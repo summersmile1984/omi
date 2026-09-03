@@ -20,6 +20,7 @@ dump/
 *.zip
 *.wav
 !backend/testing/release_fixtures/transcription-release-probe.wav
+!desktop/macos/Desktop/Sources/Resources/VoicePhrases/*.wav
 node_modules
 yarn.lock
 
@@ -115,6 +116,8 @@ web/app/public/firebase-messaging-sw.js
 !app/ios/Podfile.lock
 !mcp/uv.lock
 *.lock
+# After *.lock: the last matching pattern wins, so a re-include must follow it.
+!web/app/bun.lock
 *.log
 *.swo
 *.swp
@@ -225,6 +228,7 @@ app/android/.kotlin/
 
 CLAUDE.md
 web/app/next-env.d.ts
+web/app/tsconfig.tsbuildinfo
 .claude/settings.local.json
 .claude/worktrees/
 .mcp.json
@@ -276,11 +280,8 @@ htmlcov/
 # pnpm store
 .pnpm-store/
 
-# Local dev env (contains dev-only secrets)
-dev/.env.dev
-
-# Local agent/tooling state (LoopX goals, editor configs, pilots) — not product code
-.codex/
-.loopx/
-.opencode/
-.pilot/
+# `bunx shadcn` shells out to pnpm and drops these at the repo root. This repo
+# is Bun-only, so they are byproducts, never inputs — ignored so a shadcn run
+# cannot quietly commit a second lockfile.
+pnpm-lock.yaml
+pnpm-workspace.yaml

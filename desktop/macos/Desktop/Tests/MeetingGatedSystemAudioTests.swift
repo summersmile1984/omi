@@ -30,6 +30,28 @@ import XCTest
       XCTAssertTrue(ConferencingApps.isCallWindow(ownerName: "Discord", title: nil))
       XCTAssertTrue(ConferencingApps.isCallWindow(ownerName: "Slack", title: "#general | Acme"))
       XCTAssertTrue(ConferencingApps.isCallWindow(ownerName: "WhatsApp", title: nil))
+      XCTAssertTrue(ConferencingApps.isCallWindow(ownerName: "Telegram", title: nil))
+      XCTAssertTrue(ConferencingApps.isMessagingCallApp(appName: "Telegram"))
+      XCTAssertTrue(ConferencingApps.isMessagingCallApp(appName: "discord"))
+      XCTAssertFalse(ConferencingApps.isMessagingCallApp(appName: "Google Chrome"))
+    }
+
+    /// A *joined* Google Meet tab is titled with the bare meeting code and contains none of
+    /// `browserCallKeywords`. `browserCallWindowPresent()` used to run the keyword loop inline
+    /// instead of calling `isBrowserCallTitle`, so the one title shape a live call actually
+    /// carries was the one it missed — on macOS 14.0-14.3 that is the only detection path, and
+    /// on 14.4+ it is the path a muted browser call falls back to.
+    func testJoinedMeetCodeTitleCountsAsABrowserCall() {
+      XCTAssertTrue(ConferencingApps.isBrowserCallTitle("Meet - amc-iajq-asx"))
+      XCTAssertTrue(ConferencingApps.isBrowserCallTitle("Meet – amc-iajq-asx"))  // en dash
+      XCTAssertFalse(ConferencingApps.isBrowserCallTitle("Meet - notacode"))
+      XCTAssertFalse(ConferencingApps.isBrowserCallTitle("Meeting notes - Acme"))
+
+      // The keyword shapes must keep matching: this replaced an inline keyword loop.
+      XCTAssertTrue(ConferencingApps.isBrowserCallTitle("Google Meet — Standup"))
+      XCTAssertTrue(ConferencingApps.isBrowserCallTitle("https://meet.google.com/abc-defg"))
+      XCTAssertTrue(ConferencingApps.isBrowserCallTitle("Teams - Microsoft Teams"))
+      XCTAssertFalse(ConferencingApps.isBrowserCallTitle("GitHub - omi"))
     }
 
     func testBrowserRequiresCallKeywordInTitle() {

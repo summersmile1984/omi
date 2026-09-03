@@ -59,6 +59,8 @@ interface PiMonoRelayContext {
   requestId: string;
   /** Per-turn effort lane ("adaptive" | "fast") relayed to the gateway. */
   reasoningEffort?: string;
+  /** Kernel-derived adapter-native capability policy. */
+  builtInToolPolicy: "default" | "read_only";
 }
 
 interface PiAssistantMessageEvent {
@@ -79,6 +81,12 @@ interface PiAssistantMessage {
   usage?: PiUsage;
   stopReason?: string;
   errorMessage?: string;
+  /** Requested model id (e.g. "omi-sonnet"). */
+  model?: string;
+  /** SERVED model from the provider response stream when it differs from the
+   *  requested id (pi-ai captures chunk.model). This is the honest identity. */
+  responseModel?: string;
+  provider?: string;
 }
 
 interface PiContentBlock {
@@ -166,12 +174,12 @@ function requiredControlOperationKey(toolName: string, input: Record<string, unk
 // Map desktop model IDs (claude-*) to omi provider model IDs.
 // Covers short aliases and dated versions used by ChatProvider/ChatLab.
 const MODEL_MAP: Record<string, string> = {
-  "claude-opus-4-6": "omi-opus",
+  "claude-opus-4-6": "omi-sonnet",
   "claude-sonnet-4-6": "omi-sonnet",
   "claude-sonnet-4": "omi-sonnet",
-  "claude-opus-4": "omi-opus",
+  "claude-opus-4": "omi-sonnet",
   "claude-sonnet-4-20250514": "omi-sonnet",
-  "claude-opus-4-20250514": "omi-opus",
+  "claude-opus-4-20250514": "omi-sonnet",
 };
 
 function mapModel(model: string): string {
@@ -498,6 +506,10 @@ export class PiMonoAdapter implements HarnessAdapter {
   /** State for projecting gateway-owned public-web progress without waiting for
    * the terminal turn before forwarding model text. */
   private activePublicWebTurn: PublicWebTurnState | null = null;
+  /** Served models observed on the in-flight prompt, deduplicated. Reported
+   *  once per identity through the adapter event sink (`model_used`) so the
+   *  Response Context popover can attribute the answer honestly. */
+  private reportedPromptModels = new Set<string>();
   private piPath: string;
   private extensionPath: string;
   private readonly contextFilePath = join(
@@ -786,6 +798,7 @@ export class PiMonoAdapter implements HarnessAdapter {
     }
 
     this.eventHandler = onEvent;
+    this.reportedPromptModels.clear();
     this.toolExecutor = onToolCall;
     this.requiredAgentControlFailures.clear();
     this.requiredControlInputs.clear();
@@ -1094,6 +1107,7 @@ export class PiMonoAdapter implements HarnessAdapter {
         capabilityRef: context.capabilityRef,
         requestId: context.requestId,
         ...(context.reasoningEffort ? { reasoningEffort: context.reasoningEffort } : {}),
+        builtInToolPolicy: context.builtInToolPolicy,
       })
     );
   }
@@ -1156,11 +1170,14 @@ export class PiMonoAdapter implements HarnessAdapter {
         this.handleTurnEnd(event);
         break;
 
+      case "message_end":
+        this.recordServedModel(event.message as PiAssistantMessage | undefined);
+        break;
+
       case "agent_start":
       case "agent_end":
       case "turn_start":
       case "message_start":
-      case "message_end":
       case "response":
       case "compaction_start":
       case "compaction_end":
@@ -1186,6 +1203,24 @@ export class PiMonoAdapter implements HarnessAdapter {
           `[pi-mono] unknown event type: ${event.type}\n`
         );
     }
+  }
+
+  /** Report the model that actually served an assistant message — ONLY the
+   *  response-observed identity (pi-ai's `responseModel`, captured from the
+   *  provider stream's chunk.model). A response that names no model gets no
+   *  attribution: the requested id here is always the "omi-sonnet" alias, and
+   *  presenting it as the served model is the exact lie #11521 removed. */
+  private recordServedModel(message: PiAssistantMessage | undefined): void {
+    if (!message || message.role !== "assistant") return;
+    const served = message.responseModel;
+    if (!served || this.reportedPromptModels.has(served)) return;
+    this.reportedPromptModels.add(served);
+    this.eventHandler?.({
+      type: "model_used",
+      model: served,
+      requestedModel: message.model,
+      provider: message.provider,
+    });
   }
 
   private handleMessageUpdate(event: PiRpcEvent): void {
@@ -1413,11 +1448,13 @@ export class PiMonoAdapter implements HarnessAdapter {
       text = publicWebTurn.bufferedText || text;
       // A terminal public-web turn proves the gateway completed the required
       // provider interaction. Do not make this depend on local Pi tool events:
-      // Anthropic's server-side web_search intentionally never exposes one.
+      // managed Perplexity search runs server-side and never exposes one.
       text = stripFalsePublicWebAvailabilityDisclaimers(text);
       this.emitPublicWebText(publicWebTurn, true);
       this.finishPublicWebProgress(publicWebTurn, "completed");
     }
+
+    this.recordServedModel(message ?? undefined);
 
     // Extract usage
     const usage = message?.usage;
@@ -1579,6 +1616,7 @@ export class PiMonoRuntimeAdapter implements RuntimeAdapter {
           capabilityRef: context.toolCapabilityRef,
           requestId: context.requestId,
           reasoningEffort: relayReasoningEffort(context.metadata),
+          builtInToolPolicy: context.builtInToolPolicy,
         }
       );
 

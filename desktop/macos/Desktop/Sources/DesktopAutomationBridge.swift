@@ -681,6 +681,12 @@ final class DesktopAutomationActionRegistry {
     let run: Handler
   }
 
+  /// A 1x1 PNG, for the hermetic half of `screen_frame_quick_look_probe`. Literal bytes rather
+  /// than a rendered image so the probe has no dependency on capture history, a backend, or AppKit
+  /// drawing — the thing it is verifying is the panel, not the picture.
+  static let onePixelPNGBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
   private var entries: [String: Entry] = [:]
   private var didRegisterBuiltins = false
   /// Non-prod harness latch so race probes stay busy without relying on LLM latency.
@@ -793,9 +799,10 @@ final class DesktopAutomationActionRegistry {
         "activated": activate ? "true" : "false",
       ]
     }
-    // The five cursor-free Home-stage drivers, together because they share a failure mode:
-    // see DesktopAutomationHomeStageActions.swift.
+    // Cursor-free Home-stage and first-use-popup drivers: see their own files for the shared failure mode.
     registerHomeStageActions()
+    registerActivationActions()
+    registerFirstUsePopupActions()
     register(
       name: "refresh_all_data",
       summary: "Refresh conversations, chat, tasks, and memories (same as Cmd+R)"
@@ -1441,6 +1448,12 @@ final class DesktopAutomationActionRegistry {
     }
 
     register(
+      name: "ptt_quick_tap",
+      summary: "Mirror one quick tap of a modifier-only PTT key; two inside the double-tap window lock"
+    ) { _ in
+      PushToTalkManager.shared.quickTapPushToTalkForAutomation()
+    }
+    register(
       name: "ptt_stop",
       summary: "Finalize the in-progress push-to-talk capture (mirrors a long-hold release)"
     ) { _ in
@@ -1674,6 +1687,121 @@ final class DesktopAutomationActionRegistry {
         log("debug_reach_error: Retry tapped")
       }
       return ["shown": "true"]
+    }
+
+    // Drives the real post-meeting completion signal so the entire production
+    // chain runs (banner service → conversation + recipients fetch → persistent
+    // share card). Same NotificationCenter signal the finalization service posts.
+    register(
+      name: "trigger_meeting_completion",
+      summary:
+        "Post the real meeting-completion signal for a conversation id (presents the meeting summary share card). Non-prod only.",
+      params: ["conversation_id"]
+    ) { params in
+      guard AppBuild.isNonProduction else {
+        return ["error": "trigger_meeting_completion is disabled on production bundles"]
+      }
+      guard let conversationID = params["conversation_id"], !conversationID.isEmpty else {
+        throw DesktopAutomationActionError.invalidParams("conversation_id is required")
+      }
+      NotificationCenter.default.post(
+        name: .desktopMeetingConversationDidComplete,
+        object: MeetingCompletionNotification(conversationIDs: [conversationID]))
+      return ["posted": conversationID]
+    }
+
+    // Reads whatever notch card is on screen, so a flow can assert the card a
+    // person actually sees rather than trusting that a trigger fired.
+    register(
+      name: "notification_state",
+      summary: "Read the notch notification currently on screen (title, message, persistence).",
+      params: []
+    ) { _ in
+      guard let bar = FloatingControlBarManager.shared.barState,
+        let notification = bar.currentNotification
+      else {
+        return ["present": "false"]
+      }
+      return [
+        "present": "true",
+        "title": notification.title,
+        "message": notification.message,
+        "persistent": notification.isPersistent ? "true" : "false",
+      ]
+    }
+
+    // Presents the same "Omi is taking notes" notice the meeting boundary
+    // posts once a detected meeting has rotated into its recording session.
+    register(
+      name: "trigger_meeting_started_notice",
+      summary:
+        "Present the meeting-started note-taking notice (the card shown when a meeting is detected). Non-prod only.",
+      params: []
+    ) { _ in
+      guard AppBuild.isNonProduction else {
+        return ["error": "trigger_meeting_started_notice is disabled on production bundles"]
+      }
+      MeetingNoteTakingNotice.present()
+      return ["presented": "true"]
+    }
+
+    // Cursor-free driver for the meeting summary share card: `state` reads the
+    // presented card, `copy`/`send` run the same MeetingSummaryShareActions the
+    // card's buttons call, `close` is the user dismissal path.
+    register(
+      name: "meeting_summary_share",
+      summary:
+        "Inspect or drive the presented meeting summary share card (action=state|copy|send|close). Non-prod only.",
+      params: ["action"]
+    ) { params in
+      guard AppBuild.isNonProduction else {
+        return ["error": "meeting_summary_share is disabled on production bundles"]
+      }
+      let mgr = FloatingControlBarManager.shared
+      guard let bar = mgr.barState else { return ["error": "no bar state"] }
+      guard let notification = bar.currentNotification,
+        case .meetingSummaryShare(let conversationID, let recipients)? = notification.action
+      else {
+        return ["present": "false"]
+      }
+      switch (params["action"] ?? "state").lowercased() {
+      case "state":
+        return [
+          "present": "true",
+          "assistant_id": notification.assistantId,
+          "title": notification.title,
+          "message": notification.message,
+          "persistent": notification.isPersistent ? "true" : "false",
+          "conversation_id": conversationID,
+          "recipients": recipients.map(\.email).joined(separator: ","),
+        ]
+      case "copy":
+        let feedback = await MeetingSummaryShareActions.copyLink(conversationID: conversationID)
+        return ["copied": feedback == .copied ? "true" : "false"]
+      case "send":
+        // `email` mirrors what the owner types into the Share field; with no
+        // address supplied the detected suggestion is used, which is exactly
+        // what the field prefills with.
+        // Drive the card's own Send handler so its phase (sending → sent /
+        // failed) is exercised, not just the network call underneath it.
+        let typed = params["email"]?.trimmingCharacters(in: .whitespaces) ?? ""
+        let address = typed.isEmpty ? (recipients.first?.email ?? "") : typed
+        guard !address.isEmpty else {
+          return ["error": "no recipient: pass email=<address>"]
+        }
+        NotificationCenter.default.post(
+          name: .meetingSummaryShareSubmit, object: address)
+        return ["submitted": address]
+      case "share":
+        NotificationCenter.default.post(name: .meetingSummaryShareBeginAddressing, object: nil)
+        return ["addressing": "true"]
+      case "close":
+        mgr.dismissCurrentNotification()
+        return ["closed": "true"]
+      default:
+        throw DesktopAutomationActionError.invalidParams(
+          "action must be state, share, copy, send, or close")
+      }
     }
 
     // Cursor-free click diagnosis: report which window (any app's) is topmost at a screen point,
@@ -2018,9 +2146,9 @@ final class DesktopAutomationActionRegistry {
       guard AppBuild.isNonProduction else {
         return ["error": "suspend_agent_stream is disabled on production bundles"]
       }
-      // Default just past the 180s send watchdog so CHAT-02 can assert the
+      // Default just past the 60s send watchdog so CHAT-02 can assert the
       // "Response took too long" error + recoverable retry; capped at 300s.
-      let durationMs = intParam(params["durationMs"], default: 190_000)
+      let durationMs = intParam(params["durationMs"], default: 70_000)
       return await AgentRuntimeProcess.shared.debugSuspendStream(durationMs: durationMs)
     }
 
@@ -2348,6 +2476,33 @@ final class DesktopAutomationActionRegistry {
       }
     }
 
+    // Cursor-free notch hover driver: enter/exit run the same pointer update
+    // the tracking view calls from mouse events; state reads the island's
+    // visibility inputs so a stuck reveal or menu can be caught mechanically.
+    register(
+      name: "notch_hover",
+      summary: "Simulate notch pointer enter/exit or read island state (non-prod). action=enter|exit|state",
+      params: ["action"]
+    ) { params in
+      guard AppBuild.isNonProduction else {
+        return ["error": "notch_hover is disabled on production bundles"]
+      }
+      guard let bar = FloatingControlBarManager.shared.window else {
+        return ["error": "no floating bar window"]
+      }
+      switch params["action"] ?? "state" {
+      case "enter":
+        bar.automationSimulateNotchPointer(inside: true)
+      case "exit":
+        bar.automationSimulateNotchPointer(inside: false)
+      case "state":
+        break
+      default:
+        throw DesktopAutomationActionError.invalidParams("action must be enter, exit, or state")
+      }
+      return bar.automationNotchStateSnapshot
+    }
+
     register(
       name: "seed_subagents",
       summary: "Seed synthetic floating-bar subagents for deterministic UI benchmarks",
@@ -2403,6 +2558,31 @@ final class DesktopAutomationActionRegistry {
     ) { _ in
       CloudConnectorGuidanceOverlay.shared.dismiss()
       return ["dismissed": "true", "visible": "false"]
+    }
+
+    register(
+      name: "integration_nudge_evaluate",
+      summary:
+        "Read-only: which integration a given frontmost app/window maps to, and whether a nudge would fire",
+      params: ["bundle_id", "window_title"],
+      category: "read",
+      safety: "read_only"
+    ) { params in
+      await IntegrationNudgeAutomation.evaluate(
+        bundleID: params["bundle_id"],
+        windowTitle: params["window_title"]
+      )
+    }
+
+    register(
+      name: "integration_nudge_present",
+      summary: "Present the integration-connect card for one catalog entry (QA of the real card path)",
+      params: ["telemetry_id"],
+      category: "write",
+      surfaces: ["floating_bar"],
+      safety: "presents_ui"
+    ) { params in
+      await MainActor.run { IntegrationNudgeAutomation.present(telemetryID: params["telemetry_id"] ?? "") }
     }
 
     register(
@@ -3061,6 +3241,10 @@ final class DesktopAutomationActionRegistry {
       ]
     }
 
+    register(name: "permissions_snapshot", summary: "Every permission row the Permissions page shows") {
+      _ in await PermissionsSnapshot.capture()
+    }
+
     register(
       name: "create_test_folder",
       summary: "Create a hermetic conversation folder via the real API",
@@ -3400,7 +3584,8 @@ final class DesktopAutomationActionRegistry {
       NotificationCenter.default.post(name: .navigateToRewindNotes, object: nil)
       return [
         "posted": "navigateToRewindNotes",
-        "expected_tab_index": "\(SidebarNavItem.rewind.rawValue)",
+        "expected_tab_index": "\(SidebarNavItem.conversations.rawValue)",
+        "expected_memory_destination": "\(MemoryHubDestination.rewind.rawValue)",
       ]
     }
 
@@ -3417,49 +3602,10 @@ final class DesktopAutomationActionRegistry {
       ]
     }
 
-    register(
-      name: "settings_notifications_snapshot",
-      summary: "Return notification settings and local permission state"
-    ) { _ in
-      async let settingsTask = APIClient.shared.getNotificationSettings()
-      let settings = try await settingsTask
-      let appState = await MainActor.run { AppState.current }
-      let hasPermission = appState?.hasNotificationPermission ?? false
-      let bannersDisabled = appState?.isNotificationBannerDisabled ?? false
-      return [
-        "schema": "enabled,frequency,frequency_label,has_permission,banners_disabled",
-        "enabled": settings.enabled ? "true" : "false",
-        "frequency": "\(settings.frequency)",
-        "frequency_label": settings.frequencyDescription,
-        "has_permission": hasPermission ? "true" : "false",
-        "banners_disabled": bannersDisabled ? "true" : "false",
-      ]
-    }
-
-    register(
-      name: "set_notification_settings",
-      summary: "Update notification settings via the real API",
-      params: ["enabled", "frequency"]
-    ) { params in
-      let enabled = params["enabled"].map { boolParam($0, default: true) }
-      let frequency = params["frequency"].flatMap { Int($0) }
-      let response = try await APIClient.shared.updateNotificationSettings(
-        enabled: enabled,
-        frequency: frequency
-      )
-      UserDefaults.standard.set(
-        response.enabled,
-        forKey: NotificationService.masterEnabledDefaultsKey)
-      UserDefaults.standard.set(
-        response.frequency,
-        forKey: NotificationService.frequencyDefaultsKey)
-      return [
-        "saved": "true",
-        "enabled": response.enabled ? "true" : "false",
-        "frequency": "\(response.frequency)",
-      ]
-    }
-
+    registerNotificationActions()
+    registerRatingPromptActions()
+    registerRemotePromptActions()
+    registerRealtimeHubActions()
     register(
       name: "rewind_settings_snapshot",
       summary: "Return Rewind settings retention and excluded-app counts"
@@ -3495,6 +3641,15 @@ final class DesktopAutomationActionRegistry {
       case "5", "rewind": item = .rewind
       case "6", "apps": item = .apps
       case ",", "comma", "settings": item = .settings
+      // Settings sub-sections ride the same notifications the app already posts
+      // for its own deep-links (the Tasks gear, the floating-bar context menu),
+      // so QA can land on a specific pane without any cursor input.
+      case "tasksettings", "advancedsettings":
+        NotificationCenter.default.post(name: .navigateToTaskSettings, object: nil)
+        return ["navigated": "Settings › Advanced"]
+      case "floatingbarsettings":
+        NotificationCenter.default.post(name: .navigateToFloatingBarSettings, object: nil)
+        return ["navigated": "Settings › Floating Bar"]
       default: item = nil
       }
       guard let item else {
@@ -3563,6 +3718,31 @@ final class DesktopAutomationActionRegistry {
         ?? "[[MARKER:speaker-naming]] Harness Speaker"
       let segmentIndex = max(0, Int(params["segmentIndex"] ?? "") ?? 0)
 
+      // Raw mode: drive assignSpeakerToSegments with the ids exactly as given,
+      // without resolving the conversation first — the seam that exercises the
+      // local-first fallback for conversations the backend does not have yet.
+      if let rawConversationId = params["rawConversationId"]?.trimmingCharacters(
+        in: .whitespacesAndNewlines), !rawConversationId.isEmpty
+      {
+        let rawSegmentIds = (params["rawSegmentIds"] ?? "").split(separator: ",").map(String.init)
+        guard !rawSegmentIds.isEmpty else { return ["error": "rawSegmentIds required in raw mode"] }
+        guard let person = await appState.createPerson(name: personName) else {
+          return ["error": "failed to create person"]
+        }
+        let assigned = await appState.assignSpeakerToSegments(
+          conversationId: rawConversationId,
+          segmentIds: rawSegmentIds,
+          personId: person.id,
+          isUser: false
+        )
+        return [
+          "raw_mode": "true",
+          "assigned": assigned ? "true" : "false",
+          "conversation_id": rawConversationId,
+          "person_id": person.id,
+        ]
+      }
+
       var conversationId = params["conversationId"]?.trimmingCharacters(in: .whitespacesAndNewlines)
       if conversationId == "latest" || conversationId?.isEmpty != false {
         if appState.conversations.isEmpty {
@@ -3606,6 +3786,84 @@ final class DesktopAutomationActionRegistry {
         "speaker_label": assignedSegment?.speaker ?? segment.speaker ?? "",
         "segment_count": "\(refreshed.transcriptSegments.count)",
       ]
+    }
+
+    register(
+      name: "screen_frame_quick_look_probe",
+      summary: "Open screenshots in Quick Look and read the panel back",
+      params: ["conversationId", "source", "dismiss"]
+    ) { params in
+      // Quick Look's panel is a system window, so no capture path in this app can photograph it —
+      // see `ScreenFrameQuickLook.probeState()`. This is how the responder-chain claim, the
+      // materialisation of signed URLs into files, and the panel actually opening are verified.
+      if params["dismiss"] == "true" {
+        await ScreenFrameQuickLook.shared.dismissForProbe()
+        return ["dismissed": "true"]
+      }
+      // Two sources, because they materialise by completely different routes: a meeting frame is a
+      // signed URL to download, a Rewind moment is usually a frame inside a video chunk to decode.
+      // A probe that only exercised one would leave the other unproven.
+      let source = params["source"] ?? "conversation"
+      let frames: [QuickLookFrame]
+      let subject: String
+      if source == "synthetic" {
+        // The hermetic case. It needs neither a signed URL nor a Rewind chunk, so it can run on a
+        // fresh bundle with no capture history and no backend — which is what makes it usable as
+        // an e2e step. `URLSession` serves `file://` for a data task, so this reaches the panel
+        // through exactly the same materialise-then-present path a real frame does.
+        let seed = FileManager.default.temporaryDirectory
+          .appendingPathComponent("omi-quick-look-probe.png")
+        guard let png = Data(base64Encoded: Self.onePixelPNGBase64) else {
+          return ["error": "probe_seed_undecodable"]
+        }
+        do {
+          try png.write(to: seed, options: .atomic)
+        } catch {
+          return ["error": "probe_seed_unwritable: \(error.localizedDescription)"]
+        }
+        frames = [QuickLookFrame(id: "probe", source: .remote(seed), title: "Quick Look probe")]
+        subject = "synthetic"
+      } else if source == "rewind" {
+        let recent = try await RewindDatabase.shared.getRecentScreenshots(limit: 6)
+        frames = recent.map { QuickLookFrame(screenshot: $0) }
+        subject = "rewind"
+      } else {
+        let rawConversationId = params["conversationId"]?
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let rawConversationId, !rawConversationId.isEmpty else {
+          return ["error": "missing conversationId"]
+        }
+        let set = try await APIClient.shared.getConversationScreenFrames(
+          conversationID: rawConversationId)
+        let ordered = (set.banner.map { [$0] } ?? []) + set.strip
+        frames = ordered.compactMap { QuickLookFrame(frame: $0) }
+        subject = rawConversationId
+      }
+      guard let first = frames.first else {
+        return ["error": "no_frames", "conversation_id": subject]
+      }
+      await MainActor.run {
+        ScreenFrameQuickLook.shared.present(frames, startingAt: first.id)
+      }
+      // `present` fetches the clicked frame before it shows anything, so the panel is not up the
+      // instant this returns. Poll rather than sleep a guessed interval.
+      // Both conditions, not just visibility: an ordered-out panel can still report itself visible
+      // while its data source is gone, so polling on `panel_visible` alone returns the *previous*
+      // presentation's window and reads zero ready items off the new one.
+      for _ in 0..<40 {
+        let state = await MainActor.run { ScreenFrameQuickLook.shared.probeState() }
+        if state["panel_visible"] == "true", state["panel_controlled"] == "true",
+          state["ready_count"] != "0"
+        {
+          break
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+      }
+      var result = await MainActor.run { ScreenFrameQuickLook.shared.probeState() }
+      result["conversation_id"] = subject
+      result["source"] = source
+      result["requested_count"] = "\(frames.count)"
+      return result
     }
 
     register(
@@ -3806,7 +4064,7 @@ final class DesktopAutomationActionRegistry {
 }
 
 /// Coerce a string param ("true"/"1"/"yes") into a Bool, falling back when absent.
-private func boolParam(_ raw: String?, default fallback: Bool) -> Bool {
+func boolParam(_ raw: String?, default fallback: Bool) -> Bool {
   guard let raw = raw?.trimmingCharacters(in: .whitespaces).lowercased(), !raw.isEmpty else {
     return fallback
   }

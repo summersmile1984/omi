@@ -4,12 +4,14 @@ tier: manual
 description: Settings navigation smoke — open Settings via gear icon, navigate all 9 sections (v0.12.119+ redesign)
 app: com.omi.computer-macos
 covers:
+  - desktop/macos/Desktop/Sources/MainWindow/Pages/Settings/HiddenSettingsSurfacesPolicy.swift
   - desktop/macos/Desktop/Sources/MainWindow/Pages/Settings/Sections/SettingsContentView+DeveloperKeys.swift
   - desktop/macos/Desktop/Sources/MainWindow/Pages/SettingsPage.swift
   # `SettingsPage` mounts the shell-drawn confirmation on Advanced → Reset Onboarding, which S9b
   # opens and cancels. A system `.alert` dimmed the *window* here, and this window is a transparent
   # rectangle larger than the panels inside it.
   - desktop/macos/Desktop/Sources/MainWindow/ShellConfirmationDialog.swift
+  - desktop/macos/Desktop/Sources/Services/APIClient/APIClient+Settings.swift
   - desktop/macos/Desktop/Sources/MainWindow/Pages/Settings/Components/AppRuleEditorView.swift
   - desktop/macos/Desktop/Sources/MainWindow/Pages/Settings/Sections/SettingsContentView+General.swift
   - desktop/macos/Desktop/Sources/MainWindow/SettingsSidebar.swift

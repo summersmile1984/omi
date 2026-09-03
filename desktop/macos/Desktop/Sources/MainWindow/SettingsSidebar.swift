@@ -13,7 +13,7 @@ struct SettingsSearchItem: Identifiable {
   let settingId: String
 
   var breadcrumb: String {
-    return section.rawValue
+    section.displayTitle
   }
 
   static let allSearchableItems: [SettingsSearchItem] = [
@@ -76,6 +76,10 @@ struct SettingsSearchItem: Identifiable {
       name: "Data Retention", subtitle: "How long to keep screen recordings",
       keywords: ["retention", "storage", "delete old", "keep data"], section: .rewind,
       icon: "clock.arrow.circlepath", settingId: "rewind.retention"),
+    SettingsSearchItem(
+      name: "Meeting Screenshots", subtitle: "Add screenshots of what was on screen to meeting notes",
+      keywords: ["meeting", "screenshots", "notes", "banner", "photos"], section: .rewind,
+      icon: "photo.on.rectangle.angled", settingId: "rewind.meetingnotescreenshots"),
 
     // Transcription
     SettingsSearchItem(
@@ -125,6 +129,18 @@ struct SettingsSearchItem: Identifiable {
       name: "Memory Notifications", subtitle: "Show notification when a memory is extracted",
       keywords: ["memory", "facts", "notify memory"], section: .notifications, icon: "bell",
       settingId: "notifications.memory"),
+    SettingsSearchItem(
+      name: "Integration Notifications",
+      subtitle: "Occasionally offer to connect an app Omi can use — Gmail, Notion, ChatGPT",
+      keywords: ["integration", "suggestions", "connect", "gmail", "notion", "nudge"],
+      section: .notifications, icon: "bell",
+      settingId: "notifications.integrationsuggestions"),
+    SettingsSearchItem(
+      name: "Reset Integration Suggestions",
+      subtitle: "Clear every integration's suggestion history so Omi can offer them again",
+      keywords: ["reset", "integration", "suggestions", "history", "again"],
+      section: .advanced, icon: "wrench.and.screwdriver",
+      settingId: "advanced.troubleshooting.resetintegrationsuggestions"),
     SettingsSearchItem(
       name: "Daily Summary",
       subtitle: "Receive a daily summary of your conversations and activities",
@@ -180,6 +196,12 @@ struct SettingsSearchItem: Identifiable {
       name: "Upgrade Plan", subtitle: "Buy Operator or Architect",
       keywords: ["upgrade", "buy", "pricing", "checkout", "architect", "operator", "unlimited"], section: .planUsage,
       icon: "creditcard", settingId: "planusage.purchase"),
+
+    // Referral
+    SettingsSearchItem(
+      name: "Refer a Friend", subtitle: "Share one free month of Operator",
+      keywords: ["refer", "referral", "friend", "gift", "free month", "share link"],
+      section: .referral, icon: "gift", settingId: "referral.link"),
 
     // About
     SettingsSearchItem(
@@ -253,20 +275,21 @@ struct SettingsSearchItem: Identifiable {
       subtitle: "Configure the floating bar appearance and visibility",
       keywords: ["floating bar", "ask omi", "show bar"], section: .floatingBar, icon: "sparkles",
       settingId: "floatingbar.show"),
-    SettingsSearchItem(
-      name: "Notification Previews",
-      subtitle: "Show assistant notifications under the Floating Bar",
-      keywords: ["notification preview", "floating bar notification", "mute preview", "focus", "dnd"],
-      section: .floatingBar, icon: "sparkles", settingId: "floatingbar.notificationpreviews"),
-    SettingsSearchItem(
-      name: "Background Style", subtitle: "Toggle between solid and transparent background",
-      keywords: ["background", "solid", "transparent", "blur"], section: .floatingBar,
-      icon: "sparkles", settingId: "floatingbar.background"),
-    SettingsSearchItem(
-      name: "Draggable Floating Bar",
-      subtitle: "Allow repositioning the floating bar by dragging it",
-      keywords: ["drag", "move", "reposition", "draggable"], section: .floatingBar,
-      icon: "sparkles", settingId: "floatingbar.draggable"),
+    // HIDDEN DELIBERATELY (Nik, 2026-08-25): search entries for hidden floating-bar rows.
+    // SettingsSearchItem(
+    // name: "Notification Previews",
+    // subtitle: "Show assistant notifications under the Floating Bar",
+    // keywords: ["notification preview", "floating bar notification", "mute preview", "focus", "dnd"],
+    // section: .floatingBar, icon: "sparkles", settingId: "floatingbar.notificationpreviews"),
+    // SettingsSearchItem(
+    // name: "Background Style", subtitle: "Toggle between solid and transparent background",
+    // keywords: ["background", "solid", "transparent", "blur"], section: .floatingBar,
+    // icon: "sparkles", settingId: "floatingbar.background"),
+    // SettingsSearchItem(
+    // name: "Draggable Floating Bar",
+    // subtitle: "Allow repositioning the floating bar by dragging it",
+    // keywords: ["drag", "move", "reposition", "draggable"], section: .floatingBar,
+    // icon: "sparkles", settingId: "floatingbar.draggable"),
     SettingsSearchItem(
       name: "Typed Questions", subtitle: "Speak replies aloud for typed floating-bar questions",
       keywords: ["typed", "text", "speech", "tts", "audio answers"], section: .floatingBar,
@@ -331,22 +354,9 @@ enum SettingsSidebarMetrics {
   ///
   /// The value is **derived from the longest label rather than chosen**, because this row truncates
   /// (`lineLimit(1)`, `.tail`) and a truncated item in a table of contents is worse than a wide one.
-  /// "Notifications & Privacy" needs 196 pt including its fixtures — the icon column, the gap after
-  /// it and the row's two side paddings — measured through the real font by
-  /// `SettingsSidebarItemLayoutTests`, at the *selected* weight, which is the wider of the two.
-  ///
-  /// The two numbers below the floor were both tried on a build and both truncated:
-  ///
-  /// - **196**, the settings kit's nominal width, renders "Notifications & P…".
-  /// - **216**, which clears the 196 pt requirement by 4 pt on paper, still renders
-  ///   "Notifications & Priva…" — a bare fit is not a fit once the scroll container and subpixel
-  ///   rounding have taken their share.
-  ///
-  /// So the width carries **`labelSlack`** rather than trusting the arithmetic to the last point,
-  /// and the guard test asserts the slack rather than the fit. 232 is still 28 pt narrower than the
-  /// 260 this started at, which was the app's *main* sidebar width — that one carries conversation
-  /// titles and has something to do with the room; nine section names do not.
-  static let expandedWidth: CGFloat = 232
+  /// The longest merged label is deliberately concise, so the table of contents
+  /// can stay narrow without truncating or stealing room from the settings pane.
+  static let expandedWidth: CGFloat = 208
 
   /// Headroom over the measured label requirement. See `expandedWidth`: a zero-slack fit truncated
   /// on a real build, so the fit is held open by this rather than by luck.
@@ -379,6 +389,7 @@ enum SettingsSidebarRoutes {
     .permissions,
     .shortcuts,
     .advanced,
+    .referral,
     .about,
   ]
 }
@@ -463,9 +474,9 @@ struct SettingsSidebar: View {
       Spacer()
     }
     .frame(width: SettingsSidebarMetrics.expandedWidth)
-    // A half-step of shading, and deliberately not a second material: the window already wears the
-    // glass, and a `.regularMaterial` here would be a *within-window* blur stacked on it — two
-    // materials in one window, which on light glass reads as a grey slab down the side.
+    // A half-step of shading, and deliberately not a second material: the host already wears the
+    // glass (`PageGlassLane` in modern Settings, `LegacySidebarSurface` in old Home), and a
+    // `.regularMaterial` here would be a within-window blur stacked on it.
     .background(Ink.rowFill)
   }
 
@@ -584,7 +595,8 @@ struct SettingsSidebarItem: View {
     case .aiChat: return "cpu"
     case .floatingBar: return "sparkles"
     case .shortcuts: return "keyboard"
-    case .advanced: return "chart.bar"
+    case .advanced: return "cpu"
+    case .referral: return "gift"
     case .about: return "info.circle"
     case .permissions: return PermissionNavSymbol.outline
     }

@@ -92,8 +92,12 @@ struct SpineStream: View {
   @ObservedObject var memoriesViewModel: MemoriesViewModel
   @ObservedObject var tasksStore: TasksStore
 
-  /// Hands a conversation to the page that owns conversations.
-  let onOpenConversation: (String) -> Void
+  /// Hands a conversation to the page that owns conversations. The whole record, not its id: the
+  /// row already holds it, and handing over an id forced the receiver to look it back up against a
+  /// list that may not have loaded yet.
+  let onOpenConversation: (ServerConversation) -> Void
+  /// Hands a memory to the page that owns memories.
+  let onOpenMemory: (SpineMemory) -> Void
   /// Hands the day's memories to the surface that owns the graph.
   let onOpenBrainMap: () -> Void
   /// Hands a frame to Rewind.
@@ -111,7 +115,8 @@ struct SpineStream: View {
     GeometryReader { proxy in
       HStack(spacing: 0) {
         if proxy.size.width >= SpineLayout.railBreakpoint {
-          SpineRailColumn(store: store, viewport: viewport, collapse: collapse)
+          SpineRailColumn(
+            store: store, viewport: viewport, collapse: collapse, request: request)
           Rectangle().fill(Ink.separator).frame(width: 1)
         }
         Group {
@@ -194,10 +199,20 @@ struct SpineStream: View {
                 SpineRowView(
                   row: row,
                   showsIndent: store.kind == .everything,
-                  onOpenConversation: { onOpenConversation($0.id) },
+                  onOpenConversation: onOpenConversation,
+                  onOpenMemory: onOpenMemory,
                   onToggleTask: { task in Task { await tasksStore.toggleTask(task) } },
                   onToggleStar: toggleStar,
-                  onOpenMoment: { _ in onOpenRewind() },
+                  // Clicking a moment used to discard the moment and navigate to the Rewind
+                  // page — the one thing the user did not ask for, since what they clicked was a
+                  // specific frame they wanted to read. Quick Look shows that frame at full
+                  // resolution, in place, and arrows along the rest of the strip.
+                  onOpenMoment: { moment, strip in
+                    ScreenFrameQuickLook.shared.present(
+                      strip.map { QuickLookFrame(screenshot: $0.screenshot) },
+                      startingAt: String(moment.id))
+                  },
+                  onShowAllMoments: onOpenRewind,
                   onOpenBrainMap: onOpenBrainMap
                 )
                 .background(anchor(for: row, in: day))
@@ -221,7 +236,7 @@ struct SpineStream: View {
       guard let anchor else { return }
       Task { @MainActor in viewport.report(dayID: anchor.dayID, hour: anchor.hour) }
     }
-    .glassScrollFade(top: 6, bottom: 18)
+    .glassScrollFade(bottom: 18)
   }
 
   /// A layout-neutral reporter behind each row. A `GeometryReader` in a `background` never affects
@@ -378,6 +393,7 @@ private struct SpineRailColumn: View {
   @ObservedObject var store: SpineStore
   @ObservedObject var viewport: SpineViewport
   let collapse: SpineDayCollapse
+  let request: QueryShellRequest
 
   /// The day the rail describes.
   ///
@@ -400,13 +416,26 @@ private struct SpineRailColumn: View {
     return viewport.hour
   }
 
+  /// The rail remains a timeline navigator while the list narrows. Its capture histogram and
+  /// screen-moment total therefore describe the complete day, not just the matching rows. Say so in
+  /// the scope line; otherwise a search for a memory can make "1,204 screen moments" look like a
+  /// result count for the memory search.
+  private var railDayTitle: String {
+    guard request.isFiltering, let title = day?.title, !title.isEmpty else {
+      return day?.title ?? ""
+    }
+    return "\(title) · full day"
+  }
+
   var body: some View {
     SpineHourRail(
       density: dayID.map(store.density(for:)) ?? Array(repeating: 0, count: 24),
       currentHour: currentHour,
       momentCount: dayID.flatMap(store.momentCount(for:)),
-      dayTitle: day?.title ?? "",
-      conversationCount: day?.conversationCount ?? 0
+      dayTitle: railDayTitle,
+      // Filtered results no longer carry the complete day's conversation count. The footer is
+      // supplementary context, so omit it rather than pairing a full-day rail with a filtered noun.
+      conversationCount: request.isFiltering ? 0 : (day?.conversationCount ?? 0)
     )
   }
 }

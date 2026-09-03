@@ -3,8 +3,8 @@
 This package owns the universal memory repository and canonical processing
 pipeline. Persistence contracts live in `backend/database/` and
 `backend/models/`; HTTP entry points live in `backend/routers/`. The normative
-data model is `docs/memory/domain_model.md`, and the convergence record is
-`docs/epics/universal_memory_task_convergence.md`.
+data model is `backend/docs/memory/domain_model.md`, and the convergence record is
+`backend/docs/epics/universal_memory_task_convergence.md`.
 
 ## One logical authority, two retained formats
 
@@ -97,9 +97,14 @@ backend/modal/memory_maintenance_job.py
     memory_outbox_worker.py
 ```
 
-The job inventories accounts from a content-free universal maintenance
-registry. First canonical apply-state provisioning idempotently registers the
-UID; each job run advances a persisted bounded cursor and wraps at the end.
+The job prioritizes accounts whose authoritative Short-term items enter the
+last 24 hours of their 48-hour policy window, using a bounded collection-group
+query projected to lifecycle metadata and ordered by effective expiry. It
+fills remaining capacity from the content-free universal maintenance registry.
+First canonical apply-state
+provisioning idempotently registers the UID; each job run advances a persisted
+bounded cursor and wraps at the end. The expiry queue is independent of that
+cursor, so a registry outage or 20-hour cooldown cannot strand deadline work.
 This is neither a rollout allowlist nor an unbounded users scan. Scheduler owns
 cadence; the job is the sole host of
 `MEMORY_CANONICAL_MAINTENANCE_ENABLED`.
@@ -125,10 +130,11 @@ Flex, and increment `generation` with every control change. Setting it back to
 response from an older generation is discarded before durable apply. Flex
 resource deferrals release promotion leases for the next scheduled run and
 do not consume model-output quality retry budgets; X raw posts remain pending.
-Flex-mode memory maintenance scans a bounded registry page (up to 400 UIDs),
-skips accounts with no active Short-term row, and skips accounts dreamed in
-the last 20 hours unless they already have more than 10 active Short-term
-rows (hourly overflow drain). Remaining users run until the 15-minute Flex
+Flex-mode memory maintenance scans a bounded merged page (up to 400 UIDs),
+with expiry-ordered accounts first. It skips accounts with no active Short-term
+row, and skips non-urgent accounts dreamed in the last 20 hours unless they
+already have more than 10 active Short-term rows (hourly overflow drain).
+Remaining users run until the 15-minute Flex
 reservation no longer fits in the one-hour job budget. A Flex deferral leaves
 the durable cursor on the unfinished UID so later accounts are not skipped.
 The job does not run a separate required-processing LLM: explicit submissions
@@ -142,6 +148,27 @@ cached prefix so later batches of the same hour reuse that prefix; one pass
 can issue up to 25 such calls (500 items). Both owning
 jobs use verified private gateway endpoints, zero SDK retries, and a one-hour
 Cloud Run task budget.
+
+Owner rejection closes the feedback loop through
+`rejected_memory_feedback.py`. L1 extraction and each consolidation batch read
+at most eight newest active or terminally hidden owner rejections from active
+sources in the last 30 days. Only non-restricted content is retained,
+normalized to 180 characters per item and 1,600 characters total, then cached
+in-process for five minutes; every memory mutation invalidates the owner's
+entry. Conversation orchestration fetches the set through its injected
+Firestore client and passes it into L1, which places the examples at
+user-message priority after the conversation cache breakpoint. Consolidation
+serializes the set once in its volatile batch JSON because rejected items are
+deliberately absent from vector projection and therefore cannot be recovered
+reliably as vector neighbors.
+
+`decision_path_telemetry.py` emits the stable
+`canonical_memory_decision_path.v1` event for persisted capture and applied or
+blocked promotion routes. Capture events carry conversation source, resolved
+subject attribution, a non-PII classification of model-authored `about`,
+disagreement, and distinct speaker-ID count. Promotion events carry the route,
+stage status, and structured reason fields. Neither event accepts memory or
+transcript text.
 
 ## Search, graph, and derived providers
 
@@ -176,7 +203,7 @@ fences prevent an old lease or retry from resurrecting a recreated account.
 ## Operational controls and rollback
 
 The supported controls and rollback floor are documented in
-`docs/runbooks/universal-memory-operations.md`.
+`backend/docs/runbooks/universal-memory-operations.md`.
 
 - `MEMORY_ENABLED=on|off` is the one user-facing product flag. Unset fail-closes
   to off. `on` enables intake and list; it does not by itself enable ST→LT
@@ -187,10 +214,11 @@ The supported controls and rollback floor are documented in
   on with `MEMORY_CANONICAL_MAINTENANCE_FLEX=true`.
 - `MEMORY_CANONICAL_CONSOLIDATION_ENABLED` and its batch/candidate settings are
   global cost/incident controls.
-- `GET /v3/memories` first page uses `read_page`, which 503s
-  `Memory cursor unavailable` when `MEMORY_V3_CURSOR_SECRET` is missing. That is
-  the list fence, not `MEMORY_V3_GET_ENABLED` (unused on the route). First page
-  falls back to offset `read()` for that 503.
+- `GET /v3/memories` first page uses `read_page`, which raises
+  `MemoryBackingStoreUnavailable` (503 `Memory cursor unavailable`) when
+  `MEMORY_V3_CURSOR_SECRET` is missing. That is the list fence, not
+  `MEMORY_V3_GET_ENABLED` (unused on the route). First page falls back to
+  offset `read()` for that typed failure — not by matching detail strings.
 
 The universal dual-format reader is the rollback floor. A rollback may stop new
 canonical intake or L2 maintenance globally, but must keep the universal reader

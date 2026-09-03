@@ -142,7 +142,18 @@ def validate_app_endpoints_for_reenable(app_dict: Dict[str, Any], update_dict: D
         )
     for label, url, method, require_2xx in endpoints_to_check:
         try:
-            resp = httpx.request(method, url, json={}, timeout=10.0, follow_redirects=True)
+            # Must match delivery, which pins the destination IP and so cannot follow
+            # redirects. Checking with redirects followed passed endpoints that then
+            # failed on the very first real webhook.
+            resp = httpx.request(method, url, json={}, timeout=10.0, follow_redirects=False)
+            if 300 <= resp.status_code < 400:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f'{label.capitalize()} endpoint redirects ({resp.status_code}). Deliveries do not follow '
+                        'redirects — point it at the final URL before re-enabling.'
+                    ),
+                )
             if require_2xx and (resp.status_code < 200 or resp.status_code >= 300):
                 raise HTTPException(
                     status_code=400,
@@ -1300,7 +1311,7 @@ def build_capability_groups_response(
     id_to_title: Dict[Any, Any] = {c['id']: c['title'] for c in capabilities}
 
     ordered_keys: List[Any] = [c['id'] for c in capabilities]
-    for key in grouped_apps.keys():
+    for key in grouped_apps:
         if key not in ordered_keys:
             ordered_keys.append(key)
 
@@ -1420,7 +1431,7 @@ def build_capability_category_groups_response(
     id_to_title: Dict[str, str] = {c['id']: c['title'] for c in master_categories}
 
     ordered_keys: List[str] = [c['id'] for c in master_categories]
-    for key in grouped_apps.keys():
+    for key in grouped_apps:
         if key not in ordered_keys:
             ordered_keys.append(key)
 

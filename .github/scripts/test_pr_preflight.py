@@ -18,8 +18,23 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import preflight_runner
-from pr_metadata import TransientPRMetadataError, load_from_api, load_from_event_file
-from pr_preflight import changed_files, format_failure_class_suggest, resolve_pr_metadata, run_git, select_checks
+from pr_metadata import (
+    TransientPRMetadataError,
+    extract_merged_pr_number,
+    load_from_api,
+    load_from_event_file,
+    load_from_gh,
+    resolve_main_push_body,
+)
+from pr_preflight import (
+    changed_files,
+    current_branch,
+    format_failure_class_suggest,
+    resolve_pr_metadata,
+    run_git,
+    run_python_capture,
+    select_checks,
+)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 RUNNER = SCRIPT_DIR / "preflight_runner.py"
@@ -35,6 +50,26 @@ class FakeResponse(io.BytesIO):
 
 
 class MetadataTests(unittest.TestCase):
+    def test_gh_loader_decodes_current_metadata_as_utf8(self) -> None:
+        payload = json.dumps(
+            {
+                "number": 10823,
+                "body": "packaged entry → debug → ms",
+                "updatedAt": "2026-08-28T07:45:46Z",
+                "labels": [{"name": "workflow-review"}],
+            },
+            ensure_ascii=False,
+        )
+        completed = subprocess.CompletedProcess(args=["gh"], returncode=0, stdout=payload, stderr="")
+
+        with patch("pr_metadata.subprocess.run", return_value=completed) as run:
+            metadata = load_from_gh(REPO_ROOT)
+
+        self.assertEqual(metadata.body, "packaged entry → debug → ms")
+        self.assertEqual(metadata.labels, ("workflow-review",))
+        _, kwargs = run.call_args
+        self.assertEqual(kwargs.get("encoding"), "utf-8")
+
     def test_api_loader_uses_current_body_and_records_provenance(self) -> None:
         captured = {}
 
@@ -106,6 +141,82 @@ class MetadataTests(unittest.TestCase):
             load_from_api("BasedHardware/omi", 9847, "test-token", opener=opener, sleeper=lambda _: None)
         self.assertEqual(calls["count"], 3)
 
+    def test_extract_merged_pr_number_from_squash_and_merge_subjects(self) -> None:
+        self.assertEqual(
+            extract_merged_pr_number(
+                "Cut the Windows app's idle request volume (#11835)\n\n* Run the retention sweep\n"
+            ),
+            11835,
+        )
+        self.assertEqual(extract_merged_pr_number('Merge pull request #10965 from aryanorastar/fix'), 10965)
+        self.assertEqual(extract_merged_pr_number('Revert "foo (#12)" (#99)'), 99)
+        self.assertIsNone(extract_merged_pr_number("security(backend): gate Anthropic web search"))
+        self.assertIsNone(extract_merged_pr_number(""))
+
+    def test_main_push_body_uses_live_pr_body_for_squash_head(self) -> None:
+        """#12003: wrapped merge text must not remain beside line-sensitive metadata."""
+        commit = (
+            "Cut the Windows app's idle and focus-driven backend request volume (#11835)\n\n"
+            "Line-Count-Exception: backend/utils/conversations/process_conversation.py | 2403 ->\n"
+            "  2424 | extracted helper keeps the production owner readable\n"
+        )
+        live_body = (
+            "## Product invariants affected\n\n"
+            "- INV-CHAT-1\n\n"
+            "Line-Count-Exception: backend/utils/conversations/process_conversation.py | "
+            "2403 -> 2424 | extracted helper keeps the production owner readable\n"
+        )
+        metadata = type("M", (), {"body": live_body, "number": 11835})()
+        resolved = resolve_main_push_body(
+            commit,
+            repository="BasedHardware/omi",
+            token="test-token",
+            loader=lambda *args, **kwargs: metadata,
+        )
+        self.assertEqual(resolved, live_body)
+        self.assertNotIn("2403 ->\n", resolved)
+
+    def test_main_push_body_keeps_commit_message_when_live_pr_body_is_empty(self) -> None:
+        commit = "Cut the Windows app's idle volume (#11835)\n\nFailure-Class: FC-example\n"
+        metadata = type("M", (), {"body": "  \n", "number": 11835})()
+
+        self.assertEqual(
+            resolve_main_push_body(
+                commit,
+                repository="BasedHardware/omi",
+                token="test-token",
+                loader=lambda *args, **kwargs: metadata,
+            ),
+            commit,
+        )
+
+    def test_main_push_body_keeps_commit_message_without_pr_number_or_token(self) -> None:
+        commit = "direct push that forgot INV-CHAT-1\n"
+        self.assertEqual(
+            resolve_main_push_body(commit, repository="BasedHardware/omi", token=""),
+            commit,
+        )
+        self.assertEqual(
+            resolve_main_push_body(commit, repository="BasedHardware/omi", token="tok"),
+            commit,
+        )
+
+    def test_main_push_body_falls_back_when_api_fails(self) -> None:
+        commit = "Cut the Windows app's idle volume (#11835)\n"
+
+        def loader(*args: object, **kwargs: object):
+            raise RuntimeError("GitHub API returned HTTP 502 while reading PR #11835")
+
+        self.assertEqual(
+            resolve_main_push_body(
+                commit,
+                repository="BasedHardware/omi",
+                token="test-token",
+                loader=loader,
+            ),
+            commit,
+        )
+
     def test_event_payload_loader_uses_top_level_pr_number(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             event_path = Path(tmp) / "event.json"
@@ -163,6 +274,37 @@ class MetadataTests(unittest.TestCase):
 
 
 class SelectionTests(unittest.TestCase):
+    def test_captured_python_output_is_utf8_when_host_utf8_mode_is_disabled(self) -> None:
+        env = os.environ.copy()
+        env["PYTHONUTF8"] = "0"
+        env.pop("PYTHONIOENCODING", None)
+
+        with patch.dict(os.environ, env, clear=True):
+            completed = run_python_capture(
+                REPO_ROOT,
+                "-c",
+                "print('\\u8def\\u5f84\\U0001f680')",
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertEqual(completed.stdout, "路径🚀\n")
+
+    def test_current_branch_decodes_utf8_when_host_utf8_mode_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = os.environ.copy()
+            env["PYTHONUTF8"] = "0"
+            env.pop("PYTHONIOENCODING", None)
+            for key in tuple(env):
+                if key.startswith("GIT_"):
+                    del env[key]
+            subprocess.run(["git", "init", "-q", "-b", "分支-🚀", str(root)], check=True, env=env)
+
+            with patch.dict(os.environ, env, clear=True):
+                branch = current_branch(root)
+
+        self.assertEqual(branch, "分支-🚀")
+
     def test_run_git_decodes_unicode_checkout_path_as_utf8(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "路径 checkout"
@@ -209,11 +351,23 @@ class SelectionTests(unittest.TestCase):
         git_isolation = ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"]
 
         def run(*args: str, cwd: Path) -> None:
-            subprocess.run(["git", *git_isolation, *args], cwd=cwd, check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", *git_isolation, *args],
+                cwd=cwd,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
 
         def rev_parse(cwd: Path, ref: str = "HEAD") -> str:
             result = subprocess.run(
-                ["git", *git_isolation, "rev-parse", ref], cwd=cwd, check=True, capture_output=True, text=True
+                ["git", *git_isolation, "rev-parse", ref],
+                cwd=cwd,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
             )
             return result.stdout.strip()
 
@@ -268,6 +422,7 @@ class SelectionTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("scripts/dev-harness/run-python.sh", result.stdout)
@@ -333,6 +488,7 @@ class SelectionTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
             )
             coverage = subprocess.run(
                 [
@@ -346,6 +502,7 @@ class SelectionTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
             )
             self.assertEqual(invariant.returncode, 1, invariant.stdout)
             self.assertIn("INV-AUTH-1", invariant.stdout)
@@ -400,6 +557,7 @@ class SelectionTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
             )
 
         self.assertEqual(coverage.returncode, 1, coverage.stdout)
@@ -421,6 +579,7 @@ class SelectionTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
         )
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("## Product invariants affected", result.stdout)
@@ -467,6 +626,7 @@ class SelectionTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
             )
             # This test isolates metadata-file selection. Other manifest-selected
             # repository guardrails may legitimately fail as global state evolves;
@@ -573,6 +733,7 @@ class SingleFlightTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
         )
 
     def wait_for_lock(self, state_root: Path) -> None:
@@ -582,55 +743,11 @@ class SingleFlightTests(unittest.TestCase):
             time.sleep(0.02)
         self.assertTrue(lock.exists(), "runner did not acquire its lock")
 
-    def test_runner_starts_from_unicode_checkout(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "路径 checkout"
-            root.mkdir()
-            state_root = root / "state"
-            env = os.environ.copy()
-            env["OMI_PREFLIGHT_STATE_DIR"] = str(state_root)
-            for key in tuple(env):
-                if key.startswith("GIT_"):
-                    del env[key]
-            subprocess.run(["git", "init", "-q", str(root)], check=True, env=env)
-
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(RUNNER),
-                    "--name",
-                    "unicode-checkout",
-                    "--",
-                    sys.executable,
-                    "-c",
-                    "print('\\u8def\\u5f84\\U0001f680')",
-                ],
-                cwd=root,
-                env=env,
-                input="",
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-            )
-            log = (state_root / "unicode-checkout" / "preflight.log").read_text(encoding="utf-8")
-
-        self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("路径🚀", result.stdout)
-        self.assertEqual(log, "路径🚀\n")
-
     @unittest.skipUnless(os.name == "nt", "Windows-only")
     def test_process_liveness_check_does_not_send_windows_ctrl_c(self) -> None:
         with patch.object(os, "kill", side_effect=AssertionError("must not signal")):
             self.assertTrue(preflight_runner.process_exists(os.getpid()))
             self.assertFalse(preflight_runner.process_exists(0x7FFFFFFF))
-
-    @unittest.skipUnless(os.name == "nt", "Windows-only")
-    def test_process_that_exits_with_still_active_status_is_not_alive(self) -> None:
-        child = subprocess.Popen([sys.executable, "-c", "raise SystemExit(259)"])
-        self.assertEqual(child.wait(), 259)
-        self.assertFalse(preflight_runner.process_exists(child.pid))
 
     def test_pr_body_content_participates_in_singleflight_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

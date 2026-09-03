@@ -134,13 +134,17 @@ def redact_conversation_for_list(conv: Dict[str, Any]) -> Dict[str, Any]:
     conv['plugins_results'] = []
     conv['suggested_summarization_apps'] = []
     conv['transcript_segments'] = []
-    # MCP search may attach transcript match_snippets; never leak them for locked rows.
+    # Search may attach transcript match_snippets before list redaction; never leak evidence for locked rows.
     conv['match_snippets'] = []
     return conv
 
 
 def redact_conversation_for_integration(conv: Dict[str, Any]) -> Dict[str, Any]:
     """Integration-view redaction: strip everything including title/overview."""
+    # Geolocation is private capture metadata and is not part of the public
+    # integration contract. Strip it before either locked or unlocked data is
+    # serialized into an integration response.
+    conv.pop('geolocation', None)
     if not conv.get('is_locked', False):
         return conv
     if 'structured' in conv:
@@ -155,6 +159,7 @@ def redact_conversation_for_integration(conv: Dict[str, Any]) -> Dict[str, Any]:
     conv['plugins_results'] = []
     conv['suggested_summarization_apps'] = []
     conv['transcript_segments'] = []
+    conv['match_snippets'] = []
     return conv
 
 

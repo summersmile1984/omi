@@ -161,6 +161,7 @@ extension ChatProvider {
       durableToolReferences,
       ChatCitationProvenanceRegistry.references(
         fromToolCallBlocks: messages[index].contentBlocks))
+    messages[index].applyAuthoritativeTerminalAnswer(queryText)
     messages[index].applySelectedSourceFallback(
       selectedReferences: selectedReferences,
       requestedSources: requestedSources,
@@ -227,6 +228,12 @@ extension ChatProvider {
     ) {
       let trimmed = sourceID.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !trimmed.isEmpty, seen.insert("\(kind.rawValue):\(trimmed)").inserted else { return }
+      let formattedDate: String?
+      if let createdAt = createdAt {
+        formattedDate = formatter.string(from: createdAt)
+      } else {
+        formattedDate = nil
+      }
       result.append(
         ChatCitationReference(
           ordinal: ordinal,
@@ -234,7 +241,7 @@ extension ChatProvider {
           sourceID: trimmed,
           title: title,
           preview: preview,
-          createdAt: createdAt.map { formatter.string(from: $0) }))
+          createdAt: formattedDate))
       ordinal += 1
     }
     for memory in memories {

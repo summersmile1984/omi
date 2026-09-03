@@ -80,7 +80,7 @@ struct QueryShellHome: View {
   @State private var didCopyTranscript = false
   /// The last question that actually went. `Try again` re-sends *that* — the composer is emptied by
   /// the send now, so re-reading the bar would retry an empty string.
-  @State private var lastAskedQuestion = ""
+  @State private var sendLedger = QueryShellSendLedger()
   /// The composer's measured height, so the panel's body can end inside the window.
   ///
   /// Measured rather than assumed: the composer is at its resting height most of the time but grows
@@ -98,7 +98,9 @@ struct QueryShellHome: View {
   @State private var caretClaims = 0
 
   private var usesLegacyPresentation: Bool {
-    useLegacyHomeDesign && !forceModernPresentation
+    !HomeDesignPresentation.queryShellOwnsItsPanels(
+      useLegacyHomeDesign: useLegacyHomeDesign,
+      forceModernPresentation: forceModernPresentation)
   }
 
   var body: some View {
@@ -146,6 +148,7 @@ struct QueryShellHome: View {
             total: total,
             onExitAnswer: nil,
             bodyHeight: bodyHeight,
+            topAccessory: { EmptyView() },
             headerAccessory: { headerAccessory },
             footer: {
               if mode == .answer {
@@ -169,7 +172,14 @@ struct QueryShellHome: View {
     // A typed character belongs in the field even when the field is not focused: this is a search
     // surface, and a search surface that swallows the first letter you type is broken.
     .onAppear {
+      takePendingDraftIfAny()
       claimCaret()
+    }
+    // A prefilled draft (first-real-app card, daily-summary follow-up) lands in the composer,
+    // focused and unsent. The legacy presentation's Dashboard consumes the same request itself.
+    .onReceive(NotificationCenter.default.publisher(for: .openMainChatRequested)) { _ in
+      guard !usesLegacyPresentation else { return }
+      takePendingDraftIfAny()
     }
     // **Coming back to Omi puts the caret back in the field.** This surface's whole job is to be typed
     // into, and re-activating the app is the one moment it is certain the person is here to type.
@@ -274,7 +284,9 @@ struct QueryShellHome: View {
       onAsk: ask,
       onStop: { chatProvider.stopAgent(owner: .mainChat) },
       onAttachmentsAdded: stageAttachments,
-      onAttachmentRemoved: { chatProvider.removePendingAttachment(id: $0) }
+      onAttachmentRemoved: { chatProvider.removePendingAttachment(id: $0) },
+      references: chatProvider.pendingComposerReferences,
+      onReferenceRemoved: { chatProvider.removeComposerReference(id: $0) }
     )
     .background {
       GeometryReader { composer in
@@ -306,7 +318,8 @@ struct QueryShellHome: View {
         appState: appState,
         memoriesViewModel: memoriesViewModel,
         tasksStore: tasksStore,
-        onOpenConversation: openConversation,
+        onOpenConversation: openConversationRecord,
+        onOpenMemory: openMemory,
         onOpenBrainMap: openBrainMap,
         onOpenRewind: openRewind
       )
@@ -338,25 +351,14 @@ struct QueryShellHome: View {
       isClearing: chatProvider.isClearing)
   }
 
-  /// Clear, copy and the jump to AI settings — the deleted chat page's last three controls, which
-  /// have had nowhere to live since it went. An overflow rather than three icons in the header,
-  /// because none of them is something you reach for during a conversation.
+  /// Conversation-local actions only. Global AI configuration belongs to the
+  /// Settings gear that is already present on every page.
   private var chatMenu: some View {
     Menu {
       Button(didCopyTranscript ? "Copied" : "Copy conversation", action: copyTranscript)
         .disabled(!menu.canCopy)
       Button("Clear conversation", role: .destructive, action: clearTranscript)
         .disabled(!menu.canClear)
-      Divider()
-      // The deleted page's gear, with its own words ("Advanced AI settings"). It posts the shared
-      // notification rather than routing itself, so it lands wherever `DesktopHomeView` already
-      // sends that jump — today `.advanced`, which is the *visible* section holding AI Provider, the
-      // Claude connection and the chat workspace directory. `SettingsSection.aiChat` is deliberately
-      // absent from the sidebar and bounces to `.advanced` on production bundles; pointing a chat
-      // control straight at it would be a menu item that silently lands somewhere else.
-      Button("Advanced AI settings…") {
-        NotificationCenter.default.post(name: .navigateToAIChatSettings, object: nil)
-      }
     } label: {
       QueryPanelChipLabel(
         systemImage: didCopyTranscript ? "checkmark" : "ellipsis",
@@ -416,27 +418,48 @@ struct QueryShellHome: View {
   /// the mode change cannot drift away from the value that defines them.
   private func submit() {
     let submission = QueryShellSubmission.resolve(text: chatProvider.draftText)
+    // Plan before mutating anything: a busy provider rejects the send, so
+    // Return during an active turn must leave the typed draft intact and
+    // neither dispatch nor advance the rating-prompt count.
+    guard submission.mode != nil,
+      let plan = sendLedger.planSubmit(submission.question, providerBusy: chatProvider.isSending)
+    else { return }
     if chatProvider.draftText != submission.text { chatProvider.draftText = submission.text }
-    guard submission.mode != nil else { return }
     claimCaret()
-    guard let question = submission.question else { return }
-    lastAskedQuestion = question
-    send(question)
+    send(plan)
   }
 
   /// The one send. `Try again` on a failed turn enters here too, so a retry is the same turn through
-  /// the same provider and never a second send path (INV-6).
-  private func send(_ question: String) {
-    AnalyticsManager.shared.chatMessageSent(
-      messageLength: question.count, hasSelectedAppContext: false, source: "query_shell")
+  /// the same provider and never a second send path (INV-6). The ledger owns whether the emission
+  /// counts toward the rating-prompt trigger (submits do, retries never re-count).
+  private func send(_ plan: QueryShellSendLedger.Plan) {
     chatProvider.dismissOnboardingOpener()
-    Task { await chatProvider.sendMessage(question) }
+    Task {
+      // Analytics, question counting, and retry state all commit at the
+      // provider's own acceptance boundary — a send it rejects (busy race,
+      // signed-out) emits nothing and changes nothing.
+      var accepted = false
+      _ = await chatProvider.sendMessage(
+        plan.question,
+        onAccepted: {
+          accepted = true
+          AnalyticsManager.shared.chatMessageSent(
+            messageLength: plan.question.count, hasSelectedAppContext: false,
+            source: "query_shell", countsAsQuestion: plan.countsAsQuestion)
+          sendLedger.recordAccepted(plan)
+        })
+      if !accepted, chatProvider.draftText.isEmpty {
+        // The provider refused the send — give the typed question back
+        // instead of losing it to a cleared field.
+        chatProvider.draftText = plan.question
+      }
+    }
   }
 
   /// Re-sends the question that failed, not whatever the bar holds now — the send emptied it.
   private func retry() {
-    guard !lastAskedQuestion.isEmpty else { return }
-    send(lastAskedQuestion)
+    guard let plan = sendLedger.planRetry() else { return }
+    send(plan)
   }
 
   /// Asks for the caret. Monotonic, so a claim is never swallowed for already having been made — the
@@ -446,7 +469,41 @@ struct QueryShellHome: View {
     caretClaims &+= 1
   }
 
+  private func takePendingDraftIfAny() {
+    guard !usesLegacyPresentation, let draft = MainChatNavigationRequestStore.shared.consumeDraft() else { return }
+    // Leave search-results mode first, or the prefilled composer stays hidden behind the results.
+    searchText = HomeBridgeIntent.openChat.searchTextAfter(searchText)
+    chatProvider.draftText = draft
+    claimCaret()
+  }
+
   // MARK: - Where a row goes
+
+  /// Opens the exact conversation a spine row is about.
+  ///
+  /// The row carries the whole record, so the typed deep link can hand it straight to the
+  /// Conversations host. The id-only path below stays for the shell that has no typed navigation
+  /// owner, where this page mounts the Conversations host itself.
+  private func openConversationRecord(_ conversation: ServerConversation) {
+    if let context = chatFirstRichBlockContext {
+      context.navigation.open(conversation: conversation)
+      return
+    }
+    openConversation(conversation.id)
+  }
+
+  /// Opens the exact memory a spine row is about, on the same terms the Brain Map's citations use:
+  /// leave this surface only once the memory actually resolved.
+  private func openMemory(_ memory: SpineMemory) {
+    if let context = chatFirstRichBlockContext {
+      context.navigation.open(focus: .memory(id: memory.id))
+      return
+    }
+    Task {
+      await MemoryAtlasCitationOpen.open(
+        id: memory.id, in: memoriesViewModel, leave: { navigate(.memories) })
+    }
+  }
 
   /// Opens the real Conversations page on the real conversation — never a copy of it here (INV-NAV-1).
   private func openConversation(_ id: String) {

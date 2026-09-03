@@ -2047,6 +2047,9 @@ class AppLocalizationsSk extends AppLocalizations {
   String get memoryDeleted => 'Spomienka bola odstránená.';
 
   @override
+  String get memoryHistoryPartial => 'Some memory history is unavailable. Showing the history received so far.';
+
+  @override
   String get undo => 'Vrátiť späť';
 
   @override
@@ -9835,6 +9838,14 @@ class AppLocalizationsSk extends AppLocalizations {
   String get accountCutoverOpenStore => 'Otevřít obchod';
 
   @override
+  String chatScopeAbout(String title) {
+    return 'O: $title';
+  }
+
+  @override
+  String get askAboutThisConversation => 'Opýtať sa na to';
+
+  @override
   String get sendRawAudioToOmi => 'Odosielať nespracovaný zvuk do Omi';
 
   @override
@@ -9846,4 +9857,58 @@ class AppLocalizationsSk extends AppLocalizations {
 
   @override
   String get diagnosticsShareFailed => 'Diagnostiku sa nepodarilo zdieľať. Skús to znova.';
+
+  @override
+  String get appDisabledTitle => 'Táto aplikácia je vypnutá a nedá sa nainštalovať.';
+
+  @override
+  String get appDisabledWebhookFailures => 'Jej endpoint zlyhával 72 hodín v kuse, preto bolo doručovanie zastavené.';
+
+  @override
+  String get appDisabledGeneric => 'Vypla ju Omi.';
+
+  @override
+  String get appDisabledOwnerHint =>
+      'Najskôr oprav endpoint — pri opätovnom zapnutí sa znovu overí každá nastavená URL.';
+
+  @override
+  String get appReEnable => 'Znovu zapnúť';
+
+  @override
+  String get appReEnableFailedTitle => 'Nepodarilo sa znovu zapnúť';
+
+  @override
+  String get appReEnableFailedBody => 'Túto aplikáciu sa nepodarilo znovu zapnúť. Skús to znova.';
+
+  @override
+  String appDisabledOn(String date) {
+    return 'Vypnuté $date.';
+  }
+
+  @override
+  String appDisabledLastError(String error) {
+    return 'Posledná chyba: $error.';
+  }
+
+  @override
+  String get prerecordedTranscript => 'Prednahraté';
+
+  @override
+  String get pendantRecordingSyncBlocked =>
+      'Pendant stále nahráva, takže uložený zvuk nie je možné preniesť. Stlačením tlačidla na Pendante zastavte nahrávanie a potom synchronizujte znova.';
+
+  @override
+  String get pendantFullSyncBlocked =>
+      'Úložisko Pendantu je plné a stále je v režime nahrávania, takže uložený zvuk nemožno preniesť. Stlačením tlačidla na Pendante zastavte nahrávanie a potom znova synchronizujte.';
+
+  @override
+  String conversationsNotCapturedCount(int count) {
+    return 'Nezaznamenané ($count)';
+  }
+
+  @override
+  String get transcriptionNoAudio => 'Transkripcia neprijíma zvuk';
+
+  @override
+  String get tapPlusToStartRecording => 'Tap + to start recording';
 }

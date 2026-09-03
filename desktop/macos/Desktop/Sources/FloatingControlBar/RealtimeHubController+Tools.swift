@@ -7,44 +7,89 @@ import VoiceTurnDomain
 extension RealtimeHubController {
   // MARK: - Tools
 
-  /// ask_higher_model — reuse the EXISTING prompt-cached /v2/chat/completions
-  /// (no new backend route). Returns the assistant text for the model to speak.
+  /// think_deeper — run the question through the same kernel session,
+  /// model selection, and tool surface as typed Chat. Returns its final text
+  /// for the realtime provider to speak faithfully.
   func escalateToHigherModel(
     _ query: String,
-    kernelSemanticGuidance: String,
-    kernelContext: String,
-    stableCacheIdentity: String,
-    dynamicContextIdentity: String,
-    contextPlanID: String,
     toolContext: String,
+    invocationID: String,
+    ownerID: String
+  ) async -> AuthorizedRealtimeToolExecutionResult {
+    // The chat lane cannot see the screen; hand it what this turn's screenshot showed so
+    // "what's the answer to this riddle?" resolves to the riddle on screen, not an earlier one.
+    // When the realtime model escalated without grounding on the image, fall back to the OCR
+    // text of the same PTT-down frame so the escalation is never blind to the current screen.
+    var screenContext = screenContextByContinuityKey[turnIdempotencyKey]
+    if screenContext == nil,
+      let ocr = await PushToTalkManager.shared.visibleScreenText(timeout: 1.5)
+    {
+      screenContext = "OCR text of the screen at the moment they pressed the key:\n\(ocr)"
+    }
+    return await queryChatLaneForVoice(
+      prompt: RealtimeHubTools.escalationUserPrompt(
+        query: query, toolContext: toolContext, screenContext: screenContext),
+      invocationID: invocationID,
+      ownerID: ownerID,
+      toolName: HubTool.thinkDeeper.rawValue,
+      failureMessage: "I ran into an error reaching the model.")
+  }
+
+  /// web_search — execute a fresh public-only lookup and return its grounded
+  /// answer for the realtime provider to speak faithfully.
+  func searchPublicWeb(
+    _ query: String,
+    toolContext _: String,
+    invocationID: String,
     ownerID: String
   ) async -> AuthorizedRealtimeToolExecutionResult {
     guard AuthorizedToolExecution.isOwnerCurrent(ownerID) else {
       return .failed(Self.authorizedRealtimeOwnerChangedError())
     }
-    let body = RealtimeHubTools.escalationBody(
-      query: query,
-      kernelSemanticGuidance: kernelSemanticGuidance,
-      kernelContext: kernelContext,
-      stableCacheIdentity: stableCacheIdentity,
-      dynamicContextIdentity: dynamicContextIdentity,
-      contextPlanID: contextPlanID,
-      toolContext: toolContext)
     let t0 = Date()
     do {
-      let answer = try await APIClient.shared.askHigherModel(
-        body: body,
+      let answer = try await APIClient.shared.searchPublicWebForVoice(
+        query: RealtimeHubTools.publicWebSearchPrompt(query: query),
+        expectedOwnerID: ownerID)
+      guard AuthorizedToolExecution.isOwnerCurrent(ownerID) else {
+        return .failed(Self.authorizedRealtimeOwnerChangedError())
+      }
+      let ms = Int(Date().timeIntervalSince(t0) * 1000)
+      log("RealtimeHub: web_search public lane OK in \(ms)ms (\(answer.count) chars)")
+      return .succeeded(answer)
+    } catch {
+      guard AuthorizedToolExecution.isOwnerCurrent(ownerID) else {
+        return .failed(Self.authorizedRealtimeOwnerChangedError())
+      }
+      log("RealtimeHub: web_search failed — \(error.localizedDescription)")
+      return .succeeded("The web lookup failed. Please try again.")
+    }
+  }
+
+  private func queryChatLaneForVoice(
+    prompt: String,
+    invocationID: String,
+    ownerID: String,
+    toolName: String,
+    failureMessage: String
+  ) async -> AuthorizedRealtimeToolExecutionResult {
+    guard AuthorizedToolExecution.isOwnerCurrent(ownerID) else {
+      return .failed(Self.authorizedRealtimeOwnerChangedError())
+    }
+    let t0 = Date()
+    do {
+      let answer = try await FloatingControlBarManager.shared.askChatLaneForSpokenAnswer(
+        prompt: prompt,
+        invocationID: invocationID,
         expectedOwnerID: ownerID)
       let ms = Int(Date().timeIntervalSince(t0) * 1000)
-      log(
-        "RealtimeHub: ask_higher_model ← \(ModelQoS.Claude.defaultSelection) OK in \(ms)ms (\(answer.count) chars)"
-      )
+      log("RealtimeHub: \(toolName) chat lane OK in \(ms)ms (\(answer.count) chars)")
       return .succeeded(answer)
-    } catch AuthError.userChangedDuringRequest {
+    } catch RealtimeChatLaneError.ownerChanged {
       return .failed(Self.authorizedRealtimeOwnerChangedError())
     } catch {
-      log("RealtimeHub: ask_higher_model failed — \(error.localizedDescription)")
-      return .succeeded("I ran into an error reaching the model.")
+      log("RealtimeHub: \(toolName) failed — \(error.localizedDescription)")
+      return .succeeded(failureMessage)
     }
   }
 

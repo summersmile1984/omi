@@ -23,6 +23,7 @@ DEEPGRAM_CLOUD_PROVIDER: Final = 'deepgram_cloud'
 DEEPGRAM_SELF_HOSTED_PROVIDER: Final = 'deepgram_self_hosted'
 MODULATE_PROVIDER: Final = 'modulate'
 PARAKEET_PROVIDER: Final = 'parakeet'
+SONIOX_PROVIDER: Final = 'soniox'
 SENSEVOICE_PROVIDER: Final = 'sensevoice'
 MIMO_PROVIDER: Final = 'mimo'
 MOSS_PROVIDER: Final = 'moss'
@@ -124,6 +125,9 @@ PROVIDER_SERVING_SURFACES: Final[Mapping[str, frozenset[STTServingSurface]]] = {
             STTServingSurface.PTT,
         }
     ),
+    # Streaming only: transcribe_voice_message_stream dispatches Parakeet and
+    # Modulate alone, and the batch path has no Soniox client.
+    SONIOX_PROVIDER: frozenset({STTServingSurface.STREAMING}),
     # Cloud-neutral providers are opt-in only: they are admitted on the surfaces
     # their adapters implement, but deliberately stay out of the upstream-safe
     # default model order below.
@@ -140,10 +144,14 @@ PROVIDER_SERVING_SURFACES: Final[Mapping[str, frozenset[STTServingSurface]]] = {
 # hard stream gate (see parakeet/admission.py), so every listener converges on
 # one cap per serving pod instead of listener-local counters.
 DEFAULT_MODELS_BY_SURFACE: Final[Mapping[STTServingSurface, tuple[str, ...]]] = {
-    # Velma-2 rejects a large, variable share of live connections under production
-    # concurrency and Parakeet streaming is English-only, so neither can hold the
-    # primary slot for a multi-language live product.
-    STTServingSurface.STREAMING: ('dg-nova-3', 'modulate-velma-2', 'parakeet'),
+    # Velma-2 leads on cost, and its failures are now recoverable: a mid-session
+    # error frame hands the stream to Soniox rather than ending it (#12459), which
+    # is what the second slot is for. Deepgram stays last so a BYOK user still
+    # resolves a `dg-*` model — dropping it would strip them of Deepgram entirely.
+    # Parakeet stays last rather than being dropped: a client can ask for it by
+    # name (`?stt_service=parakeet`), and that preference is only honorable while
+    # the model is listed here.
+    STTServingSurface.STREAMING: ('modulate-velma-2', 'soniox', 'dg-nova-3', 'parakeet'),
     # Batch work is queued, so Parakeet's bounded GPU means waiting rather than the
     # user-visible failure it causes on the streaming surface. Prefer the self-hosted
     # provider here and keep Velma as the overflow.
@@ -230,6 +238,8 @@ def provider_for_model_token(model: str) -> str | None:
         return PARAKEET_PROVIDER
     if normalized == 'modulate-velma-2':
         return MODULATE_PROVIDER
+    if normalized == 'soniox':
+        return SONIOX_PROVIDER
     if normalized == 'sensevoice':
         return SENSEVOICE_PROVIDER
     if normalized == 'mimo':
@@ -273,3 +283,22 @@ def default_models_for_surface(surface: STTServingSurface) -> tuple[str, ...]:
 def canonical_model_config(surface: STTServingSurface) -> str:
     """Return the deployment-safe comma-separated model preference."""
     return ','.join(default_models_for_surface(surface))
+
+
+def provider_for_service(service: object) -> str | None:
+    """Return the provider token a serving ``STTService`` belongs to.
+
+    The inverse of ``provider_for_model_token`` for callers holding a resolved
+    service rather than a configured model string, so a mid-session failover can
+    exclude the provider that just died.
+    """
+    value = getattr(service, 'value', service)
+    if value == 'modulate':
+        return MODULATE_PROVIDER
+    if value == 'soniox':
+        return SONIOX_PROVIDER
+    if value == 'parakeet':
+        return PARAKEET_PROVIDER
+    if value == 'deepgram':
+        return DEEPGRAM_CLOUD_PROVIDER
+    return None

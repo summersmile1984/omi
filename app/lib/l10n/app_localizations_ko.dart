@@ -2004,6 +2004,9 @@ class AppLocalizationsKo extends AppLocalizations {
   String get memoryDeleted => '기억이 삭제되었습니다.';
 
   @override
+  String get memoryHistoryPartial => 'Some memory history is unavailable. Showing the history received so far.';
+
+  @override
   String get undo => '실행 취소';
 
   @override
@@ -9677,6 +9680,14 @@ class AppLocalizationsKo extends AppLocalizations {
   String get accountCutoverOpenStore => '스토어 열기';
 
   @override
+  String chatScopeAbout(String title) {
+    return '$title에 대해';
+  }
+
+  @override
+  String get askAboutThisConversation => '이에 대해 질문';
+
+  @override
   String get sendRawAudioToOmi => '원본 오디오를 Omi로 보내기';
 
   @override
@@ -9688,4 +9699,57 @@ class AppLocalizationsKo extends AppLocalizations {
 
   @override
   String get diagnosticsShareFailed => '진단 정보를 공유하지 못했습니다. 다시 시도해 주세요.';
+
+  @override
+  String get appDisabledTitle => '이 앱은 비활성화되어 설치할 수 없습니다.';
+
+  @override
+  String get appDisabledWebhookFailures => '엔드포인트가 72시간 연속으로 실패하여 전송이 중단되었습니다.';
+
+  @override
+  String get appDisabledGeneric => 'Omi에 의해 비활성화되었습니다.';
+
+  @override
+  String get appDisabledOwnerHint => '먼저 엔드포인트를 수정하세요. 다시 활성화하면 설정된 모든 URL을 다시 확인합니다.';
+
+  @override
+  String get appReEnable => '다시 활성화';
+
+  @override
+  String get appReEnableFailedTitle => '다시 활성화할 수 없음';
+
+  @override
+  String get appReEnableFailedBody => '이 앱을 다시 활성화하지 못했습니다. 다시 시도해 주세요.';
+
+  @override
+  String appDisabledOn(String date) {
+    return '$date에 비활성화되었습니다.';
+  }
+
+  @override
+  String appDisabledLastError(String error) {
+    return '마지막 오류: $error';
+  }
+
+  @override
+  String get prerecordedTranscript => '사전 녹음';
+
+  @override
+  String get pendantRecordingSyncBlocked =>
+      'Pendant가 아직 녹음 중이어서 저장된 오디오를 전송할 수 없습니다. Pendant의 버튼을 눌러 녹음을 중지한 후 다시 동기화하세요.';
+
+  @override
+  String get pendantFullSyncBlocked =>
+      'Pendant의 저장 공간이 가득 찼고 아직 녹음 모드이므로 저장된 오디오를 전송할 수 없습니다. Pendant의 버튼을 눌러 녹음을 중지한 다음 다시 동기화하세요.';
+
+  @override
+  String conversationsNotCapturedCount(int count) {
+    return '기록되지 않음 ($count)';
+  }
+
+  @override
+  String get transcriptionNoAudio => '전사가 오디오를 받지 못하고 있습니다';
+
+  @override
+  String get tapPlusToStartRecording => 'Tap + to start recording';
 }

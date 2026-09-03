@@ -199,8 +199,45 @@ struct FloatingBarNotificationContext: Equatable {
   }
 }
 
+/// Pure decision for how a persistent card interacts with the notification
+/// queue: a newcomer displaces it (the persistent card returns right after)
+/// rather than queueing behind a card that has no timeout — otherwise one
+/// un-acted persistent card would starve every later proactive notification.
+enum FloatingBarNotificationQueuePolicy {
+  static func shouldDisplacePersistentCard(
+    currentIsPersistent: Bool,
+    showingAIConversation: Bool
+  ) -> Bool {
+    currentIsPersistent && !showingAIConversation
+  }
+
+  /// A displaced persistent card rejoins at the TAIL: every notification that
+  /// queued while it was visible presents first, and the card — which never
+  /// times out — returns once the queue drains, so it can neither be lost nor
+  /// starve anything behind it.
+  static func requeueIndex(queueCount: Int) -> Int {
+    queueCount
+  }
+}
+
 enum FloatingBarNotificationAction: Equatable {
   case openWhatMattersNow(recommendationID: String)
+  /// Offer to connect an integration the user has open but has not set up.
+  /// Carries the catalog's telemetry id (`import:email`, `export:notion`, …),
+  /// which is unique across both halves of the catalog — the bare connector id
+  /// is not, because ChatGPT and Claude exist on both sides. `triggerID` names
+  /// what was recognized, so a conversion can be attributed to the native-app
+  /// or browser-site trigger that produced the card rather than merged.
+  case connectIntegration(telemetryID: String, triggerID: String)
+  /// Post-meeting summary share card: carries what the card's buttons need —
+  /// the conversation to share and the calendar-detected recipients a
+  /// one-click "Send to …" email would go to (empty = no send button).
+  case meetingSummaryShare(conversationID: String, recipients: [ConversationShareRecipient])
+  /// Open the main chat with `prompt` already in the composer, focused and
+  /// **not sent**. Raised by the first-real-app card, whose whole purpose is to
+  /// turn a dead-end notch card into the user's first question — they still
+  /// press return, so the question stays theirs.
+  case askOmiPrefilled(prompt: String)
 }
 
 /// A custom in-app notification rendered directly below the floating bar.
@@ -215,6 +252,9 @@ struct FloatingBarNotification: Identifiable, Equatable {
   let kind: ProactiveNotificationKind
   let context: FloatingBarNotificationContext?
   let action: FloatingBarNotificationAction?
+  /// Explicit feedback controls for a planned JIT trigger. This is opaque
+  /// provenance only; action labels are rendered by the card.
+  let jitFeedbackContext: JITTriggerFeedbackContext?
   /// Optional opaque proactive-suggestion join keys. No card content or screen
   /// provenance enters notification analytics through this field.
   let suggestionTelemetryIdentity: SuggestionAssistantTelemetry.NotificationIdentity?
@@ -223,6 +263,10 @@ struct FloatingBarNotification: Identifiable, Equatable {
   let insightDeliveryID: UUID?
   /// Screenshot JPEG data from the moment the notification was generated (not shown in UI)
   let screenshotData: Data?
+  /// A persistent card never times out: it stays presented until the user
+  /// acts on it or dismisses it. Reserved for cards whose whole point is an
+  /// explicit decision (e.g. the meeting summary share card).
+  let isPersistent: Bool
 
   init(
     ownerID: String,
@@ -232,9 +276,11 @@ struct FloatingBarNotification: Identifiable, Equatable {
     kind: ProactiveNotificationKind? = nil,
     context: FloatingBarNotificationContext? = nil,
     action: FloatingBarNotificationAction? = nil,
+    jitFeedbackContext: JITTriggerFeedbackContext? = nil,
     suggestionTelemetryIdentity: SuggestionAssistantTelemetry.NotificationIdentity? = nil,
     insightDeliveryID: UUID? = nil,
-    screenshotData: Data? = nil
+    screenshotData: Data? = nil,
+    isPersistent: Bool = false
   ) {
     self.ownerID = ownerID
     self.title = title
@@ -243,9 +289,24 @@ struct FloatingBarNotification: Identifiable, Equatable {
     self.kind = kind ?? ProactiveNotificationKind.from(assistantId: assistantId)
     self.context = context
     self.action = action
+    self.jitFeedbackContext = jitFeedbackContext
     self.suggestionTelemetryIdentity = suggestionTelemetryIdentity
     self.insightDeliveryID = insightDeliveryID
     self.screenshotData = screenshotData
+    self.isPersistent = isPersistent
+  }
+
+  /// Identity every shown card can write. SuggestionAssistant supplies a real
+  /// pair; context-director and other cards synthesize from delivery id / card id
+  /// so the ledger is not gated on suggestion-only telemetry.
+  var feedbackIdentity: SuggestionAssistantTelemetry.NotificationIdentity {
+    if let suggestionTelemetryIdentity { return suggestionTelemetryIdentity }
+    let evaluationID =
+      insightDeliveryID
+      ?? UUID(uuidString: context?.provenanceRef ?? "")
+      ?? id
+    return SuggestionAssistantTelemetry.NotificationIdentity(
+      evaluationID: evaluationID, suggestionID: id)
   }
 
   static func == (lhs: FloatingBarNotification, rhs: FloatingBarNotification) -> Bool {
@@ -265,6 +326,11 @@ class FloatingControlBarState: NSObject, ObservableObject {
   @Published var isHoveringBar: Bool = false
   @Published var requiresHoverReset: Bool = false
   @Published var currentNotification: FloatingBarNotification? = nil
+  /// Visible while PTT is live inside the 60s card-context window.
+  @Published var interjectReplyingToTitle: String? = nil
+  /// Same hover signal the Interject dismiss timer pauses on. Notch hover
+  /// never sets `isHoveringBar`; insight teasers key off this instead.
+  @Published var interjectBarHovering: Bool = false
 
   /// Onboarding-only: pulse a glowing border on the bar so first-run users
   /// notice it. Cleared automatically once they start typing.

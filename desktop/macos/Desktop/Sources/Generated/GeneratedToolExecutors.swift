@@ -2,6 +2,7 @@
 import Foundation
 
 enum GeneratedSwiftTool: String, CaseIterable {
+  case getWorkContext = "get_work_context"
   case executeSql = "execute_sql"
   case semanticSearch = "semantic_search"
   case getDailyRecap = "get_daily_recap"
@@ -15,6 +16,13 @@ enum GeneratedSwiftTool: String, CaseIterable {
   case getMemories = "get_memories"
   case searchMemories = "search_memories"
   case createMemory = "create_memory"
+  case searchKnowledge = "search_knowledge"
+  case readPlaybook = "read_playbook"
+  case searchHistoricalFacts = "search_historical_facts"
+  case getEntityTimelineTool = "get_entity_timeline_tool"
+  case savePlaybook = "save_playbook"
+  case createStandingTrigger = "create_standing_trigger"
+  case closeFact = "close_fact"
   case getActionItems = "get_action_items"
   case createActionItem = "create_action_item"
   case updateActionItem = "update_action_item"
@@ -28,11 +36,11 @@ enum GeneratedSwiftTool: String, CaseIterable {
   case getEmailInsights = "get_email_insights"
   case getTasks = "get_tasks"
   case createCalendarEvent = "create_calendar_event"
-  case askHigherModel = "ask_higher_model"
+  case thinkDeeper = "think_deeper"
+  case webSearch = "web_search"
   case screenshot = "screenshot"
   case reportScreenObservation = "report_screen_observation"
   case pointClick = "point_click"
-  case getWorkContext = "get_work_context"
   case createCanonicalGoal = "create_canonical_goal"
   case getCanonicalGoals = "get_canonical_goals"
   case renderChatBlocks = "render_chat_blocks"
@@ -46,8 +54,8 @@ enum GeneratedSwiftToolExecutor: String {
 
 enum GeneratedToolExecutors {
   static let manifestVersion = 1
-  static let manifestDigest = "sha256:c1bee79f74def1a256bd4d00d7918c658dcb5043b21e21ccd80b0cb7e96dee17"
-  static let chatFirstManifestDigest = "sha256:3805f67fad145b38bee5a4f139fee7f5974fc65cb557b626455a9db8219f92c1"
+  static let manifestDigest = "sha256:fef83a43659e9914982d9f913789af004c298e419b4fa736ef264d033c9c2a25"
+  static let chatFirstManifestDigest = "sha256:cf4e4ece9bfb94cfea82a5874c9552a3b6052d32f6454b858d4ea3f78df9d2ef"
 
   static let aliasToCanonical: [String: GeneratedSwiftTool] = [
     "search_screen_history": .semanticSearch,
@@ -56,6 +64,7 @@ enum GeneratedToolExecutors {
   ]
 
   static let executorByTool: [GeneratedSwiftTool: GeneratedSwiftToolExecutor] = [
+    .getWorkContext: .chatToolExecutor,
     .executeSql: .chatToolExecutor,
     .semanticSearch: .chatToolExecutor,
     .getDailyRecap: .chatToolExecutor,
@@ -69,6 +78,13 @@ enum GeneratedToolExecutors {
     .getMemories: .chatToolExecutor,
     .searchMemories: .chatToolExecutor,
     .createMemory: .chatToolExecutor,
+    .searchKnowledge: .chatToolExecutor,
+    .readPlaybook: .chatToolExecutor,
+    .searchHistoricalFacts: .chatToolExecutor,
+    .getEntityTimelineTool: .chatToolExecutor,
+    .savePlaybook: .chatToolExecutor,
+    .createStandingTrigger: .chatToolExecutor,
+    .closeFact: .chatToolExecutor,
     .getActionItems: .chatToolExecutor,
     .createActionItem: .chatToolExecutor,
     .updateActionItem: .chatToolExecutor,
@@ -82,11 +98,11 @@ enum GeneratedToolExecutors {
     .getEmailInsights: .chatToolExecutor,
     .getTasks: .realtimeHub,
     .createCalendarEvent: .chatToolExecutor,
-    .askHigherModel: .realtimeHub,
+    .thinkDeeper: .realtimeHub,
+    .webSearch: .realtimeHub,
     .screenshot: .realtimeHub,
     .reportScreenObservation: .realtimeHub,
     .pointClick: .realtimeHub,
-    .getWorkContext: .chatToolExecutor,
     .createCanonicalGoal: .chatToolExecutor,
     .getCanonicalGoals: .chatToolExecutor,
     .renderChatBlocks: .chatToolExecutor,
@@ -122,6 +138,7 @@ enum GeneratedToolExecutors {
 
   /// Dispatch surface for ChatToolExecutor — chatToolExecutor-bound tools only.
   enum ChatDispatch {
+    case getWorkContext
     case executeSql
     case semanticSearch
     case getDailyRecap
@@ -135,6 +152,13 @@ enum GeneratedToolExecutors {
     case getMemories
     case searchMemories
     case createMemory
+    case searchKnowledge
+    case readPlaybook
+    case searchHistoricalFacts
+    case getEntityTimelineTool
+    case savePlaybook
+    case createStandingTrigger
+    case closeFact
     case getActionItems
     case createActionItem
     case updateActionItem
@@ -147,7 +171,6 @@ enum GeneratedToolExecutors {
     case completeOnboarding
     case getEmailInsights
     case createCalendarEvent
-    case getWorkContext
     case createCanonicalGoal
     case getCanonicalGoals
     case renderChatBlocks
@@ -160,6 +183,7 @@ enum GeneratedToolExecutors {
       return .unhandled
     }
     switch tool {
+    case .getWorkContext: return .getWorkContext
     case .executeSql: return .executeSql
     case .semanticSearch: return .semanticSearch
     case .getDailyRecap: return .getDailyRecap
@@ -173,6 +197,13 @@ enum GeneratedToolExecutors {
     case .getMemories: return .getMemories
     case .searchMemories: return .searchMemories
     case .createMemory: return .createMemory
+    case .searchKnowledge: return .searchKnowledge
+    case .readPlaybook: return .readPlaybook
+    case .searchHistoricalFacts: return .searchHistoricalFacts
+    case .getEntityTimelineTool: return .getEntityTimelineTool
+    case .savePlaybook: return .savePlaybook
+    case .createStandingTrigger: return .createStandingTrigger
+    case .closeFact: return .closeFact
     case .getActionItems: return .getActionItems
     case .createActionItem: return .createActionItem
     case .updateActionItem: return .updateActionItem
@@ -185,7 +216,6 @@ enum GeneratedToolExecutors {
     case .completeOnboarding: return .completeOnboarding
     case .getEmailInsights: return .getEmailInsights
     case .createCalendarEvent: return .createCalendarEvent
-    case .getWorkContext: return .getWorkContext
     case .createCanonicalGoal: return .createCanonicalGoal
     case .getCanonicalGoals: return .getCanonicalGoals
     case .renderChatBlocks: return .renderChatBlocks

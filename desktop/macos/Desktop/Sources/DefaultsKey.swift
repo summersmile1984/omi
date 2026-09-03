@@ -42,8 +42,31 @@ enum DefaultsKey: String {
   case multiChatEnabled = "multiChatEnabled"
   /// Opt-in: proactive notifications are also spoken out loud on delivery.
   case speakNotificationsAloud = "speakNotificationsAloud"
+  /// Opt-out (defaults to on): the post-meeting summary share notification —
+  /// the persistent notch card offering "Copy link" / "Send to <participant>".
+  case meetingSummaryNotificationsEnabled = "meetingSummaryNotificationsEnabled"
+  /// Opt-out: when you open an app Omi integrates with but have not connected,
+  /// Omi offers the connection once. Defaults to on; the per-integration
+  /// budgets in `IntegrationNudgePolicy` are what keep that from being noise.
+  case integrationNudgesEnabled = "integrationNudgesEnabled"
   case aiChatWorkingDirectory = "aiChatWorkingDirectory"
+  /// Presence-only marker: the user turned Launch at Login OFF in Settings on
+  /// a build that has this key. Absent means "no recorded decline" — the
+  /// default-on migration (`OmiApp.migrateLaunchAtLoginDefault`) enables once;
+  /// a decline made before this key existed is indistinguishable from a fresh
+  /// install and is re-enabled by that one shot. Present means the user's
+  /// choice wins and no migration ever re-enables it. Re-enabling from Settings
+  /// removes the marker. Never written `false`.
+  case launchAtLoginUserDeclined = "launchAtLoginUserDeclined"
   case hasCompletedOnboarding = "hasCompletedOnboarding"
+  /// Three-state marker for the one-time first-real-app tap-to-ask card
+  /// (`FirstRealAppCardState`): absent = this build has never looked at this
+  /// install, `pending` = a fresh install still owes the card, `consumed` = it
+  /// fired, or the install gate retired it for a user who was already onboarded
+  /// when this build arrived. A `Bool` cannot express the first state, and
+  /// conflating "never written" with `false` is the exact ambiguity that made
+  /// the launch-at-login V1 migration re-enable a setting the user turned off.
+  case firstRealAppCardState = "firstRealAppCardState"
   case onboardingStep = "onboardingStep"
   case onboardingFurthestStep = "onboardingFurthestStep"
   case onboardingMemoryImportOwnerUserId = "onboardingMemoryImportOwnerUserID"
@@ -52,6 +75,15 @@ enum DefaultsKey: String {
   case onboardingJustCompleted = "onboardingJustCompleted"
   case hasCompletedFileIndexing = "hasCompletedFileIndexing"
   case screenAnalysisEnabled = "screenAnalysisEnabled"
+  case ratingPromptQuestionCount = "ratingPromptQuestionCount"
+  case ratingPromptSubmittedRating = "ratingPromptSubmittedRating"
+  case ratingPromptDismissed = "ratingPromptDismissed"
+  /// One-shot marker: the question counter was seeded from server chat
+  /// history so long-time users see the rating ask without three NEW questions.
+  case ratingPromptHistorySeeded = "ratingPromptHistorySeeded"
+  /// Last-good server CSAT config (JSON), so a cold start renders the right
+  /// copy before the first config poll lands. Product-wide, not owner-scoped.
+  case csatConfigLastGood = "csatConfigLastGood"
   case screenAnalysisAutoStartFixedV2 = "screenAnalysisAutoStartFixed_v2"
   case screenAnalysisAutoStartFixedV3 = "screenAnalysisAutoStartFixed_v3"
   case homeOmiDeviceAccountHistory = "home-omi-device-account-history"
@@ -59,6 +91,10 @@ enum DefaultsKey: String {
   case pairedDeviceName = "pairedDeviceName"
   case pairedDeviceType = "pairedDeviceType"
   case chatScreenshotSharingEnabled = "chatScreenshotSharingEnabled"
+  /// Client-side mirror of the server's `meeting_note_screenshots_enabled` account setting
+  /// (contract §3/§9). Absent key means enabled (default on) — see
+  /// `MeetingNoteScreenshotsFeature.isEnabled`.
+  case meetingNoteScreenshotsEnabled = "meetingNoteScreenshotsEnabled"
   /// Test hook: forces TTS playback start to report failure (non-prod gauntlets).
   case forceTTSPlaybackStartFalse = "forceTTSPlaybackStartFalse"
   case shortcutPTTInputDeviceUID = "shortcut_pttInputDeviceUID"
@@ -69,6 +105,12 @@ enum DefaultsKey: String {
   case floatingBarCachedPlan = "floatingBar_cachedPlan"
   case floatingBarCachedDesktopGrandfatherUntil = "floatingBar_cachedDesktopGrandfatherUntil"
   case desktopIsPaywalled = "desktop_isPaywalled"
+  case askOmiBarEnabled = "askOmiBarEnabled"
+  case byokLLMProvider = "dev_byok_llm_provider"
+  /// Provider → SHA-256 fingerprint last enrolled after BYOKValidator .ok.
+  case byokEnrolledFingerprints = "byok_enrolled_fingerprints"
+  /// UID that last owned persisted BYOK keys on this Mac.
+  case byokOwnerUid = "byok_owner_uid"
   case rewindDisableContentCache = "rewindDisableContentCache"
   // Task-order migration keys are typed so TasksPage and its tests share the
   // migration contract instead of repeating raw UserDefaults literals.
@@ -127,12 +169,48 @@ struct ScopedDefaultsKey {
     Self(rawValue: "\(keyPrefix)\(ownerID).timestamps")
   }
 
+  /// Owner-scoped proactive integration-nudge history. `field` is one of the
+  /// closed set the store writes (`shownCount`, `lastShownAt`, `snoozedUntil`,
+  /// `optedOut`); `scope` is the catalog telemetry id plus the owner id, so one
+  /// person's dismissals never silence an integration for another account on
+  /// the same Mac.
+  static func integrationNudge(_ field: String, scope: String) -> Self {
+    Self(rawValue: "integrationNudge.v1.\(field).\(scope)")
+  }
+
+  /// Owner-scoped cross-integration nudge budget (last delivery, and the
+  /// delivery timestamps inside the trailing day window).
+  static func integrationNudgeBudget(_ field: String, ownerID: String) -> Self {
+    Self(rawValue: "integrationNudgeBudget.v1.\(field).\(ownerID)")
+  }
+
+  /// Owner-scoped id of the newest daily summary the owner has already been shown a notch card
+  /// for. Desktop receives no `daily_summary` push, so this is what keeps the announcement at
+  /// most once per summary, and per account on a shared Mac.
+  static func dailySummaryLastSeenID(ownerID: String) -> Self {
+    Self(rawValue: "dailySummary.lastSeenID.v1.\(ownerID)")
+  }
+
   static func importConnectorAvailabilityText(connectorID: String) -> Self {
     Self(rawValue: "appsImportConnectorAvailabilityText.\(connectorID)")
   }
 
   static func importConnectorSourceCount(connectorID: String) -> Self {
     Self(rawValue: "appsImportConnectorSourceCount.\(connectorID)")
+  }
+
+  /// Per-prompt, per-account resolution of a remote (admin-authored) prompt:
+  /// "answered" or "dismissed". Absent = still eligible. Owner-scoped so one
+  /// account's answer never suppresses prompts for another account on the
+  /// same Mac (the #9821 account-switch-bleed class).
+  static func remotePromptResolution(promptId: String, ownerID: String) -> Self {
+    Self(rawValue: "remotePrompt.resolution.v2.\(ownerID).\(promptId)")
+  }
+
+  /// Owner-scoped rating-prompt state (count / submitted / dismissed /
+  /// historySeeded) — same bleed class as above.
+  static func ratingPrompt(_ field: String, ownerID: String) -> Self {
+    Self(rawValue: "ratingPrompt.v2.\(field).\(ownerID)")
   }
 
   static func taskInterruptionLedger(ownerID: String) -> Self {
@@ -151,8 +229,12 @@ extension UserDefaults {
   func bool(forKey key: DefaultsKey) -> Bool { bool(forKey: key.rawValue) }
   func integer(forKey key: DefaultsKey) -> Int { integer(forKey: key.rawValue) }
   func double(forKey key: DefaultsKey) -> Double { double(forKey: key.rawValue) }
+  func string(forKey key: ScopedDefaultsKey) -> String? { string(forKey: key.rawValue) }
   func data(forKey key: ScopedDefaultsKey) -> Data? { data(forKey: key.rawValue) }
   func bool(forKey key: ScopedDefaultsKey) -> Bool { bool(forKey: key.rawValue) }
+  func integer(forKey key: ScopedDefaultsKey) -> Int { integer(forKey: key.rawValue) }
+  func double(forKey key: ScopedDefaultsKey) -> Double { double(forKey: key.rawValue) }
+  func array(forKey key: ScopedDefaultsKey) -> [Any]? { array(forKey: key.rawValue) }
   func stringArray(forKey key: ScopedDefaultsKey) -> [String]? { stringArray(forKey: key.rawValue) }
   func dictionary(forKey key: ScopedDefaultsKey) -> [String: Any]? {
     dictionary(forKey: key.rawValue)

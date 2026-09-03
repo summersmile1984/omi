@@ -1637,10 +1637,15 @@ final class ChatTimelineContinuityTests: XCTestCase {
     let root = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-    let bubble = try String(
-      contentsOf: root.appendingPathComponent("Sources/MainWindow/Components/ChatBubble.swift"),
-      encoding: .utf8
-    )
+    // The chat-bubble surface spans the main file plus extracted same-module
+    // components (StableChatCardHeader moved out under the frozen-file
+    // line-count ratchet); the alignment contract scrapes the whole surface.
+    let bubble = try [
+      "Sources/MainWindow/Components/ChatBubble.swift",
+      "Sources/MainWindow/Components/StableChatCardHeader.swift",
+    ]
+    .map { try String(contentsOf: root.appendingPathComponent($0), encoding: .utf8) }
+    .joined(separator: "\n")
     let floating = try String(
       contentsOf: root.appendingPathComponent("Sources/FloatingControlBar/FloatingControlBarView.swift"),
       encoding: .utf8
@@ -1787,14 +1792,12 @@ final class ChatTimelineContinuityTests: XCTestCase {
       """
     )
 
-    let schedulerSource = try String(
-      contentsOf: sourcesRoot().appendingPathComponent("Services/RecurringTaskScheduler.swift"),
-      encoding: .utf8
-    )
-    XCTAssertTrue(schedulerSource.contains("configure(taskChatCoordinator:"))
+    // RecurringTaskScheduler is gone with the execute feature it drove, so there
+    // is no longer a second production site that could construct a ChatProvider.
     XCTAssertFalse(
-      schedulerSource.contains("ChatProvider()"),
-      "RecurringTaskScheduler must reuse the shared TaskChatCoordinator"
+      FileManager.default.fileExists(
+        atPath: sourcesRoot().appendingPathComponent("Services/RecurringTaskScheduler.swift").path),
+      "RecurringTaskScheduler was removed with task execution; it must not come back"
     )
   }
 

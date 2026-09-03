@@ -8,6 +8,7 @@ inventory; this module never scans all users or consults a UID allowlist.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -16,10 +17,12 @@ from collections.abc import Callable
 from typing import Any, Iterable, Optional, Protocol, cast
 
 from pydantic import ValidationError
+from google.cloud import firestore
 
 from database._client import db as default_db_client
 from database.memory_collections import MemoryCollections
-from models.product_memory import MemoryItemStatus, MemoryLayer
+from jobs.short_term_lifecycle_worker import fetch_expiry_urgent_short_term_memory_items_firestore
+from models.product_memory import DEFAULT_SHORT_TERM_TTL, MemoryItemStatus, MemoryLayer
 from utils.executors import db_executor, run_blocking
 from utils.log_sanitizer import sanitize_validation_error
 from utils.observability.fallback import record_fallback
@@ -32,6 +35,11 @@ from utils.memory.memory_system import (
     CANONICAL_MEMORY_MAINTENANCE_CURSOR_PATH,
     CANONICAL_MEMORY_MAINTENANCE_REGISTRY_COLLECTION,
     CANONICAL_MEMORY_MAINTENANCE_REGISTRY_SCHEMA_VERSION,
+)
+from utils.jit_rollout import JITDecisionStage, resolve_jit_rollout
+from utils.memory.knowledge_ledger_migration import (
+    publish_ledger_migration_cutover,
+    run_ledger_migration_sweep,
 )
 from utils.memory.promotion_flex import (
     MEMORY_PROMOTION_FLEX_LEASE_SECONDS,
@@ -58,6 +66,9 @@ DEFAULT_GRAPH_BACKFILL_PAGE_SIZE = 5
 GRAPH_BACKFILL_SCAN_PAGE_MULTIPLIER = 5
 DEFAULT_GRAPH_BACKFILL_SCAN_SIZE = DEFAULT_GRAPH_BACKFILL_PAGE_SIZE * GRAPH_BACKFILL_SCAN_PAGE_MULTIPLIER
 MAX_MAINTENANCE_UIDS_PER_RUN = 400
+MAX_LEDGER_MIGRATION_UIDS_PER_RUN = 200
+LEDGER_ROW_AUTHORIZATION_TIMEOUT_SECONDS = 15.0
+EXPIRY_ADJUDICATION_LOOKAHEAD = DEFAULT_SHORT_TERM_TTL / 2
 CANONICAL_MEMORY_MAINTENANCE_SEED_CURSOR_PATH = "canonical_memory_maintenance_control/seed_cursor"
 CANONICAL_MEMORY_MAINTENANCE_SEED_SCHEMA_VERSION = 1
 CANONICAL_MEMORY_DREAMING_STATE_COLLECTION = "canonical_memory_dreaming_state"
@@ -75,6 +86,46 @@ class CanonicalMaintenanceUIDInventory(Protocol):
     def __call__(self, db_client: Any, limit: int) -> Iterable[str]: ...
 
 
+@dataclass(frozen=True)
+class ExpiryOrderedMaintenanceInventory:
+    uids: tuple[str, ...]
+    candidate_item_count: int = 0
+    expired_active_item_count: int = 0
+
+
+def expiry_ordered_maintenance_uid_inventory(
+    db_client: Any,
+    *,
+    now: datetime,
+    limit: int = MAX_MAINTENANCE_UIDS_PER_RUN,
+) -> ExpiryOrderedMaintenanceInventory:
+    """Return UIDs ordered by their earliest approaching Short-term expiry."""
+    bounded_limit = max(1, min(MAX_MAINTENANCE_UIDS_PER_RUN, int(limit)))
+    deadline = now.astimezone(timezone.utc) + EXPIRY_ADJUDICATION_LOOKAHEAD
+    try:
+        items = fetch_expiry_urgent_short_term_memory_items_firestore(
+            db_client=db_client,
+            deadline=deadline,
+        )
+    except Exception as exc:
+        raise CanonicalMaintenanceInventoryUnavailable("expiry-ordered canonical memory inventory failed") from exc
+
+    uids: list[str] = []
+    expired_active_items = 0
+    for item in items:
+        if item.effective_expiry <= now:
+            expired_active_items += 1
+        if item.uid not in uids:
+            uids.append(item.uid)
+        if len(uids) >= bounded_limit:
+            break
+    return ExpiryOrderedMaintenanceInventory(
+        uids=tuple(uids),
+        candidate_item_count=len(items),
+        expired_active_item_count=expired_active_items,
+    )
+
+
 def _registry_uid(snapshot: Any) -> Optional[str]:
     payload = snapshot.to_dict() if hasattr(snapshot, "to_dict") else None
     if not isinstance(payload, dict):
@@ -90,36 +141,59 @@ def _registry_uid(snapshot: Any) -> Optional[str]:
     return uid.strip()
 
 
-def _read_registry_cursor(db_client: Any) -> str:
+def _read_registry_cursor_state(db_client: Any) -> tuple[str, int]:
     ref = db_client.document(CANONICAL_MEMORY_MAINTENANCE_CURSOR_PATH)
     try:
         snapshot = ref.get()
     except Exception as exc:
         raise CanonicalMaintenanceInventoryUnavailable("canonical maintenance cursor unavailable") from exc
     if not getattr(snapshot, "exists", False):
-        payload = {"schema_version": 1, "last_uid": ""}
-        try:
-            create = getattr(ref, "create", None)
-            if callable(create):
-                create(payload)
-            else:
-                ref.set(payload)
-        except Exception as exc:
-            raise CanonicalMaintenanceInventoryUnavailable("canonical maintenance cursor unavailable") from exc
-        return ""
+        # Reads must stay side-effect free. The first durable cursor write is
+        # performed by the generation-fenced commit below; creating an empty
+        # document here would make ``persist_cursor=False`` mutate state.
+        return "", 0
     payload = snapshot.to_dict()
     if not isinstance(payload, dict) or payload.get("schema_version") != 1:
         raise CanonicalMaintenanceInventoryUnavailable("canonical maintenance cursor is malformed")
     last_uid = payload.get("last_uid", "")
-    if not isinstance(last_uid, str):
+    generation = payload.get("generation", 0)
+    if not isinstance(last_uid, str) or not isinstance(generation, int) or generation < 0:
         raise CanonicalMaintenanceInventoryUnavailable("canonical maintenance cursor is malformed")
-    return last_uid
+    return last_uid, generation
 
 
-def _persist_registry_cursor(db_client: Any, last_uid: str) -> None:
+def _persist_registry_cursor(db_client: Any, last_uid: str, *, expected_generation: int | None = None) -> None:
     payload = {"schema_version": 1, "last_uid": last_uid}
     try:
-        db_client.document(CANONICAL_MEMORY_MAINTENANCE_CURSOR_PATH).set(payload, merge=True)
+        ref = db_client.document(CANONICAL_MEMORY_MAINTENANCE_CURSOR_PATH)
+        current = ref.get()
+        current_payload = current.to_dict() if getattr(current, "exists", False) else {}
+        current_generation = current_payload.get("generation", 0) if isinstance(current_payload, dict) else 0
+        if not isinstance(current_generation, int) or current_generation < 0:
+            raise CanonicalMaintenanceInventoryUnavailable("canonical maintenance cursor is malformed")
+        if expected_generation is not None and current_generation != expected_generation:
+            raise CanonicalMaintenanceInventoryUnavailable("canonical maintenance cursor generation conflict")
+        next_payload = {**payload, "generation": current_generation + 1}
+        transaction_factory = getattr(db_client, "transaction", None)
+        if callable(transaction_factory):
+            try:
+                transaction = transaction_factory()
+
+                def write_transaction(tx: Any) -> None:
+                    live_snapshot = ref.get(transaction=tx)
+                    live_payload = live_snapshot.to_dict() if getattr(live_snapshot, "exists", False) else {}
+                    live_generation = live_payload.get("generation", 0) if isinstance(live_payload, dict) else 0
+                    if expected_generation is not None and live_generation != expected_generation:
+                        raise CanonicalMaintenanceInventoryUnavailable(
+                            "canonical maintenance cursor generation conflict"
+                        )
+                    tx.set(ref, next_payload, merge=True)
+
+                cast(Any, firestore.transactional(write_transaction))(transaction)
+                return
+            except TypeError:
+                pass
+        ref.set(next_payload, merge=True)
     except Exception as exc:
         raise CanonicalMaintenanceInventoryUnavailable("canonical maintenance cursor unavailable") from exc
 
@@ -212,6 +286,18 @@ def recently_dreamed(uid: str, *, db_client: Any, now: datetime) -> bool:
     if last_dreamed_at is None:
         return False
     return now - last_dreamed_at < DREAMING_MIN_INTERVAL
+
+
+def _is_ledger_writer(uid: str, *, db_client: Any) -> bool:
+    """Ledger-mode accounts own formation via the daily sweep, not dreaming."""
+    try:
+        from models.memory_apply import WriterMode
+        from utils.memory.memory_system import ensure_canonical_apply_control_state
+
+        control = ensure_canonical_apply_control_state(uid, db_client=db_client)
+        return getattr(control, "writer_mode", None) == WriterMode.ledger
+    except Exception:
+        return False
 
 
 def _read_seed_cursor(db_client: Any) -> str:
@@ -326,7 +412,7 @@ def bounded_canonical_memory_uid_inventory(
             "bounded canonical UID registry is unavailable; provide a registry/index or injectable inventory"
         )
     _seed_registry_from_existing_memory_states(db_client, limit=bounded_limit)
-    cursor = _read_registry_cursor(db_client)
+    cursor, cursor_generation = _read_registry_cursor_state(db_client)
     try:
         # Firestore's public query objects and the strict test fakes both expose
         # this fluent surface, but the callable narrowing above intentionally
@@ -345,7 +431,7 @@ def bounded_canonical_memory_uid_inventory(
             if uid and uid not in uids:
                 uids.append(uid)
         if persist_cursor and uids:
-            _persist_registry_cursor(db_client, uids[-1])
+            _persist_registry_cursor(db_client, uids[-1], expected_generation=cursor_generation)
         return tuple(uids[:bounded_limit])
     except CanonicalMaintenanceInventoryUnavailable:
         raise
@@ -375,6 +461,15 @@ def _empty_errors() -> list[str]:
 
 
 def canonical_maintenance_enabled() -> bool:
+    """Whether *this process* hosts the ST→LT cron.
+
+    Not a product rollout flag — that is ``MEMORY_ENABLED``, which is universal for
+    authenticated accounts. This one is per-deployable routing, so the ``"false"``
+    default is correct: only ``memory-maintenance-job`` sets it true, and
+    ``scripts/runtime_env_validation/manifest.py`` fails the build if any other job
+    or request-path surface does. Read the deployed value from
+    ``deploy/runtime_env/*.overlay.yaml``, not from this default.
+    """
     raw = os.getenv(MEMORY_CANONICAL_MAINTENANCE_ENABLED_ENV, "false")
     return raw.lower() == "true"
 
@@ -430,11 +525,18 @@ class CanonicalShortTermMaintenanceCronSummary:
     user_count: int = 0
     inventory_source: str = "bounded_registry"
     inventory_complete: bool = False
+    expiry_urgent_users: int = 0
+    expiry_urgent_items: int = 0
+    expired_active_candidates_total: int = 0
+    expired_without_terminal_disposition_total: int = 0
+    expired_with_recorded_disposition_total: int = 0
+    expired_terminal_dispositions_total: int = 0
     routed_total: int = 0
     promoted_total: int = 0
     skipped_users: int = 0
     skipped_no_short_term: int = 0
     skipped_recently_dreamed: int = 0
+    skipped_ledger_writer: int = 0
     dreamed_users: int = 0
     flex_deferred: bool = False
     recurrence_candidates_total: int = 0
@@ -444,6 +546,9 @@ class CanonicalShortTermMaintenanceCronSummary:
     outbox_ack_failures_total: int = 0
     graph_enriched_total: int = 0
     graph_enrichment_blocked_total: int = 0
+    ledger_migration_users: int = 0
+    ledger_migration_rows: int = 0
+    completed_uids: tuple[str, ...] = ()
     errors: list[str] = field(default_factory=_empty_errors)
 
 
@@ -500,18 +605,57 @@ def run_universal_short_term_maintenance(
 
     client = db_client if db_client is not None else default_db_client
     promotion_flex = PromotionFlexRunRouter(db_client=client, force_enabled=maintenance_flex_forced())
-    try:
-        if uid_inventory is None:
-            uids = bounded_canonical_memory_uid_inventory(client, limit=inventory_limit, persist_cursor=False)
-        else:
+    expiry_inventory = ExpiryOrderedMaintenanceInventory(uids=())
+    registry_uids: tuple[str, ...] = ()
+    registry_cursor_generation = 0
+    inventory_errors: list[str] = []
+    if uid_inventory is None:
+        try:
+            expiry_inventory = expiry_ordered_maintenance_uid_inventory(
+                client,
+                now=current_time,
+                limit=inventory_limit,
+            )
+        except CanonicalMaintenanceInventoryUnavailable as exc:
+            inventory_errors.append("canonical_expiry_inventory_unavailable")
+            logger.warning(
+                "canonical_short_term_maintenance_cron: canonical_expiry_inventory_unavailable (%s)",
+                type(exc).__name__,
+            )
+        try:
+            # Keep compatibility with the injected expiry-only backstop,
+            # which intentionally uses a sentinel client without Firestore.
+            # Real clients expose ``document`` and therefore receive the
+            # generation snapshot used by the final CAS commit.
+            if callable(getattr(client, "document", None)):
+                _registry_cursor, registry_cursor_generation = _read_registry_cursor_state(client)
+            registry_uids = bounded_canonical_memory_uid_inventory(
+                client,
+                limit=inventory_limit,
+                persist_cursor=False,
+            )
+        except CanonicalMaintenanceInventoryUnavailable as exc:
+            inventory_errors.append("canonical_uid_inventory_unavailable")
+            logger.warning(
+                "canonical_short_term_maintenance_cron: canonical_uid_inventory_unavailable (%s)",
+                type(exc).__name__,
+            )
+        uids = tuple(dict.fromkeys((*expiry_inventory.uids, *registry_uids)))[
+            : max(1, min(MAX_MAINTENANCE_UIDS_PER_RUN, int(inventory_limit)))
+        ]
+    else:
+        try:
             uids = _resolve_maintenance_uids(client, uid_inventory=uid_inventory, limit=inventory_limit)
-    except CanonicalMaintenanceInventoryUnavailable as exc:
+        except CanonicalMaintenanceInventoryUnavailable as exc:
+            inventory_errors.append("canonical_uid_inventory_unavailable")
+            logger.warning(
+                "canonical_short_term_maintenance_cron: canonical_uid_inventory_unavailable (%s)",
+                type(exc).__name__,
+            )
+            uids = ()
+
+    if not uids and inventory_errors:
         message = "canonical_uid_inventory_unavailable"
-        logger.warning(
-            "canonical_short_term_maintenance_cron: %s (%s)",
-            message,
-            type(exc).__name__,
-        )
         return CanonicalShortTermMaintenanceCronSummary(
             run_id=effective_run_id,
             inventory_source="unavailable",
@@ -521,8 +665,20 @@ def run_universal_short_term_maintenance(
     summary = CanonicalShortTermMaintenanceCronSummary(
         run_id=effective_run_id,
         user_count=len(uids),
-        inventory_source="injected" if uid_inventory is not None else "bounded_registry",
-        inventory_complete=True,
+        inventory_source=(
+            "injected"
+            if uid_inventory is not None
+            else (
+                "expiry_ordered+bounded_registry"
+                if expiry_inventory.uids and registry_uids
+                else "expiry_ordered" if expiry_inventory.uids else "bounded_registry"
+            )
+        ),
+        inventory_complete=not inventory_errors,
+        expiry_urgent_users=len(expiry_inventory.uids),
+        expiry_urgent_items=expiry_inventory.candidate_item_count,
+        expired_active_candidates_total=expiry_inventory.expired_active_item_count,
+        errors=inventory_errors,
     )
     logger.info(
         "canonical_short_term_maintenance_cron: start run_id=%s user_count=%d flex=%s",
@@ -530,21 +686,28 @@ def run_universal_short_term_maintenance(
         len(uids),
         promotion_flex.control.enabled,
     )
-    last_completed_uid: Optional[str] = None
+    completed_uids: set[str] = set()
     for uid in uids:
         stm_count = count_active_short_term(uid, db_client=client)
         if stm_count == 0:
             summary.skipped_no_short_term += 1
             summary.skipped_users += 1
-            last_completed_uid = uid
+            completed_uids.add(uid)
             logger.info("canonical_short_term_maintenance_cron: uid=%s skipped_reason=no_active_short_term", uid)
             continue
         overflow = stm_count is not None and stm_count > OVERFLOW_SHORT_TERM_THRESHOLD
-        if recently_dreamed(uid, db_client=client, now=current_time) and not overflow:
+        expiry_urgent = uid in expiry_inventory.uids
+        if recently_dreamed(uid, db_client=client, now=current_time) and not overflow and not expiry_urgent:
             summary.skipped_recently_dreamed += 1
             summary.skipped_users += 1
-            last_completed_uid = uid
+            completed_uids.add(uid)
             logger.info("canonical_short_term_maintenance_cron: uid=%s skipped_reason=recently_dreamed", uid)
+            continue
+        if _is_ledger_writer(uid, db_client=client):
+            summary.skipped_ledger_writer += 1
+            summary.skipped_users += 1
+            completed_uids.add(uid)
+            logger.info("canonical_short_term_maintenance_cron: uid=%s skipped_reason=writer_mode_ledger", uid)
             continue
         promotion_llm_invoke = promotion_flex.llm_invoke_for_uid(uid)
         try:
@@ -577,7 +740,7 @@ def run_universal_short_term_maintenance(
             message = _safe_maintenance_error(uid, exc)
             summary.errors.append(message)
             logger.warning("canonical_short_term_maintenance_cron: failed %s", message)
-            last_completed_uid = uid
+            completed_uids.add(uid)
             continue
 
         promoted = _promoted_count(report)
@@ -585,6 +748,10 @@ def run_universal_short_term_maintenance(
         trigger = report.consolidation.trigger_reason if report.consolidation else None
         summary.routed_total += report.routed_count
         summary.promoted_total += promoted
+        if report.lifecycle is not None:
+            summary.expired_without_terminal_disposition_total += report.lifecycle.lifecycle_created_count
+            summary.expired_with_recorded_disposition_total += report.lifecycle.lifecycle_existing_count
+            summary.expired_terminal_dispositions_total += report.lifecycle.lifecycle_terminal_count
         outbox = report.outbox or {}
         outbox_delivered = int(outbox.get("delivered_count") or 0)
         outbox_retryable = int(outbox.get("retryable_failure_count") or 0)
@@ -661,7 +828,7 @@ def run_universal_short_term_maintenance(
         )
         if not dream_incomplete:
             persist_last_dreamed_at(uid, db_client=client, now=current_time)
-        last_completed_uid = uid
+        completed_uids.add(uid)
 
         logger.info(
             "canonical_short_term_maintenance_cron: uid=%s trigger_reason=%s routed_count=%d "
@@ -700,9 +867,18 @@ def run_universal_short_term_maintenance(
             summary.errors.append(message)
             logger.warning("canonical_short_term_maintenance_cron: %s", message)
 
-    if uid_inventory is None and last_completed_uid:
+    last_completed_registry_uid: Optional[str] = None
+    for registry_uid in registry_uids:
+        if registry_uid not in completed_uids:
+            break
+        last_completed_registry_uid = registry_uid
+    if uid_inventory is None and last_completed_registry_uid:
         try:
-            _persist_registry_cursor(client, last_completed_uid)
+            _persist_registry_cursor(
+                client,
+                last_completed_registry_uid,
+                expected_generation=registry_cursor_generation,
+            )
         except CanonicalMaintenanceInventoryUnavailable as exc:
             summary.errors.append(f"cursor_persist:{type(exc).__name__}")
             logger.warning(
@@ -713,7 +889,12 @@ def run_universal_short_term_maintenance(
     logger.info(
         "canonical_short_term_maintenance_cron: done run_id=%s user_count=%d routed_total=%d "
         "promoted_total=%d dreamed_users=%d skipped_no_short_term=%d skipped_recently_dreamed=%d "
-        "flex_deferred=%s graph_enriched_total=%d graph_enrichment_blocked_total=%d skipped_users=%d errors=%d",
+        "skipped_ledger_writer=%d "
+        "flex_deferred=%s expiry_urgent_users=%d expiry_urgent_items=%d "
+        "expired_active_candidates_total=%d "
+        "expired_without_terminal_disposition_total=%d expired_with_recorded_disposition_total=%d "
+        "expired_terminal_dispositions_total=%d graph_enriched_total=%d graph_enrichment_blocked_total=%d "
+        "skipped_users=%d errors=%d",
         effective_run_id,
         summary.user_count,
         summary.routed_total,
@@ -721,12 +902,20 @@ def run_universal_short_term_maintenance(
         summary.dreamed_users,
         summary.skipped_no_short_term,
         summary.skipped_recently_dreamed,
+        summary.skipped_ledger_writer,
         summary.flex_deferred,
+        summary.expiry_urgent_users,
+        summary.expiry_urgent_items,
+        summary.expired_active_candidates_total,
+        summary.expired_without_terminal_disposition_total,
+        summary.expired_with_recorded_disposition_total,
+        summary.expired_terminal_dispositions_total,
         summary.graph_enriched_total,
         summary.graph_enrichment_blocked_total,
         summary.skipped_users,
         len(summary.errors),
     )
+    summary.completed_uids = tuple(sorted(completed_uids))
     return summary
 
 
@@ -741,7 +930,7 @@ async def run_canonical_short_term_maintenance_cron(
     inventory_limit: int = MAX_MAINTENANCE_UIDS_PER_RUN,
 ) -> CanonicalShortTermMaintenanceCronSummary:
     """Async entrypoint: offload sync Firestore maintenance to ``db_executor``."""
-    return await run_blocking(
+    summary = await run_blocking(
         db_executor,
         run_universal_short_term_maintenance,
         db_client=db_client,
@@ -752,3 +941,86 @@ async def run_canonical_short_term_maintenance_cron(
         uid_inventory=uid_inventory,
         inventory_limit=inventory_limit,
     )
+    client = db_client if db_client is not None else default_db_client
+    candidate_uids = summary.completed_uids[:MAX_LEDGER_MIGRATION_UIDS_PER_RUN]
+    if not candidate_uids:
+        return summary
+
+    authority_loop = asyncio.get_running_loop()
+
+    def fresh_rollout_authorizer(uid: str) -> Callable[..., bool]:
+        def authorize(*_context: str) -> bool:
+            future = asyncio.run_coroutine_threadsafe(
+                resolve_jit_rollout(
+                    uid,
+                    stage=JITDecisionStage.INGRESS,
+                    force_refresh=True,
+                ),
+                authority_loop,
+            )
+            try:
+                return future.result(timeout=LEDGER_ROW_AUTHORIZATION_TIMEOUT_SECONDS).permits_work
+            except Exception as exc:
+                future.cancel()
+                logger.warning(
+                    "canonical_short_term_maintenance_cron: uid=%s ledger_authorization_failed=%s",
+                    uid,
+                    type(exc).__name__,
+                )
+                return False
+
+        return authorize
+
+    # Re-authorize each account immediately before its bounded mutation pass.
+    # Resolving the whole page up front leaves later accounts holding stale
+    # permission while earlier accounts scan and mutate.
+    for uid in candidate_uids:
+        decision = await resolve_jit_rollout(
+            uid,
+            stage=JITDecisionStage.INGRESS,
+            force_refresh=True,
+        )
+        if not decision.permits_work:
+            continue
+        authorizer = fresh_rollout_authorizer(uid)
+        try:
+            result = await run_blocking(
+                db_executor,
+                run_ledger_migration_sweep,
+                uid,
+                db_client=client,
+                completed_at=now,
+                publish=False,
+                mutation_authorizer=authorizer,
+                publication_authorizer=authorizer,
+            )
+        except Exception as exc:
+            summary.errors.append(f"uid={uid}: ledger_migration:{type(exc).__name__}")
+            logger.warning(
+                "canonical_short_term_maintenance_cron: uid=%s ledger_migration_failed=%s",
+                uid,
+                type(exc).__name__,
+            )
+            continue
+        summary.ledger_migration_rows += result.migrated_long_term_count
+        if getattr(result, "authorization_revoked", False):
+            continue
+        if result.remaining_live_legacy_count:
+            continue
+        try:
+            await run_blocking(
+                db_executor,
+                publish_ledger_migration_cutover,
+                uid,
+                db_client=client,
+                publication_authorizer=authorizer,
+                mutation_authorizer=authorizer,
+                migrated_long_term_count=result.migrated_long_term_count,
+                adjudicated_short_term_count=result.adjudicated_short_term_count,
+                completed_at=now,
+            )
+        except Exception as exc:
+            summary.errors.append(f"uid={uid}: ledger_publication:{type(exc).__name__}")
+            continue
+        summary.ledger_migration_users += 1
+    return summary

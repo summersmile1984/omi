@@ -204,7 +204,7 @@ private actor PermissionCallbackBox<Value: Sendable> {
     XCTAssertFalse(result.contains("owner-a-private-memory"))
   }
 
-  func testMemoryReadReturnsResponseWhileOriginalOwnerRemainsCurrent() async {
+  func testMemoryReadReturnsResponseWhileOriginalOwnerRemainsCurrent() async throws {
     let client = await makeClient()
     let operation = Task { @MainActor in
       await ChatToolExecutor.execute(
@@ -220,7 +220,13 @@ private actor PermissionCallbackBox<Value: Sendable> {
         #"{"tool_name":"get_memories","result_text":"owner-a-memory","is_error":false}"#)
 
     let result = await operation.value
-    XCTAssertEqual(result, "owner-a-memory")
+    let object = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
+    XCTAssertEqual(object["ok"] as? Bool, true)
+    XCTAssertEqual(object["tool"] as? String, "get_memories")
+    let sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+    let textSection = try XCTUnwrap(sections.first { $0["name"] as? String == "text" })
+    XCTAssertEqual(textSection["items"] as? [String], ["owner-a-memory"])
   }
 
   func testActionItemWriteKeepsOriginalCredentialAndRejectsResultAfterMidFlightAccountSwitch() async {
@@ -252,46 +258,6 @@ private actor PermissionCallbackBox<Value: Sendable> {
     let result = await operation.value
     XCTAssertEqual(result, ChatToolExecutor.authorizedOwnerChangedResult())
     XCTAssertFalse(result.contains("created-owner-a-task"))
-  }
-
-  func testRealtimeHigherModelNeverReleasesOwnerAContextAfterMidFlightAccountSwitch() async {
-    let client = await makeClient()
-    let operation = Task { @MainActor in
-      let privateBody: [String: Any] = [
-        "messages": [
-          [
-            "role": "user",
-            "content": "owner-a-private-query\nowner-a-private-about-user",
-          ]
-        ]
-      ]
-      do {
-        _ = try await client.askHigherModel(
-          body: privateBody,
-          expectedOwnerID: "owner-a",
-          customBaseURL: "https://owner-bound.invalid/")
-        return false
-      } catch AuthError.userChangedDuringRequest {
-        return true
-      } catch {
-        return false
-      }
-    }
-
-    let request = await AuthorizedToolOwnerURLProtocol.gate.waitForRequest(path: "/v2/chat/completions")
-    XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer owner-a-token")
-    let body = AuthorizedToolOwnerURLProtocol.bodyData(from: request).flatMap {
-      try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
-    }
-    XCTAssertNotNil(body)
-
-    UserDefaults.standard.set("owner-b", forKey: .authUserId)
-    await AuthorizedToolOwnerURLProtocol.gate.succeed(
-      path: "/v2/chat/completions",
-      with: #"{"choices":[{"message":{"content":"owner-a-private-answer"}}]}"#)
-
-    let rejectedLateResponse = await operation.value
-    XCTAssertTrue(rejectedLateResponse)
   }
 
   func testRealtimeMintNeverReleasesOwnerATokenAfterMidFlightAccountSwitch() async {

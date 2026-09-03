@@ -98,7 +98,10 @@ struct DesktopHomeView: View {
   /// Whether we're currently viewing the settings page
   private var isInSettings: Bool {
     selectedIndex == SidebarNavItem.settings.rawValue
+      || selectedIndex == SidebarNavItem.permissions.rawValue
   }
+
+  private var homeOwnsItsPanels: Bool { !useLegacyHomeDesign }
 
   private var shouldShowAuthEntryShell: Bool {
     authState.isRestoringAuth || authState.sessionPhase == .recoveryRequired || !authState.isSignedIn
@@ -108,12 +111,18 @@ struct DesktopHomeView: View {
   @ViewBuilder
   private var authEntryShell: some View {
     if authState.isRestoringAuth {
-      Color.clear
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // No ground of its own: the shell's glass is already under this.
-        .onAppear {
-          log("DesktopHomeView: Showing auth loading splash")
+      TransparentWindowStatusPanel {
+        VStack(spacing: OmiSpacing.md) {
+          ProgressView()
+            .controlSize(.small)
+            .tint(Ink.secondary)
+          Text("Restoring your session…")
+            .inkStyle(.prose, color: Ink.secondary)
         }
+      }
+      .onAppear {
+        log("DesktopHomeView: Showing auth loading splash")
+      }
     } else if authState.sessionPhase == .recoveryRequired {
       SessionRecoveryView()
         .onAppear {
@@ -125,7 +134,16 @@ struct DesktopHomeView: View {
           log("DesktopHomeView: Showing SignInView (not signed in)")
         }
     } else if shouldSkipOnboarding() {
-      Color.clear.onAppear {
+      TransparentWindowStatusPanel {
+        VStack(spacing: OmiSpacing.md) {
+          ProgressView()
+            .controlSize(.small)
+            .tint(Ink.secondary)
+          Text("Finishing setup…")
+            .inkStyle(.prose, color: Ink.secondary)
+        }
+      }
+      .onAppear {
         log("DesktopHomeView: --skip-onboarding flag detected, skipping onboarding")
         appState.hasCompletedOnboarding = true
       }
@@ -196,8 +214,7 @@ struct DesktopHomeView: View {
       .onAppear {
         log("DesktopHomeView: Showing mainContent (signed in and onboarded)")
 
-        // Chat-first renders starter prompts in main chat; only legacy may arm the floating popup.
-        FloatingPrimaryTextInputRouting.configure(routesToMainApp: usesChatFirstShell)
+        // Only the legacy shell arms the first-use popup; chat-first renders starters in main chat.
         if !usesChatFirstShell && PostOnboardingPromptSuggestions.shouldArmPopup() {
           showTryAskingPopup = true
         }
@@ -330,29 +347,30 @@ struct DesktopHomeView: View {
           mainContentWithLifecycle
 
           if !viewModelContainer.isInitialLoadComplete {
-            VStack(spacing: OmiSpacing.xxl) {
-              if let nsImage = Self.heroLogoImage {
-                Image(nsImage: nsImage)
-                  .resizable()
-                  .scaledToFit()
-                  .frame(width: 72, height: 72)
-                  .scaleEffect(logoPulse ? 1.08 : 1.0)
-                  .opacity(logoPulse ? 1.0 : 0.7)
-                  .omiAnimation(
-                    .easeInOut(duration: 1.2).repeatForever(autoreverses: true),
-                    value: logoPulse
-                  )
-                  .onAppear { logoPulse = true }
+            TransparentWindowStatusPanel {
+              VStack(spacing: OmiSpacing.xxl) {
+                if let nsImage = Self.heroLogoImage {
+                  Image(nsImage: nsImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 72, height: 72)
+                    .scaleEffect(logoPulse ? 1.08 : 1.0)
+                    .opacity(logoPulse ? 1.0 : 0.7)
+                    .omiAnimation(
+                      .easeInOut(duration: 1.2).repeatForever(autoreverses: true),
+                      value: logoPulse
+                    )
+                    .onAppear { logoPulse = true }
+                }
+
+                Text(viewModelContainer.initStatusMessage)
+                  .inkStyle(.prose, color: Ink.secondary)
+
+                ProgressView()
+                  .scaleEffect(0.8)
+                  .tint(Ink.secondary)
               }
-
-              Text(viewModelContainer.initStatusMessage)
-                .inkStyle(.prose, color: Ink.secondary)
-
-              ProgressView()
-                .scaleEffect(0.8)
-                .tint(Ink.secondary)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .transition(.opacity.animation(OmiMotion.gated(.easeOut(duration: 0.3))))
           }
 
@@ -379,6 +397,7 @@ struct DesktopHomeView: View {
     .preferredColorScheme(.light)  // Glass is pinned light — see `InkGlass`. Deliberate, not a bug.
     .tint(Ink.accent)
     .onAppear {
+      reconcileOnboardingCompletionOwner()
       log(
         "DesktopHomeView: View appeared - isSignedIn=\(authState.isSignedIn), hasCompletedOnboarding=\(appState.hasCompletedOnboarding)"
       )
@@ -428,6 +447,7 @@ struct DesktopHomeView: View {
       consumePendingMainChatRequestForChatFirstShell()
     }
     .onReceive(NotificationCenter.default.publisher(for: .runtimeOwnerDidChange)) { _ in
+      reconcileOnboardingCompletionOwner()
       chatFirstCapabilitySample.ownerDidChange(to: RuntimeOwnerIdentity.currentOwnerId())
       // The provider's owner-bound gate rejects the previous sample for this
       // owner; no replacement sample is persisted or inferred locally.
@@ -437,7 +457,7 @@ struct DesktopHomeView: View {
       enforceMainWindowMinimumSize()
       reportAutomationState()
       // First-run seed so the counter doesn't count the entire backlog as "new".
-      if topBarNewSinceRaw.isZero { topBarNewSinceRaw = Date().timeIntervalSince1970 }
+      seedTopBarNewSinceIfNeeded()
     }
     .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
       reportAutomationState()
@@ -467,6 +487,18 @@ struct DesktopHomeView: View {
     .onReceive(NotificationCenter.default.publisher(for: .openMainChatRequested)) { _ in
       handleMainChatRequest()
     }
+  }
+
+  private func reconcileOnboardingCompletionOwner() {
+    guard
+      OnboardingFlow.reconcileCompletionOwner(
+        currentOwnerID: RuntimeOwnerIdentity.currentOwnerId()) == .resetForDifferentOwner
+    else { return }
+
+    onboardingStep = 0
+    onboardingFurthestStep = 0
+    onboardingJustCompleted = false
+    appState.hasCompletedOnboarding = false
   }
 
   private func handleMainChatRequest() {
@@ -515,13 +547,10 @@ struct DesktopHomeView: View {
     }
   }
 
-  /// Pins the hugged glass: not smaller than the destinations, not wider than the
-  /// readable lane plus its page margins. Height stays display-limited.
+  /// Pins the shell between the destination minimum and the visible display frame.
   private static func pinShellWindowSizeLimits(_ window: NSWindow, resizeFrame: Bool = true) {
     let minimumContentSize = DesktopWindowLayoutPolicy.minimumContentSize
-    let maximumContentSize = NSSize(
-      width: DesktopWindowLayoutPolicy.maximumContentWidth,
-      height: 10_000)
+    let maximumContentSize = DesktopWindowLayoutPolicy.maximumContentSize(for: window)
     window.contentMinSize = minimumContentSize
     window.minSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: minimumContentSize)).size
     window.contentMaxSize = maximumContentSize
@@ -625,13 +654,18 @@ struct DesktopHomeView: View {
   /// chrome and stays bar-less — the Memory atlas is the same: it has its
   /// own back affordance and header, so the redundant top bar hides while it's open.
   private var showsTopBar: Bool {
-    guard !useLegacyHomeDesign, let item = SidebarNavItem(rawValue: selectedIndex) else { return false }
-    return item != .permissions
+    !useLegacyHomeDesign && SidebarNavItem(rawValue: selectedIndex) != nil
   }
 
   /// Reference instant for the top bar's "new since you were last here" counts.
   private var topBarSinceDate: Date {
     topBarNewSinceRaw > 0 ? Date(timeIntervalSince1970: topBarNewSinceRaw) : Date()
+  }
+
+  private func seedTopBarNewSinceIfNeeded() {
+    let currentValue = topBarNewSinceRaw
+    guard currentValue == 0 else { return }
+    topBarNewSinceRaw = Date().timeIntervalSince1970
   }
 
   private var currentAppStateLabel: String {
@@ -748,6 +782,12 @@ struct DesktopHomeView: View {
       }
     }
     highlightedSettingId = settingId
+
+    if target.lowercased().replacingOccurrences(of: "-", with: "_") == "rewind" {
+      navigateToLegacyDestination(.rewind)
+      reportAutomationState()
+      return
+    }
 
     if usesChatFirstShell, let route = ChatFirstRoute.automationVisibilityDestination(named: target) {
       switch route {
@@ -983,7 +1023,7 @@ struct DesktopHomeView: View {
     let plugin = ProactiveAssistantsPlugin.shared
     if !AssistantSettings.shared.screenAnalysisEnabled, plugin.isMonitoring {
       log("DesktopHomeView: Stopping screen analysis after server settings sync")
-      plugin.stopMonitoring()
+      plugin.stopMonitoring(reason: .settingsSync)
     }
     restorePersistedCaptureServices(reason: "settings sync")
   }
@@ -1106,6 +1146,18 @@ struct DesktopHomeView: View {
   /// names. This is the sole root adapter between those callers and typed
   /// Chat-first navigation.
   private func navigateToLegacyDestination(_ item: SidebarNavItem) {
+    if item == .permissions {
+      selectedSettingsSection = .permissions
+      if usesChatFirstShell {
+        chatFirstNavigation.selectMore(.settings)
+      } else {
+        selectedIndex = SidebarNavItem.settings.rawValue
+      }
+      return
+    }
+    if let destination = MemoryHubDestination.destination(for: item) {
+      memoryDestinationRawValue = destination.rawValue
+    }
     if usesChatFirstShell {
       chatFirstNavigation.selectLegacyDestination(item)
     } else {
@@ -1130,23 +1182,34 @@ struct DesktopHomeView: View {
         // Goal completion celebration overlay
         GoalCelebrationView()
       }
+      .overlay(alignment: .bottom) {
+        // One-time rating ask, due after the user's 3rd question. Remote
+        // (admin-authored) prompts render through the same slot; the built-in
+        // ask has right of way inside RemotePromptEngine.evaluate().
+        RatingPromptBar()
+        RemotePromptBar()
+      }
+      .task(id: RuntimeOwnerIdentity.currentOwnerId() ?? "signed-out") {
+        // Re-runs on every owner transition (same pattern as the chat-first
+        // capability task): cached prompt state must swap accounts instantly.
+        RatingPromptManager.shared.ownerDidChange()
+        RemotePromptEngine.shared.ownerDidChange()
+        RemotePromptEngine.shared.start()
+        await RatingPromptManager.shared.seedFromHistoryIfNeeded()
+      }
       .overlay {
         if !usesChatFirstShell && showTryAskingPopup {
-          let suggestions = PostOnboardingPromptSuggestions.suggestions()
-          if !suggestions.isEmpty {
-            TryAskingPopupView(
-              suggestions: suggestions,
-              onAsk: { suggestion in
-                showTryAskingPopup = false
-                PostOnboardingPromptSuggestions.consume()
-                FloatingControlBarManager.shared.openAIInputWithQuery(suggestion)
-              },
-              onDismiss: {
-                showTryAskingPopup = false
-                PostOnboardingPromptSuggestions.consume()
-              }
-            )
-          }
+          TryAskingPopupView(
+            onTry: { useCase in
+              showTryAskingPopup = false
+              PostOnboardingPromptSuggestions.consume()
+              FirstUseCaseLauncher.launch(useCase)
+            },
+            onDismiss: {
+              showTryAskingPopup = false
+              PostOnboardingPromptSuggestions.consume()
+            }
+          )
         }
       }
   }
@@ -1248,7 +1311,6 @@ struct DesktopHomeView: View {
       .onChange(of: chatFirstNavigation.visibleRoute) { _, _ in reportAutomationState() }
       .onChange(of: chatFirstNavigation.isSidebarCollapsed) { _, _ in reportAutomationState() }
       .onChange(of: useLegacyHomeDesign) { _, newValue in
-        FloatingPrimaryTextInputRouting.configure(routesToMainApp: usesChatFirstShell)
         if usesChatFirstShell { showTryAskingPopup = false }
         OmiMotion.withGated(.easeInOut(duration: 0.2)) {
           isSidebarCollapsed = !newValue
@@ -1301,26 +1363,24 @@ struct DesktopHomeView: View {
   @ViewBuilder
   private var sidebarSlot: some View {
     if showsPrimarySidebar {
-      ZStack {
-        SidebarView(
-          selectedIndex: $selectedIndex,
-          isCollapsed: $isSidebarCollapsed,
-          memoryDestinationRawValue: $memoryDestinationRawValue,
-          appState: appState
-        )
-        .opacity(isInSettings ? 0 : 1)
-        .allowsHitTesting(!isInSettings)
-        if isInSettings { settingsSidebar }
+      LegacySidebarSurface {
+        ZStack {
+          SidebarView(
+            selectedIndex: $selectedIndex,
+            isCollapsed: $isSidebarCollapsed,
+            memoryDestinationRawValue: $memoryDestinationRawValue,
+            appState: appState
+          )
+          .opacity(isInSettings ? 0 : 1)
+          .allowsHitTesting(!isInSettings)
+          if isInSettings { settingsSidebar }
+        }
       }
-      .fixedSize(horizontal: true, vertical: false)
-      .clipped()
     }
   }
 
-  /// The settings section list. In the glass shell it belongs *inside* the Settings panel rather than
-  /// beside the whole window: the window has no ground, so a nav column left outside the panel is a
-  /// list of controls floating on the user's wallpaper. It needs no surface of its own — its
-  /// `Ink.rowFill` is already a wash meant to read as a shaded part of the glass it sits on.
+  /// The settings section list. Modern settings hosts it inside the page panel; legacy Home hosts the
+  /// whole sidebar slot on `LegacySidebarSurface`, so this view always inherits a glass ground.
   private var settingsSidebar: some View {
     SettingsSidebar(
       selectedSection: $selectedSettingsSection,
@@ -1353,19 +1413,17 @@ struct DesktopHomeView: View {
           appState: appState,
           memoriesViewModel: viewModelContainer.memoriesViewModel,
           tasksStore: viewModelContainer.tasksStore,
-          sinceDate: topBarSinceDate,
-          onRewind: {
-            OmiMotion.withGated(Self.pageNavigationAnimation) {
-              selectedIndex = SidebarNavItem.rewind.rawValue
-            }
-          }
+          sinceDate: topBarSinceDate
         )
         .zIndex(1)
       }
 
       // One panel per destination — see `PageGlassLane`. Settings' own section list rides inside it
       // so the page is one object rather than a panel with its nav stranded on the wallpaper.
-      PageGlassLane(selectedIndex: selectedIndex) {
+      PageGlassLane(
+        selectedIndex: selectedIndex,
+        homeOwnsItsPanels: homeOwnsItsPanels
+      ) {
         HStack(spacing: 0) {
           if isInSettings && !showsPrimarySidebar { settingsSidebar }
           PageContentView(
@@ -1408,15 +1466,17 @@ struct DesktopHomeView: View {
 
 private struct ChatFirstCapabilityLoadingView: View {
   var body: some View {
-    VStack(spacing: OmiSpacing.md) {
-      ProgressView()
-        .controlSize(.small)
-        .tint(Ink.secondary)
-      Text("Preparing Omi…")
-        .inkStyle(.prose, color: Ink.secondary)
+    TransparentWindowStatusPanel {
+      VStack(spacing: OmiSpacing.md) {
+        ProgressView()
+          .controlSize(.small)
+          .tint(Ink.secondary)
+        Text("Preparing Omi…")
+          .inkStyle(.prose, color: Ink.secondary)
+      }
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    // No ground: this renders inside the shell's glass while the cohort settles.
+    // The main window is transparent and the destination shell has not mounted yet. This loading
+    // card therefore owns its ground rather than assuming a window-scale surface underneath it.
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Preparing Omi")
   }
@@ -1505,32 +1565,26 @@ private struct PageContentView: View {
           memoriesViewModel: viewModelContainer.memoriesViewModel,
           taskChatCoordinator: viewModelContainer.taskChatCoordinator,
           selectedIndex: $selectedTabIndex)
-      case 1:
-        ConversationsDestinationView(
+      case SidebarNavItem.conversations.rawValue,
+        SidebarNavItem.memories.rawValue,
+        SidebarNavItem.rewind.rawValue:
+        MemoryHubPage(
           appState: appState,
           viewModelContainer: viewModelContainer,
-          memoryDestinationRawValue: $memoryDestinationRawValue,
-          onOpenRewind: { selectedTabIndex = SidebarNavItem.rewind.rawValue }
+          memoriesViewModel: viewModelContainer.memoriesViewModel,
+          destinationRawValue: $memoryDestinationRawValue
         )
-      case 3:
-        // Same rule as the hub's Memories destination: the readable-width
-        // cap yields while the detail panel is open so the panel takes new
-        // space instead of eating the list's column.
-        MemoriesPage(viewModel: viewModelContainer.memoriesViewModel)
-          .frame(
-            maxWidth: viewModelContainer.memoriesViewModel.selectedMemory == nil
-              ? MemoryHubLayoutPolicy.readableContentWidth : .infinity,
-            maxHeight: .infinity
-          )
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
       case 4:
         constrainedListPage(
           TasksPage(
             viewModel: viewModelContainer.tasksViewModel,
             chatCoordinator: viewModelContainer.taskChatCoordinator,
-            chatProvider: viewModelContainer.chatProvider))
-      case 7:
-        RewindPage(appState: appState)
+            chatProvider: viewModelContainer.chatProvider,
+            onOpenRewindEvidence: { screenshotID in
+              RewindCitationFocusState.shared.request(screenshotID)
+              memoryDestinationRawValue = MemoryHubDestination.rewind.rawValue
+              selectedTabIndex = SidebarNavItem.rewind.rawValue
+            }))
       case 8:
         constrainedListPage(
           AppsPage(
@@ -1538,15 +1592,13 @@ private struct PageContentView: View {
             appState: appState,
             connectorStatusStore: viewModelContainer.homeStatusStore.connectorStatusStore,
             handlesAutomationPresentations: viewModelContainer.isInitialLoadComplete))
-      case 9:
+      case SidebarNavItem.settings.rawValue, SidebarNavItem.permissions.rawValue:
         SettingsPage(
           appState: appState,
           selectedSection: $selectedSettingsSection,
           highlightedSettingId: $highlightedSettingId,
           chatProvider: viewModelContainer.chatProvider
         )
-      case 10:
-        PermissionsPage(appState: appState)
       default:
         QueryShellHome(
           viewModel: viewModelContainer.dashboardViewModel,
@@ -1566,11 +1618,20 @@ private struct PageContentView: View {
 /// so tapping a row navigates to the detail view.
 struct ConversationsPageHost: View {
   let appState: AppState
+  var brainDestination: MemoryHubDestination? = nil
+  var onSelectBrainDestination: ((MemoryHubDestination) -> Void)? = nil
   /// Optional exact record supplied by a Chat-first conversation deep-link.
   /// The normal Conversations page still owns list loading and row selection;
   /// this value only seeds selection when a link fetched a record that is not
   /// present in the current page.
   var initialConversation: ServerConversation? = nil
+  /// Optional source-specific behavior carried into the canonical detail.
+  /// These values never select a second browser or detail presentation.
+  var initialCaptureMomentTimestamp: TimeInterval? = nil
+  var onCaptureFocusResolved: ((Bool) -> Void)? = nil
+  var onDiscussInChat: ((ServerConversation) -> Void)? = nil
+  var onOpenLinkedTask: ((String) -> Void)? = nil
+  var onSelectionChanged: ((ServerConversation?) -> Void)? = nil
   @State private var selectedConversation: ServerConversation? = nil
   @ObservedObject private var conversationDetailState = ConversationDetailAutomationState.shared
 
@@ -1583,26 +1644,40 @@ struct ConversationsPageHost: View {
   }
 
   var body: some View {
-    ConversationsPage(appState: appState, selectedConversation: $selectedConversation)
-      .frame(
-        maxWidth: usesAvailableWidth ? .infinity : MemoryHubLayoutPolicy.readableContentWidth,
-        maxHeight: .infinity
-      )
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .animation(.easeInOut(duration: 0.22), value: usesAvailableWidth)
-      // Owner fencing: an open detail view must not keep showing the previous
-      // account's conversation after an in-place account switch.
-      .onReceive(NotificationCenter.default.publisher(for: .runtimeOwnerDidChange)) { _ in
-        selectedConversation = nil
-      }
-      .onAppear {
-        if let initialConversation {
-          selectedConversation = initialConversation
-        }
-      }
-      .onChange(of: initialConversation?.id) { _, _ in
+    ConversationsPage(
+      appState: appState,
+      selectedConversation: $selectedConversation,
+      brainDestination: brainDestination,
+      onSelectBrainDestination: onSelectBrainDestination,
+      initialCaptureMomentTimestamp: initialCaptureMomentTimestamp,
+      onCaptureFocusResolved: onCaptureFocusResolved,
+      onDiscussInChat: onDiscussInChat,
+      onOpenLinkedTask: onOpenLinkedTask
+    )
+    .frame(
+      maxWidth: brainDestination != nil || usesAvailableWidth
+        ? .infinity : MemoryHubLayoutPolicy.readableContentWidth,
+      maxHeight: .infinity
+    )
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .animation(.easeInOut(duration: 0.22), value: usesAvailableWidth)
+    // Owner fencing: an open detail view must not keep showing the previous
+    // account's conversation after an in-place account switch.
+    .onReceive(NotificationCenter.default.publisher(for: .runtimeOwnerDidChange)) { _ in
+      selectedConversation = nil
+    }
+    .onAppear {
+      if let initialConversation {
         selectedConversation = initialConversation
       }
+      onSelectionChanged?(selectedConversation)
+    }
+    .onChange(of: initialConversation?.id) { _, _ in
+      selectedConversation = initialConversation
+    }
+    .onChange(of: selectedConversation?.id) { _, _ in
+      onSelectionChanged?(selectedConversation)
+    }
   }
 }
 

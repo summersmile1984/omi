@@ -863,22 +863,30 @@ class TestMcpSseLockRedaction:
     """M5: MCP SSE get_conversations must redact locked conversation structured data."""
 
     def test_mcp_sse_redacts_locked(self):
-        """MCP SSE execute_tool('get_conversations') must clear action_items/events for locked."""
-        import database.conversations as conversations_db
+        """MCP SSE conversation cards must expose no action items or events for locked rows."""
+        from routers import mcp_sse
 
-        conversations_db.get_conversations = MagicMock(
-            return_value=[_make_conversation(locked=True), _make_conversation(locked=False, conversation_id='conv-2')]
-        )
-
-        from routers.mcp_sse import execute_tool
-
-        result = execute_tool('test-uid', 'get_conversations', {})
+        conversations = [
+            _make_conversation(locked=True),
+            _make_conversation(locked=False, conversation_id='conv-2'),
+        ]
+        with patch.object(mcp_sse.conversations_db, 'get_mcp_conversation_cards', return_value=conversations) as fetch:
+            result = mcp_sse.execute_tool('test-uid', 'get_conversations', {})
         convs = result['conversations']
 
-        assert convs[0]['structured']['action_items'] == []
-        assert convs[0]['structured']['events'] == []
+        fetch.assert_called_once_with(
+            'test-uid',
+            20,
+            0,
+            start_date=None,
+            end_date=None,
+            categories=[],
+        )
+        assert 'action_items' not in convs[0]['structured']
+        assert 'events' not in convs[0]['structured']
         assert convs[0]['structured']['title'] == 'Test Conversation'
-        assert len(convs[1]['structured']['action_items']) == 1
+        assert 'action_items' not in convs[1]['structured']
+        assert 'events' not in convs[1]['structured']
 
     def test_mcp_sse_search_memories_filters_locked_and_backfills_limit(self):
         """MCP SSE search delegates filtering and limiting to universal authority."""
@@ -988,7 +996,7 @@ class TestUsersLockEnforcement:
 
         memory_service = MagicMock()
         exported_memory = MagicMock(model_dump=MagicMock(return_value={"id": "mem-1"}))
-        memory_service.iter_export_memories.return_value = iter([exported_memory])
+        memory_service.iter_portability_export_memories.return_value = iter([exported_memory])
 
         # The export generator lives in services.users.data_export, which binds
         # these helpers at module level. Patch the service-level symbols so the
@@ -1000,23 +1008,19 @@ class TestUsersLockEnforcement:
                     "services.users.data_export.get_standalone_action_items",
                     return_value=[],
                 ):
-                    with patch("services.users.data_export.MemoryService", return_value=memory_service):
-                        from routers.users import export_all_user_data
+                    with patch("services.users.data_export._iter_user_subcollection", return_value=iter(())):
+                        with patch(
+                            "services.users.data_export._iter_user_nested_subcollection",
+                            return_value=iter(()),
+                        ):
+                            with patch("services.users.data_export.MemoryService", return_value=memory_service):
+                                from services.users.data_export import iter_user_data_export
 
-                        response = export_all_user_data(uid="test-uid")
-
-                        # Consume body inside patches — the generator is lazy.
-                        # StreamingResponse wraps sync generators as async iterators,
-                        # so iterate the underlying generator directly.
-                        import asyncio
-
-                        async def _consume():
-                            parts = []
-                            async for chunk in response.body_iterator:
-                                parts.append(chunk)
-                            return "".join(parts)
-
-                        body = asyncio.run(_consume())
+                                # Exercise the export producer directly and keep every
+                                # user-data source hermetic. This test module can be
+                                # collected after the real data-export module, so its
+                                # import-time dependency stubs are not reliable isolation.
+                                body = "".join(iter_user_data_export(uid="test-uid"))
 
         import json
 
@@ -1026,7 +1030,7 @@ class TestUsersLockEnforcement:
         assert data["conversations"][0]["is_locked"] is True
         assert data["conversations"][1]["id"] == "conv-2"
         assert data["memories"] == [{"id": "mem-1"}]
-        memory_service.iter_export_memories.assert_called_once_with("test-uid", include_archive=True)
+        memory_service.iter_portability_export_memories.assert_called_once_with("test-uid", include_archive=True)
 
 
 # =============================================================================
@@ -1346,6 +1350,20 @@ class TestIntegrationSearchLockRedaction:
 
 class TestPromptDataLockFilter:
     """get_prompt_data (shared utility) must exclude locked memories."""
+
+    @pytest.fixture(autouse=True)
+    def clear_prompt_cache(self):
+        import sys
+
+        if 'utils.llms.memory' in sys.modules:
+            mod = sys.modules['utils.llms.memory']
+            if hasattr(mod, '_prompt_data_cache'):
+                mod._prompt_data_cache.clear()
+        yield
+        if 'utils.llms.memory' in sys.modules:
+            mod = sys.modules['utils.llms.memory']
+            if hasattr(mod, '_prompt_data_cache'):
+                mod._prompt_data_cache.clear()
 
     def test_get_prompt_data_filters_locked_memories(self):
         """get_prompt_data must not include locked memories in prompt context."""

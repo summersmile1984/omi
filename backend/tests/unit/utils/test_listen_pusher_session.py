@@ -6,6 +6,8 @@ import pytest
 
 from utils.listen_pusher_session import (
     FINALIZATION_IN_FLIGHT_ERROR,
+    FINALIZATION_RESULT_PROTOCOL,
+    FINALIZATION_STALE_GENERATION_ERROR,
     TARGET_SAMPLE_RATE,
     ListenPusherSession,
     ListenPusherSessionConfig,
@@ -66,6 +68,18 @@ def in_flight_response_201(conversation_id: str):
     return struct.pack("<I", 201) + payload
 
 
+def stale_generation_response_201(conversation_id: str, dispatch_generation=None, terminal: bool = False):
+    payload = {
+        "conversation_id": conversation_id,
+        "error": FINALIZATION_STALE_GENERATION_ERROR,
+        "terminal": terminal,
+    }
+    if dispatch_generation is not None:
+        payload["dispatch_generation"] = dispatch_generation
+    payload = json.dumps(payload).encode("utf-8")
+    return struct.pack("<I", 201) + payload
+
+
 def fenced_response_201(conversation_id: str):
     payload = json.dumps({"conversation_id": conversation_id, "fenced": True}).encode("utf-8")
     return struct.pack("<I", 201) + payload
@@ -84,6 +98,7 @@ def make_session(
     config_overrides=None,
     deps_overrides=None,
     connect_calls=None,
+    client_kind_calls=None,
 ):
     active_ref = active_ref if active_ref is not None else {"active": True}
     config_values = {
@@ -101,9 +116,11 @@ def make_session(
     if config_overrides:
         config_values.update(config_overrides)
 
-    async def connect_to_pusher(uid, sample_rate, retries=5, is_active=None):
+    async def connect_to_pusher(uid, sample_rate, retries=5, is_active=None, client_kind='unknown'):
         if connect_calls is not None:
             connect_calls.append((uid, sample_rate, retries, is_active))
+        if client_kind_calls is not None:
+            client_kind_calls.append(client_kind)
         return ws or FakePusherWebSocket()
 
     async def wait_for_event(event, timeout):
@@ -192,6 +209,7 @@ async def test_finalization_job_identity_survives_pusher_reconnect():
             'byok_keys': {'openai': 'key'},
             'finalization_job_id': 'job-1',
             'dispatch_generation': 3,
+            'finalization_result_protocol': FINALIZATION_RESULT_PROTOCOL,
         },
         {
             'conversation_id': 'conv-1',
@@ -199,6 +217,7 @@ async def test_finalization_job_identity_survives_pusher_reconnect():
             'byok_keys': {'openai': 'key'},
             'finalization_job_id': 'job-1',
             'dispatch_generation': 3,
+            'finalization_result_protocol': FINALIZATION_RESULT_PROTOCOL,
         },
     ]
 
@@ -406,6 +425,76 @@ async def test_in_flight_finalization_lease_does_not_consume_the_retry_burst():
 
 
 @pytest.mark.anyio
+async def test_stale_finalization_generation_drops_live_request_for_durable_replay():
+    active_ref = {"active": True}
+    ws = FakePusherWebSocket(incoming=[stale_generation_response_201("conv-1", 2)])
+    ws.on_recv = lambda: active_ref.update(active=False)
+    session = make_session(ws=ws, active_ref=active_ref)
+    await session.connect()
+    await session.request_conversation_processing("conv-1", "job-1", 2)
+
+    await session.pusher_receive()
+
+    # The reconciler owns the newer dispatch generation; a live retry of 2
+    # can never claim it and must not consume the session's retry burst.
+    assert session.pending_conversation_requests == {}
+    finalization_frames = [frame for frame in ws.sent if frame_type(frame) == 104]
+    assert len(finalization_frames) == 1
+
+
+@pytest.mark.anyio
+async def test_delayed_stale_finalization_response_does_not_drop_newer_pending_generation():
+    active_ref = {"active": True}
+    ws = FakePusherWebSocket(incoming=[stale_generation_response_201("conv-1", 1)])
+    ws.on_recv = lambda: active_ref.update(active=False)
+    session = make_session(ws=ws, active_ref=active_ref)
+    await session.connect()
+    await session.request_conversation_processing("conv-1", "job-1", 2)
+
+    await session.pusher_receive()
+
+    assert session.pending_conversation_requests["conv-1"]["dispatch_generation"] == 2
+    finalization_frames = [frame for frame in ws.sent if frame_type(frame) == 104]
+    assert len(finalization_frames) == 1
+
+
+@pytest.mark.anyio
+async def test_legacy_pusher_stale_response_without_generation_preserves_newer_pending_generation():
+    active_ref = {"active": True}
+    ws = FakePusherWebSocket(incoming=[stale_generation_response_201("conv-1")])
+    ws.on_recv = lambda: active_ref.update(active=False)
+    session = make_session(ws=ws, active_ref=active_ref)
+    await session.connect()
+    await session.request_conversation_processing("conv-1", "job-1", 2)
+
+    await session.pusher_receive()
+
+    # A pre-v2 pusher cannot identify which pending generation it rejected.
+    assert session.pending_conversation_requests["conv-1"]["dispatch_generation"] == 2
+    finalization_frames = [frame for frame in ws.sent if frame_type(frame) == 104]
+    assert len(finalization_frames) == 1
+
+
+@pytest.mark.anyio
+async def test_stale_generation_one_drops_pending_job_with_omitted_generation():
+    active_ref = {"active": True}
+    ws = FakePusherWebSocket(incoming=[stale_generation_response_201("conv-1", 1)])
+    ws.on_recv = lambda: active_ref.update(active=False)
+    session = make_session(ws=ws, active_ref=active_ref)
+    await session.connect()
+    await session.request_conversation_processing("conv-1", "job-1")
+
+    await session.pusher_receive()
+
+    # The wire serializer defaults an omitted generation to 1, so the stale
+    # response must match that effective generation and drop the request.
+    assert session.pending_conversation_requests == {}
+    finalization_frames = [frame for frame in ws.sent if frame_type(frame) == 104]
+    assert len(finalization_frames) == 1
+    assert frame_json(finalization_frames[0])["dispatch_generation"] == 1
+
+
+@pytest.mark.anyio
 async def test_incoming_terminal_finalization_error_stops_retrying():
     active_ref = {"active": True}
     ws = FakePusherWebSocket(incoming=[error_response_201("conv-1", terminal=True)])
@@ -471,3 +560,32 @@ async def test_close_cancels_reconnect_flushes_buffers_and_closes_socket():
     assert session.reconnect_task is None
     assert [frame_type(frame) for frame in ws.sent] == [103, 101, 102]
     assert ws.closed_codes == [1001]
+
+
+@pytest.mark.anyio
+async def test_pusher_connection_carries_the_bounded_client_kind():
+    """The pusher session is the only place that knows which client opened it.
+
+    Without this the pusher-side journey counters cannot tell an iOS outage from
+    a healthy Android population, which is the aggregation that let a 19-hour
+    desktop chat outage hide behind a larger healthy client.
+    """
+    client_kind_calls = []
+    session = make_session(
+        config_overrides={"client_kind": "mobile_ios"},
+        client_kind_calls=client_kind_calls,
+    )
+
+    await session.connect()
+
+    assert client_kind_calls == ["mobile_ios"]
+
+
+@pytest.mark.anyio
+async def test_pusher_connection_defaults_to_unknown_rather_than_guessing():
+    client_kind_calls = []
+    session = make_session(client_kind_calls=client_kind_calls)
+
+    await session.connect()
+
+    assert client_kind_calls == ["unknown"]

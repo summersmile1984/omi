@@ -15,6 +15,26 @@ DEFAULT_SPEC_PATH = ROOT_DIR / 'docs' / 'api-reference' / 'app-client-openapi.js
 DEFAULT_OUTPUT_DIR = ROOT_DIR / 'app' / 'lib' / 'backend' / 'schema' / 'gen'
 
 SCHEMA_GROUPS = {
+    'frame_requests': {
+        'output': DEFAULT_OUTPUT_DIR / 'frame_requests_wire.g.dart',
+        'schemas': (
+            'FrameRequest',
+            'CreateFrameRequest',
+            'FrameRequestStateUpdate',
+            'FrameRequestPromotion',
+            'FrameRequestEnvelope',
+            'FrameRequestBatch',
+        ),
+    },
+    'screen_activity': {
+        'output': DEFAULT_OUTPUT_DIR / 'screen_activity_wire.g.dart',
+        'schemas': (
+            'ScreenActivityRow',
+            'FrameRequestDelivery',
+            'ScreenActivitySyncRequest',
+            'ScreenActivitySyncResponse',
+        ),
+    },
     'conversation': {
         'output': DEFAULT_OUTPUT_DIR / 'conversation_wire.g.dart',
         'schemas': (
@@ -32,7 +52,10 @@ SCHEMA_GROUPS = {
             'ConversationAudioSpan',
             'ConversationAudio',
             'CalendarEventLink',
+            'CalendarCaptureGap',
+            'TranscriptMatchSnippet',
             'Conversation',
+            'ConversationSearchItem',
             'ConversationTestPromptResponse',
             'MergeConversationsResponse',
             'SearchConversationsResponse',
@@ -54,6 +77,8 @@ SCHEMA_GROUPS = {
             'ChartDataPoint',
             'ChartDataset',
             'ChartData',
+            'ChatEvidenceReference',
+            'ChatEvidenceEnvelope',
             'Message',
             'ResponseMessage',
             'MessageReportResponse',
@@ -374,6 +399,8 @@ SCHEMA_GROUPS = {
         'schemas': (
             'Evidence',
             'MemoryDB',
+            'MemoryEditResponse',
+            'MemoryRevertRequest',
         ),
     },
     'goals': {

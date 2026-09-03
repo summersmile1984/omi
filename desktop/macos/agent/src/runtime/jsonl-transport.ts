@@ -37,6 +37,8 @@ export interface McpServerBuildContext {
   adapterId?: string;
   includeSwiftBackedTools?: boolean;
   screenContext?: boolean;
+  /** See `QueryMessage.jitKnowledgeToolsEnabled` — relayed opaquely, client-side UX gate only. */
+  jitKnowledgeToolsEnabled?: boolean;
   executionRole?: "coordinator" | "leaf";
   /** Server-authoritative projection admitted into this exact run snapshot. */
   chatFirstUi?: boolean;
@@ -52,6 +54,15 @@ export type McpServerBuilder = (
 
 export type RecoverableErrorPredicate = (error: unknown, adapterId: string) => boolean;
 export type RecoverableErrorHandler = (error: unknown, adapterId: string) => Promise<void>;
+export type QueryActivityLeaseScheduler = (emit: () => void) => () => void;
+
+const QUERY_ACTIVITY_LEASE_INTERVAL_MS = 15_000;
+
+function scheduleQueryActivityLease(emit: () => void): () => void {
+  const timer = setInterval(emit, QUERY_ACTIVITY_LEASE_INTERVAL_MS);
+  timer.unref();
+  return () => clearInterval(timer);
+}
 
 export interface JsonlTransportOptions {
   kernel: AgentRuntimeKernel;
@@ -66,6 +77,7 @@ export interface JsonlTransportOptions {
   onRecoverableError?: RecoverableErrorHandler;
   maxRecoverableRetries?: number;
   activeOwnerId?: () => string;
+  scheduleQueryActivity?: QueryActivityLeaseScheduler;
 }
 
 interface ActiveRequestContext {
@@ -80,6 +92,9 @@ interface ActiveRequestContext {
   isRunning?: boolean;
   authorityController?: AbortController;
   revoked?: boolean;
+  /** Served models observed on this query's completions (from `model_used`
+   *  adapter events); reported on the terminal result message. */
+  modelsUsed?: Set<string>;
 }
 
 const TERMINAL_RUN_EVENT_STATUSES = new Set([
@@ -108,6 +123,7 @@ const QUERY_WIRE_FIELDS = new Set([
   "expectedContextRendererFingerprint",
   "expectedCapabilityVersion",
   "reasoningEffort",
+  "jitKnowledgeToolsEnabled",
 ]);
 
 export class JsonlTransport {
@@ -123,6 +139,7 @@ export class JsonlTransport {
   private readonly onRecoverableError?: RecoverableErrorHandler;
   private readonly maxRecoverableRetries: number;
   private readonly activeOwnerId: () => string;
+  private readonly scheduleQueryActivity: QueryActivityLeaseScheduler;
   private readonly activeByRequest = new Map<string, ActiveRequestContext>();
   private readonly activeByRun = new Map<string, ActiveRequestContext>();
   private readonly latestRunByClient = new Map<string, string>();
@@ -141,6 +158,7 @@ export class JsonlTransport {
     this.onRecoverableError = options.onRecoverableError;
     this.maxRecoverableRetries = Math.max(0, options.maxRecoverableRetries ?? 0);
     this.activeOwnerId = options.activeOwnerId ?? (() => this.ownerId);
+    this.scheduleQueryActivity = options.scheduleQueryActivity ?? scheduleQueryActivityLease;
     this.kernel.subscribe((event) => this.handleKernelEvent(event));
   }
 
@@ -162,6 +180,16 @@ export class JsonlTransport {
       revoked: false,
     };
     this.activeByRequest.set(key, context);
+    const stopQueryActivity = this.scheduleQueryActivity(() => {
+      // The callback is deliberately owned by this live request registration.
+      // A scheduler callback racing with terminal cleanup cannot extend a
+      // completed or owner-revoked turn.
+      if (context.revoked || !this.activeByRequest.has(key)) return;
+      this.send(this.withCorrelation({
+        type: "turn_activity",
+        phase: "running",
+      }, context));
+    });
 
     try {
       const result = await this.kernel.executeRun(input);
@@ -183,6 +211,7 @@ export class JsonlTransport {
         outputTokens: result.run.outputTokens ?? Math.ceil(result.text.length / 4),
         cacheReadTokens: result.run.cacheReadTokens ?? 0,
         cacheWriteTokens: result.run.cacheWriteTokens ?? 0,
+        modelsUsed: context.modelsUsed ? [...context.modelsUsed] : undefined,
         artifacts: result.artifacts.map(serializeArtifact),
         completionDeltaArtifacts: result.completionDeltaArtifacts?.map(serializeArtifact),
       };
@@ -202,6 +231,7 @@ export class JsonlTransport {
       };
       this.send(this.withCorrelation(errorMessage, context));
     } finally {
+      stopQueryActivity();
       this.activeByRequest.delete(this.activeRequestKey(context.requestId, context.clientId));
       if (context.runId) {
         this.activeByRun.delete(context.runId);
@@ -477,6 +507,7 @@ export class JsonlTransport {
         screenContext: snapshot.sourceOutcomes.some(
           (source) => source.source === "screen" && source.outcome === "available",
         ),
+        jitKnowledgeToolsEnabled: message.jitKnowledgeToolsEnabled === true,
         chatFirstUi: snapshot.capabilities.chatFirstUi === true,
         chatFirstControlGeneration: snapshot.capabilities.chatFirstControlGeneration,
       }),
@@ -496,6 +527,7 @@ export class JsonlTransport {
         contextRendererFingerprint: snapshot.rendererFingerprint,
         contextCapabilityVersion: snapshot.capabilityVersion,
         ...(message.reasoningEffort ? { reasoningEffort: message.reasoningEffort } : {}),
+        ...(message.jitKnowledgeToolsEnabled === true ? { jitKnowledgeToolsEnabled: true } : {}),
       },
     };
   }
@@ -565,6 +597,15 @@ export class JsonlTransport {
     context.adapterSessionId = adapterEvent.adapterSessionId ?? context.adapterSessionId;
 
     switch (type) {
+      case "model_used": {
+        // Collected onto the owning query and reported once on its terminal
+        // result; not forwarded as a streaming event.
+        const served = (adapterEvent as { model?: unknown }).model;
+        if (typeof served === "string" && served.length > 0) {
+          (context.modelsUsed ??= new Set()).add(served);
+        }
+        break;
+      }
       case "text_delta":
       case "tool_activity":
       case "tool_result_display":

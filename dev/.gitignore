@@ -1,0 +1,2 @@
+# Local dev env (contains dev-only secrets) — fork-owned, keeps the root .gitignore untouched
+.env.dev

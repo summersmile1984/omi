@@ -6,6 +6,8 @@ app: com.omi.computer-macos
 covers:
   - desktop/macos/Desktop/Sources/Rewind/UI/RewindPage.swift
   - desktop/macos/Desktop/Sources/ScreenCaptureService.swift
+  - desktop/macos/Desktop/Sources/WindowCaptureStreamEngine.swift
+  - desktop/macos/Desktop/Sources/ScreenCaptureStreamFeature.swift
   - desktop/macos/Desktop/Sources/Chat/ScreenContextTelemetry.swift
   - desktop/macos/Desktop/Sources/ScreenRecordingPermissionPolicy.swift
   - desktop/macos/Desktop/Sources/Onboarding/PermissionDragGuidance.swift
@@ -26,6 +28,9 @@ covers:
   - desktop/macos/Desktop/Sources/ProactiveAssistants/Core/ProactiveAssistantOrchestrationPolicy.swift
   - desktop/macos/Desktop/Sources/ProactiveAssistants/Core/ProactiveExternalCaptureYield.swift
   - desktop/macos/Desktop/Sources/ProactiveAssistants/ProactiveAssistantsPlugin.swift
+  - desktop/macos/Desktop/Sources/ProactiveAssistants/MonitoringSessionTracker.swift
+  - desktop/macos/Desktop/Sources/ProactiveAssistants/MonitoringSessionStore.swift
+  - desktop/macos/Desktop/Sources/ProactiveAssistants/MonitoringTelemetry.swift
   - desktop/macos/Desktop/Sources/ProactiveAssistants/Core/MediaPlaybackIdleExemption.swift
   - desktop/macos/Desktop/Sources/ProactiveAssistants/ProactiveAssistantsPlugin+CaptureStatus.swift
   - desktop/macos/Desktop/Sources/ProactiveAssistants/ProactiveCaptureStatusSnapshot.swift
@@ -37,6 +42,9 @@ covers:
   - desktop/macos/Desktop/Sources/ProactiveAssistants/Assistants/Suggestions/SuggestionAssistantSettings.swift
   - desktop/macos/Desktop/Sources/ProactiveAssistants/Assistants/Suggestions/SuggestionModels.swift
   - desktop/macos/Desktop/Sources/ModelQoS.swift
+  - desktop/macos/Desktop/Sources/Automation/AccessibilityProcessBoundary.swift
+  - desktop/macos/Desktop/Sources/Diagnostics/PermissionsSnapshot.swift
+  - desktop/macos/Desktop/Sources/ProactiveAssistants/Services/OverlayService.swift
 preconditions:
   - auth_ready
 

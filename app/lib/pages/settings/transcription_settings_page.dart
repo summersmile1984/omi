@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:omi/utils/error_message.dart';
 import 'package:omi/utils/platform/platform_manager.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -592,7 +593,7 @@ class _TranscriptionSettingsPageState extends State<TranscriptionSettingsPage> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(context.l10n.errorSaving(e.toString())), backgroundColor: Colors.red.shade700),
+          SnackBar(content: Text(context.l10n.errorSaving(readableError(e))), backgroundColor: Colors.red.shade700),
         );
       }
     } finally {
@@ -1193,10 +1194,7 @@ class _TranscriptionSettingsPageState extends State<TranscriptionSettingsPage> {
           Icon(Icons.warning_amber_rounded, color: Colors.orange.shade700, size: 14),
           const SizedBox(width: 6),
           Expanded(
-            child: Text(
-              warningText,
-              style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
-            ),
+            child: Text(warningText, style: TextStyle(color: Colors.grey.shade500, fontSize: 12)),
           ),
         ],
       ),
@@ -1938,10 +1936,10 @@ class _TranscriptionSettingsPageState extends State<TranscriptionSettingsPage> {
         if (mounted) {
           setState(() {
             _isDownloadingModel = false;
-            _modelDownloadStatus = context.l10n.errorWithMessage(e.toString());
+            _modelDownloadStatus = context.l10n.errorWithMessage(readableError(e));
           });
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(context.l10n.downloadErrorWithMessage(e.toString())), backgroundColor: Colors.red),
+            SnackBar(content: Text(context.l10n.downloadErrorWithMessage(readableError(e))), backgroundColor: Colors.red),
           );
         }
       }
