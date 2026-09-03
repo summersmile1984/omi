@@ -55,11 +55,13 @@ jobs:
       # needs the pinned interpreter. Without it the check silently degrades to
       # "no module named pytest" -- a dead check is worse than no check, since
       # the whole point is catching an upstream rename.
-      - name: Cache backend venv
-        uses: actions/cache@v4
+      # Same pinned action and cache key shape upstream's backend-unit-tests
+      # workflow uses, so the fork gate provisions the identical interpreter.
+      - name: Install uv
+        uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
         with:
-          path: backend/.venv
-          key: fork-backend-venv-${{ runner.os }}-${{ hashFiles('backend/pylock.toml') }}
+          enable-cache: true
+          cache-dependency-glob: backend/pylock*.toml
 
       - name: Provision backend environment
         run: make setup-backend
