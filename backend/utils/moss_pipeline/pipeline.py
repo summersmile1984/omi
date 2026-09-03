@@ -12,8 +12,7 @@ Chain:
 
 No GPU required: MOSS does transcription+diarization server-side; speaker
 identification runs on CPU via a pluggable embedding extractor (wespeaker /
-pyannote), defaulting to the existing hosted embedding API so no new
-inference service is needed.
+pyannote), defaulting to the deployment-selected HTTP embedding API.
 """
 
 from __future__ import annotations
@@ -22,11 +21,11 @@ import io
 import logging
 import wave
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .moss_client import MossClient, MossSegment, MossTranscription
+from .moss_client import MlxAudioClient, MossClient, MossSegment, MossTranscription, create_moss_client
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +79,10 @@ def _wav_slice(wav_bytes: bytes, start_sec: float, end_sec: float) -> Optional[b
 
 
 def _default_embedding_extractor() -> EmbeddingExtractor:
-    """Embedding extractor backed by the existing hosted embedding API.
+    """Embedding extractor backed by the configured HTTP embedding API.
 
-    Returns a callable ``(wav_bytes) -> (1, D) np.ndarray``. The hosted
-    endpoint (``HOSTED_SPEAKER_EMBEDDING_API_URL``) is the diarizer's
+    Returns a callable ``(wav_bytes) -> (1, D) np.ndarray``. The configured
+    endpoint (``SPEAKER_EMBEDDING_API_URL``) is the diarizer's
     ``/v2/embedding`` (wespeaker resnet34) — works with or without a local
     GPU because the diarizer service falls back to CPU.
     """
@@ -105,13 +104,13 @@ class MossSpeakerPipeline:
     def __init__(
         self,
         *,
-        client: Optional[MossClient] = None,
+        client: Optional[MossClient | MlxAudioClient] = None,
         embedding_extractor: Optional[EmbeddingExtractor] = None,
         matcher: Optional[Callable[[np.ndarray, np.ndarray], float]] = None,
         match_threshold: float = 0.45,
         min_clip_seconds: float = MIN_SPEAKER_CLIP_SECONDS,
     ) -> None:
-        self._client = client or MossClient()
+        self._client = client or create_moss_client()
         self._extract_embedding = embedding_extractor or _default_embedding_extractor()
         self._compare = matcher or _default_matcher()
         self._threshold = match_threshold
@@ -151,7 +150,24 @@ class MossSpeakerPipeline:
         transcribe_model: str = "moss-transcribe-diarize",
     ) -> PipelineResult:
         # 1) Upload + transcribe + diarize via MOSS
-        if file_path:
+        if isinstance(self._client, MlxAudioClient):
+            if file_path:
+                with open(file_path, 'rb') as source_file:
+                    source_bytes = source_file.read()
+                filename = file_path.rsplit('/', 1)[-1] or 'audio.wav'
+            elif wav_bytes is not None:
+                source_bytes = wav_bytes
+                filename = 'audio.wav'
+            else:
+                raise ValueError('file_path or wav_bytes is required')
+            # mlx-audio owns the model configured in MOSS_MODEL; it has no
+            # MOSS file/task upload protocol.
+            transcription = self._client.transcribe_audio(
+                source_bytes,
+                filename=filename,
+                diarize=True,
+            )
+        elif file_path:
             file_id = self._client.upload_file(file_path)
             try:
                 transcription = self._client.transcribe(file_id=file_id, model=transcribe_model, diarize=True)
@@ -161,8 +177,10 @@ class MossSpeakerPipeline:
             # in-memory: write temp file for MOSS upload
             import tempfile
 
+            if wav_bytes is None:
+                raise ValueError('file_path or wav_bytes is required')
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-                tmp.write(cast(bytes, wav_bytes))
+                tmp.write(wav_bytes)
                 tmp.flush()
                 file_id = self._client.upload_file(tmp.name)
                 try:
@@ -189,7 +207,9 @@ class MossSpeakerPipeline:
             if file_path:
                 clip = _wav_slice_from_file(file_path, best_seg.start, best_seg.end)
             else:
-                clip = _wav_slice(cast(bytes, wav_bytes), best_seg.start, best_seg.end)
+                if wav_bytes is None:
+                    raise ValueError('file_path or wav_bytes is required')
+                clip = _wav_slice(wav_bytes, best_seg.start, best_seg.end)
             if not clip:
                 continue
             try:

@@ -1,8 +1,9 @@
-"""MiMo-V2.5-ASR official API client: transcribe audio via OpenAI-compatible
-chat completions.
+"""MiMo-V2.5-ASR operator-gateway client: transcribe audio via
+OpenAI-compatible chat completions.
 
-Platform: https://mimo.mi.com · API base: https://api.xiaomimimo.com
-(China TokenPlan base: https://token-plan-cn.xiaomimimo.com, same /v1 shape)
+Platform: operator-configured OpenAI-compatible endpoint (the authority is
+never selected implicitly).  The endpoint may be a self-hosted service or an
+operator-approved hosted authority.
 Model: ``mimo-v2.5-asr``
 
 MiMo-V2.5-ASR is an OpenAI-compatible **chat completions** endpoint (NOT
@@ -26,18 +27,78 @@ import logging
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
+from .config import MimoConfigurationError, resolve_mimo_config, timeout_seconds
+from fork.prerecorded_stt_config import is_private_operator_hostname, is_unsafe_network_hostname
+from fork.egress_policy import assert_http_endpoint_allowed
+
 logger = logging.getLogger(__name__)
 
-# OpenAI-compatible base for MiMo ASR. MIMO_API_BASE overrides for a custom
-# gateway; MIMO_USE_TOKENPLAN=1 switches to the China TokenPlan base.
-MIMO_API_BASE = os.getenv("MIMO_API_BASE", "https://api.xiaomimimo.com")
-MIMO_TOKENPLAN_BASE = os.getenv("MIMO_TOKENPLAN_BASE", "https://token-plan-cn.xiaomimimo.com")
-MIMO_API_KEY = os.getenv("MIMO_API_KEY", "")
-MIMO_ASR_MODEL = os.getenv("MIMO_ASR_MODEL", "mimo-v2.5-asr")
-DEFAULT_TIMEOUT = float(os.getenv("MIMO_TIMEOUT_SECONDS", "120"))
+DEFAULT_TIMEOUT = 120.0
+
+_MIMO_VENDOR_HOST_SUFFIXES = (".xiaomimimo.com", ".mimo.mi.com")
+MIMO_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def configured_mimo_endpoint(value: str, variable_name: str = "MIMO_API_BASE") -> str:
+    """Validate an explicit operator-owned MiMo-compatible HTTP authority.
+
+    MiMo is an optional provider in this fork.  The official cloud authorities
+    are deliberately rejected so an isolated deployment cannot silently send
+    audio or credentials to the vendor when its own gateway is absent or
+    mistyped.  Private HTTP authorities are allowed for local/container
+    services; public authorities must use HTTPS.
+    """
+
+    endpoint = (value or "").strip().rstrip("/")
+    try:
+        parsed = urlsplit(endpoint)
+        # Accessing ``port`` validates malformed ports (urlsplit is lazy).
+        _ = parsed.port
+    except ValueError as exc:
+        raise MimoAPIError(f"{variable_name} must be an explicit operator HTTP(S) endpoint") from exc
+    hostname = (parsed.hostname or "").rstrip(".").lower()
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or is_unsafe_network_hostname(hostname)
+        or any(hostname == suffix.lstrip(".") or hostname.endswith(suffix) for suffix in _MIMO_VENDOR_HOST_SUFFIXES)
+        or (parsed.scheme == "http" and not is_private_operator_hostname(hostname))
+    ):
+        raise MimoAPIError(
+            f"{variable_name} must be an explicit operator HTTP(S) endpoint "
+            "without credentials/query and must not use the MiMo cloud authority"
+        )
+    if not endpoint:
+        raise MimoAPIError(f"{variable_name} environment variable is required")
+    return endpoint
+
+
+def _resolve_base_url() -> str:
+    use_tokenplan = os.getenv("MIMO_USE_TOKENPLAN", "").strip().lower() in MIMO_TRUE_VALUES
+    variable_name = "MIMO_TOKENPLAN_BASE" if use_tokenplan else "MIMO_API_BASE"
+    value = os.getenv(variable_name, "").strip()
+    if not value:
+        raise MimoAPIError(f"{variable_name} environment variable is required for MiMo")
+    return configured_mimo_endpoint(value, variable_name)
+
+
+def mimo_configuration_ready() -> bool:
+    """Return whether the selected operator endpoint and key are configured."""
+
+    try:
+        _resolve_base_url()
+    except MimoAPIError:
+        return False
+    return bool(os.getenv("MIMO_API_KEY", "").strip())
+
 
 # wav/mp3 <= 10MB per MiMo docs; keep a conservative cap.
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
@@ -67,12 +128,6 @@ class MimoTranscription:
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
-def _resolve_base_url() -> str:
-    if os.getenv("MIMO_USE_TOKENPLAN", "").strip().lower() in ("1", "true", "yes"):
-        return MIMO_TOKENPLAN_BASE
-    return MIMO_API_BASE
-
-
 def _raise_for_error(resp: httpx.Response) -> None:
     if resp.is_success:
         return
@@ -83,7 +138,7 @@ def _raise_for_error(resp: httpx.Response) -> None:
     raise MimoAPIError(f"MiMo ASR API {resp.status_code}: {detail}")
 
 
-def _guess_format(path_or_name: str, content_type: Optional[str] = None) -> str:
+def infer_audio_format(path_or_name: str, content_type: Optional[str] = None) -> str:
     """Map a file suffix / content type to the MiMo format token."""
     if content_type:
         ct = content_type.lower()
@@ -113,16 +168,21 @@ class MimoClient:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: Optional[float] = None,
     ) -> None:
-        self._api_key = api_key or MIMO_API_KEY
-        self._base_url = (base_url or _resolve_base_url()).rstrip("/")
-        self._model = model or MIMO_ASR_MODEL
-        self._timeout = timeout
+        try:
+            config = resolve_mimo_config(api_key=api_key, base_url=base_url)
+            request_timeout = timeout_seconds(DEFAULT_TIMEOUT) if timeout is None else timeout
+        except MimoConfigurationError as exc:
+            raise MimoAPIError(str(exc)) from exc
+        if request_timeout <= 0:
+            raise MimoAPIError("MIMO_TIMEOUT_SECONDS must be greater than zero")
+        self._api_key = config.api_key
+        self._base_url = config.base_url
+        self._model = model or os.getenv("MIMO_ASR_MODEL", "mimo-v2.5-asr").strip() or "mimo-v2.5-asr"
+        self._timeout = request_timeout
 
     def _headers(self) -> Dict[str, str]:
-        if not self._api_key:
-            raise MimoAPIError("MIMO_API_KEY environment variable not set")
         return {"Authorization": f"Bearer {self._api_key}"}
 
     def _endpoint(self) -> str:
@@ -166,7 +226,13 @@ class MimoClient:
                 f"audio too large for MiMo ASR ({len(audio_bytes)} > {MAX_AUDIO_BYTES} bytes); "
                 "MiMo docs cap audio at 10MB — chunk it upstream"
             )
-        fmt = _guess_format(filename or "", content_type) if audio_format is None else audio_format
+        endpoint = self._endpoint()
+        # This legacy synchronous helper does not use the shared httpx pool.
+        # Enforce the same operator egress policy before encoding or sending
+        # audio, so neutral deployments cannot silently use an undeclared
+        # public authority.
+        assert_http_endpoint_allowed(endpoint)
+        fmt = infer_audio_format(filename or "", content_type) if audio_format is None else audio_format
         audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
         messages = self._build_messages(audio_b64, fmt, language=language, instruction=instruction)
         payload: Dict[str, Any] = {
@@ -178,7 +244,7 @@ class MimoClient:
         if language:
             payload["asr_options"] = {"language": language}
         resp = httpx.post(
-            self._endpoint(),
+            endpoint,
             headers=self._headers(),
             json=payload,
             timeout=self._timeout,

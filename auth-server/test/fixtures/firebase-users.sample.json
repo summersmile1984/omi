@@ -1,0 +1,24 @@
+{
+  "users": [
+    {
+      "localId": "firebase-uid-1",
+      "email": "owner@example.com",
+      "emailVerified": true,
+      "displayName": "Owner",
+      "passwordHash": "lSrfV15cpx95/sZS2W9c9Kp6i/LVgQNDNC/qzrCnh1SAyZvqmZqAjTdn3aoItz+VHjoZilo78198JAdRuid5lQ==",
+      "salt": "42xEC+ixf3L2lw==",
+      "createdAt": "1700000000000",
+      "lastLoginAt": "1700000100000",
+      "providerUserInfo": [
+        {
+          "providerId": "google.com",
+          "rawId": "google-sub-1"
+        },
+        {
+          "providerId": "apple.com",
+          "rawId": "apple-sub-1"
+        }
+      ]
+    }
+  ]
+}
