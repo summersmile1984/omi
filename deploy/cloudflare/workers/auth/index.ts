@@ -30,7 +30,7 @@ import {
 import { registerNativeAuthCompatibilityRoutes } from "./native-auth-compatibility";
 
 const app = new Hono<{ Bindings: AuthEnv }>();
-const AUTH_BASE_PATH = "/api/better-auth";
+const AUTH_BASE_PATH = "/api/auth";
 const JWT_ROTATION_INTERVAL_SECONDS = 30 * 24 * 60 * 60;
 const JWT_GRACE_PERIOD_SECONDS = 2 * 24 * 60 * 60;
 export const MCP_SCOPES = [

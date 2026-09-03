@@ -542,7 +542,7 @@ describe("auth worker Better Auth dev issuer", () => {
     });
     const sessionRequest = authHandler.mock.calls[0][0] as Request;
     expect(new URL(sessionRequest.url).pathname).toBe(
-      "/api/better-auth/get-session",
+      "/api/auth/get-session",
     );
     expect(sessionRequest.headers.get("cookie")).toBe(
       "__Secure-better-auth.session_token=cookie-session",
@@ -554,7 +554,7 @@ describe("auth worker Better Auth dev issuer", () => {
 
   it("uses the same-origin public path, D1 rate limits, and rotating ES256 keys", async () => {
     const response = await auth.fetch(
-      new Request("https://auth.test/api/better-auth/get-session"),
+      new Request("https://auth.test/api/auth/get-session"),
       env(),
     );
 
@@ -562,7 +562,7 @@ describe("auth worker Better Auth dev issuer", () => {
     const options = vi.mocked(betterAuth).mock.calls.at(-1)?.[0];
     expect(options).toMatchObject({
       baseURL: "https://auth.test",
-      basePath: "/api/better-auth",
+      basePath: "/api/auth",
       emailAndPassword: {
         enabled: true,
         password: {
@@ -594,19 +594,19 @@ describe("auth worker Better Auth dev issuer", () => {
     ] as (request: Request) => false | { window: number; max: number };
     expect(
       getSessionRateLimit(
-        new Request("https://auth.test/api/better-auth/get-session"),
+        new Request("https://auth.test/api/auth/get-session"),
       ),
     ).toEqual({ window: 60, max: 100 });
     expect(
       getSessionRateLimit(
-        new Request("https://auth.test/api/better-auth/get-session", {
+        new Request("https://auth.test/api/auth/get-session", {
           headers: { "x-internal-assertion-secret": "internal-secret" },
         }),
       ),
     ).toBe(false);
     expect(
       getSessionRateLimit(
-        new Request("https://auth.test/api/better-auth/get-session", {
+        new Request("https://auth.test/api/auth/get-session", {
           headers: { "x-internal-assertion-secret": "wrong" },
         }),
       ),
@@ -629,7 +629,7 @@ describe("auth worker Better Auth dev issuer", () => {
   it("upgrades a migrated password only after a successful email sign-in", async () => {
     const upgrade = passwordUpgradeEnv();
     await auth.fetch(
-      new Request("https://auth.test/api/better-auth/get-session"),
+      new Request("https://auth.test/api/auth/get-session"),
       upgrade.environment,
     );
     const options = vi.mocked(betterAuth).mock.calls.at(-1)?.[0];
@@ -655,7 +655,7 @@ describe("auth worker Better Auth dev issuer", () => {
   it("does not inspect a password when email sign-in did not create a session", async () => {
     const upgrade = passwordUpgradeEnv();
     await auth.fetch(
-      new Request("https://auth.test/api/better-auth/get-session"),
+      new Request("https://auth.test/api/auth/get-session"),
       upgrade.environment,
     );
     const options = vi.mocked(betterAuth).mock.calls.at(-1)?.[0];
@@ -679,7 +679,7 @@ describe("auth worker Better Auth dev issuer", () => {
     const upgrade = passwordUpgradeEnv({ failUpdate: true });
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     await auth.fetch(
-      new Request("https://auth.test/api/better-auth/get-session"),
+      new Request("https://auth.test/api/auth/get-session"),
       upgrade.environment,
     );
     const options = vi.mocked(betterAuth).mock.calls.at(-1)?.[0];
@@ -721,7 +721,7 @@ describe("auth worker Better Auth dev issuer", () => {
       APPLE_CLIENT_ID: "incomplete-apple-id",
     };
     const capabilities = await auth.fetch(
-      new Request("https://auth.test/api/better-auth/omi-capabilities"),
+      new Request("https://auth.test/api/auth/omi-capabilities"),
       providerEnv,
     );
     expect(await capabilities.json()).toEqual({
@@ -731,7 +731,7 @@ describe("auth worker Better Auth dev issuer", () => {
     });
 
     await auth.fetch(
-      new Request("https://auth.test/api/better-auth/get-session"),
+      new Request("https://auth.test/api/auth/get-session"),
       providerEnv,
     );
     const options = vi.mocked(betterAuth).mock.calls.at(-1)?.[0];

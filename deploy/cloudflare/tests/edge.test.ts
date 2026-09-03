@@ -1903,7 +1903,7 @@ describe("edge gateway", () => {
     let forwarded: Request | undefined;
     const response = await edge.fetch(
       new Request(
-        "https://edge.test/api/better-auth/callback/google?code=opaque",
+        "https://edge.test/api/auth/callback/google?code=opaque",
         {
           headers: {
             authorization: "Bearer session",
@@ -1924,7 +1924,7 @@ describe("edge gateway", () => {
 
     expect(response.status).toBe(302);
     expect(new URL(forwarded?.url || "https://invalid.test").pathname).toBe(
-      "/api/better-auth/callback/google",
+      "/api/auth/callback/google",
     );
     expect(forwarded?.headers.get("authorization")).toBe("Bearer session");
     expect(forwarded?.headers.get("cookie")).toBe(
@@ -1941,8 +1941,8 @@ describe("edge gateway", () => {
         paths.push(new URL(request.url).pathname);
         return Response.json(
           {
-            issuer: "https://web.test/api/better-auth",
-            token_endpoint: "https://web.test/api/better-auth/oauth2/token",
+            issuer: "https://web.test/api/auth",
+            token_endpoint: "https://web.test/api/auth/oauth2/token",
           },
           { headers: { "cache-control": "no-store" } },
         );
@@ -1955,7 +1955,7 @@ describe("edge gateway", () => {
     );
     expect(getResponse.status).toBe(200);
     expect(await getResponse.json()).toMatchObject({
-      issuer: "https://web.test/api/better-auth",
+      issuer: "https://web.test/api/auth",
     });
 
     const headResponse = await edge.fetch(
@@ -1968,8 +1968,8 @@ describe("edge gateway", () => {
     expect(await headResponse.text()).toBe("");
     expect(methods).toEqual(["GET", "GET"]);
     expect(paths).toEqual([
-      "/api/better-auth/.well-known/oauth-authorization-server",
-      "/api/better-auth/.well-known/oauth-authorization-server",
+      "/api/auth/.well-known/oauth-authorization-server",
+      "/api/auth/.well-known/oauth-authorization-server",
     ]);
   });
 
@@ -2018,9 +2018,9 @@ describe("edge gateway", () => {
       200,
     ]);
     expect(requests.map(({ request }) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
-      "GET /api/better-auth/oauth2/authorize",
-      "POST /api/better-auth/oauth2/authorize",
-      "POST /api/better-auth/oauth2/token",
+      "GET /api/auth/oauth2/authorize",
+      "POST /api/auth/oauth2/authorize",
+      "POST /api/auth/oauth2/token",
     ]);
     expect(new URL(requests[0].request.url).searchParams.get("client_id")).toBe("client-1");
     expect(requests[0].request.headers.get("authorization")).toBe("Basic client-secret");

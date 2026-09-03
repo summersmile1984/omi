@@ -188,7 +188,7 @@ app.on(
   async (c) => {
     const id = requestId(c.req.raw);
     const target = new URL(
-      "/api/better-auth/.well-known/oauth-authorization-server",
+      "/api/auth/.well-known/oauth-authorization-server",
       "https://auth.internal",
     );
     try {
@@ -218,7 +218,7 @@ app.on(
 
 // Keep the historical MCP OAuth paths as aliases for Better Auth's OAuth
 // provider. The public discovery document already advertises the canonical
-// `/api/better-auth/oauth2/*` endpoints; these aliases let older clients
+// `/api/auth/oauth2/*` endpoints; these aliases let older clients
 // upgrade without sending authorization codes or cookies to the legacy API.
 const proxyLegacyMcpOAuth = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
@@ -226,7 +226,7 @@ const proxyLegacyMcpOAuth = async (
 ) => {
   const id = requestId(c.req.raw);
   const target = new URL(
-    `/api/better-auth/oauth2/${endpoint}`,
+    `/api/auth/oauth2/${endpoint}`,
     "https://auth.internal",
   );
   target.search = new URL(c.req.url).search;
@@ -1055,7 +1055,7 @@ app.get("/v1/admin/fair-use/case/:case_ref", proxyPublicCore);
 app.get("/memory/admin/users/:uid/non-active-route-report", proxyPublicCore);
 app.post("/memory/admin/users/:uid/short-term-lifecycle/run", proxyPublicJobs);
 
-app.all("/api/better-auth/*", async (c) => {
+app.all("/api/auth/*", async (c) => {
   const id = requestId(c.req.raw);
   const response = await c.env.AUTH.fetch(
     new Request(c.req.raw, {

@@ -104,7 +104,7 @@ async function accessToken(scope = "memories.read offline_access") {
     scope,
   })
     .setProtectedHeader({ alg: "ES256", kid: "mcp-test-key" })
-    .setIssuer("https://auth.test/api/better-auth")
+    .setIssuer("https://auth.test/api/auth")
     .setAudience("https://edge.test/v1/mcp/sse")
     .setSubject("mcp-user")
     .setIssuedAt()
@@ -211,7 +211,7 @@ describe("auth worker MCP OAuth provider", () => {
   it("creates credential accounts with the Better Auth issuer identity key", async () => {
     const env = environment();
     const response = await auth.fetch(
-      new Request("https://auth.test/api/better-auth/sign-up/email", {
+      new Request("https://auth.test/api/auth/sign-up/email", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -241,7 +241,7 @@ describe("auth worker MCP OAuth provider", () => {
     const env = environment();
     const metadataResponse = await auth.fetch(
       new Request(
-        "https://auth.test/api/better-auth/.well-known/oauth-authorization-server",
+        "https://auth.test/api/auth/.well-known/oauth-authorization-server",
       ),
       env,
     );
@@ -249,12 +249,12 @@ describe("auth worker MCP OAuth provider", () => {
     expect(metadataResponse.status).toBe(200);
     const metadata = (await metadataResponse.json()) as Record<string, unknown>;
     expect(metadata).toMatchObject({
-      issuer: "https://auth.test/api/better-auth",
+      issuer: "https://auth.test/api/auth",
       authorization_endpoint:
-        "https://auth.test/api/better-auth/oauth2/authorize",
-      token_endpoint: "https://auth.test/api/better-auth/oauth2/token",
+        "https://auth.test/api/auth/oauth2/authorize",
+      token_endpoint: "https://auth.test/api/auth/oauth2/token",
       registration_endpoint:
-        "https://auth.test/api/better-auth/oauth2/register",
+        "https://auth.test/api/auth/oauth2/register",
       code_challenge_methods_supported: ["S256"],
     });
     expect(metadata.client_id_metadata_document_supported).toBeUndefined();
@@ -263,7 +263,7 @@ describe("auth worker MCP OAuth provider", () => {
     );
 
     const registrationResponse = await auth.fetch(
-      new Request("https://auth.test/api/better-auth/oauth2/register", {
+      new Request("https://auth.test/api/auth/oauth2/register", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -312,7 +312,7 @@ describe("auth worker MCP OAuth provider", () => {
     const env = environment({ MCP_ALLOW_UNAUTHENTICATED_DCR: undefined });
     const metadataResponse = await auth.fetch(
       new Request(
-        "https://auth.test/api/better-auth/.well-known/oauth-authorization-server",
+        "https://auth.test/api/auth/.well-known/oauth-authorization-server",
       ),
       env,
     );
@@ -323,7 +323,7 @@ describe("auth worker MCP OAuth provider", () => {
     expect(metadata.client_id_metadata_document_supported).toBeUndefined();
 
     const registrationResponse = await auth.fetch(
-      new Request("https://auth.test/api/better-auth/oauth2/register", {
+      new Request("https://auth.test/api/auth/oauth2/register", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

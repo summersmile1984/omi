@@ -277,7 +277,7 @@ if a popup is blocked, the flow falls back to the current tab.
 
 Better Auth browser sessions are cookie-only: the same-origin auth proxy
 forwards `Set-Cookie` but removes the session token from successful sign-in and
-sign-up JSON. The public Better Auth base path is `/api/better-auth`; keeping
+sign-up JSON. The public Better Auth base path is `/api/auth`; keeping
 that path and the Web Worker origin through provider callbacks lets the
 encrypted OAuth state and session cookies remain same-origin. The API proxy
 forwards the httpOnly session cookie only over the `EDGE`
@@ -289,7 +289,7 @@ claims it once, so the Realtime Worker never receives a long-lived Better Auth
 session token or an Auth service binding. MCP OAuth discovery, login
 continuation, and consent stay on the same Web origin. The historical root
 `GET/POST /authorize` and `POST /token` paths are aliases to Better Auth's
-`/api/better-auth/oauth2/*` provider, so older MCP clients use the same D1
+`/api/auth/oauth2/*` provider, so older MCP clients use the same D1
 client/consent/token authority instead of the legacy Firebase-backed handler.
 The consent page sends only Better Auth's signed authorization query, and MCP access tokens terminate
 at Edge; API Core receives a request-bound signed principal instead of the
@@ -775,7 +775,7 @@ staging smoke surface is:
 GET  /health                  public Edge liveness
 GET  /ready                   Edge → all internal dependency readiness
 GET  Web /api/worker-ready    Web → Edge service-binding readiness
-POST /api/better-auth/sign-up/email
+POST /api/auth/sign-up/email
                               Better Auth + D1
 GET  /v1/cf/probe             Edge → Auth → Python API Core → D1
 POST /v1/stt/transcribe      Edge → Python API AI → hosted ASR API

@@ -8,7 +8,7 @@ import type { EdgeEnv } from "../workers/edge/env";
 import { verifyRequestAuthContext } from "../workers/shared/auth-context";
 
 const resource = "https://edge.test/v1/mcp/sse";
-const authorizationServer = "https://web.test/api/better-auth";
+const authorizationServer = "https://web.test/api/auth";
 const apiKey = `Bearer omi_mcp_${"a".repeat(32)}`;
 
 function fetcher(
