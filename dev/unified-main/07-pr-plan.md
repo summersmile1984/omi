@@ -76,6 +76,7 @@ D10、D11 已由 [PR #3](https://github.com/summersmile1984/omi/pull/3) 落地�
 | B6 | web/docs: 四站点 + public-build-values 生成 + docs.json + Dockerfile.datadog | B0, S4 | 3 |
 | B7 | firmware: brand.conf + nfc + UUID 基址 + 新 MCUboot 密钥 + 删除预编译件 + 发布工作流 | B0, D6 | 3 |
 | B8 | governance: INV-UI-1/INV-BETA-1 参数化 + impeccable/design-qa fork 版 + 不改清单进 AGENTS.fork.md | B1–B7 | 2 |
+| B9 | cloudflare: `apply.py` `--only` 扩展 `cloudflare` + `omi-cf-*` 前缀模板化（含 `validate-manifests.mjs` 的硬编码前缀校验）+ `workers.dev` 子域名模板化（M2 已把生产侧的静默个人账号回退改成必须显式配置；staging 侧仍是 `wrangler.jsonc` 字面量，无运行时安全阀） | B0, M2 | 3 |
 
 ## 3. 排期（10 周，两人并行；周为工作周）
 
