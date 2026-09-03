@@ -7,7 +7,7 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect
 
 from database import conversation_finalization_jobs as finalization_jobs_db
 from services.conversation_finalization import final_attempt_failed
-from utils.byok import set_byok_keys, set_byok_uid
+from utils.byok import set_validated_byok_keys
 from utils.cloud_tasks import get_listen_finalization_tasks_max_attempts
 from utils.conversations import lifecycle as lifecycle_service
 from utils.conversations.finalizer import (
@@ -16,9 +16,15 @@ from utils.conversations.finalizer import (
     finalize_persisted_conversation,
 )
 from utils.executors import db_executor, run_blocking
-from utils.observability.journeys import record_capture_finalization_terminal
+from utils.observability.journeys import (
+    record_capture_finalization_terminal,
+    record_conversation_finalization_client_terminal,
+)
 
 logger = logging.getLogger('routers.pusher')
+
+FINALIZATION_RESULT_PROTOCOL_LEGACY = 1
+FINALIZATION_RESULT_PROTOCOL_V2 = 2
 
 
 async def process_conversation_task(
@@ -29,6 +35,8 @@ async def process_conversation_task(
     byok_keys: Optional[Dict[str, str]] = None,
     finalization_job_id: Optional[str] = None,
     dispatch_generation: Optional[int] = None,
+    client_kind: str = 'unknown',
+    finalization_result_protocol: int = FINALIZATION_RESULT_PROTOCOL_LEGACY,
 ) -> None:
     """Process a leased conversation job and send a minimal result to listen.
 
@@ -37,8 +45,9 @@ async def process_conversation_task(
     provider keys instead of Omi's env keys.
     """
     if byok_keys:
-        set_byok_keys(byok_keys)
-        set_byok_uid(uid)
+        # Listen already validated these against enrollment; mark them validated
+        # so process_conversation can reuse request_has_llm_byok_key().
+        set_validated_byok_keys(byok_keys, uid)
 
     async def send_result(result: Dict[str, Any]) -> None:
         """Attempt the optional live acknowledgement after durable work.
@@ -134,6 +143,20 @@ async def process_conversation_task(
         if claim_status == 'completed':
             await send_result({'conversation_id': conversation_id, 'success': True})
             return
+        if claim_status == 'stale_generation':
+            # The generation-aware response is opt-in so either side can be
+            # rolled out first. Legacy listeners treat unknown non-terminal
+            # errors as their existing bounded retry path; only a v2 listener
+            # can safely match and drop the superseded pending generation.
+            result: Dict[str, Any] = {
+                'conversation_id': conversation_id,
+                'error': 'job_stale_generation',
+                'terminal': False,
+            }
+            if finalization_result_protocol >= FINALIZATION_RESULT_PROTOCOL_V2:
+                result['dispatch_generation'] = generation
+            await send_result(result)
+            return
         if claim_status != 'claimed':
             await send_result(
                 {
@@ -161,6 +184,7 @@ async def process_conversation_task(
             finalization_job_id=job_id,
             dispatch_generation=generation,
             lease_epoch=lease_epoch,
+            final_attempt=attempt_count >= get_listen_finalization_tasks_max_attempts(),
         )
 
         if disposition == ConversationFinalizationDisposition.fenced:
@@ -184,9 +208,11 @@ async def process_conversation_task(
             return
         if disposition == ConversationFinalizationDisposition.fenced:
             record_capture_finalization_terminal('stale', claim.get('created_at'))
+            record_conversation_finalization_client_terminal('cancelled', claim, client_kind=client_kind)
             await send_result({'conversation_id': conversation_id, 'fenced': True})
             return
         record_capture_finalization_terminal('success', claim.get('created_at'))
+        record_conversation_finalization_client_terminal('success', claim, client_kind=client_kind)
         await send_result({'conversation_id': conversation_id, 'success': True})
     except ConversationFinalizationError:
         terminal = await record_failure('processing_failed')

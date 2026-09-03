@@ -5,7 +5,7 @@ import pytest
 from starlette.requests import Request
 
 from utils import cloud_tasks, cloud_tasks_redis
-from utils.other import storage_minio
+from fork import storage_minio
 
 
 def _request(headers=None):

@@ -104,6 +104,7 @@ def _install_streams(service, service_mod, *, canonical, historical, statuses=No
         include_pending_processing=False,
         include_archive=False,
         now=None,
+        budget=None,
     ):
         del db_client, device_scope_request, include_pending_processing, include_archive, now
         assert limit <= 500
@@ -178,12 +179,12 @@ def _install_streams(service, service_mod, *, canonical, historical, statuses=No
         return slots, exhausted
 
     updated_mock = MagicMock(
-        side_effect=lambda _uid, *, limit, start_after=None, device_scope_request=None: _keyset_page(
+        side_effect=lambda _uid, *, limit, start_after=None, device_scope_request=None, budget=None: _keyset_page(
             updated_rows, limit=limit, start_after=start_after, order_attr="updated_at"
         )
     )
     created_mock = MagicMock(
-        side_effect=lambda _uid, *, limit, start_after=None, device_scope_request=None: _keyset_page(
+        side_effect=lambda _uid, *, limit, start_after=None, device_scope_request=None, budget=None: _keyset_page(
             created_rows, limit=limit, start_after=start_after, order_attr="created_at"
         )
     )
@@ -423,6 +424,7 @@ def test_fully_suppressed_historical_set_stops_at_the_scan_row_budget(service_mo
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == service_mod.MEMORY_LIST_SCAN_BUDGET_DETAIL
+    assert isinstance(exc_info.value, service_mod.MemoryBackingStoreUnavailable)
     # The walk stopped at the budget instead of scanning every historical row.
     scanned = sum(call.kwargs["limit"] for call in updated_mock.call_args_list)
     assert scanned <= 150
@@ -507,7 +509,9 @@ def test_historical_status_suppression_batched_once_per_chunk(service_mod):
     statuses = {f"h-{index}": MemoryItemStatus.tombstoned for index in range(10)}
     _install_streams(service, service_mod, canonical=[], historical=historical, statuses=statuses)
     status_mock = MagicMock(
-        side_effect=lambda _uid, ids: {memory_id: statuses[memory_id] for memory_id in ids if memory_id in statuses}
+        side_effect=lambda _uid, ids, budget=None: {
+            memory_id: statuses[memory_id] for memory_id in ids if memory_id in statuses
+        }
     )
     service.canonical_statuses = status_mock
 
@@ -523,7 +527,7 @@ def test_front_insert_and_delete_do_not_omit_under_keyset_continuation(service_m
     rows = [_dated_historical(service_mod, f"h-{index}", day=50 - index) for index in range(6)]
     mutable = {"rows": list(rows)}
 
-    def updated_page(_uid, *, limit, start_after=None, device_scope_request=None):
+    def updated_page(_uid, *, limit, start_after=None, device_scope_request=None, budget=None):
         del device_scope_request
         ordered = sorted(mutable["rows"], key=lambda record: (-record.memory.updated_at.timestamp(), record.memory.id))
         start = 0
@@ -1376,6 +1380,8 @@ def test_canonical_scan_failure_logs_underlying_exception_and_503s(service_mod, 
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "Canonical memory unavailable"
+    assert isinstance(exc_info.value, service_mod.MemoryBackingStoreUnavailable)
+    assert exc_info.value.stream == "canonical"
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert "canonical list scan page failed" in caplog.text
     assert "RuntimeError" in caplog.text
@@ -1385,10 +1391,10 @@ def test_canonical_scan_failure_logs_underlying_exception_and_503s(service_mod, 
 def test_building_index_failure_is_the_historical_unavailable_detail(service_mod):
     """Pin the detail the historical keyset scan raises while an index builds.
 
-    ``routers.memories`` matches this exact string to fall the first page back
-    to the legacy offset read (the 2026-08-18 5.5h GET /v3/memories outage), so
-    a rename here would silently reopen it. Drives the real adapter with the
-    Firestore error prod raised.
+    ``routers.memories`` catches ``MemoryBackingStoreUnavailable`` to fall the
+    first page back to the legacy offset read (the 2026-08-18 5.5h GET
+    /v3/memories outage). The detail is preserved for the 503 body. Drives the
+    real adapter with the Firestore error prod raised.
     """
     from fastapi import HTTPException
     from google.api_core import exceptions as gcloud_exceptions
@@ -1408,4 +1414,6 @@ def test_building_index_failure_is_the_historical_unavailable_detail(service_mod
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "Historical memory unavailable"
+    assert isinstance(exc_info.value, service_mod.MemoryBackingStoreUnavailable)
+    assert exc_info.value.stream == "historical"
     assert isinstance(exc_info.value.__cause__, gcloud_exceptions.FailedPrecondition)

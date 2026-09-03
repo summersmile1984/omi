@@ -2,8 +2,7 @@ import Foundation
 import OmiSupport
 
 extension Notification.Name {
-  /// Posted on MainActor after the runtime handshake makes direct control
-  /// tools admissible. Carries no owner id or request content.
+  /// Posted on MainActor after the runtime handshake makes direct control tools admissible.
   static let agentRuntimeDidBecomeReady = Notification.Name("com.omi.desktop.agentRuntimeDidBecomeReady")
 }
 
@@ -312,40 +311,6 @@ actor AgentRuntimeProcess {
       let requestId: String
     }
 
-    enum Kind: Equatable {
-      case initMessage
-      case textDelta
-      case thinkingDelta
-      case toolUse
-      case authorizedToolExecution
-      case toolActivity
-      case toolResultDisplay
-      case result
-      case error
-      case authRequired
-      case authSuccess
-      case cancelAck
-      case controlToolResult
-      case journalOperationResult
-      case journalTurnChanged
-      case journalBackendSync
-      case journalBackendDelete
-      case journalBackendReconcile
-      case chatFirstDeferralDelivery
-      case defaultExecutionProfileConfigured
-      case surfaceSessionResolved
-      case sessionExecutionProfileMigrated
-      case contextSourceUpdated
-      case contextSnapshot
-      case legacyMainChatSessionsImported
-      case externalSurfaceRunBeginResult
-      case externalSurfaceToolResult
-      case externalSurfaceRunCompleteResult
-      case chatFirstHarnessExecutorResult
-      case ownerRuntimeRevoked
-      case unknown(String)
-    }
-
     let kind: Kind
     let requestId: String?
     let clientId: String?
@@ -381,6 +346,7 @@ actor AgentRuntimeProcess {
       case "tool_use": return .toolUse
       case "authorized_tool_execution": return .authorizedToolExecution
       case "tool_activity": return .toolActivity
+      case "turn_activity": return .turnActivity
       case "tool_result_display": return .toolResultDisplay
       case "result": return .result
       case "error": return .error
@@ -454,6 +420,7 @@ actor AgentRuntimeProcess {
     let originatingUserText: String?
     let onTextDelta: AgentBridge.TextDeltaHandler
     let onToolActivity: AgentBridge.ToolActivityHandler
+    let onTurnActivity: AgentBridge.TurnActivityHandler
     let onThinkingDelta: AgentBridge.ThinkingDeltaHandler
     let onToolResultDisplay: AgentBridge.ToolResultDisplayHandler
     let onAuthRequired: AgentBridge.AuthRequiredHandler
@@ -1097,6 +1064,7 @@ actor AgentRuntimeProcess {
     sessionID: String,
     turnID: String,
     prompt: String,
+    promptIsSynthetic: Bool = false,
     mode: ExternalSurfaceRunMode
   ) async throws -> ExternalSurfaceRunBinding {
     guard
@@ -1139,6 +1107,7 @@ actor AgentRuntimeProcess {
         sessionId: sessionID,
         turnId: turnID,
         prompt: prompt,
+        promptIsSynthetic: promptIsSynthetic,
         mode: mode
       ),
       expectedKind: .externalSurfaceRunBeginResult,
@@ -1510,6 +1479,7 @@ actor AgentRuntimeProcess {
     sessionId: String,
     turnId: String,
     prompt: String,
+    promptIsSynthetic: Bool = false,
     mode: ExternalSurfaceRunMode
   ) -> [String: Any] {
     var message = protocolEnvelope(
@@ -1521,6 +1491,7 @@ actor AgentRuntimeProcess {
     message["sessionId"] = sessionId
     message["turnId"] = turnId
     message["prompt"] = prompt
+    if promptIsSynthetic { message["promptIsSynthetic"] = true }
     message["mode"] = mode.rawValue
     return message
   }
@@ -1581,7 +1552,8 @@ actor AgentRuntimeProcess {
     attachments: [AgentQueryAttachment],
     producingTurnId: String?,
     expectedContext: AgentContextFreshness?,
-    reasoningEffort: String? = nil
+    reasoningEffort: String? = nil,
+    jitKnowledgeToolsEnabled: Bool = false
   ) -> [String: Any] {
     var message = protocolEnvelope(
       type: "query",
@@ -1597,6 +1569,11 @@ actor AgentRuntimeProcess {
     if !attachments.isEmpty { message["attachments"] = attachments.map(\.dictionary) }
     if let producingTurnId, !producingTurnId.isEmpty { message["producingTurnId"] = producingTurnId }
     if let reasoningEffort, !reasoningEffort.isEmpty { message["reasoningEffort"] = reasoningEffort }
+    // UX gate only: the backend independently re-checks JIT entitlement on
+    // every /v1/agent/execute-tool call. Omitted (not `false`) when the
+    // rollout verdict isn't `enabled`, matching how the runtime treats an
+    // absent field as false.
+    if jitKnowledgeToolsEnabled { message["jitKnowledgeToolsEnabled"] = true }
     if let expectedContext {
       message["expectedContextSnapshotVersion"] = expectedContext.version
       message["expectedContextSnapshotGeneration"] = expectedContext.generation
@@ -2294,7 +2271,7 @@ actor AgentRuntimeProcess {
   /// process. With the process paused it emits no further events, so an in-flight
   /// chat send stalls exactly like a hung ACP subprocess — driving the
   /// StallDetector to `.stalled` (20s) and, if held long enough, ChatProvider's
-  /// 180s send watchdog (CHAT-02). A safety auto-resume fires after `durationMs`
+  /// 60s send watchdog (CHAT-02). A safety auto-resume fires after `durationMs`
   /// (hard-capped) so the process can never stay frozen if `debugResumeStream`
   /// is never called. Non-production bundles only.
   func debugSuspendStream(durationMs: Int) -> [String: String] {
@@ -2383,6 +2360,7 @@ actor AgentRuntimeProcess {
     authorizationSnapshot: RuntimeOwnerAuthorizationSnapshot,
     onTextDelta: @escaping AgentBridge.TextDeltaHandler,
     onToolActivity: @escaping AgentBridge.ToolActivityHandler,
+    onTurnActivity: @escaping AgentBridge.TurnActivityHandler,
     onThinkingDelta: @escaping AgentBridge.ThinkingDeltaHandler,
     onToolResultDisplay: @escaping AgentBridge.ToolResultDisplayHandler,
     onAuthRequired: @escaping AgentBridge.AuthRequiredHandler,
@@ -2390,6 +2368,10 @@ actor AgentRuntimeProcess {
   ) async throws -> AgentBridge.QueryResult {
     guard isBridgeReady else { throw BridgeError.stopped }
     try assertAuthorization(authorizationSnapshot)
+
+    // See AgentRuntimeProcess+JITKnowledgeToolsGate.swift: fail-closed UX gate only.
+    let jitKnowledgeToolsEnabled = await Self.resolvedJitKnowledgeToolsEnabled(
+      authorizationSnapshot: authorizationSnapshot)
 
     return try await withCheckedThrowingContinuation { continuation in
       let surfaceRef = surface
@@ -2400,6 +2382,7 @@ actor AgentRuntimeProcess {
         originatingUserText: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
         onTextDelta: onTextDelta,
         onToolActivity: onToolActivity,
+        onTurnActivity: onTurnActivity,
         onThinkingDelta: onThinkingDelta,
         onToolResultDisplay: onToolResultDisplay,
         onAuthRequired: onAuthRequired,
@@ -2424,7 +2407,8 @@ actor AgentRuntimeProcess {
         attachments: attachments,
         producingTurnId: producingTurnId,
         expectedContext: expectedContext,
-        reasoningEffort: reasoningEffort
+        reasoningEffort: reasoningEffort,
+        jitKnowledgeToolsEnabled: jitKnowledgeToolsEnabled
       )
       sendJson(queryDict)
     }
@@ -2593,9 +2577,8 @@ actor AgentRuntimeProcess {
     try assertStartupAuthority(
       authorizationSnapshot,
       expectedAuthorityEpoch: admissionAuthorityEpoch)
-    if !rustBase.isEmpty {
-      env["OMI_API_BASE_URL"] = rustBase.hasSuffix("/") ? "\(rustBase)v2" : "\(rustBase)/v2"
-    } else if preferredAdapterId == .piMono {
+    env = Self.childBackendRoutingEnvironment(baseEnvironment: env, rustBase: rustBase)
+    if rustBase.isEmpty && preferredAdapterId == .piMono {
       log("AgentRuntimeProcess: pi-mono start refused, OMI_DESKTOP_API_URL is not configured")
       throw BridgeError.bridgeScriptNotFound
     }
@@ -2814,19 +2797,19 @@ actor AgentRuntimeProcess {
 
     var candidateValues: [String: String] = [:]
     var suppressedProviders: [BYOKProvider] = []
-    for provider in BYOKProvider.allCases {
-      guard let key = APIKeyService.byokKey(provider) else { continue }
-      let fingerprint = APIKeyService.byokFingerprint(key)
-      if CredentialHealthManager.shared.canUseBYOK(provider: provider, fingerprint: fingerprint) {
-        candidateValues[byokEnvironmentKey(for: provider)] = key
+    for (provider, entry) in APIKeyService.activeBYOKSnapshot {
+      if CredentialHealthManager.shared.canUseBYOK(provider: provider, fingerprint: entry.fingerprint) {
+        candidateValues[byokEnvironmentKey(for: provider)] = entry.key
       } else {
         suppressedProviders.append(provider)
       }
     }
-    guard suppressedProviders.isEmpty, candidateValues.count == BYOKProvider.allCases.count else {
+    guard let selectedProvider = APIKeyService.selectedBYOKLLMProvider,
+      candidateValues[byokEnvironmentKey(for: selectedProvider)] != nil
+    else {
       return ([:], suppressedProviders)
     }
-    return (candidateValues, [])
+    return (candidateValues, suppressedProviders)
   }
 
   static func openClawAdapterCommand(openClawPath: String, fileManager: FileManager = .default) -> String {
@@ -3244,6 +3227,9 @@ actor AgentRuntimeProcess {
         message.payload["toolUseId"] as? String,
         message.payload["input"] as? [String: Any]
       )
+
+    case .turnActivity:
+      routedRequest(for: message)?.onTurnActivity()
 
     case .toolResultDisplay:
       routedRequest(for: message)?.onToolResultDisplay(
@@ -3709,8 +3695,9 @@ actor AgentRuntimeProcess {
         suppressedByStreamingTail: message.payload["suppressedByStreamingTail"] as? Bool ?? false,
         materializationStoppedByTail: message.payload["materializationStoppedByTail"] as? Bool ?? false,
         materializationReceipts: Self.chatFirstMaterializationReceipts(
-          from: message.payload["materializationReceipts"]
-        ),
+          from: message.payload["materializationReceipts"]),
+        materializationRejections: Self.chatFirstRejections(from: message.payload["materializationRejections"]),
+        materializationDeferrals: Self.chatFirstDeferrals(from: message.payload["materializationDeferrals"]),
         coldStartSequenceTerminalReceipts: Self.chatFirstColdStartSequenceTerminalReceipts(
           from: message.payload["coldStartSequenceTerminalReceipts"]
         ),
@@ -4000,7 +3987,7 @@ actor AgentRuntimeProcess {
         journalRequest.continuation.resume(throwing: BridgeError.authMissing)
         return
       }
-      log("AgentRuntimeProcess: journal operation failed (code-only)")
+      log(Self.chatFirstJournalFailureLog(failure: failure, payload: message.payload, raw: raw))
       journalRequest.continuation.resume(
         throwing: failure.map(BridgeError.agentRuntimeFailure) ?? BridgeError.agentError(raw)
       )
@@ -4034,32 +4021,6 @@ actor AgentRuntimeProcess {
       log("AgentRuntimeProcess: agent error (raw): \(raw)")
     }
     request.continuation.resume(throwing: bridgeError)
-  }
-
-  private func queryResult(from message: RuntimeMessage) -> AgentBridge.QueryResult {
-    let payload = message.payload
-    let omiSessionId = payload["sessionId"] as? String ?? ""
-    let adapterSessionId = payload["adapterSessionId"] as? String
-    return AgentBridge.QueryResult(
-      text: payload["text"] as? String ?? "",
-      costUsd: payload["costUsd"] as? Double ?? 0,
-      omiSessionId: omiSessionId,
-      runId: payload["runId"] as? String ?? "",
-      attemptId: payload["attemptId"] as? String ?? "",
-      adapterSessionId: adapterSessionId,
-      terminalStatus: payload["terminalStatus"] as? String,
-      failure: AgentRuntimeFailure.parse(from: payload["failure"]),
-      inputTokens: payload["inputTokens"] as? Int ?? 0,
-      outputTokens: payload["outputTokens"] as? Int ?? 0,
-      cacheReadTokens: payload["cacheReadTokens"] as? Int ?? 0,
-      cacheWriteTokens: payload["cacheWriteTokens"] as? Int ?? 0,
-      artifacts: AgentArtifactProjection.parseList(
-        fromJSONArray: payload["artifacts"] as? [[String: Any]] ?? []
-      ),
-      completionDeltaArtifacts: AgentArtifactProjection.parseList(
-        fromJSONArray: payload["completionDeltaArtifacts"] as? [[String: Any]] ?? []
-      )
-    )
   }
 
   @discardableResult

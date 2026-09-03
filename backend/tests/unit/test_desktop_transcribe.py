@@ -18,6 +18,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
+# Load the real live-STT failure machinery (and its pydantic status-event
+# models) before this file's autouse fixture stubs ``models.conversation``:
+# ``routers.chat`` imports ``utils.stt.live_failure`` at module scope, and
+# ``models.message_event`` can only build its models against the real
+# ``Conversation`` class.
+import utils.stt.live_failure  # noqa: F401  (import-order dependency)
+
 # ---------------------------------------------------------------------------
 # Module-level stubs (same pattern as test_sync_transcription_prefs.py)
 # ---------------------------------------------------------------------------
@@ -199,10 +206,6 @@ def _desktop_transcribe_isolation():
         _deepgram.LiveTranscriptionEvents = MagicMock()
         sys.modules.setdefault('deepgram', _deepgram)
 
-        _fal_client = ModuleType('fal_client')
-        _fal_client.submit = MagicMock()
-        sys.modules.setdefault('fal_client', _fal_client)
-
         def _parse_options_header(value):
             if value is None:
                 return b'', {}
@@ -352,13 +355,20 @@ def _desktop_transcribe_isolation():
         # Stub transitive imports for utils.chat (avoid pulling in all of utils.llm etc.)
         # Do NOT stub utils.other.endpoints — it contains the @timeit decorator that must
         # be a real function (not MagicMock) or it corrupts decorated function signatures.
+        _utils_llm = ModuleType('utils.llm')
+        _utils_llm.__path__ = []
+        _utils_llm.__package__ = 'utils.llm'
+        sys.modules['utils.llm'] = _utils_llm
         for _ufull in [
             'utils.llm',
+            'utils.llm.gateway_client',
             'utils.llm.memories',
             'utils.llm.persona',
             'utils.llm.chat',
             'utils.llm.goals',
             'utils.llm.usage_tracker',
+            'utils.llm.gateway_client',
+            'utils.llm.gateway_observability',
             'utils.conversations.process_conversation',
             'utils.notifications',
             'utils.other.storage',
@@ -376,6 +386,16 @@ def _desktop_transcribe_isolation():
             'models.goal',
         ]:
             sys.modules.setdefault(_ufull, MagicMock())
+        for _llm_child in (
+            'memories',
+            'persona',
+            'chat',
+            'goals',
+            'usage_tracker',
+            'gateway_client',
+            'gateway_observability',
+        ):
+            setattr(_utils_llm, _llm_child, sys.modules[f'utils.llm.{_llm_child}'])
 
         _utils_conversations_pkg = ModuleType('utils.conversations')
         _utils_conversations_pkg.__path__ = []
@@ -1172,6 +1192,10 @@ class TestTranscribeStreamWebSocket:
         """WebSocket should accept connection and forward Parakeet segments."""
         client, module, saved = _make_chat_client()
         try:
+            attempt = MagicMock(finished=False)
+            attempt.succeed.side_effect = lambda: setattr(attempt, 'finished', True)
+            attempt.fail.side_effect = lambda _issue: setattr(attempt, 'finished', True)
+            attempt.cancel.side_effect = lambda: setattr(attempt, 'finished', True)
             # Mock Parakeet to return a fake socket that captures sent audio.
             mock_dg_socket = MagicMock()
             mock_dg_socket.is_connection_dead = False
@@ -1203,9 +1227,12 @@ class TestTranscribeStreamWebSocket:
                 with patch.object(
                     module, 'get_stt_service_for_language', return_value=(module.STTService.parakeet, 'en', 'parakeet')
                 ):
-                    with patch.object(module, 'process_audio_parakeet', side_effect=mock_process_audio_parakeet):
+                    with patch.object(
+                        module, 'process_audio_parakeet', side_effect=mock_process_audio_parakeet
+                    ), patch.object(module, 'ClientJourneyAttempt', return_value=attempt) as journey_factory:
                         with client.websocket_connect(
-                            '/v2/voice-message/transcribe-stream?language=en&sample_rate=16000'
+                            '/v2/voice-message/transcribe-stream?language=en&sample_rate=16000',
+                            headers={'X-App-Platform': 'macos'},
                         ) as ws:
                             # Send enough audio to trigger a 30ms flush (16000 * 2 * 0.03 = 960 bytes)
                             ws.send_bytes(b'\x00' * 960)
@@ -1215,6 +1242,9 @@ class TestTranscribeStreamWebSocket:
                             assert len(data) == 1
                             assert data[0]['text'] == 'Hello'
                             assert data[0]['speaker'] == 'SPEAKER_00'
+                        journey_factory.assert_called_once_with('realtime_voice', 'desktop_macos')
+                        attempt.succeed.assert_called_once_with()
+                        attempt.fail.assert_not_called()
         finally:
             _cleanup_chat_client(saved)
 
@@ -1222,6 +1252,10 @@ class TestTranscribeStreamWebSocket:
         """If both serving provider connections fail, WebSocket should close with 1011."""
         client, module, saved = _make_chat_client()
         try:
+            attempt = MagicMock(finished=False)
+            attempt.succeed.side_effect = lambda: setattr(attempt, 'finished', True)
+            attempt.fail.side_effect = lambda _issue: setattr(attempt, 'finished', True)
+            attempt.cancel.side_effect = lambda: setattr(attempt, 'finished', True)
 
             async def mock_process_audio_parakeet_fail(stream_transcript, **kwargs):
                 return None
@@ -1232,11 +1266,22 @@ class TestTranscribeStreamWebSocket:
             with patch.object(
                 module, 'get_stt_service_for_language', return_value=(module.STTService.parakeet, 'en', 'parakeet')
             ):
-                with patch.object(module, 'process_audio_parakeet', side_effect=mock_process_audio_parakeet_fail):
-                    with patch.object(module, 'process_audio_modulate', side_effect=mock_process_audio_modulate_fail):
-                        with pytest.raises(Exception):
-                            with client.websocket_connect('/v2/voice-message/transcribe-stream') as ws:
-                                ws.receive_json()  # Should not get here
+                with patch.object(
+                    module, 'process_audio_parakeet', side_effect=mock_process_audio_parakeet_fail
+                ), patch.object(
+                    module, 'process_audio_modulate', side_effect=mock_process_audio_modulate_fail
+                ), patch.object(
+                    module, 'ClientJourneyAttempt', return_value=attempt
+                ):
+                    with pytest.raises(WebSocketDisconnect) as exc_info:
+                        with client.websocket_connect('/v2/voice-message/transcribe-stream') as ws:
+                            event = ws.receive_json()
+                            assert event['type'] == 'service_status'
+                            assert event['status'] == 'stt_failed'
+                            ws.receive_json()  # terminal close frame follows the status event
+                    assert exc_info.value.code == 1011
+                attempt.fail.assert_called_once_with('provider_error')
+                attempt.succeed.assert_not_called()
         finally:
             _cleanup_chat_client(saved)
 
@@ -1285,34 +1330,238 @@ class TestTranscribeStreamWebSocket:
             _cleanup_chat_client(saved)
 
     def test_ws_rejected_audio_send_closes_1011_without_charge_or_finalize(self):
-        """A rejected provider send must remain terminal, uncharged, and cleaned up."""
+        """An exhausted failover chain on a rejected send stays terminal, uncharged, cleaned up.
+
+        The safe-socket wrapper contract reports a rejected send through the
+        death latch, and the selector offers no provider this session has not
+        already marked dead — so the failover chain is exhausted and the
+        session must still end in the terminal 1011 path.
+        """
         client, module, saved = _make_chat_client()
         try:
             mock_dg_socket = MagicMock()
             mock_dg_socket.is_connection_dead = False
             mock_dg_socket.death_reason = None
-            mock_dg_socket.send = MagicMock(return_value=False)
+
+            def reject_send(_audio):
+                # Safe socket wrappers latch the death on a rejected send.
+                mock_dg_socket.is_connection_dead = True
+                return False
+
+            mock_dg_socket.send = MagicMock(side_effect=reject_send)
             mock_dg_socket.finalize = MagicMock()
             mock_dg_socket.finish = MagicMock()
 
             async def mock_process_audio_parakeet(stream_transcript, **kwargs):
                 return mock_dg_socket
 
-            with patch.object(module, 'check_budget', return_value=(True, 0, 7200000)):
-                with patch.object(
-                    module, 'get_stt_service_for_language', return_value=(module.STTService.parakeet, 'en', 'parakeet')
-                ):
-                    with patch.object(module, 'process_audio_parakeet', side_effect=mock_process_audio_parakeet):
-                        with patch.object(module, 'record_actual_duration') as mock_record_duration:
-                            with pytest.raises(WebSocketDisconnect) as exc_info:
-                                with client.websocket_connect('/v2/voice-message/transcribe-stream') as ws:
-                                    ws.send_bytes(b'\x00' * 960)
-                                    ws.receive_json()
+            def select_provider(_language, **kwargs):
+                if kwargs.get('exclude'):
+                    return None  # every remaining provider already died here
+                return (module.STTService.parakeet, 'en', 'parakeet')
 
+            def provider_for(service):
+                if service == module.STTService.parakeet:
+                    return 'parakeet'
+                return None
+
+            with patch.object(module, 'check_budget', return_value=(True, 0, 7200000)):
+                with patch.object(module, 'get_stt_service_for_language', side_effect=select_provider):
+                    with patch.object(module, 'provider_for_service', side_effect=provider_for, create=True):
+                        with patch.object(module, 'process_audio_parakeet', side_effect=mock_process_audio_parakeet):
+                            with patch.object(module, 'record_actual_duration') as mock_record_duration:
+                                with pytest.raises(WebSocketDisconnect) as exc_info:
+                                    with client.websocket_connect('/v2/voice-message/transcribe-stream') as ws:
+                                        ws.send_bytes(b'\x00' * 960)
+                                        event = ws.receive_json()
+                                        assert event['status'] == 'stt_failed'
+                                        ws.receive_json()
             assert exc_info.value.code == 1011
             mock_dg_socket.send.assert_called_once_with(b'\x00' * 960)
             mock_dg_socket.finalize.assert_not_called()
             mock_dg_socket.finish.assert_called_once()
+            mock_record_duration.assert_not_called()
+        finally:
+            _cleanup_chat_client(saved)
+
+    def test_ws_send_path_death_fails_over_and_retries_chunk(self):
+        """A mid-session send-path death swaps the provider and retries the chunk.
+
+        Velma/Modulate accepts the upgrade and only then dies on the first
+        audio send — the exact listen outage #12469 described. With a remaining
+        provider in the chain the PTT session must not 1011: it swaps the
+        socket, retries the SAME chunk against the replacement, and a later
+        nonempty transcript still succeeds the journey.
+        """
+        client, module, saved = _make_chat_client()
+        try:
+            attempt = MagicMock(finished=False)
+            attempt.succeed.side_effect = lambda: setattr(attempt, 'finished', True)
+            attempt.fail.side_effect = lambda _issue: setattr(attempt, 'finished', True)
+            attempt.cancel.side_effect = lambda: setattr(attempt, 'finished', True)
+
+            dying_socket = MagicMock()
+            dying_socket.is_connection_dead = False
+            dying_socket.death_reason = 'stream error'
+
+            def die_on_send(_audio):
+                dying_socket.is_connection_dead = True
+                return False
+
+            dying_socket.send = MagicMock(side_effect=die_on_send)
+            dying_socket.finalize = MagicMock()
+            dying_socket.finish = MagicMock()
+
+            replacement_socket = MagicMock()
+            replacement_socket.is_connection_dead = False
+            replacement_socket.death_reason = None
+            replacement_accept_order = []
+
+            async def mock_process_audio_parakeet(stream_transcript, **kwargs):
+                return dying_socket
+
+            async def mock_process_audio_modulate(stream_transcript, sample_rate, language):
+                def accept_and_transcribe(audio):
+                    replacement_accept_order.append(bytes(audio))
+                    stream_transcript(
+                        [
+                            {
+                                'speaker': 'SPEAKER_00',
+                                'start': 0.0,
+                                'end': 1.0,
+                                'text': 'Recovered',
+                                'is_user': False,
+                                'person_id': None,
+                            }
+                        ]
+                    )
+                    return True
+
+                replacement_socket.send = MagicMock(side_effect=accept_and_transcribe)
+                replacement_socket.finalize = MagicMock()
+                replacement_socket.finish = MagicMock()
+                return replacement_socket
+
+            selector_calls = []
+
+            def select_provider(_language, **kwargs):
+                selector_calls.append(kwargs.get('exclude'))
+                if len(selector_calls) == 1:
+                    return (module.STTService.parakeet, 'en', 'parakeet')
+                return (module.STTService.modulate, 'en', 'velma-2')
+
+            # The real provider_for_service reads the enum's ``value``; the
+            # stubbed STTService has none, so map the stub identities here to
+            # exercise the real exclusion logic against them.
+            def provider_for(service):
+                if service == module.STTService.parakeet:
+                    return 'parakeet'
+                if service == module.STTService.modulate:
+                    return 'modulate'
+                return None
+
+            with patch.object(module, 'check_budget', return_value=(True, 0, 7200000)):
+                with patch.object(module, 'get_stt_service_for_language', side_effect=select_provider):
+                    with patch.object(module, 'provider_for_service', side_effect=provider_for, create=True):
+                        with patch.object(module, 'process_audio_parakeet', side_effect=mock_process_audio_parakeet):
+                            with patch.object(
+                                module, 'process_audio_modulate', side_effect=mock_process_audio_modulate
+                            ):
+                                with patch.object(module, 'ClientJourneyAttempt', return_value=attempt):
+                                    with patch.object(module, 'record_actual_duration'):
+                                        with client.websocket_connect(
+                                            '/v2/voice-message/transcribe-stream?language=en&sample_rate=16000',
+                                            headers={'X-App-Platform': 'macos'},
+                                        ) as ws:
+                                            ws.send_bytes(b'\x00' * 960)
+                                            data = ws.receive_json()
+                                            assert isinstance(data, list)
+                                            assert data[0]['text'] == 'Recovered'
+                                            ws.send_text('finalize')
+
+            dying_socket.send.assert_called_once_with(b'\x00' * 960)
+            dying_socket.finish.assert_called_once()
+            # The chunk was retried verbatim against the replacement socket.
+            replacement_socket.send.assert_called_once_with(b'\x00' * 960)
+            attempt.succeed.assert_called_once_with()
+            attempt.fail.assert_not_called()
+            assert len(selector_calls) == 2
+            assert selector_calls[1] == frozenset({'parakeet'})
+        finally:
+            _cleanup_chat_client(saved)
+
+    def test_ws_send_path_death_with_exhausted_chain_closes_1011(self):
+        """A send-path death with no reachable replacement ends provider_error + 1011."""
+        client, module, saved = _make_chat_client()
+        try:
+            attempt = MagicMock(finished=False)
+            attempt.succeed.side_effect = lambda: setattr(attempt, 'finished', True)
+            attempt.fail.side_effect = lambda _issue: setattr(attempt, 'finished', True)
+            attempt.cancel.side_effect = lambda: setattr(attempt, 'finished', True)
+
+            dying_socket = MagicMock()
+            dying_socket.is_connection_dead = False
+            dying_socket.death_reason = 'stream error'
+
+            def die_on_send(_audio):
+                dying_socket.is_connection_dead = True
+                return False
+
+            dying_socket.send = MagicMock(side_effect=die_on_send)
+            dying_socket.finalize = MagicMock()
+            dying_socket.finish = MagicMock()
+
+            rejected_socket = MagicMock()
+            rejected_socket.is_connection_dead = True
+            rejected_socket.death_reason = 'capacity_full'
+            rejected_socket.finish = MagicMock()
+
+            async def mock_process_audio_parakeet(stream_transcript, **kwargs):
+                # Parakeet accepts the reconnect and only then rejects the stream.
+                return rejected_socket
+
+            async def mock_process_audio_modulate(stream_transcript, sample_rate, language):
+                return dying_socket
+
+            selector_calls = []
+
+            def select_provider(_language, **kwargs):
+                selector_calls.append(kwargs.get('exclude'))
+                if len(selector_calls) == 1:
+                    return (module.STTService.modulate, 'en', 'velma-2')
+                return (module.STTService.parakeet, 'en', 'parakeet')
+
+            def provider_for(service):
+                if service == module.STTService.parakeet:
+                    return 'parakeet'
+                if service == module.STTService.modulate:
+                    return 'modulate'
+                return None
+
+            with patch.object(module, 'check_budget', return_value=(True, 0, 7200000)):
+                with patch.object(module, 'get_stt_service_for_language', side_effect=select_provider):
+                    with patch.object(module, 'provider_for_service', side_effect=provider_for, create=True):
+                        with patch.object(module, 'process_audio_parakeet', side_effect=mock_process_audio_parakeet):
+                            with patch.object(
+                                module, 'process_audio_modulate', side_effect=mock_process_audio_modulate
+                            ):
+                                with patch.object(module, 'ClientJourneyAttempt', return_value=attempt):
+                                    with patch.object(module, 'record_actual_duration') as mock_record_duration:
+                                        with pytest.raises(WebSocketDisconnect) as exc_info:
+                                            with client.websocket_connect('/v2/voice-message/transcribe-stream') as ws:
+                                                ws.send_bytes(b'\x00' * 960)
+                                                event = ws.receive_json()
+                                                assert event['status'] == 'stt_failed'
+                                                ws.receive_json()
+
+            assert exc_info.value.code == 1011
+            dying_socket.send.assert_called_once_with(b'\x00' * 960)
+            # The replacement that never served was released before terminating.
+            rejected_socket.finish.assert_called_once()
+            assert len(selector_calls) == 2
+            assert selector_calls[1] == frozenset({'modulate'})
+            attempt.fail.assert_called_once_with('provider_error')
+            attempt.succeed.assert_not_called()
             mock_record_duration.assert_not_called()
         finally:
             _cleanup_chat_client(saved)
@@ -1341,6 +1590,8 @@ class TestTranscribeStreamWebSocket:
                                 with client.websocket_connect('/v2/voice-message/transcribe-stream') as ws:
                                     ws.send_bytes(b'\x00' * 500)
                                     ws.send_text('finalize')
+                                    event = ws.receive_json()
+                                    assert event['status'] == 'stt_failed'
                                     ws.receive_json()
 
             assert exc_info.value.code == 1011

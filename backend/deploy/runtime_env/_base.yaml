@@ -17,6 +17,9 @@ environment_shared:
           category: rollout
       values_file: backend/charts/parakeet/{env}_omi_parakeet_values.yaml
     backend-listen:
+      capabilities:
+      - conversation.finalize.persisted
+      - memory.canonical.mutate
       env:
         OMI_LLM_GATEWAY_URL:
           value: http://{env}-omi-llm-gateway.{env}-omi-backend.svc.cluster.local:8080
@@ -65,7 +68,7 @@ environment_shared:
           value: '{env}'
           category: runtime_identity
         STT_SERVICE_MODELS:
-          value: dg-nova-3,modulate-velma-2,parakeet
+          value: modulate-velma-2,soniox,dg-nova-3,parakeet
           category: stt_policy
         CONVERSATION_SUMMARIZED_APP_IDS:
           config_map:
@@ -73,6 +76,12 @@ environment_shared:
             key: CONVERSATION_SUMMARIZED_APP_IDS
         CONVERSATION_NOTES_V2_ENABLED:
           value: 'false'
+          category: rollout
+        MEETING_RECEIPT_RECONCILER_ENABLED:
+          value: 'false'
+          category: rollout
+        LISTEN_FINALIZATION_BYOK_ABANDONMENT_ENABLED:
+          value: 'true'
           category: rollout
         CONVERSATION_CALENDAR_CONTEXT_READ_ENABLED:
           value: 'false'
@@ -119,6 +128,12 @@ environment_shared:
             key: MCP_OAUTH_CHATGPT_REDIRECT_URIS
         GOOGLE_CLOUD_PROJECT:
           value: '{compute_project}'
+        OMI_FIRESTORE_DATA_PLANE_PROJECT:
+          value: '{data_plane_project}'
+        POSTHOG_PROJECT_API_KEY:
+          secret:
+            name: '{env}-omi-backend-secrets'
+            key: POSTHOG_PROJECT_API_KEY
         TWILIO_API_KEY_SID:
           config_map:
             name: '{env}-omi-backend-config'
@@ -169,6 +184,23 @@ environment_shared:
         value: '{compute_project}'
       GCP_LOCATION:
         value: us-central1
+      # The customer data plane (memory ledger, JIT proactivity state, screen
+      # sync) for this deployment family — see backend/database/_client.py's
+      # get_data_plane_firestore_client(). Equal to compute_project in prod by
+      # construction, so this is a no-op there; only dev's compute project
+      # (based-hardware-dev) diverges from it.
+      OMI_FIRESTORE_DATA_PLANE_PROJECT:
+        value: '{data_plane_project}'
+      PROMETHEUS_SIDECAR_PORT:
+        value: '9090'
+        category: telemetry
+    secrets:
+      METRICS_SECRET:
+        secret: METRICS_SECRET
+        version: latest
+      POSTHOG_PROJECT_API_KEY:
+        secret: POSTHOG_PROJECT_API_KEY
+        version: latest
   cloud_run:
     network:
       flags:
@@ -236,9 +268,22 @@ environment_shared:
           POSTHOG_HOST:
             value: https://app.posthog.com
             category: telemetry
+          BUCKET_FRAME_REQUESTS:
+            env_var: BUCKET_FRAME_REQUESTS
+            default: '{env}-omi-frame-requests'
+            provisional: true
+            category: storage_retention
+          BUCKET_FRAME_REQUESTS_TEMPORARY:
+            env_var: BUCKET_FRAME_REQUESTS_TEMPORARY
+            default: '{env}-omi-frame-requests-temporary'
+            provisional: true
+            category: storage_retention
           GCP_LOCATION:
             value: us-central1
       backend:
+        capabilities:
+        - conversation.finalize.persisted
+        - memory.canonical.mutate
         secrets:
           GOOGLE_CLIENT_SECRET:
             secret: GOOGLE_CLIENT_SECRET
@@ -252,12 +297,30 @@ environment_shared:
           OMI_LLM_GATEWAY_SERVICE_TOKEN:
             secret: OMI_LLM_GATEWAY_SERVICE_TOKEN
             version: latest
+          METRICS_SECRET:
+            secret: METRICS_SECRET
+            version: latest
+          # Same secret the day3-reengagement-email-job uses to MINT unsubscribe
+          # tokens; this service VERIFIES them at /email/unsubscribe. Bound on
+          # only one side, every unsubscribe link and every RFC 8058 one-click
+          # POST is a neutral 400 — the link is live, correctly addressed, and
+          # silently inert, which is the failure this whole path exists to
+          # prevent. It is here, not only on the job, for that reason.
+          LIFECYCLE_EMAIL_SIGNING_SECRET:
+            secret: LIFECYCLE_EMAIL_SIGNING_SECRET
+            version: latest
         env:
+          PROMETHEUS_SIDECAR_PORT:
+            value: '9090'
+            category: telemetry
           # The conversation summary pipeline runs in two services: backend-listen
           # finalizes a live conversation, and this one runs process_conversation
           # inline for POST /v1/conversations/{id}/reprocess. Declaring the rollout
           # flags on only one of them makes regenerate disagree with live capture.
           CONVERSATION_NOTES_V2_ENABLED:
+            value: 'false'
+            category: rollout
+          MEETING_RECEIPT_RECONCILER_ENABLED:
             value: 'false'
             category: rollout
           CONVERSATION_CALENDAR_CONTEXT_READ_ENABLED:
@@ -427,6 +490,9 @@ environment_shared:
             category: memory_rollout
         provisional: true
       backend-sync:
+        capabilities:
+        - conversation.finalize.persisted
+        - memory.canonical.mutate
         secrets:
           GOOGLE_CLIENT_SECRET:
             secret: GOOGLE_CLIENT_SECRET
@@ -571,6 +637,9 @@ environment_shared:
           SERVICE_ACCOUNT_JSON:
             secret: SERVICE_ACCOUNT_JSON
             version: latest
+          POSTHOG_PROJECT_API_KEY:
+            secret: POSTHOG_PROJECT_API_KEY
+            version: latest
           PINECONE_API_KEY:
             secret: PINECONE_API_KEY
             version: latest
@@ -580,6 +649,17 @@ environment_shared:
         flags:
           --remove-env-vars: MEMORY_ENABLED_USERS,MEMORY_CANONICAL_PROMOTION_CRON_ENABLED,MEMORY_CANONICAL_PROMOTION_CRON_INTERVAL_HOURS,MEMORY_CANONICAL_PROMOTION_FAST_TRACK_ENABLED
         env:
+          BUCKET_FRAME_REQUESTS:
+            env_var: BUCKET_FRAME_REQUESTS
+            default: '{env}-omi-frame-requests'
+            category: storage_retention
+          BUCKET_FRAME_REQUESTS_TEMPORARY:
+            env_var: BUCKET_FRAME_REQUESTS_TEMPORARY
+            default: '{env}-omi-frame-requests-temporary'
+            category: storage_retention
+          FRAME_REQUEST_RETENTION_INDEPENDENT_HEALTHY:
+            value: 'false'
+            category: storage_retention
           OMI_LLM_GATEWAY_URL:
             env_var: OMI_LLM_GATEWAY_URL
             default: http://127.0.0.1:9
@@ -619,3 +699,130 @@ environment_shared:
           OMI_BACKGROUND_FLEX_CAPABLE:
             value: 'false'
             category: memory_rollout
+      frame-request-retention-job:
+        secrets:
+          SERVICE_ACCOUNT_JSON:
+            secret: SERVICE_ACCOUNT_JSON
+            version: latest
+          POSTHOG_PROJECT_API_KEY:
+            secret: POSTHOG_PROJECT_API_KEY
+            version: latest
+        env:
+          OMI_ENV_STAGE:
+            value: '{env}'
+            category: runtime_identity
+          BUCKET_FRAME_REQUESTS:
+            env_var: BUCKET_FRAME_REQUESTS
+            default: '{env}-omi-frame-requests'
+            provisional: false
+            category: storage_retention
+          BUCKET_FRAME_REQUESTS_TEMPORARY:
+            env_var: BUCKET_FRAME_REQUESTS_TEMPORARY
+            default: '{env}-omi-frame-requests-temporary'
+            provisional: false
+            category: storage_retention
+      daily-memory-sweep-job:
+        flags:
+          --remove-env-vars: HOSTED_PUSHER_API_URL
+          --task-timeout: 3600s
+        secrets:
+          ENCRYPTION_SECRET:
+            secret: ENCRYPTION_SECRET
+            version: latest
+          OPENAI_API_KEY:
+            secret: OPENAI_API_KEY
+            version: latest
+          SERVICE_ACCOUNT_JSON:
+            secret: SERVICE_ACCOUNT_JSON
+            version: latest
+          POSTHOG_PROJECT_API_KEY:
+            secret: POSTHOG_PROJECT_API_KEY
+            version: latest
+        env:
+          OMI_ENV_STAGE:
+            value: '{env}'
+            category: runtime_identity
+          GOOGLE_CLOUD_PROJECT:
+            value: '{compute_project}'
+          MEMORY_ENABLED:
+            value: 'off'
+            category: memory_rollout
+          MEMORY_DAILY_MEMORY_SWEEP_ENABLED:
+            value: 'false'
+            category: memory_rollout
+          MEMORY_DAILY_MEMORY_SWEEP_KILL_SWITCH:
+            value: 'false'
+            category: memory_rollout
+          MEMORY_DAILY_MEMORY_SWEEP_MODEL_ENABLED:
+            value: 'false'
+            category: memory_rollout
+          MEMORY_DAILY_MEMORY_SWEEP_MODEL_NAME:
+            value: disabled
+            category: memory_rollout
+          MEMORY_DAILY_MEMORY_SWEEP_MAX_MODEL_CANDIDATES:
+            value: '8'
+            category: memory_rollout
+          MEMORY_DAILY_MEMORY_SWEEP_MAX_MODEL_COST_USD:
+            value: '0'
+            category: memory_rollout
+          MEMORY_DAILY_MEMORY_SWEEP_COHORT_ENABLED:
+            value: 'false'
+            category: memory_rollout
+          MEMORY_DAILY_MEMORY_SWEEP_COHORT_FLAG:
+            value: ''
+            category: memory_rollout
+          MEMORY_DAILY_MEMORY_SWEEP_COHORT_TIMEOUT_SECONDS:
+            value: '3'
+            category: memory_rollout
+          MEMORY_DAILY_MEMORY_SWEEP_TIMEZONE_RECONCILIATION_ENABLED:
+            value: 'false'
+            category: memory_rollout
+        forbidden_env:
+        - HOSTED_PUSHER_API_URL
+      # EXP-001. Ships default-off: both the enable flag and the kill switch
+      # must be set deliberately before a single message is sent.
+      #
+      # LIFECYCLE_EMAIL_SIGNING_SECRET must ALSO be present on the API service,
+      # not just here -- this job mints unsubscribe tokens and the API verifies
+      # them, so a secret configured on only one side produces links that
+      # silently fail to verify.
+      day3-reengagement-email-job:
+        flags:
+          --remove-env-vars: HOSTED_PUSHER_API_URL
+          --task-timeout: 900s
+        secrets:
+          ENCRYPTION_SECRET:
+            secret: ENCRYPTION_SECRET
+            version: latest
+          SERVICE_ACCOUNT_JSON:
+            secret: SERVICE_ACCOUNT_JSON
+            version: latest
+          POSTHOG_PROJECT_API_KEY:
+            secret: POSTHOG_PROJECT_API_KEY
+            version: latest
+          RESEND_API_KEY:
+            secret: RESEND_API_KEY
+            version: latest
+          LIFECYCLE_EMAIL_SIGNING_SECRET:
+            secret: LIFECYCLE_EMAIL_SIGNING_SECRET
+            version: latest
+        env:
+          OMI_ENV_STAGE:
+            value: '{env}'
+            category: runtime_identity
+          GOOGLE_CLOUD_PROJECT:
+            value: '{compute_project}'
+          # The API origin that serves /email/unsubscribe. Set per overlay
+          # (api.omi.me / api.omiapi.com) because it differs by environment.
+          # Not the share origin: unsubscribe is a FastAPI route, and a link
+          # built from the conversation-share host 404s.
+          BASE_API_URL:
+            value: ''
+          DAY3_REENGAGEMENT_EMAIL_ENABLED:
+            value: 'false'
+            category: lifecycle_email
+          DAY3_REENGAGEMENT_EMAIL_KILL_SWITCH:
+            value: 'false'
+            category: lifecycle_email
+        forbidden_env:
+        - HOSTED_PUSHER_API_URL

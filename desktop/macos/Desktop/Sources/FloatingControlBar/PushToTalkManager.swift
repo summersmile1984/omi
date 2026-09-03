@@ -92,6 +92,11 @@ struct ModifierOnlyPTTActivationGate {
   enum Action: Equatable {
     case scheduleStart
     case cancelPendingStart
+    /// The modifier was released before the activation delay elapsed and no other
+    /// key was pressed with it: a deliberate quick tap. No turn was started (an
+    /// accidental brush of the modifier must stay inert), but the tap is real
+    /// input and is offered to the double-tap detector.
+    case cancelPendingStartAsQuickTap
     case releaseStartedTurn
     case none
   }
@@ -108,7 +113,7 @@ struct ModifierOnlyPTTActivationGate {
 
     if hasPendingStart {
       hasPendingStart = false
-      return .cancelPendingStart
+      return .cancelPendingStartAsQuickTap
     }
     guard hasStartedTurn else { return .none }
     hasStartedTurn = false
@@ -245,6 +250,8 @@ class PushToTalkManager: ObservableObject {
   // Double-tap detection
   private var lastOptionDownTime: TimeInterval = 0
   private var lastOptionUpTime: TimeInterval = 0
+  /// Uptime of the last modifier-only quick tap that did not start a turn.
+  private var lastModifierQuickTapTime: TimeInterval = 0
   private let doubleTapThreshold: TimeInterval = 0.4
   private let tapToLockMaxHoldDuration: TimeInterval = 0.22
 
@@ -279,6 +286,18 @@ class PushToTalkManager: ObservableObject {
   private var hasMicPermission: Bool = false
   private var isCurrentSessionFollowUp = false
   private var currentContextSnapshot: PTTContextSnapshot?
+
+  /// OCR text of this turn's pre-overlay frame, waiting briefly for the in-flight OCR when the
+  /// realtime model escalates before it finished. Nil when no turn is capturing.
+  func visibleScreenText(timeout: TimeInterval) async -> String? {
+    let deadline = Date().addingTimeInterval(timeout)
+    while currentVoiceTurnID != nil {
+      if let snapshot = currentContextSnapshot { return snapshot.visibleText }
+      if Date() >= deadline { return nil }
+      try? await Task.sleep(nanoseconds: 100_000_000)
+    }
+    return nil
+  }
   private var contextCaptureTask: Task<Void, Never>?
 
   // Batch mode: accumulate raw audio for post-recording transcription
@@ -326,7 +345,7 @@ class PushToTalkManager: ObservableObject {
     RealtimeHubController.shared.setup()
     // Hermetic local harness has no Firebase SDK and no live realtime providers.
     if !DesktopLocalProfile.isEnabled {
-      RealtimeHubController.shared.ensureWarm()
+      RealtimeHubController.shared.ensureWarm(userInitiated: true)
     }
     log("PushToTalkManager: setup complete, micPermission=\(hasMicPermission)")
   }
@@ -501,6 +520,9 @@ class PushToTalkManager: ObservableObject {
       scheduleModifierOnlyShortcutStart()
     case .cancelPendingStart:
       cancelPendingModifierOnlyShortcutStart()
+    case .cancelPendingStartAsQuickTap:
+      cancelPendingModifierOnlyShortcutStart()
+      handleModifierOnlyQuickTap()
     case .releaseStartedTurn:
       handleShortcutUp()
     case .none:
@@ -519,6 +541,33 @@ class PushToTalkManager: ObservableObject {
     DispatchQueue.main.asyncAfter(
       deadline: .now() + Self.modifierOnlyShortcutActivationDelay,
       execute: workItem)
+  }
+
+  /// A modifier-only shortcut released inside `modifierOnlyShortcutActivationDelay`
+  /// never starts a turn — that delay is what keeps an accidental brush of the
+  /// modifier (or the modifier held as part of another shortcut) from recording.
+  /// A *pair* of such taps is unambiguous intent, so it drives locked mode, and a
+  /// tap while already locked sends, matching "Tap again to send".
+  private func handleModifierOnlyQuickTap() {
+    guard ShortcutSettings.shared.doubleTapForLock else { return }
+    let now = ProcessInfo.processInfo.systemUptime
+    if phase == .lockedRecording {
+      lastModifierQuickTapTime = 0
+      finalize()
+      return
+    }
+    guard (now - lastModifierQuickTapTime) < doubleTapThreshold else {
+      // First tap: stay completely inert. Nothing records, nothing is shown.
+      lastModifierQuickTapTime = now
+      return
+    }
+    lastModifierQuickTapTime = 0
+    if !FloatingControlBarManager.shared.isVisible {
+      FloatingControlBarManager.shared.show()
+    }
+    guard FloatingControlBarManager.shared.isVisible else { return }
+    log("PushToTalkManager: modifier-only double tap — entering locked listening")
+    enterLockedListening()
   }
 
   private func cancelPendingModifierOnlyShortcutStart() {
@@ -553,8 +602,13 @@ class PushToTalkManager: ObservableObject {
     switch phase {
     case .idle, .awaitingResponse, .awaitingTools, .awaitingJournal, .playing, .terminal, .none:
       // Check for double-tap: if last Option-up was recent, enter locked mode
-      if ShortcutSettings.shared.doubleTapForLock && (now - lastOptionUpTime) < doubleTapThreshold {
+      // A first tap can arrive either as a completed turn (`lastOptionUpTime`) or, on a
+      // modifier-only key, as a quick tap that never started one. Either counts, so a
+      // double tap locks even when the two taps differ in speed.
+      let recentFirstTap = max(lastOptionUpTime, lastModifierQuickTapTime)
+      if ShortcutSettings.shared.doubleTapForLock && (now - recentFirstTap) < doubleTapThreshold {
         lastOptionUpTime = 0
+        lastModifierQuickTapTime = 0
         enterLockedListening()
       } else {
         lastOptionDownTime = now
@@ -566,7 +620,7 @@ class PushToTalkManager: ObservableObject {
       break
 
     case .pendingLockDecision:
-      stopListening()
+      stopListening(endInterjectHold: false)
       enterLockedListening()
 
     case .lockedRecording:
@@ -587,6 +641,7 @@ class PushToTalkManager: ObservableObject {
 
       if ShortcutSettings.shared.doubleTapForLock && holdDuration < tapToLockMaxHoldDuration {
         lastOptionUpTime = now
+        lastModifierQuickTapTime = 0
         enterPendingLockDecision()
       } else {
         lastOptionUpTime = 0
@@ -666,6 +721,7 @@ class PushToTalkManager: ObservableObject {
       micPermissionGranted: refreshedMicPermission())
     let preOverlayImage = captureTurnScreenEvidence()
     updateBarState()
+    FloatingControlBarManager.shared.interjectPushToTalkDidStart()
 
     captureContextAndStartAudio(preOverlayImage: preOverlayImage)
     log("PushToTalkManager: started listening (mode=\(mode))")
@@ -719,6 +775,7 @@ class PushToTalkManager: ObservableObject {
     }
 
     updateBarState()
+    FloatingControlBarManager.shared.interjectPushToTalkDidStart()
     log("PushToTalkManager: entered locked listening mode (mode=\(mode))")
   }
 
@@ -730,7 +787,10 @@ class PushToTalkManager: ObservableObject {
     updateBarState()
   }
 
-  private func stopListening() {
+  private func stopListening(endInterjectHold: Bool = true) {
+    if endInterjectHold {
+      FloatingControlBarManager.shared.interjectPushToTalkDidCancel()
+    }
     if let turnID = currentVoiceTurnID,
       voiceTurnCoordinator.activeTurnID == turnID
     {
@@ -908,6 +968,19 @@ class PushToTalkManager: ObservableObject {
   /// which must end the turn with a hint rather than hang. No-op unless a capture is
   /// active.
   @discardableResult
+  /// Mirrors one *quick tap* of a modifier-only shortcut: the release lands inside
+  /// `modifierOnlyShortcutActivationDelay`, so no turn starts. Two of these inside the
+  /// double-tap window must lock, which is what the physical key does and what no other
+  /// automation entry point can express (`ptt_stop` mirrors a long-hold release).
+  func quickTapPushToTalkForAutomation() -> [String: String] {
+    ensureAutomationBarConfigured()
+    handleModifierOnlyQuickTap()
+    return [
+      "state": VoiceTurnCoordinator.phaseLabel(phase ?? .idle),
+      "locked": phase == .lockedRecording ? "true" : "false",
+    ]
+  }
+
   func endPushToTalkForAutomation() -> [String: String] {
     let wasActive = voiceTurnCoordinator.activeTurn?.phase.isRecording == true
     if wasActive { finalize() }
@@ -1107,6 +1180,7 @@ class PushToTalkManager: ObservableObject {
   }
 
   func finalize() {
+    FloatingControlBarManager.shared.interjectPushToTalkDidEnd()
     guard phase?.isRecording == true else { return }
     guard let turnID = currentVoiceTurnID else { return }
     voiceTurnCoordinator.publish(.finalize(turnID: turnID))
@@ -1191,7 +1265,6 @@ class PushToTalkManager: ObservableObject {
           rms: rms,
           turnAudioSeconds: totalSec,
           voicedAudioSeconds: nil,
-          isNearZero: peak <= 5 && rms <= 5,
           judgeable: totalSec >= Self.minTurnAudioSeconds)
         log(
           "PushToTalkManager: discarding hub turn — audio \(String(format: "%.2f", totalSec))s "
@@ -1204,7 +1277,7 @@ class PushToTalkManager: ObservableObject {
         }
         _ = RealtimeHubController.shared.cancelTurn(turnID: turnID)
         AnalyticsManager.shared.floatingBarPTTEnded(
-          mode: finalizedMode, hadTranscript: false, transcriptLength: 0)
+          mode: finalizedMode, committed: false, transcriptLength: nil)
         // Too short to have captured anything (fast tap / capture not ready) — hint
         // the user to hold longer instead of clearing silently. A longer hub turn
         // that simply had no speech keeps the quiet reset.
@@ -1233,17 +1306,20 @@ class PushToTalkManager: ObservableObject {
       }
       recordSilentMicRecoveryOutcome(silentMicRecoveryPolicy.recordSuccessfulTurn())
       DesktopDiagnosticsManager.shared.recordPTTCommitted(mode: finalizedMode, hubActive: true)
+      // Committed turns must report the same measurements as rejected ones. While
+      // this reported a literal 0, admitted and rejected energy were on different
+      // scales and the speech gate could not be tuned against its own traffic.
+      let (committedPeak, committedRMS) = Self.audioEnergy(pcm16k: turnAudio)
       pttLifecycle.terminate(
         disposition: .committed,
         source: "hub",
-        peak: 0,
-        rms: 0,
-        turnAudioSeconds: 0,
+        peak: committedPeak,
+        rms: committedRMS,
+        turnAudioSeconds: totalSec,
         voicedAudioSeconds: nil,
-        isNearZero: false,
         judgeable: true)
       AnalyticsManager.shared.floatingBarPTTEnded(
-        mode: finalizedMode, hadTranscript: true, transcriptLength: 0)
+        mode: finalizedMode, committed: true, transcriptLength: nil)
       log(
         "PushToTalkManager: hub turn "
           + "\(commitResult == .accepted ? "committed" : "deferred until its realtime session is ready")")
@@ -1287,13 +1363,12 @@ class PushToTalkManager: ObservableObject {
           rms: rms,
           turnAudioSeconds: totalSec,
           voicedAudioSeconds: voicedSec,
-          isNearZero: peak <= 5 && rms <= 5,
           judgeable: totalSec >= Self.minTurnAudioSeconds)
         log(
           "PushToTalkManager: discarding silent turn (audio \(String(format: "%.2f", totalSec))s, voiced \(String(format: "%.2f", voicedSec))s) — not transcribing"
         )
         AnalyticsManager.shared.floatingBarPTTEnded(
-          mode: finalizedMode, hadTranscript: false, transcriptLength: 0)
+          mode: finalizedMode, committed: false, transcriptLength: nil)
         if recoveryDecision.shouldRebuildCapture {
           requestCoreAudioCaptureRecovery(reason: "repeated dead-mic PTT turns", restartPTT: false, batchMode: isBatch)
         }
@@ -1401,14 +1476,14 @@ class PushToTalkManager: ObservableObject {
           }
         } catch {
           logError("PushToTalkManager: batch transcription failed", error: error)
+          let (batchPeak, batchRMS) = Self.audioEnergy(pcm16k: audioData)
           self.pttLifecycle.terminate(
             disposition: .committed,
             source: "batch_stt",
-            peak: 0,
-            rms: 0,
-            turnAudioSeconds: 0,
+            peak: batchPeak,
+            rms: batchRMS,
+            turnAudioSeconds: Double(audioData.count / 2) / 16000.0,
             voicedAudioSeconds: nil,
-            isNearZero: false,
             judgeable: true)
           self.voiceTurnCoordinator.publish(
             .transcriptionFailed(turnID: turnID, message: error.localizedDescription))
@@ -1536,7 +1611,7 @@ class PushToTalkManager: ObservableObject {
 
     AnalyticsManager.shared.floatingBarPTTEnded(
       mode: finalizedMode,
-      hadTranscript: hasQuery,
+      committed: hasQuery,
       transcriptLength: query.count
     )
     if hasQuery {
@@ -1544,11 +1619,12 @@ class PushToTalkManager: ObservableObject {
       pttLifecycle.terminate(
         disposition: .committed,
         source: isOmniSTT ? "omni_stt" : "batch_stt",
-        peak: 0,
-        rms: 0,
-        turnAudioSeconds: 0,
+        // The turn's PCM was consumed before finalization reached this point, so
+        // these are genuinely unknown here rather than zero.
+        peak: nil,
+        rms: nil,
+        turnAudioSeconds: nil,
         voicedAudioSeconds: nil,
-        isNearZero: false,
         judgeable: true)
     } else {
       // Empty transcript after the turn reached finalization (e.g. a live-Deepgram
@@ -1558,11 +1634,12 @@ class PushToTalkManager: ObservableObject {
       pttLifecycle.terminate(
         disposition: .committed,
         source: isOmniSTT ? "omni_stt" : "batch_stt",
-        peak: 0,
-        rms: 0,
-        turnAudioSeconds: 0,
+        // The turn's PCM was consumed before finalization reached this point, so
+        // these are genuinely unknown here rather than zero.
+        peak: nil,
+        rms: nil,
+        turnAudioSeconds: nil,
         voicedAudioSeconds: nil,
-        isNearZero: false,
         judgeable: true)
     }
 
@@ -1794,7 +1871,7 @@ class PushToTalkManager: ObservableObject {
       // behind a global fence with no captured-turn owner.
       _ = RealtimeHubController.shared.beginTurn(turnID: turnID)
     }
-    RealtimeHubController.shared.ensureWarm()
+    RealtimeHubController.shared.ensureWarm(userInitiated: true)
     guard startMicrophoneCapture else { return }
     if let builtIn = preferredPTTInputOverrideDeviceID() {
       log("PushToTalkManager: waiting for realtime hub — buffering built-in mic audio")
@@ -1878,7 +1955,6 @@ class PushToTalkManager: ObservableObject {
         rms: rms,
         turnAudioSeconds: totalSec,
         voicedAudioSeconds: nil,
-        isNearZero: peak <= 5 && rms <= 5,
         judgeable: totalSec >= Self.minTurnAudioSeconds)
       log(
         "PushToTalkManager: discarding buffered hub turn — audio \(String(format: "%.2f", totalSec))s "
@@ -1890,7 +1966,7 @@ class PushToTalkManager: ObservableObject {
         requestCoreAudioCaptureRecovery(reason: "repeated dead-mic PTT turns", restartPTT: false, batchMode: false)
       }
       AnalyticsManager.shared.floatingBarPTTEnded(
-        mode: finalizedMode, hadTranscript: false, transcriptLength: 0)
+        mode: finalizedMode, committed: false, transcriptLength: nil)
       if let turnID = currentVoiceTurnID {
         voiceTurnCoordinator.publish(
           .finish(
@@ -1915,17 +1991,17 @@ class PushToTalkManager: ObservableObject {
     }
     recordSilentMicRecoveryOutcome(silentMicRecoveryPolicy.recordSuccessfulTurn())
     DesktopDiagnosticsManager.shared.recordPTTCommitted(mode: finalizedMode, hubActive: true)
+    let (committedPeak, committedRMS) = Self.audioEnergy(pcm16k: turnAudio)
     pttLifecycle.terminate(
       disposition: .committed,
       source: "buffered_hub",
-      peak: 0,
-      rms: 0,
-      turnAudioSeconds: 0,
+      peak: committedPeak,
+      rms: committedRMS,
+      turnAudioSeconds: totalSec,
       voicedAudioSeconds: nil,
-      isNearZero: false,
       judgeable: true)
     AnalyticsManager.shared.floatingBarPTTEnded(
-      mode: finalizedMode, hadTranscript: true, transcriptLength: 0)
+      mode: finalizedMode, committed: true, transcriptLength: nil)
     log(
       "PushToTalkManager: buffered hub turn "
         + "\(commitResult == .accepted ? "committed" : "deferred until its realtime session is ready") after warm wait")
@@ -1961,13 +2037,12 @@ class PushToTalkManager: ObservableObject {
         rms: rms,
         turnAudioSeconds: totalSec,
         voicedAudioSeconds: voicedSec,
-        isNearZero: peak <= 5 && rms <= 5,
         judgeable: totalSec >= Self.minTurnAudioSeconds)
       log(
         "PushToTalkManager: discarding warm-wait fallback turn (audio \(String(format: "%.2f", totalSec))s, voiced \(String(format: "%.2f", voicedSec))s)"
       )
       AnalyticsManager.shared.floatingBarPTTEnded(
-        mode: finalizedMode, hadTranscript: false, transcriptLength: 0)
+        mode: finalizedMode, committed: false, transcriptLength: nil)
       if recoveryDecision.shouldRebuildCapture {
         requestCoreAudioCaptureRecovery(reason: "repeated dead-mic PTT turns", restartPTT: false, batchMode: true)
       }
@@ -2312,11 +2387,12 @@ class PushToTalkManager: ObservableObject {
         self.pttLifecycle.terminate(
           disposition: .silentRejected,
           source: "capture_start",
+          // Capture never started, so zero samples is a measured fact here, not a
+          // placeholder: it is what distinguishes a failed start from an unknown.
           peak: 0,
           rms: 0,
           turnAudioSeconds: 0,
           voicedAudioSeconds: nil,
-          isNearZero: true,
           judgeable: false)
         if let diagnosticRecoveryAction {
           DesktopDiagnosticsManager.shared.recordPTTDeviceRouteChanged(

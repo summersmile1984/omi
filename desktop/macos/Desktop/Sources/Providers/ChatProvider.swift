@@ -972,6 +972,85 @@ enum ChatSystemPromptStyle {
   case floating
 }
 
+enum RealtimeChatLaneError: Error {
+  case busy
+  case unavailable
+  case emptyResponse
+  case ownerChanged
+  case revoked
+}
+
+struct RealtimeChatLaneInvocationGate: Equatable {
+  private(set) var activeInvocationID: String?
+  private var revokedInvocationID: String?
+
+  mutating func begin(_ invocationID: String) -> Bool {
+    guard activeInvocationID == nil, !invocationID.isEmpty else { return false }
+    activeInvocationID = invocationID
+    return true
+  }
+
+  func accepts(_ invocationID: String) -> Bool {
+    activeInvocationID == invocationID && revokedInvocationID != invocationID
+  }
+
+  @discardableResult
+  mutating func finish(_ invocationID: String) -> Bool {
+    guard activeInvocationID == invocationID else { return false }
+    activeInvocationID = nil
+    revokedInvocationID = nil
+    return true
+  }
+
+  mutating func revokeActive() -> String? {
+    guard let activeInvocationID, revokedInvocationID != activeInvocationID else { return nil }
+    revokedInvocationID = activeInvocationID
+    return activeInvocationID
+  }
+}
+
+/// Binds a voice companion query to one bridge request id so a delayed interrupt
+/// cannot cancel a later typed chat turn.
+struct RealtimeChatLaneInterruptBinding: Equatable {
+  private(set) var boundIdentity: String?
+  private(set) var pendingInterruptIdentity: String?
+  private(set) var activeRequestId: String?
+
+  mutating func bind(_ identity: String) {
+    guard !identity.isEmpty else { return }
+    boundIdentity = identity
+  }
+
+  mutating func unbind(_ identity: String) {
+    guard boundIdentity == identity else { return }
+    boundIdentity = nil
+    if pendingInterruptIdentity == identity {
+      pendingInterruptIdentity = nil
+    }
+    activeRequestId = nil
+  }
+
+  mutating func beginRequest(_ requestId: String) -> Bool {
+    guard !requestId.isEmpty else { return false }
+    activeRequestId = requestId
+    if let boundIdentity, pendingInterruptIdentity == boundIdentity {
+      return false
+    }
+    return true
+  }
+
+  mutating func requestInterrupt(_ identity: String) -> String? {
+    pendingInterruptIdentity = identity
+    guard boundIdentity == identity else { return nil }
+    return activeRequestId
+  }
+
+  mutating func finishRequest(_ requestId: String) {
+    guard activeRequestId == requestId else { return }
+    activeRequestId = nil
+  }
+}
+
 /// State management for chat functionality with Claude Agent SDK
 /// Uses hybrid architecture: Swift → Claude Agent (via Node.js bridge) for AI, Backend for persistence + context
 @MainActor
@@ -1014,6 +1093,10 @@ class ChatProvider: ObservableObject {
   }
   /// Files staged for attachment to the next message. Cleared when the message is sent.
   @Published var pendingAttachments: [ChatAttachment] = []
+  /// Conversation references staged for the next main-chat turn. These are
+  /// composer state, not chat history, and remain visible until the turn is
+  /// accepted or the user removes them.
+  @Published var pendingComposerReferences: [ChatComposerReference] = []
   @Published var messages: [ChatMessage] = []
   @Published var sessions: [ChatSession] = []
   @Published var currentSession: ChatSession? {
@@ -1073,14 +1156,22 @@ class ChatProvider: ObservableObject {
   /// Watchdog tasks capture their gen and only reset state if it still
   /// matches — so a watchdog fired by a stuck send #N won't cancel a
   /// later, healthy send #N+1. See sendMessage() and stopAgent().
-  private var sendGeneration: Int = 0
+  ///
+  /// Readable (never writable) outside the provider so a test can assert that a
+  /// transcript reset actually revoked the in-flight turn — the bump is what
+  /// makes `ChatQueryResultAuthority` reject the dead turn's late result.
+  private(set) var sendGeneration: Int = 0
   private var sendLockOwnership = ChatSendLockOwnership()
+  private var realtimeChatLaneInvocationGate = RealtimeChatLaneInvocationGate()
 
   /// Whether a new turn can start right now. The bridge holds one message
   /// continuation, so a second concurrent turn would have its response
   /// consumed by the wrong caller. Exposed so a caller can ask before it
   /// sends — and report the refusal — instead of discovering it as a `nil`.
-  var canAcceptSend: Bool { !isSending && !sendLockOwnership.isHeld }
+  var canAcceptSend: Bool {
+    !isSending && !sendLockOwnership.isHeld
+      && realtimeChatLaneInvocationGate.activeInvocationID == nil
+  }
 
   /// Said, not swallowed: a refused send is the reader's message going
   /// nowhere, so it needs an account of where it went.
@@ -1311,6 +1402,7 @@ class ChatProvider: ObservableObject {
 
   // MARK: - Cached Context for Prompts
   private var cachedMemories: [ServerMemory] = []
+  private var cachedLedgerPromptProjection: KnowledgeLedgerPromptProjection?
   private var memoriesLoaded = false
   private var cachedGoals: [Goal] = []
   private var goalsLoaded = false
@@ -1698,9 +1790,11 @@ class ChatProvider: ObservableObject {
     messages.removeAll()
     resetMessagesPagination()
     pendingAttachments.removeAll()
+    pendingComposerReferences.removeAll()
     sessions.removeAll()
     currentSession = nil
     cachedMemories = []
+    cachedLedgerPromptProjection = nil
     memoriesLoaded = false
     cachedGoals = []
     goalsLoaded = false
@@ -1712,7 +1806,7 @@ class ChatProvider: ObservableObject {
     schemaLoaded = false
   }
 
-  private var runtimeOwnerId: String? {
+  var runtimeOwnerId: String? {
     RuntimeOwnerIdentity.currentOwnerId()
   }
 
@@ -1822,7 +1916,8 @@ class ChatProvider: ObservableObject {
     includeScreenSource: Bool = true,
     includePromptCitations: Bool = true,
     requestedModelProfile: String? = nil,
-    pinnedSession: AgentSurfaceSession? = nil
+    pinnedSession: AgentSurfaceSession? = nil,
+    composerReferences: [ChatComposerReference] = []
   ) async throws -> KernelQueryContext {
     let client = resolvedAgentClient()
     let session: AgentSurfaceSession
@@ -1845,7 +1940,10 @@ class ChatProvider: ObservableObject {
     let includesLegacyGoals = !isChatFirstEnabled(for: surface)
     let promptCitationLedger =
       includePromptCitations
-      ? makePromptCitationLedger(includesLegacyGoals: includesLegacyGoals)
+      ? makePromptCitationLedger(
+        includesLegacyGoals: includesLegacyGoals,
+        additionalSources: composerReferences.map(\.promptCitationSource)
+      )
       : ChatPromptCitationLedger(sources: [])
     let memoryText = formatMemoriesSection(citations: promptCitationLedger)
     let goalText = includesLegacyGoals ? formatGoalSection(citations: promptCitationLedger) : ""
@@ -1860,6 +1958,7 @@ class ChatProvider: ObservableObject {
     }
     let responseContext = [
       systemPromptSuffix?.trimmingCharacters(in: .whitespacesAndNewlines),
+      ThreeDoorsDemoPage.activeModelNote?.trimmingCharacters(in: .whitespacesAndNewlines),
       AssistantSettings.shared.hasExplicitVoiceLanguages
         ? Self.responseLanguageInstruction(languageCodes: AssistantSettings.shared.voiceLanguages)
         : nil,
@@ -1873,6 +1972,30 @@ class ChatProvider: ObservableObject {
     }
     if let notificationContext, !notificationContext.isEmpty {
       surfacePayload["notificationContext"] = notificationContext
+    }
+    if !composerReferences.isEmpty {
+      let selectedReferences: [[String: Any]] = composerReferences.compactMap { reference in
+        guard
+          let marker = promptCitationLedger.marker(
+            kind: reference.promptCitationSource.kind,
+            sourceID: reference.sourceID
+          )
+        else { return nil }
+        var payload: [String: Any] = [
+          "kind": reference.kind.rawValue,
+          "sourceId": reference.sourceID,
+          "title": reference.displayTitle,
+          "preview": reference.preview,
+          "citation": marker,
+        ]
+        if let momentTimestampMs = reference.momentTimestampMs {
+          payload["momentTimestampMs"] = momentTimestampMs
+        }
+        return payload
+      }
+      if !selectedReferences.isEmpty {
+        surfacePayload["selectedChatReferences"] = selectedReferences
+      }
     }
     let capturedAtMs = Int(Date().timeIntervalSince1970 * 1_000)
     let screenOutcome: AgentContextSourceOutcome = screenPayload == nil ? .empty : .available
@@ -1975,6 +2098,85 @@ class ChatProvider: ObservableObject {
       log("ChatProvider: realtime kernel context preparation failed: \(error.localizedDescription)")
       return .empty
     }
+  }
+
+  /// Executes one non-journaled companion query on the canonical main-chat
+  /// session. Session resolution supplies the same selected model and complete
+  /// desktop-chat capability projection as typed Chat; the voice reducer still
+  /// owns the enclosing audible turn and its persistence.
+  func askChatLaneForSpokenAnswer(
+    prompt: String,
+    invocationID: String,
+    expectedOwnerID: String
+  ) async throws -> String {
+    guard runtimeOwnerId == expectedOwnerID else { throw RealtimeChatLaneError.ownerChanged }
+    guard canAcceptSend, realtimeChatLaneInvocationGate.begin(invocationID) else {
+      throw RealtimeChatLaneError.busy
+    }
+    defer { realtimeChatLaneInvocationGate.finish(invocationID) }
+
+    guard await ensureBridgeStartedForKernel() else { throw RealtimeChatLaneError.unavailable }
+    guard runtimeOwnerId == expectedOwnerID else { throw RealtimeChatLaneError.ownerChanged }
+    guard realtimeChatLaneInvocationGate.accepts(invocationID) else {
+      throw RealtimeChatLaneError.revoked
+    }
+
+    let surface = mainChatSurfaceReference()
+    let kernelContext = try await prepareKernelQueryContext(
+      surface: surface,
+      systemPromptStyle: .main,
+      systemPromptPrefix: nil,
+      systemPromptSuffix: RealtimeHubTools.escalationSystemPrompt(),
+      notificationContext: nil,
+      screenPayload: nil,
+      includePromptCitations: true,
+      requestedModelProfile: nil
+    )
+    await resolvedAgentClient().warmupSession(kernelContext.session)
+    guard runtimeOwnerId == expectedOwnerID else { throw RealtimeChatLaneError.ownerChanged }
+    guard realtimeChatLaneInvocationGate.accepts(invocationID) else {
+      throw RealtimeChatLaneError.revoked
+    }
+
+    let client = resolvedAgentClient()
+    await client.bindRealtimeChatLaneInterrupt(invocationID)
+    let result: AgentClient.QueryResult
+    do {
+      result = try await client.query(
+        prompt: ChatPromptBuilder.currentTimePrompt(for: prompt),
+        session: kernelContext.session,
+        surface: surface,
+        mode: chatMode.rawValue,
+        expectedContext: kernelContext.snapshot.freshness,
+        reasoningEffort: ChatTurnOwner.mainChat.reasoningEffort,
+        onTextDelta: { _ in },
+        onToolActivity: { _, _, _, _ in },
+        onThinkingDelta: { _ in }
+      )
+      await client.unbindRealtimeChatLaneInterrupt(invocationID)
+    } catch {
+      await client.unbindRealtimeChatLaneInterrupt(invocationID)
+      if case BridgeError.stopped = error {
+        throw RealtimeChatLaneError.revoked
+      }
+      throw error
+    }
+    guard runtimeOwnerId == expectedOwnerID else { throw RealtimeChatLaneError.ownerChanged }
+    guard realtimeChatLaneInvocationGate.accepts(invocationID) else {
+      throw RealtimeChatLaneError.revoked
+    }
+    let answer = try Self.requireSuccessfulQueryResult(result).text
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !answer.isEmpty else { throw RealtimeChatLaneError.emptyResponse }
+    return answer
+  }
+
+  /// Revokes only the exact voice companion query. The gate remains occupied
+  /// until that query unwinds, so its interrupt cannot touch a newer typed turn.
+  func cancelActiveRealtimeChatLaneInvocation() {
+    guard let identity = realtimeChatLaneInvocationGate.revokeActive() else { return }
+    let client = resolvedAgentClient()
+    Task { await client.interruptRealtimeChatLane(identity: identity) }
   }
 
   private static func queryAttachments(_ attachments: [ChatAttachment]) -> [AgentQueryAttachment] {
@@ -2366,6 +2568,13 @@ class ChatProvider: ObservableObject {
   func selectSession(_ session: ChatSession, force: Bool = false) async {
     guard force || currentSession?.id != session.id || isInDefaultChat else { return }
 
+    // This replaces the transcript, so it is a transcript reset and must go
+    // through the one revocation authority — same as `selectApp`/`reinitialize`.
+    // Without it a turn still in flight for the previous session stays
+    // generation-current, and its late result (including the reconstructed
+    // failure notice) is accepted into *this* session's transcript.
+    revokeActiveTurn(reason: .superseded)
+
     currentSession = session
     isInDefaultChat = false
     isLoading = true
@@ -2484,8 +2693,12 @@ class ChatProvider: ObservableObject {
 
   // MARK: - Load Context (Memories)
 
-  /// Loads user memories from local SQLite for use in prompts (refreshed each turn).
+  /// Loads prompt knowledge on every turn. The canonical path activates only
+  /// from an owner-pinned dedicated server receipt; any disabled/unknown
+  /// rollout, kill switch, incomplete migration, mixed schema, or auth race
+  /// retains the released local-cache behavior for rollback compatibility.
   private func refreshMemoriesForPrompt() async {
+    cachedLedgerPromptProjection = nil
     do {
       cachedMemories = try await MemoryStorage.shared.getLocalMemories(limit: 50)
       memoriesLoaded = true
@@ -2494,10 +2707,60 @@ class ChatProvider: ObservableObject {
       logError("Failed to load memories from local DB", error: error)
       // Continue without memories - non-critical
     }
+
+    guard let authorization = RuntimeOwnerIdentity.captureAuthorizationSnapshot() else {
+      await loadAIProfileIfNeeded()
+      return
+    }
+    do {
+      let snapshot = try await APIClient.shared.getKnowledgeLedgerPromptSnapshot(
+        authorizationSnapshot: authorization)
+      guard snapshot.isAuthoritative else {
+        await loadAIProfileIfNeeded()
+        return
+      }
+      Task {
+        do {
+          _ = try await KnowledgeLedgerMirrorCoordinator.shared.sync(
+            authorizationSnapshot: authorization)
+        } catch {
+          log("ChatProvider: exhaustive ledger mirror convergence deferred")
+        }
+      }
+      let projection = KnowledgeLedgerPromptProjection(
+        memories: snapshot.memories,
+        hasAuthoritativeSnapshot: true)
+      guard projection.isCompleteLedgerSnapshot else {
+        log("ChatProvider: canonical ledger prompt snapshot rejected as incomplete or mixed-version")
+        await loadAIProfileIfNeeded()
+        return
+      }
+      try await MemoryStorage.shared.syncAuthoritativeKnowledgeLedgerSnapshot(
+        snapshot.memories,
+        authorizationSnapshot: authorization)
+      guard RuntimeOwnerIdentity.isAuthorizationCurrent(authorization) else { return }
+      cachedLedgerPromptProjection = projection
+      // Authoritative empty and non-empty ledgers both replace the independent
+      // synthesized profile. Mark it reloadable so a later flag-off or stale
+      // receipt can intentionally restore compatibility on the next turn.
+      cachedAIProfile = ""
+      aiProfileLoaded = false
+      log("ChatProvider: adopted authoritative ledger prompt snapshot (\(snapshot.memories.count) rows)")
+    } catch {
+      logError("ChatProvider: authoritative ledger prompt refresh failed closed", error: error)
+      await loadAIProfileIfNeeded()
+    }
   }
 
   /// Formats cached memories into a string for the prompt
   private func formatMemoriesSection(citations: ChatPromptCitationLedger) -> String {
+    if let projection = cachedLedgerPromptProjection,
+      let rendered = projection.render(
+        userName: AuthService.shared.displayName.isEmpty ? nil : AuthService.shared.givenName,
+        marker: { citations.marker(kind: .memory, sourceID: $0) })
+    {
+      return "<user_facts>\n\(rendered)</user_facts>"
+    }
     guard !cachedMemories.isEmpty else { return "" }
 
     let userName = AuthService.shared.displayName.isEmpty ? "the user" : AuthService.shared.givenName
@@ -2513,16 +2776,21 @@ class ChatProvider: ObservableObject {
     return lines.joined(separator: "\n")
   }
 
-  private func makePromptCitationLedger(includesLegacyGoals: Bool) -> ChatPromptCitationLedger {
+  private func makePromptCitationLedger(
+    includesLegacyGoals: Bool,
+    additionalSources: [ChatPromptCitationSource] = []
+  ) -> ChatPromptCitationLedger {
     let formatter = ISO8601DateFormatter()
-    var sources = cachedMemories.prefix(30).map {
-      ChatPromptCitationSource(
-        kind: .memory,
-        sourceID: $0.id,
-        title: $0.headline ?? "Memory",
-        preview: $0.content,
-        createdAt: formatter.string(from: $0.createdAt))
-    }
+    var sources =
+      cachedLedgerPromptProjection?.citationSources
+      ?? cachedMemories.prefix(30).map {
+        ChatPromptCitationSource(
+          kind: .memory,
+          sourceID: $0.id,
+          title: $0.headline ?? "Memory",
+          preview: $0.content,
+          createdAt: formatter.string(from: $0.createdAt))
+      }
     if includesLegacyGoals {
       sources.append(
         contentsOf: cachedGoals.filter(\.isActive).map {
@@ -2543,7 +2811,10 @@ class ChatProvider: ObservableObject {
           preview: $0.contextSummary ?? $0.description,
           createdAt: formatter.string(from: $0.createdAt))
       })
-    return ChatPromptCitationLedger(sources: sources)
+    // Explicit composer selections are user intent, so reserve their citation
+    // ordinals ahead of ambient memory/task context before the bounded ledger
+    // applies its 128-source cap.
+    return ChatPromptCitationLedger(sources: additionalSources + sources)
   }
 
   // MARK: - Load Goals
@@ -2626,10 +2897,7 @@ class ChatProvider: ObservableObject {
         line += " [priority: \(priority)]"
       }
       if let dueAt = task.dueAt {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        line += " [due: \(formatter.string(from: dueAt))]"
+        line += " [due: \(DesktopChatTimestampFormat.userFacing(dueAt, timeZone: .current))]"
       }
       if let category = task.category {
         line += " [category: \(category)]"
@@ -2647,6 +2915,11 @@ class ChatProvider: ObservableObject {
 
   /// Fetches the latest AI-generated user profile from local database
   private func loadAIProfileIfNeeded() async {
+    guard promptKnowledgeSelection.shouldLoadLegacyAIProfile else {
+      cachedAIProfile = ""
+      aiProfileLoaded = false
+      return
+    }
     guard !aiProfileLoaded else { return }
 
     if let profile = await AIUserProfileService.shared.getLatestProfile() {
@@ -2658,8 +2931,11 @@ class ChatProvider: ObservableObject {
 
   /// Formats AI profile into a prompt section
   private func formatAIProfileSection() -> String {
-    guard !cachedAIProfile.isEmpty else { return "" }
-    return "\n<ai_user_profile>\n\(cachedAIProfile)\n</ai_user_profile>"
+    promptKnowledgeSelection.legacyAIProfileSection(profileText: cachedAIProfile)
+  }
+
+  private var promptKnowledgeSelection: ChatPromptKnowledgeSelection {
+    ChatPromptKnowledgeSelection(authoritativeLedger: cachedLedgerPromptProjection)
   }
 
   // MARK: - Load Database Schema
@@ -2907,7 +3183,6 @@ class ChatProvider: ObservableObject {
       await loadGoalsIfNeeded()
     }
     await loadTasksIfNeeded()
-    await loadAIProfileIfNeeded()
     await loadSchemaIfNeeded()
     await discoverClaudeConfig()
 
@@ -3546,10 +3821,11 @@ class ChatProvider: ObservableObject {
     messageId: String,
     status: KernelJournalTurnStatus,
     surface: AgentSurfaceReference? = nil,
-    ownerID: String
+    ownerID: String,
+    messageOverride: ChatMessage? = nil
   ) async -> Bool {
     let targetSurface = surface ?? mainChatSurfaceReference()
-    if let message = messages.first(where: { $0.id == messageId }) {
+    if let message = messageOverride ?? messages.first(where: { $0.id == messageId }) {
       return await kernelTurnProjection.updateTurn(
         surface: targetSurface,
         message: message,
@@ -3570,7 +3846,8 @@ class ChatProvider: ObservableObject {
   /// adapter completion cannot race two terminal journal updates or callbacks.
   private func finishJournalTarget(
     generation: Int,
-    status: KernelJournalTurnStatus
+    status: KernelJournalTurnStatus,
+    messageOverride: ChatMessage? = nil
   ) async -> Bool {
     guard let target = journalTerminalTargets.claim(generation: generation) else {
       return false
@@ -3588,7 +3865,8 @@ class ChatProvider: ObservableObject {
         messageId: target.assistantMessageId,
         status: status,
         surface: target.surface,
-        ownerID: target.ownerID
+        ownerID: target.ownerID,
+        messageOverride: messageOverride
       )
     }
     journalOwnerByMessageID.removeValue(forKey: target.assistantMessageId)
@@ -3659,6 +3937,21 @@ class ChatProvider: ObservableObject {
 
   func removePendingAttachment(id: String) {
     pendingAttachments.removeAll { $0.id == id }
+  }
+
+  /// Stage a source in the one main-chat composer. Re-selecting the same
+  /// source replaces its display metadata rather than creating duplicate
+  /// chips, and never changes the current draft or submits a turn.
+  func stageComposerReference(_ reference: ChatComposerReference) {
+    guard !reference.sourceID.isEmpty else { return }
+    pendingComposerReferences.removeAll {
+      $0.kind == reference.kind && $0.sourceID == reference.sourceID
+    }
+    pendingComposerReferences.append(reference)
+  }
+
+  func removeComposerReference(id: String) {
+    pendingComposerReferences.removeAll { $0.id == id }
   }
 
   /// Upload a single staged attachment in the background. The user can send
@@ -4392,6 +4685,7 @@ class ChatProvider: ObservableObject {
     // via the local thumbnail data — we only block sending until the upload
     // settles so persistence stays consistent across sessions.
     var attachmentsForMessage: [ChatAttachment] = []
+    let composerReferencesForMessage = pendingComposerReferences
     if !pendingAttachments.isEmpty {
       let ok = await awaitPendingUploads()
       guard
@@ -4487,12 +4781,17 @@ class ChatProvider: ObservableObject {
     let capturedSessionId = sessionId
     let capturedAppId = overrideAppId ?? selectedAppId
     let journalOrigin = journalOrigin(for: resolvedSurface)
+    let userMessageResources = ChatResource.userMessageResources(
+      attachments: attachmentsForMessage,
+      references: composerReferencesForMessage
+    )
     let userMessage = ChatMessage(
       id: userMessageId,
       clientTurnId: turnAttemptId,
       text: effectivePrompt,
       sender: .user,
       attachments: attachmentsForMessage,
+      resources: userMessageResources,
       turnOwner: turnOwner
     )
     let aiMessageId = turnMessageIds.assistant
@@ -4560,6 +4859,10 @@ class ChatProvider: ObservableObject {
     // Signal to ChatMessagesView only after the complete exchange exists so
     // anchoring can never expose a user row without its response target.
     localSendToken = LocalSendToken(generation: sendGen)
+    // The staged reference is now a durable resource on the accepted user
+    // turn. Clearing composer state keeps it out of the next draft without
+    // removing the pill from this message or a later journal replay.
+    pendingComposerReferences.removeAll()
     onAccepted?()
 
     // Track onboarding user-message shape without content.
@@ -4670,7 +4973,8 @@ class ChatProvider: ObservableObject {
         screenPayload: screenPayload,
         includePromptCitations: turnOwner != .floatingVoice,
         requestedModelProfile: model,
-        pinnedSession: pinnedSession
+        pinnedSession: pinnedSession,
+        composerReferences: composerReferencesForMessage
       )
       await resolvedAgentClient().warmupSession(kernelContext.session)
       let effectiveRequestModel = kernelContext.session.profile.modelProfile
@@ -4793,6 +5097,16 @@ class ChatProvider: ObservableObject {
               toolName: name, durationMs: durationMs, outcome: status)
           }
           let transitions = await stallDetector.step(kind: detectorKind, atMs: nowMs)
+          self.applyStallTransitions(messageId: aiMessageId, transitions: transitions)
+        }
+      }
+      let turnActivityHandler: AgentClient.TurnActivityHandler = { [weak self] in
+        callbackQueue.submit { @MainActor [weak self] in
+          guard let self else { return }
+          let transitions = await stallDetector.step(
+            kind: .other,
+            atMs: ChatProvider.monotonicNowMs()
+          )
           self.applyStallTransitions(messageId: aiMessageId, transitions: transitions)
         }
       }
@@ -4957,6 +5271,7 @@ class ChatProvider: ObservableObject {
           reasoningEffort: turnOwner.reasoningEffort,
           onTextDelta: textDeltaHandler,
           onToolActivity: toolActivityHandler,
+          onTurnActivity: turnActivityHandler,
           onThinkingDelta: thinkingDeltaHandler,
           onToolResultDisplay: toolResultDisplayHandler,
           onAuthRequired: { [weak self] methods, authUrl in
@@ -5122,7 +5437,8 @@ class ChatProvider: ObservableObject {
             imageByteCount: effectiveImageData?.count,
             toolNames: toolTiming.toolNames,
             sqlRowsReturned: metricsSnapshot.sqlRowsReturned,
-            sqlQueryCount: metricsSnapshot.sqlQueryCount
+            sqlQueryCount: metricsSnapshot.sqlQueryCount,
+            modelsUsed: queryResult.modelsUsed
           )
           completeRemainingToolCalls(
             messageId: aiMessageId,
@@ -5402,8 +5718,12 @@ class ChatProvider: ObservableObject {
         ),
         providerAuthMessage: Self.providerAuthRequiredUserMessage(isUserClaudeMode: isUserClaudeMode)
       )
-      if let failureNotice {
-        applyTurnFailureMarker(failureNotice, toAssistantMessage: aiMessageId)
+      let failedAssistantMessage = failureNotice.flatMap {
+        applyTurnFailureMarker(
+          $0,
+          toAssistantMessage: aiMessageId,
+          fallbackAssistantMessage: aiMessage
+        )
       }
 
       if !watchdogFired, !toolStallAbortFired, let explicitStopReason {
@@ -5457,10 +5777,16 @@ class ChatProvider: ObservableObject {
         _ = await finishJournalTarget(
           generation: sendGen,
           queryResult: correlatedTerminalResult,
-          disposition: disposition
+          disposition: disposition,
+          acceptedMessage: failedAssistantMessage,
+          acceptedContent: failedAssistantMessage?.text
         )
       } else {
-        _ = await finishJournalTarget(generation: sendGen, status: .failed)
+        _ = await finishJournalTarget(
+          generation: sendGen,
+          status: .failed,
+          messageOverride: failedAssistantMessage
+        )
       }
 
       // Preserve only a bounded error class in analytics. Raw details stay
@@ -5544,7 +5870,8 @@ class ChatProvider: ObservableObject {
       AssistantSettings.shared.audioRecordingMode == .always ? .always : .meetingsOnly
     let baseStarters = HomeSuggestionComposer.compose(
       personalized: HomeSuggestionsStore.shared.personalizedQuestions,
-      onboarding: PostOnboardingPromptSuggestions.suggestions())
+      onboarding: PostOnboardingPromptSuggestions.suggestions(),
+      dayZero: .live())
 
     onboardingOpener = OnboardingOpenerComposer.compose(
       name: name, mode: mode, meetings: [], now: Date(), baseStarters: baseStarters)
@@ -5615,11 +5942,12 @@ class ChatProvider: ObservableObject {
   /// was accepted into the timeline. Preflight failures leave it untouched,
   /// and typing a new draft while acceptance is pending is never overwritten.
   @discardableResult
-  func sendMainDraft(_ text: String) async -> String? {
+  func sendMainDraft(_ text: String, onAccepted: (@MainActor () -> Void)? = nil) async -> String? {
     let submittedRevision = composerDraft.revision
     return await sendMessage(
       text,
       onAccepted: { [weak self] in
+        onAccepted?()
         guard let self,
           self.composerDraft.revision == submittedRevision,
           self.draftText == text
@@ -5692,11 +6020,33 @@ class ChatProvider: ObservableObject {
   /// finalized so `journalUpdate` carries it into the durable record. This is
   /// what stops the row being an empty `.failed` placeholder that the journal
   /// projection deletes, leaving the question with nothing under it.
-  func applyTurnFailureMarker(_ notice: ChatTurnFailureNotice, toAssistantMessage messageID: String) {
-    guard let index = messages.firstIndex(where: { $0.id == messageID }) else { return }
-    messages[index].text = notice.transcriptContent(partialText: messages[index].text)
-    messages[index].isStreaming = false
-    messages[index].journalStatus = .failed
+  @discardableResult
+  func applyTurnFailureMarker(
+    _ notice: ChatTurnFailureNotice,
+    toAssistantMessage messageID: String,
+    fallbackAssistantMessage: ChatMessage? = nil
+  ) -> ChatMessage? {
+    if let index = messages.firstIndex(where: { $0.id == messageID }) {
+      messages[index].text = notice.transcriptContent(partialText: messages[index].text)
+      messages[index].isStreaming = false
+      messages[index].journalStatus = .failed
+      return messages[index]
+    }
+
+    // The agent runtime may terminalize and project an empty `.failed` row
+    // before Swift receives the error. Journal projection intentionally drops
+    // that empty placeholder, so reconstruct this already-admitted assistant
+    // row from the turn's original identity instead of losing the failure
+    // notice along with it.
+    guard var fallback = fallbackAssistantMessage,
+      fallback.id == messageID,
+      fallback.sender == .ai
+    else { return nil }
+    fallback.text = notice.transcriptContent(partialText: fallback.text)
+    fallback.isStreaming = false
+    fallback.journalStatus = .failed
+    messages.append(fallback)
+    return fallback
   }
 
   /// Put a failed turn's prompt back in the composer it came from, so the
@@ -6517,6 +6867,13 @@ class ChatProvider: ObservableObject {
     isClearing = true
     defer { isClearing = false }
 
+    // Clearing blanks the transcript, so revoke first. Otherwise the in-flight
+    // turn keeps the send lock and stays generation-current, and its late
+    // result — the reconstructed failure notice included — resurrects a row in
+    // the transcript the user just cleared.
+    revokeActiveTurn(reason: .superseded)
+    pendingComposerReferences.removeAll()
+
     if isInDefaultChat {
       let runtimeChatId = mainChatRuntimeChatId(sessionId: nil)
       let surface = AgentSurfaceReference.mainChat(chatId: runtimeChatId)
@@ -6700,7 +7057,6 @@ class ChatProvider: ObservableObject {
       currentError = nil
       errorMessage = nil
       await runtime.unregisterClient(clientId: probeClientID)
-
       var detail = automationMainChatSnapshot(limit: 20)
       detail["owner_a"] = ownerA
       detail["owner_b"] = trimmedOwnerB
@@ -6741,66 +7097,6 @@ class ChatProvider: ObservableObject {
       "owner_id": result.ownerId ?? "",
       "auth_user_id": defaults.string(forKey: .authUserId) ?? "",
     ]
-  }
-
-  /// Snapshot for `main_chat_snapshot` / `wait_main_chat_idle` harness actions.
-  func automationMainChatSnapshot(limit: Int) -> [String: String] {
-    automationChatSnapshot(limit: limit)
-  }
-
-  /// Snapshot for the floating-bar chat. It intentionally returns the same
-  /// canonical Omi chat timeline as main chat so typed notch, PTT, and
-  /// spawned-agent links can be verified from either surface.
-  func automationFloatingChatSnapshot(limit: Int) -> [String: String] {
-    automationChatSnapshot(limit: limit)
-  }
-
-  private func automationChatSnapshot(limit: Int) -> [String: String] {
-    let boundedLimit = max(1, limit)
-    let runtimeChatId = mainChatRuntimeChatId(sessionId: currentSessionId)
-    let rows: [[String: String]] = messages.suffix(boundedLimit).map { message in
-      [
-        "id": message.id,
-        "role": message.sender == .user ? "user" : "assistant",
-        "text": message.copyableText,
-        "raw_text": message.text,
-        "streaming": message.isStreaming ? "true" : "false",
-        "content_blocks_json": ChatContentBlockCodec.encode(message.contentBlocks) ?? "[]",
-        "resources_json": ChatResource.encodeResourcesForPersistence(message.displayResources) ?? "[]",
-      ]
-    }
-    let messagesJSON: String
-    if let data = try? JSONSerialization.data(withJSONObject: rows),
-      let encoded = String(data: data, encoding: .utf8)
-    {
-      messagesJSON = encoded
-    } else {
-      messagesJSON = "[]"
-    }
-    var detail: [String: String] = [
-      "chat_session_id": currentSessionId ?? "",
-      "runtime_chat_id": runtimeChatId,
-      "is_sending": isSending ? "true" : "false",
-      "is_streaming": messages.contains(where: { $0.isStreaming }) ? "true" : "false",
-      "message_count": "\(messages.count)",
-      "messages_json": messagesJSON,
-    ]
-    if let lastAssistant = messages.last(where: { $0.sender != .user })?.copyableText {
-      detail["last_assistant_text"] = lastAssistant
-    }
-    if let ownerId = runtimeOwnerId {
-      detail["owner_id"] = ownerId
-    }
-    let hasStructuredError = currentError != nil
-    let hasLegacyError = !(errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-    detail["has_error"] = (hasStructuredError || hasLegacyError) ? "true" : "false"
-    if let errorMessage, !errorMessage.isEmpty {
-      detail["error_message"] = errorMessage
-    }
-    if let currentError {
-      detail["current_error"] = String(describing: currentError)
-    }
-    return detail
   }
 
   /// Clear kernel `main_chat` turns for the active owner (continuity harness hygiene).

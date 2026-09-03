@@ -482,6 +482,7 @@ final class KernelTurnProjection {
     surface: AgentSurfaceReference,
     message: ChatMessage,
     status: KernelJournalTurnStatus? = nil,
+    terminalReason: String? = nil,
     ownerID: String? = nil
   ) async -> KernelJournalTurn? {
     guard let lease = captureOwnerLease(ownerID: ownerID), let host else { return nil }
@@ -490,7 +491,7 @@ final class KernelTurnProjection {
       let turn = try await client.updateJournalTurn(
         surface: surface,
         ownerID: lease.ownerID,
-        update: message.journalUpdate(status: status)
+        update: message.journalUpdate(status: status, terminalReason: terminalReason)
       )
       guard isCurrent(lease) else { return nil }
       _ = await refresh(surface: surface, lease: lease, publishPartialResults: true)
@@ -634,18 +635,24 @@ final class KernelTurnProjection {
     continuityKey: String,
     assistantContentBlocks: [ChatContentBlock] = [],
     resources: [ChatResource] = [],
+    assistantStatus: KernelJournalTurnStatus = .completed,
+    terminalReason: String? = nil,
+    userScreenContext: String? = nil,
     ownerID: String? = nil
   ) async -> Bool {
     let baseDate = Date()
     var writes: [KernelJournalTurnWrite] = []
     if !userText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      let user = ChatMessage(
+      var user = ChatMessage(
         id: Self.stableTurnID(continuityKey: continuityKey, role: "user"),
         clientTurnId: continuityKey,
         text: userText,
         createdAt: baseDate,
         sender: .user
       )
+      if let userScreenContext, !userScreenContext.isEmpty {
+        user.metadata = MessageMetadata(screenContext: userScreenContext)
+      }
       writes.append(
         user.journalWrite(
           origin: origin,
@@ -669,9 +676,10 @@ final class KernelTurnProjection {
       writes.append(
         assistant.journalWrite(
           origin: origin,
-          status: .completed,
+          status: assistantStatus,
           continuityKey: continuityKey,
-          messageSource: origin
+          messageSource: origin,
+          terminalReason: terminalReason
         ))
     }
 

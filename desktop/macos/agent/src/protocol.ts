@@ -48,6 +48,14 @@ export interface QueryMessage extends ProtocolEnvelope {
    * x-omi-reasoning-effort header; never interpreted by the runtime.
    */
   reasoningEffort?: string;
+  /**
+   * Per-turn client-computed capability flag: true when the desktop's JIT
+   * knowledge-ledger rollout is enabled for the current user. This is a UX
+   * gate only — the backend independently re-checks entitlement on every
+   * `/v1/agent/execute-tool` call, so an absent or stale value only affects
+   * which tools the model is offered, never authorization.
+   */
+  jitKnowledgeToolsEnabled?: boolean;
 }
 
 export interface QueryAttachment {
@@ -95,6 +103,9 @@ export interface ExternalSurfaceRunBeginMessage extends ProtocolEnvelope {
   sessionId: string;
   turnId: string;
   prompt: string;
+  /** The prompt is an internal instruction, not user speech: it drives the run
+   *  but must never be journaled as the user's turn. */
+  promptIsSynthetic?: boolean;
   mode: "ask" | "act";
 }
 
@@ -780,6 +791,8 @@ export interface ResultMessage extends QueryScopedOutbound {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /// Served model identities observed on this run's completions, deduplicated.
+  modelsUsed?: string[];
   artifacts?: SerializedArtifact[];
   completionDeltaArtifacts?: SerializedArtifact[];
 }
@@ -817,12 +830,35 @@ export interface RuntimeFailurePayload {
   retryDisposition?: "next_send";
 }
 
+/// One concrete model identity observed serving this turn's completions.
+/// `model` is ONLY the SERVED model from the provider's response stream (e.g.
+/// the gateway lane's resolved upstream, pi-ai's `responseModel`). A response
+/// that names no model produces NO event — the requested id is an alias and
+/// must never be presented as the served model (#11521). Deduplicated per
+/// turn by the adapter; `requestedModel` is context, not attribution.
+export interface ModelUsedMessage extends QueryScopedOutbound {
+  type: "model_used";
+  model: string;
+  requestedModel?: string;
+  provider?: string;
+}
+
 export interface ToolActivityMessage extends QueryScopedOutbound {
   type: "tool_activity";
   name: string;
   status: "started" | "progress" | "completed" | "failed" | "cancelled" | "interrupted";
   toolUseId?: string;
   input?: Record<string, unknown>;
+}
+
+/**
+ * Content-free proof that the query-owning runtime is still servicing an
+ * admitted turn. Swift uses this lease to distinguish a quiet provider round
+ * from a frozen JSONL bridge; it must never be rendered as assistant output.
+ */
+export interface TurnActivityMessage extends QueryScopedOutbound {
+  type: "turn_activity";
+  phase: "running";
 }
 
 export interface ToolResultDisplayMessage extends QueryScopedOutbound {
@@ -962,6 +998,8 @@ export interface ContextSnapshotProjection {
     status: string;
     origin: string;
     createdAtMs: number;
+    /** Text of what the user's screen showed when this turn was asked (historical). */
+    screenContext?: string;
   }>;
   sourceOutcomes: ContextSourceOutcomeProjection[];
   activeRuns: Array<{
@@ -1090,6 +1128,8 @@ export interface JournalOperationResultMessage extends OutboundEnvelope {
   suppressedByStreamingTail?: boolean;
   materializationStoppedByTail?: boolean;
   materializationReceipts?: Array<{ intentId: string; receiptId: string }>;
+  materializationRejections?: Array<{ intentId: string; code: string; message: string }>;
+  materializationDeferrals?: Array<{ intentId: string; code: "tail_question" | "streaming_tail" }>;
   coldStartSequenceTerminalReceipts?: Array<{
     sequenceId: string;
     receiptId: string;
@@ -1178,6 +1218,8 @@ export type OutboundMessage =
   | TextDeltaMessage
   | ToolUseMessage
   | ToolActivityMessage
+  | ModelUsedMessage
+  | TurnActivityMessage
   | ToolResultDisplayMessage
   | ThinkingDeltaMessage
   | ResultMessage
@@ -1218,6 +1260,8 @@ export type OutboundMessageDraft =
   | DraftEnvelope<TextDeltaMessage>
   | DraftEnvelope<ToolUseMessage>
   | DraftEnvelope<ToolActivityMessage>
+  | DraftEnvelope<ModelUsedMessage>
+  | DraftEnvelope<TurnActivityMessage>
   | DraftEnvelope<ToolResultDisplayMessage>
   | DraftEnvelope<ThinkingDeltaMessage>
   | DraftEnvelope<ResultMessage>

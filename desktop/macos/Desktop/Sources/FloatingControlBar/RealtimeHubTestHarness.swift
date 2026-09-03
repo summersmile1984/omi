@@ -129,7 +129,8 @@ final class RealtimeHubTestHarness: NSObject, RealtimeHubSessionDelegate {
     // without spawning real agents / network calls inside the test.
     let stub: String
     switch HubTool(rawValue: name) {
-    case .askHigherModel: stub = "Paris is the capital of France."
+    case .thinkDeeper: stub = "Paris is the capital of France."
+    case .webSearch: stub = "According to the live forecast, New York is sunny and 73 degrees."
     case .getTasks: stub = "Due today (1):\n- Example task [id:task_123]"
     case .getMemories: stub = "You live in San Francisco and prefer concise answers."
     case .searchMemories: stub = "Your dog's name is Rex."
@@ -147,6 +148,8 @@ final class RealtimeHubTestHarness: NSObject, RealtimeHubSessionDelegate {
     case .inspectAgentArtifacts:
       stub =
         "Canonical agent artifacts. Use artifactRef values internally for follow-up tool calls; do not say them aloud.\n- artifact_1: role result, state retained"
+    case .readToolOutput: stub = "Bounded saved tool output excerpt."
+    case .searchToolOutput: stub = "Found 1 matching saved-output line."
     case .updateAgentArtifactLifecycle: stub = "Artifact lifecycle is now retained. Changed: true."
     case .getDailyRecap: stub = "Yesterday: 3 hrs in Xcode, 1 hr in Safari; 2 conversations; 1 task created."
     case .searchScreenHistory: stub = "Found it: yesterday afternoon you were reading the launch doc in Safari."
@@ -192,7 +195,7 @@ final class RealtimeHubTestHarness: NSObject, RealtimeHubSessionDelegate {
       // Phase 2: if asked for ephemeral, or no BYOK key exists (managed user),
       // mint a server-side ephemeral token via the backend; else use the BYOK key.
       let wantEphemeral = params["auth"] == "ephemeral"
-      let byok = APIKeyService.byokKey(provider.byokProvider)
+      let byok = APIKeyService.selectedRealtimeBYOKKey(for: provider.byokProvider)
       let auth: HubAuth
       if !wantEphemeral, let key = byok {
         auth = .byokKey(key)

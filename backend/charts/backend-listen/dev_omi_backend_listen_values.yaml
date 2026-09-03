@@ -104,6 +104,8 @@ envFrom:
       name: dev-omi-backend-config
 
 env:
+  - name: REFERRAL_PUBLIC_BASE_URL
+    value: "https://api.omiapi.com"
   - name: DESKTOP_UPDATE_POINTERS_MODE
     value: "primary"
   - name: DESKTOP_UPDATE_RECONCILE_SAMPLE_RATE
@@ -120,6 +122,12 @@ env:
       secretKeyRef:
         name: dev-omi-backend-secrets
         key: MODULATE_API_KEY
+  - name: SONIOX_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: dev-omi-backend-secrets
+        key: SONIOX_API_KEY
+        optional: true
   - name: FAL_KEY
     valueFrom:
       secretKeyRef:
@@ -153,9 +161,15 @@ env:
     value: "true"
   - name: CONVERSATION_NOTES_V2_ENABLED
     value: "true"
+  - name: MEETING_RECEIPT_RECONCILER_ENABLED
+    value: "false"
+  - name: LISTEN_FINALIZATION_BYOK_ABANDONMENT_ENABLED
+    value: "true"
   - name: CONVERSATION_CALENDAR_CONTEXT_READ_ENABLED
     value: "true"
   - name: CONVERSATION_OCR_CONTEXT_ENABLED
+    value: "true"
+  - name: GOOGLE_CALENDAR_AUTO_LINK_ENABLED
     value: "true"
   - name: OMI_LLM_CHAT_AGENT_ROUTE
     value: "gateway"
@@ -248,7 +262,7 @@ env:
   - name: DEEPGRAM_SELF_HOSTED_ENABLED
     value: "false"
   - name: STT_SERVICE_MODELS
-    value: "dg-nova-3,modulate-velma-2,parakeet"
+    value: "modulate-velma-2,soniox,dg-nova-3,parakeet"
   - name: NO_SOCKET_TIMEOUT
     value: "true"
   - name: HOSTED_PUSHER_API_URL
@@ -351,6 +365,13 @@ env:
   - name: GOOGLE_CLOUD_PROJECT
     # Template substitutes runtimeGcpProjectId (chart default = compute project).
     value: "based-hardware-dev"
+  - name: OMI_FIRESTORE_DATA_PLANE_PROJECT
+    value: "based-hardware"
+  - name: POSTHOG_PROJECT_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: dev-omi-backend-secrets
+        key: POSTHOG_PROJECT_API_KEY
   - name: GCP_LOCATION
     value: "us-central1"
   - name: TWILIO_AUTH_TOKEN

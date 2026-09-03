@@ -11,7 +11,7 @@ extension RealtimeHubController {
   /// result is the caller's fail-closed gate for buffered audio replay.
   @discardableResult
   func beginTurn(turnID requestedTurnID: VoiceTurnID? = nil) -> RealtimeInputPreparationResult {
-    if discardMismatchedSessionIfNeeded() { ensureWarm() }
+    if discardMismatchedSessionIfNeeded() { ensureWarm(userInitiated: true) }
     turnPreparationTask?.cancel()
     turnPreparationTask = nil
     // Barge-in: was a reply from the previous turn still in flight when the user
@@ -62,7 +62,7 @@ extension RealtimeHubController {
             ownerID: interruptedTurn.ownerID,
             userText: interruptedTurn.userText,
             assistantText: interruptedTurn.assistantText,
-            interrupted: true,
+            terminal: .interruptedByBargeIn,
             idempotencyKey: interruptedTurn.idempotencyKey,
             acceptedSpawnOwnerID: interruptedTurn.acceptedSpawnOwnerID) ?? false
         }
@@ -243,7 +243,7 @@ extension RealtimeHubController {
     if VoiceTurnCoordinator.shared.activeTurnID == nil,
       discardMismatchedSessionIfNeeded()
     {
-      ensureWarm()
+      ensureWarm(userInitiated: true)
     }
     if let requestedTurnID {
       guard requestedTurnID == VoiceTurnCoordinator.shared.activeTurnID,
@@ -311,7 +311,7 @@ extension RealtimeHubController {
           identity: identity,
           previousSessionID: voiceSessionID))
       log("RealtimeHub[\(providerTag)]: buffering mic audio until the reconnecting session is ready")
-      ensureWarm()
+      ensureWarm(userInitiated: true)
       return
     }
     sendAudio(pcm16k, to: s)
@@ -356,7 +356,7 @@ extension RealtimeHubController {
     if VoiceTurnCoordinator.shared.activeTurnID == nil,
       discardMismatchedSessionIfNeeded()
     {
-      ensureWarm()
+      ensureWarm(userInitiated: true)
     }
     guard let turnID = VoiceTurnCoordinator.shared.activeTurnID,
       VoiceTurnCoordinator.shared.requireCurrentOwner(for: turnID) != nil
@@ -392,7 +392,7 @@ extension RealtimeHubController {
         "RealtimeHub[\(providerTag)]: session reconnect not ready at commit — "
           + "deferring commit (bufferedChunks=\(pending.audioBuffer.count))"
       )
-      ensureWarm()
+      ensureWarm(userInitiated: true)
       return .deferredForReconnect
     }
     guard session != nil, voiceSessionID != nil else {
@@ -449,12 +449,23 @@ extension RealtimeHubController {
       // PTT-up can beat asynchronous context preparation. Queue begin before
       // commit on the session transport so Gemini always has activityStart and
       // OpenAI always has an immutable event identity.
-      s.beginInputTurn(
+      beginLiveInputTurn(
+        s,
         turnID: turnID,
         responseID: voiceResponseID,
         interrupting: reducerInterruptsPreviousTurn)
     }
     s.commitInputTurn()
+    AnalyticsManager.shared.floatingBarQuerySent(
+      messageLength: turnTranscript.count,
+      // A PTT turn does carry a screenshot whenever the pre-overlay capture produced usable
+      // pixels. Hard-coding false made every screen-grounded voice turn look screenshot-free.
+      // Only a Gemini session attaches the pre-overlay frame to the turn
+      // (`attachTurnScreenFrameIfNeeded`); elsewhere the image is not sent.
+      hasScreenshot: sessionProvider == .gemini && screenEvidence?.descriptor.canVerifyCurrentScreen == true,
+      source: .pttRealtime,
+      attemptID: turnID.description
+    )
     VoiceTurnCoordinator.shared.publish(
       .hubCommitAccepted(
         turnID: turnID,
@@ -466,6 +477,8 @@ extension RealtimeHubController {
   /// pixels are captured only by the kernel-authorized screenshot tool; voice
   /// commits themselves never attach an ambient frame.
   func prepareAcceptedCommit(preservingContextPreparation: Bool = false) {
+    // PTT-up: the utterance is over, so the screen-evidence budget starts now.
+    screenEvidenceSpeechEndedAt = Date()
     let candidates = AssistantSettings.shared.voiceBaseLanguages
     if !preservingContextPreparation {
       turnPreparationTask?.cancel()

@@ -54,8 +54,8 @@ final class SBOnboardingModel: ObservableObject {
 
   enum Step: Int, CaseIterable {
     case promise, name, howHeard, language, role
-    case mic, systemAudio, screen, files, accessibility, automation
-    case shortcutOpen, shortcutTalk, screenDemo, agents, context, capture
+    case mic, systemAudio, screen, files, accessibility, automation, notifications
+    case shortcutOpen, shortcutTalk, screenDemo, agents, context, capture, referral
   }
 
   /// "How did you hear about Omi?" options (mirrors the legacy step).
@@ -110,9 +110,15 @@ final class SBOnboardingModel: ObservableObject {
   @Published var fdaState: PermState = .ask  // full disk access (files)
   @Published var accState: PermState = .ask  // accessibility
   @Published var autoState: PermState = .ask  // automation / Apple Events
+  @Published var notifState: PermState = .ask  // notifications
   @Published var localFileProfileState: LocalFileProfileState = .idle
 
-  var launchAtLogin: Bool = LaunchAtLoginManager.shared.isEnabled
+  /// Fresh installs default to launching at login: every proactive path needs
+  /// the process alive, and `SMAppService` reports "not registered" for every
+  /// new install, so seeding from the live status meant every new user finished
+  /// onboarding with auto-start off. The user's Settings toggle stays
+  /// authoritative afterwards (`LaunchAtLoginPreference`).
+  var launchAtLogin: Bool = LaunchAtLoginPreference.defaultForOnboarding()
 
   /// One-shot guard: fire a single throwaway ScreenCaptureKit capture to surface
   /// the "bypass the private window picker" consent in-context once Screen
@@ -163,6 +169,10 @@ final class SBOnboardingModel: ObservableObject {
   /// that state, leave PTT unarmed and offer an explicit retry or skip instead
   /// of presenting a shortcut which cannot answer.
   @Published var screenDemoPTTUnavailable = false
+  /// The three-doors demo page was opened for the current visit to the screen-demo step.
+  @Published var threeDoorsOpened = false
+  var openDoorsObserver: NSObjectProtocol?
+  var doorsCompletedObserver: NSObjectProtocol?
   var voiceCancellable: AnyCancellable?
   var voiceTimeout: Task<Void, Never>?
   var screenDemoSetupTask: Task<Void, Never>?
@@ -314,6 +324,9 @@ final class SBOnboardingModel: ObservableObject {
       return "Turn on Accessibility, so I can use your shortcut and click and type for you."
     case .automation:
       return "Turn on Automation, so I can help with tasks in the apps you choose."
+    case .notifications:
+      return
+        "Turn on Notifications, so I can tell you the moment I notice something — a mistake before you hit send, a meeting about to start, a follow-up you're about to miss."
     // Both steps used to invite "press any key", and `acceptsRecordedChord` then refused a bare key
     // in silence — correct (a global bare `L` is unrecoverable) but unexplained. Name the rule.
     case .shortcutOpen:
@@ -328,7 +341,9 @@ final class SBOnboardingModel: ObservableObject {
       return "The more I can see, the more I can help. Connect anything you want me to know:"
     case .capture:
       return
-        "You're all set, \(name). One last thing: should I listen all the time, or only during your meetings?"
+        "You're all set, \(name). Should I listen all the time, or only during your meetings?"
+    case .referral:
+      return "Want to invite a friend? They'll get one free month."
     }
   }
 
@@ -384,6 +399,31 @@ final class SBOnboardingModel: ObservableObject {
   /// mandatory lacked this flag, so `begin()` clamps them back through the steps.
   static let shortcutsCompletedKey = "sbOnboardingShortcutsCompleted"
 
+  /// Layout version of the persisted `resumeStepKey` value.
+  ///
+  /// `Step`'s raw values are written to disk, so inserting a case renumbers
+  /// every later step and silently reinterprets any resume state written by an
+  /// older build. Version 2 added `.notifications` between `.automation` and
+  /// `.shortcutOpen`; absent (0) means the version-1 layout that predates it.
+  static let resumeStepSchemaKey = "sbOnboardingResumeStepSchema"
+  static let resumeStepSchemaVersion = 2
+
+  /// Raw value `.notifications` took in version 2, frozen as a literal.
+  ///
+  /// Deliberately **not** `Step.notifications.rawValue`: this describes a
+  /// historical layout boundary, so it must not move if the enum is edited
+  /// again. A future insertion adds a version 3 rule beside this one.
+  private static let notificationsStepRawInV2 = 11
+
+  /// Translate a persisted resume step into the current layout.
+  ///
+  /// Pure so the renumbering is testable without `UserDefaults`. Anything at or
+  /// after the inserted case shifts up by one; earlier steps are unaffected.
+  static func migratedResumeStepRaw(savedRaw: Int, storedSchema: Int) -> Int {
+    guard storedSchema < 2 else { return savedRaw }
+    return savedRaw >= notificationsStepRawInV2 ? savedRaw + 1 : savedRaw
+  }
+
   func begin() {
     guard thread.isEmpty && streamingText == nil else { return }
     // Re-hydrate the editable drafts from what was already saved, so stepping
@@ -394,7 +434,31 @@ final class SBOnboardingModel: ObservableObject {
     // were already saved to the backend/settings, so we just re-enter at the saved
     // step; each permission step re-checks its grant on appear, so a permission
     // granted before the quit shows ✓ rather than prompting again.
-    let savedRaw = UserDefaults.standard.integer(forKey: Self.resumeStepKey)
+    // Renumber a resume state written before `.notifications` existed before
+    // anything reads it, and stamp the layout so this runs exactly once.
+    let persistedRaw = UserDefaults.standard.integer(forKey: Self.resumeStepKey)
+    let storedSchema = UserDefaults.standard.integer(forKey: Self.resumeStepSchemaKey)
+    let savedRaw = Self.migratedResumeStepRaw(savedRaw: persistedRaw, storedSchema: storedSchema)
+    if storedSchema < Self.resumeStepSchemaVersion {
+      // Stamp the schema BEFORE rewriting the value. Two `UserDefaults` writes
+      // are not one atomic transaction, and the two orderings fail differently
+      // if the process dies between them:
+      //
+      //   value first — the stamp is lost, the next launch shifts the *already*
+      //     shifted value again, and a resume at `.referral` (17 -> 18 -> 19)
+      //     lands outside `Step`, so `begin()` silently restarts onboarding
+      //     from `.promise` and the user loses their answers.
+      //   stamp first — the shift is lost, so the value keeps its version-1
+      //     meaning under version-2 numbering: at worst one step off (old
+      //     `.shortcutOpen` reads as `.notifications`), always in range, never
+      //     a restart.
+      //
+      // Neither is atomic; only one of them can throw away progress.
+      UserDefaults.standard.set(Self.resumeStepSchemaVersion, forKey: Self.resumeStepSchemaKey)
+      if savedRaw != persistedRaw {
+        UserDefaults.standard.set(savedRaw, forKey: Self.resumeStepKey)
+      }
+    }
     recordSetupStateDisagreementAtRead(savedRaw: savedRaw)
     if savedRaw > Step.promise.rawValue, let resumed = Step(rawValue: savedRaw) {
       // A legacy resume state persisted before shortcuts were mandatory bypasses the new
@@ -508,6 +572,7 @@ final class SBOnboardingModel: ObservableObject {
     case .files: precheckPerm("full_disk_access")
     case .accessibility: precheckPerm("accessibility")
     case .automation: precheckPerm("automation")
+    case .notifications: precheckPerm("notifications")
     case .shortcutOpen, .shortcutTalk: armShortcutSummon()
     case .screenDemo: startScreenDemo()
     case .agents: refreshAgentStates()
@@ -689,6 +754,10 @@ final class SBOnboardingModel: ObservableObject {
 
   func capture(_ selection: CaptureSelection) {
     AssistantSettings.shared.audioRecordingMode = selection.audioRecordingMode
+    advance(userAnswer: nil, to: .referral)
+  }
+
+  func finishReferral() {
     complete()
   }
 
@@ -721,11 +790,26 @@ final class SBOnboardingModel: ObservableObject {
     OnboardingChatPersistence.clear()
     ChatDraftStore.shared.clear(.onboardingMain)
     ChatDraftStore.shared.clear(.onboardingFloating)
+    // **Mark onboarding done before anything can await, and before the last window can close.**
+    //
+    // `applicationShouldTerminateAfterLastWindowClosed` returns true while this flag is false --
+    // deliberately, so a half-finished onboarding does not leave a menu-bar process behind. That
+    // makes the flag load-bearing for process lifetime, not just for which view renders. Setting
+    // it after `await finishOnboardingJournal()` left a window in which the onboarding window had
+    // already gone away and the flag was still false, and the app quit on the user at the exact
+    // moment they finished. It then reran onboarding on next launch, because the flag never got
+    // written -- observed twice in a row on a bundle whose onboarding was not pre-seeded.
+    //
+    // The `[weak self]` made it worse rather than safer: `teardownAll()` runs at the top of this
+    // function, so a deallocated model meant `guard let self else { return }` skipped the write
+    // entirely and onboarding could never complete at all.
+    //
+    // The journal is genuinely async and genuinely optional. Completion is neither.
+    OnboardingFlow.markCompleted(for: RuntimeOwnerIdentity.currentOwnerId())
+    appState.hasCompletedOnboarding = true
     onComplete?()
-    Task { [weak self] in
-      guard let self else { return }
-      await self.chatProvider.finishOnboardingJournal()
-      self.appState.hasCompletedOnboarding = true
+    Task { [chatProvider] in
+      await chatProvider.finishOnboardingJournal()
     }
   }
 
@@ -733,6 +817,10 @@ final class SBOnboardingModel: ObservableObject {
   /// tab (with the personalized opener), without force-enabling capture or screen
   /// analysis the user chose to bypass. They can turn those on later.
   func skip() {
+    if step == .referral {
+      complete()
+      return
+    }
     finishOnboardingHandoff(clearOnboardingChatFlag: false)
   }
 

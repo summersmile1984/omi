@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from models.message_event import MessageServiceStatusEvent
 from utils.metrics import OMI_LIVE_STT_MISALIGNED_FRAMES_TOTAL
@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 LIVE_STT_FAILURE_CLOSE_CODE = 1011
 LIVE_STT_FAILURE_CLOSE_REASON = 'transcription_service_unavailable'
+
+
+# Chain depth is 3 (velma/soniox/deepgram); allow walking it once, not looping.
+# Shared by every live surface so a mid-session failover cannot loop a chain
+# forever (#12459, #12469).
+MAX_STT_FAILOVERS = 2
 
 _KNOWN_FAILURE_REASONS = frozenset(
     {
@@ -41,6 +47,7 @@ class LiveSTTSession(Protocol):
     close_code: int
     stt_terminal_failure: bool
     live_transcription_attempt: Any
+    client_live_transcription_attempt: Any
 
 
 class LiveSTTClientSocket(Protocol):
@@ -115,6 +122,9 @@ async def terminate_live_stt_session(
         attempt = getattr(session, 'live_transcription_attempt', None)
         if attempt is not None:
             attempt.finish('failure', phase=_FAILURE_PHASE_BY_REASON[bounded_reason])
+        client_attempt = getattr(session, 'client_live_transcription_attempt', None)
+        if client_attempt is not None:
+            client_attempt.fail('provider_error')
     except Exception as error:
         logger.warning(
             'Unable to record terminal live STT failure error_type=%s',
@@ -163,8 +173,18 @@ async def send_live_stt_audio(
     audio: bytes,
     provider: str | None,
     platform: str | None,
+    attempt_failover: Callable[[], Awaitable[bool]] | None = None,
 ) -> bool:
-    """Send one audio chunk, terminating the client if the provider is unusable."""
+    """Send one audio chunk, terminating the client if the provider is unusable.
+
+    ``attempt_failover`` is the session's chance to swap a dead provider socket
+    for the next one in the chain before this path declares the failure
+    terminal. The send path observes a provider death on the very next audio
+    chunk — hundreds of milliseconds before the 1s death-monitor poll — so
+    without the gate here the monitor's failover (#12459) loses that race on
+    every session with audio flowing. After a successful failover the chunk is
+    reported unsent so the caller retries it against the replacement socket.
+    """
 
     # Observed on every provider, not just Velma: whether production emits frames that
     # are not whole 16-bit samples is otherwise unmeasurable without exposing users to
@@ -172,6 +192,19 @@ async def send_live_stt_audio(
     if len(audio) % 2:
         OMI_LIVE_STT_MISALIGNED_FRAMES_TOTAL.labels(provider=bounded_provider(provider), stage='buffer').inc()
 
+    async def _recoverable_failure(reason: str) -> None:
+        if attempt_failover is not None and await attempt_failover():
+            return
+        await terminate_live_stt_session(
+            websocket,
+            session,
+            failure=live_stt_upstream_failure(provider),
+            reason=reason,
+            platform=platform,
+        )
+
+    # A None socket means initialization never produced one; there is nothing to
+    # fail over from, so this stays terminal.
     if stt_socket is None:
         await terminate_live_stt_session(
             websocket,
@@ -183,47 +216,23 @@ async def send_live_stt_audio(
         return False
 
     if live_stt_socket_is_dead(stt_socket):
-        await terminate_live_stt_session(
-            websocket,
-            session,
-            failure=live_stt_upstream_failure(provider),
-            reason='connection_lost',
-            platform=platform,
-        )
+        await _recoverable_failure('connection_lost')
         return False
 
     try:
         accepted = stt_socket.send(audio)
     except Exception:
-        await terminate_live_stt_session(
-            websocket,
-            session,
-            failure=live_stt_upstream_failure(provider),
-            reason='send_failed',
-            platform=platform,
-        )
+        await _recoverable_failure('send_failed')
         return False
 
     if accepted is not True:
-        await terminate_live_stt_session(
-            websocket,
-            session,
-            failure=live_stt_upstream_failure(provider),
-            reason='send_failed',
-            platform=platform,
-        )
+        await _recoverable_failure('send_failed')
         return False
 
     # Safe socket wrappers report send failures through the death latch instead
     # of raising so every provider must be checked after the send as well.
     if live_stt_socket_is_dead(stt_socket):
-        await terminate_live_stt_session(
-            websocket,
-            session,
-            failure=live_stt_upstream_failure(provider),
-            reason='send_failed',
-            platform=platform,
-        )
+        await _recoverable_failure('send_failed')
         return False
 
     return True
@@ -237,6 +246,7 @@ async def flush_live_stt_buffer(
     buffer: bytearray,
     provider: str | None,
     platform: str | None,
+    attempt_failover: Callable[[], Awaitable[bool]] | None = None,
 ) -> bool:
     """Send and clear a buffer only after the provider accepted its contents."""
 
@@ -247,6 +257,7 @@ async def flush_live_stt_buffer(
         audio=bytes(buffer),
         provider=provider,
         platform=platform,
+        attempt_failover=attempt_failover,
     )
     if sent:
         buffer.clear()

@@ -14,9 +14,9 @@ from scripts.runtime_env_durable_dispatch_contracts import (  # noqa: E402
     validate_listen_finalization_dispatch_contract as _validate_listen_finalization_dispatch_contract,
 )
 from scripts.runtime_env_parakeet_contract import validate_parakeet_admission_contract  # noqa: E402
+from scripts.runtime_env_capability_contracts import validate_conversation_finalization_capabilities  # noqa: E402
 from scripts.runtime_env_memory_contract import validate_retired_memory_manifest  # noqa: E402
 from scripts.runtime_env_validation.cloud_run import (
-    _build_rendered_cloud_run_state,
     _fetch_live_cloud_run_state,
     _validate_cloud_run,
 )
@@ -44,6 +44,7 @@ from scripts.runtime_env_validation.common import (
     _validate_cloud_run_secret_entries,
     _validate_env_entries,
     _validate_forbidden_env_entries,
+    data_plane_project,
 )
 
 _MEMORY_MAINTENANCE_GATEWAY_REQUIRED_ENV = {
@@ -264,6 +265,36 @@ def _validate_memory_maintenance_job_contract(env: str, env_config: ConfigDict) 
 
     job_env = _as_config_dict(job.get('env')) or {}
     job_secrets = _as_config_dict(job.get('secrets')) or {}
+    daily_sweep_env_names = {
+        'MEMORY_DAILY_MEMORY_SWEEP_ENABLED',
+        'MEMORY_DAILY_MEMORY_SWEEP_KILL_SWITCH',
+        'MEMORY_DAILY_MEMORY_SWEEP_MODEL_ENABLED',
+        'MEMORY_DAILY_MEMORY_SWEEP_MODEL_NAME',
+        'MEMORY_DAILY_MEMORY_SWEEP_MAX_MODEL_CANDIDATES',
+        'MEMORY_DAILY_MEMORY_SWEEP_MAX_MODEL_COST_USD',
+        'MEMORY_DAILY_MEMORY_SWEEP_COHORT_ENABLED',
+        'MEMORY_DAILY_MEMORY_SWEEP_COHORT_NAME',
+        'MEMORY_DAILY_MEMORY_SWEEP_COHORT_FLAG',
+        'MEMORY_DAILY_MEMORY_SWEEP_COHORT_TIMEOUT_SECONDS',
+        'MEMORY_DAILY_MEMORY_SWEEP_TIMEZONE_RECONCILIATION_ENABLED',
+    }
+    for forbidden_name in sorted(daily_sweep_env_names.intersection(job_env)):
+        errors.append(
+            ValidationError(
+                scope,
+                f'env {forbidden_name} belongs only on daily-memory-sweep-job',
+            )
+        )
+    for forbidden_name in ('POSTHOG_HOST',):
+        if forbidden_name in job_env:
+            errors.append(ValidationError(scope, f'env {forbidden_name} belongs only on daily-memory-sweep-job'))
+    if 'POSTHOG_PROJECT_API_KEY' not in job_secrets:
+        errors.append(
+            ValidationError(
+                scope,
+                'missing secret POSTHOG_PROJECT_API_KEY; ledger drain evaluates jit-processing-v1',
+            )
+        )
     if env == 'dev':
         job_flags = _as_config_dict(job.get('flags')) or {}
         for flag_name, expected_value in _MEMORY_MAINTENANCE_DEV_REQUIRED_FLAGS.items():
@@ -460,6 +491,65 @@ def _validate_memory_maintenance_job_contract(env: str, env_config: ConfigDict) 
     return errors
 
 
+def _validate_jit_admission_surface_contract(env: str, env_config: ConfigDict) -> list[ValidationError]:
+    """Listen and maintenance must see PostHog; GKE listen must pin the data plane."""
+    errors: list[ValidationError] = []
+    expected_data_plane = data_plane_project(env_config)
+    gke = _as_config_dict(env_config.get('gke')) or {}
+    listen = _as_config_dict(gke.get('backend-listen')) or {}
+    listen_env = _as_config_dict(listen.get('env')) or {}
+    listen_scope = f'{env}/gke/backend-listen'
+    posthog = _as_config_dict(listen_env.get('POSTHOG_PROJECT_API_KEY'))
+    posthog_secret = _as_config_dict(posthog.get('secret')) if posthog is not None else None
+    if posthog_secret is None or posthog_secret.get('key') != 'POSTHOG_PROJECT_API_KEY':
+        errors.append(
+            ValidationError(
+                listen_scope,
+                'missing secret POSTHOG_PROJECT_API_KEY; live finalization evaluates jit-processing-v1',
+            )
+        )
+    actual_data_plane = _manifest_literal_env_value(listen_env, 'OMI_FIRESTORE_DATA_PLANE_PROJECT')
+    if actual_data_plane != expected_data_plane:
+        errors.append(
+            ValidationError(
+                listen_scope,
+                f'OMI_FIRESTORE_DATA_PLANE_PROJECT must be {expected_data_plane!r}',
+            )
+        )
+    return errors
+
+
+def _validate_daily_memory_sweep_job_contract(env: str, env_config: ConfigDict) -> list[ValidationError]:
+    """Keep the replacement sweep deployable after legacy-job retirement."""
+
+    scope = f'{env}/cloud_run/jobs/daily-memory-sweep-job'
+    cloud_run = _as_config_dict(env_config.get('cloud_run')) or {}
+    jobs = _as_config_dict(cloud_run.get('jobs')) or {}
+    job = _as_config_dict(jobs.get('daily-memory-sweep-job'))
+    if job is None:
+        return [ValidationError(scope, 'missing cloud_run.jobs.daily-memory-sweep-job')]
+    errors: list[ValidationError] = []
+    env_map = _as_config_dict(job.get('env')) or {}
+    secrets = _as_config_dict(job.get('secrets')) or {}
+    if 'MEMORY_CANONICAL_MAINTENANCE_ENABLED' in env_map:
+        errors.append(ValidationError(scope, 'daily sweep must not depend on MEMORY_CANONICAL_MAINTENANCE_ENABLED'))
+    for required_env in (
+        'MEMORY_ENABLED',
+        'MEMORY_DAILY_MEMORY_SWEEP_ENABLED',
+        'MEMORY_DAILY_MEMORY_SWEEP_KILL_SWITCH',
+        'MEMORY_DAILY_MEMORY_SWEEP_COHORT_ENABLED',
+        'MEMORY_DAILY_MEMORY_SWEEP_COHORT_FLAG',
+        'MEMORY_DAILY_MEMORY_SWEEP_COHORT_TIMEOUT_SECONDS',
+        'GOOGLE_CLOUD_PROJECT',
+    ):
+        if required_env not in env_map:
+            errors.append(ValidationError(scope, f'missing env {required_env}'))
+    for required_secret in ('SERVICE_ACCOUNT_JSON', 'ENCRYPTION_SECRET', 'OPENAI_API_KEY', 'POSTHOG_PROJECT_API_KEY'):
+        if required_secret not in secrets:
+            errors.append(ValidationError(scope, f'missing secret {required_secret}'))
+    return errors
+
+
 def _validate_prerecorded_stt_contract(env: str, env_config: ConfigDict) -> list[ValidationError]:
     """Keep selected providers and their required runtime bindings deployable together."""
     errors: list[ValidationError] = []
@@ -640,7 +730,6 @@ def validate_runtime_env(
     manifest_path: Path = DEFAULT_MANIFEST,
     cloud_run_state_path: Path | None = None,
     check_live_cloud_run: bool = False,
-    check_rendered_cloud_run: bool = False,
     check_workflows: bool = False,
     workflow_root: Path | None = None,
     strict_provisional: bool = False,
@@ -653,10 +742,13 @@ def validate_runtime_env(
 
     errors.extend(_validate_desktop_backend_vertex_pt_contract(env, env_config))
     errors.extend(_validate_gke(env_config, strict_provisional=strict_provisional))
+    errors.extend(validate_conversation_finalization_capabilities(env, env_config))
     errors.extend(_validate_stt_serving_model_policy(env, env_config))
     errors.extend(validate_parakeet_admission_contract(env, env_config))
     errors.extend(_validate_prerecorded_stt_contract(env, env_config))
     errors.extend(_validate_memory_maintenance_job_contract(env, env_config))
+    errors.extend(_validate_jit_admission_surface_contract(env, env_config))
+    errors.extend(_validate_daily_memory_sweep_job_contract(env, env_config))
     errors.extend(_validate_account_deletion_dispatch_contract(env, env_config))
     errors.extend(_validate_listen_finalization_dispatch_contract(env, env_config))
     if check_workflows:
@@ -674,8 +766,6 @@ def validate_runtime_env(
     cloud_run_state = None
     if cloud_run_state_path is not None:
         cloud_run_state = _load_json(cloud_run_state_path)
-    elif check_rendered_cloud_run:
-        cloud_run_state = _build_rendered_cloud_run_state(env_config)
     elif check_live_cloud_run:
         cloud_run_state = _fetch_live_cloud_run_state(env_config)
 

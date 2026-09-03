@@ -44,6 +44,48 @@ def run_git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def run_python_capture(root: Path, *args: str, errors: str = "strict") -> subprocess.CompletedProcess[str]:
+    """Run an owned Python check with a UTF-8 pipe contract on every host."""
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8:backslashreplace"
+    return subprocess.run(
+        [sys.executable, *args],
+        cwd=root,
+        env=env,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors=errors,
+    )
+
+
+def current_branch(root: Path) -> str:
+    """Return the current branch without inheriting the Windows host locale."""
+    return subprocess.run(
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+        cwd=root,
+        check=False,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="backslashreplace",
+    ).stdout.strip()
+
+
+def configure_output_streams() -> None:
+    """Keep direct Windows preflight output UTF-8 and non-fatal."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        options = {"errors": "backslashreplace"}
+        if os.name == "nt":
+            options["encoding"] = "utf-8"
+        reconfigure(**options)
+
+
 def changed_files(root: Path, base: str, head: str) -> list[str]:
     output = run_git(
         root,
@@ -87,7 +129,7 @@ def format_failure_class_suggest(payload: dict) -> str:
             "",
             "<!-- A `fix:` commit is in this diff. Choose manually: this command does not infer a class from paths or diffs.",
             "Before opening the PR, inspect a relevant class with `scripts/failure-class explain FC-<slug> --format json`; replace `none` only if an existing class applies, or use `new` for a genuinely new class.",
-            "Available classes:",
+            _candidate_heading(payload),
         ]
     )
     for candidate in payload.get("advisory_candidates", []):
@@ -95,6 +137,24 @@ def format_failure_class_suggest(payload: dict) -> str:
             lines.append(f"- {candidate['id']}: {candidate['violated_contract']}")
     lines.extend(["-->", ""])
     return "\n".join(lines)
+
+
+def _candidate_heading(payload: dict) -> str:
+    """Label the candidate list honestly.
+
+    `failure-class prepare` lists the classes whose advisory scope_hints overlap the
+    change, falling back to the whole registry when none match. Calling a narrowed list
+    "Available classes" would imply the others do not apply, which is a classification
+    the CLI does not make.
+    """
+    shown = payload.get("candidates_shown")
+    total = payload.get("candidates_total")
+    if isinstance(shown, int) and isinstance(total, int) and shown < total:
+        return (
+            f"Classes whose scope_hints overlap this change ({shown} of {total}; advisory only "
+            "— run `scripts/failure-class prepare --all-candidates` for the rest):"
+        )
+    return "Available classes:"
 
 
 def resolve_pr_metadata(
@@ -165,6 +225,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    configure_output_streams()
     args = parse_args()
     if bool(args.repository) != bool(args.pr_number):
         print("FAIL: --repository and --pr-number must be supplied together", file=sys.stderr)
@@ -190,19 +251,13 @@ def main() -> int:
         files_path = temp / "changed-files.txt"
         files_path.write_text("".join(f"{path}\n" for path in files), encoding="utf-8")
         if args.suggest:
-            invariants = subprocess.run(
-                [
-                    sys.executable,
-                    ".github/scripts/check_product_invariants.py",
-                    "--changed-files",
-                    str(files_path),
-                    "--suggest",
-                ],
-                cwd=root,
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+            invariants = run_python_capture(
+                root,
+                ".github/scripts/check_product_invariants.py",
+                "--changed-files",
+                str(files_path),
+                "--suggest",
+                errors="backslashreplace",
             )
             if invariants.stdout:
                 print(invariants.stdout, end="")
@@ -211,25 +266,18 @@ def main() -> int:
 
             suggestion_body = temp / "suggest-pr-body.md"
             suggestion_body.write_text("", encoding="utf-8")
-            failure_classes = subprocess.run(
-                [
-                    sys.executable,
-                    "scripts/failure-class",
-                    "prepare",
-                    "--base",
-                    args.base,
-                    "--head",
-                    args.head,
-                    "--pr-body-file",
-                    str(suggestion_body),
-                    "--format",
-                    "json",
-                ],
-                cwd=root,
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+            failure_classes = run_python_capture(
+                root,
+                "scripts/failure-class",
+                "prepare",
+                "--base",
+                args.base,
+                "--head",
+                args.head,
+                "--pr-body-file",
+                str(suggestion_body),
+                "--format",
+                "json",
             )
             if failure_classes.returncode:
                 print("FAIL: failure-class preparation failed.", file=sys.stderr)
@@ -256,13 +304,7 @@ def main() -> int:
             return 1
         head_branch = args.head_branch or os.getenv("GITHUB_HEAD_REF", "")
         if not head_branch:
-            head_branch = subprocess.run(
-                ["git", "symbolic-ref", "--short", "-q", "HEAD"],
-                cwd=root,
-                check=False,
-                stdout=subprocess.PIPE,
-                text=True,
-            ).stdout.strip()
+            head_branch = current_branch(root)
         skip_changelog = head_branch.startswith("changelog/v") or os.getenv("PRE_PUSH_SKIP_DESKTOP_CHANGELOG") == "1"
         if metadata:
             print(f"PR metadata: {metadata.source}, updated_at={metadata.updated_at}")

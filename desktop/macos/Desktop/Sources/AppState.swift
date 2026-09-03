@@ -276,6 +276,27 @@ struct FinishedRecordingEnvelope: Equatable, Sendable {
 }
 
 @MainActor
+protocol DesktopAlertPresenting: AnyObject {
+  func present(title: String, message: String, completion: (@MainActor () -> Void)?)
+  /// Stop draining the alert queue until Omi is the active app again.
+  ///
+  /// Completions that hand the foreground to another app (System Settings)
+  /// must call this *before* that hand-off. `NSWorkspace.open` can return
+  /// while Omi is still active, so inferring a pause from the current shell
+  /// window would drain the next alert and hide it behind Settings.
+  func pauseQueueUntilAppActive()
+}
+
+@MainActor
+extension DesktopAlertPresenting {
+  func present(title: String, message: String) {
+    present(title: title, message: message, completion: nil)
+  }
+
+  func pauseQueueUntilAppActive() {}
+}
+
+@MainActor
 class AppState: ObservableObject {
   /// Weak reference to the current AppState instance, set on init.
   /// Used by background services (e.g. TranscriptionRetryService) to check recording state.
@@ -298,6 +319,12 @@ class AppState: ObservableObject {
   /// continue into the WAL while the transport reconnects, so this stays
   /// visible until the backend is ready or the active session is reset.
   @Published var transcriptionServiceError: String?
+  /// Assigned in `init()` rather than here: the pinned Xcode 16.4 toolchain
+  /// segfaults (signal 11 in `silgen emitStoredPropertyInitialization`) when
+  /// lowering this existential-erasure default initializer, introduced with
+  /// the presenter itself in d49f978512. Every desktop CI lane was red from
+  /// that commit until this dodge; behavior is identical on both toolchains.
+  var alertPresenter: any DesktopAlertPresenting
   /// Monotonically increasing counter — incremented for each recording start or stop request.
   /// Used to prevent asynchronous work from mutating a newer recording decision.
   var recordingGeneration: UInt64 = 0
@@ -387,9 +414,19 @@ class AppState: ObservableObject {
   @Published var automationPermissionError: OSStatus = 0
   // Prevent concurrent checks (retry path has a 1s sleep).
   var isCheckingAutomationPermission = false
+  /// In-flight guard for the accessibility probe, mirroring the automation one above.
+  /// The probe is several `AXUIElementCopyAttributeValue` round trips against OTHER
+  /// processes, and AX messaging to a hung app blocks for the full AX timeout (seconds).
+  /// Without this, a repeating caller (onboarding polls once a second) stacks a fresh
+  /// detached probe on every tick against an app that is not answering.
+  var isCheckingAccessibilityPermission = false
   @Published var hasAccessibilityPermission = false
   // TCC says yes but AX calls actually fail (common after macOS updates/app re-signs).
   @Published var isAccessibilityBroken = false
+
+  /// Token for the `com.apple.accessibility.api` observer, so the live permission refresh is
+  /// installed exactly once. See `startAccessibilityChangeObserver()`.
+  var accessibilityChangeObserver: NSObjectProtocol?
   @Published var hasFullDiskAccess = false
 
   /// Usage-limit popup state. Set by `triggerUsageLimitPopup(reason:)` when the
@@ -623,6 +660,7 @@ class AppState: ObservableObject {
   }
 
   init() {
+    alertPresenter = AppKitSheetAlertPresenter()
     // Fold any legacy PTT-only microphone choice into the shared preference before
     // anything reads it. Running this only from PTT routing meant a user who had picked a
     // PTT microphone saw "System Default" in Transcription — and was recorded by it —
@@ -729,8 +767,13 @@ class AppState: ObservableObject {
     // Note: Bluetooth subscription is initialized lazily via initializeBluetoothIfNeeded()
     // to avoid triggering the permission dialog before the user reaches the Bluetooth step
 
-    // Start periodic notification health check (every 30 min)
-    // Detects when macOS silently revokes notification authorization and auto-repairs
+    // Start periodic notification health check (every 30 min).
+    // Detects when macOS silently revokes notification authorization. NOTE: this only
+    // *observes* — it reads `UNUserNotificationCenter.notificationSettings` and updates
+    // published state. It does NOT auto-repair (the repair path this comment used to
+    // describe, `NotificationRegistrationRepair`, has no live caller), and it must not
+    // be wired to one: the repair unregisters the app from LaunchServices and
+    // re-requests authorization, which is not something to do on a timer.
     notificationHealthTimer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) {
       [weak self] _ in
       MainActor.assumeIsolated {
@@ -936,6 +979,11 @@ extension Notification.Name {
   /// never reach UserDefaults or the UI on all macOS versions).
   static let onboardingStepNavigationRequested = Notification.Name(
     "onboardingStepNavigationRequested")
+  /// Automation bridge → onboarding screen-demo step: open the three-doors page (same code path as
+  /// the step's "Open the doors" button), so agents can exercise the demo without the cursor.
+  static let onboardingOpenDoorsRequested = Notification.Name("onboardingOpenDoorsRequested")
+  /// The three-doors page finished and handed the user back to Omi via the app URL scheme.
+  static let onboardingDoorsCompleted = Notification.Name("onboardingDoorsCompleted")
   /// Posted when the system wakes from sleep
   static let systemDidWake = Notification.Name("systemDidWake")
   /// Posted when the screen is locked
@@ -948,6 +996,10 @@ extension Notification.Name {
   static let screenCaptureKitBroken = Notification.Name("screenCaptureKitBroken")
   /// Posted to show the "Try asking" popup centered over the full window
   static let showTryAskingPopup = Notification.Name("showTryAskingPopup")
+  /// Posted (automation bridge) to select a case in the first-use popup. userInfo["id"] = FirstUseCase id.
+  static let firstUsePopupSelect = Notification.Name("firstUsePopupSelect")
+  /// Posted (automation bridge) to press "Try it now" in the first-use popup.
+  static let firstUsePopupTry = Notification.Name("firstUsePopupTry")
   /// Posted (automation bridge) to open the inline chat on the redesigned Home
   static let homeStageOpenChat = Notification.Name("homeStageOpenChat")
   /// Posted (automation bridge) to toggle the Connect tray on the redesigned Home
@@ -992,6 +1044,8 @@ extension Notification.Name {
   static let goalCompleted = Notification.Name("goalCompleted")
   /// Posted to navigate to AI Chat page
   static let navigateToChat = Notification.Name("navigateToChat")
+  /// Posted to open the refer-a-friend sheet (top bar owns its presentation)
+  static let openReferralSheet = Notification.Name("openReferralSheet")
   static let navigateToTasks = Notification.Name("navigateToTasks")
   /// Posted by keyboard shortcuts to navigate sidebar. userInfo: ["rawValue": Int]
   static let navigateToSidebarItem = Notification.Name("navigateToSidebarItem")
@@ -1003,6 +1057,15 @@ extension Notification.Name {
   static let desktopAutomationNavigateRequested = Notification.Name(
     "desktopAutomationNavigateRequested")
   /// Posted by the local desktop automation bridge to open a specific conversation detail.
+  /// Submits the meeting-summary card's Share field with the address in the
+  /// notification object, driving the same handler the Send button calls.
+  static let meetingSummaryShareSubmit = Notification.Name("meetingSummaryShareSubmit")
+
+  /// Opens the meeting-summary card's Share address field. Posted by the
+  /// automation bridge so the field can be exercised without a cursor.
+  static let meetingSummaryShareBeginAddressing = Notification.Name(
+    "meetingSummaryShareBeginAddressing")
+
   static let desktopAutomationOpenConversationRequested = Notification.Name(
     "desktopAutomationOpenConversationRequested")
   static let desktopAutomationSetConversationsSearchRequested = Notification.Name(

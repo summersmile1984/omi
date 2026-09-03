@@ -5,8 +5,8 @@ enum DesktopShellPresentationPolicy {
     return false
   }
 
-  /// The floating "Try asking" popup belongs to the legacy shell. Chat-first owns its starter
-  /// prompts inside the main chat and must never expose the notch as a primary text-entry surface.
+  /// The first-use popup belongs to the legacy shell. Chat-first owns its starter prompts inside
+  /// the main chat. Neither shell exposes the notch as a text-entry surface.
   static func usesLegacyPostOnboardingPopup(
     _ useLegacyHomeDesign: Bool,
     _ capabilityVariant: ChatFirstShellVariant
@@ -15,16 +15,40 @@ enum DesktopShellPresentationPolicy {
   }
 }
 
-@MainActor
-enum FloatingPrimaryTextInputRouting {
-  private(set) static var routesToMainApp = false
+enum HomeDesignPresentation: Equatable {
+  case queryShell
+  case redesignedHub
+  case oldestLegacy
 
-  static func configure(routesToMainApp: Bool) {
-    self.routesToMainApp = routesToMainApp
+  static func resolve(
+    useLegacyHomeDesign: Bool,
+    useOldestHomeDesign: Bool,
+    forceModernPresentation: Bool
+  ) -> Self {
+    guard !forceModernPresentation, useLegacyHomeDesign else { return .queryShell }
+    return useOldestHomeDesign ? .oldestLegacy : .redesignedHub
   }
 
+  static func queryShellOwnsItsPanels(
+    useLegacyHomeDesign: Bool,
+    forceModernPresentation: Bool
+  ) -> Bool {
+    resolve(
+      useLegacyHomeDesign: useLegacyHomeDesign,
+      useOldestHomeDesign: false,
+      forceModernPresentation: forceModernPresentation
+    ) == .queryShell
+  }
+}
+
+/// The notch is not a text surface. Typed conversation lives in the main window on every shell, so
+/// backing out of an agent chat with nothing else to show in the notch lands in the main chat
+/// rather than an empty composer. This used to be a per-shell flag (chat-first only); the legacy
+/// shell kept a typed composer in the notch until it was removed outright.
+@MainActor
+enum FloatingPrimaryTextInputRouting {
   static func shouldRouteAgentExitToMainApp(hasMainConversation: Bool) -> Bool {
-    routesToMainApp && !hasMainConversation
+    !hasMainConversation
   }
 }
 

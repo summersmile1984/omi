@@ -219,6 +219,35 @@ def fake_storage():
 _app_cache = None
 
 
+def _install_hermetic_privacy_projection_fakes() -> None:
+    """Confirm deletion at provider boundaries the hermetic stack does not run."""
+    import database.vector_db as vector_db
+    import utils.memory.atom_keyword_index as atom_keyword_index
+    from fakes.vector_search import DeterministicEmbeddings, FakeVectorIndex
+
+    if vector_db.index is None:
+        embeddings = DeterministicEmbeddings()
+        vector_db.embeddings = embeddings
+        vector_db.index = FakeVectorIndex(embeddings)
+
+    real_vector_delete = vector_db.delete_canonical_memory_vectors
+
+    def delete_canonical_memory_vectors(uid: str, memory_id: str | None = None) -> bool:
+        # Tests that install an in-memory Pinecone index still exercise its
+        # real deletion path. With no index, the hermetic provider is absent,
+        # so absence is already confirmed without weakening production code.
+        if vector_db.index is None:
+            return True
+        return real_vector_delete(uid, memory_id)
+
+    def delete_atom_keyword_doc(uid: str, memory_id: str, *, db_client=None) -> bool:
+        del db_client
+        return bool(uid and memory_id)
+
+    vector_db.delete_canonical_memory_vectors = delete_canonical_memory_vectors
+    atom_keyword_index.delete_atom_keyword_doc = delete_atom_keyword_doc
+
+
 def _create_backend_app(fake_firestore_instance, fake_redis_instance, fake_storage_instance):
     """
     Create the real FastAPI app with patched dependencies.
@@ -264,6 +293,8 @@ def _create_backend_app(fake_firestore_instance, fake_redis_instance, fake_stora
     # Import the real FastAPI app (triggers all backend module imports)
     import main as backend_main
 
+    _install_hermetic_privacy_projection_fakes()
+
     # Some backend modules bind ``db``/``r`` with ``from database._client import db``
     # or ``from database.redis_db import r`` at import time. If an import raced ahead
     # of the constructor monkeypatches above, relink those already-bound module
@@ -276,6 +307,21 @@ def _create_backend_app(fake_firestore_instance, fake_redis_instance, fake_stora
     old_r = redis_db.r
     db_client.db = fake_firestore_instance
     redis_db.r = fake_redis_instance
+    # Redis Script objects retain the client that registered them. Relinking
+    # only redis_db.r leaves rate limits and other Lua-backed paths talking to
+    # the developer's localhost Redis, which both violates hermeticity and leaks
+    # counters across wrapper runs. Re-register every imported Lua script on
+    # FakeRedis, including scripts owned by modules outside database.redis_db.
+    for module in list(sys.modules.values()):
+        if module is None:
+            continue
+        for attr_name, attr_value in list(vars(module).items()):
+            try:
+                script = vars(attr_value).get('script')
+            except TypeError:
+                continue
+            if isinstance(script, str):
+                setattr(module, attr_name, fake_redis_instance.register_script(script))
     for module in list(sys.modules.values()):
         if module is None:
             continue

@@ -236,16 +236,10 @@ struct DashboardPage: View {
   @State private var dismissedKnowsTaskIDs: Set<String> = []
   @State private var homeAskFocusPolicy = HomeAskFocusPolicy()
   @Binding var selectedIndex: Int
-  @State private var citedConversation: ServerConversation? = nil
   @State private var selectedCatalogApp: OmiApp?
   @State private var selectedImportConnector: ImportConnector?
   @State private var selectedExportDestination: MemoryExportDestination?
-  @State private var isShowingAppsPopup = false
-  @State private var appsPopupAcceptsInput = false
   @State private var homeConnectSheetAcceptsInput = false
-  @State private var appsPopupInitialSection: AppsCatalogInitialSection = .imports
-  @State private var appsPopupPresentationID = UUID()
-  @State private var isLoadingCitation = false
   @State private var isCaptureMonitoring = false
   @State private var isTogglingCapture = false
   @State private var isTogglingListening = false
@@ -256,6 +250,7 @@ struct DashboardPage: View {
   @AppStorage(AssistantSettings.audioRecordingModeDefaultsKey) private var audioRecordingModeRaw =
     AssistantSettings.AudioRecordingMode.onlyMeetings.rawValue
   @AppStorage("useLegacyHomeDesign") private var useLegacyHomeDesign = false
+  @AppStorage("useOldestHomeDesign") private var useOldestHomeDesign = false
   @State private var homeMode: HomeStageMode = .hub
   @State private var didReportChatFirstTranscriptPage = false
   @FocusState private var homeAskFieldFocused: Bool
@@ -295,13 +290,6 @@ struct DashboardPage: View {
   private static let homeStageTopPadding: CGFloat = 74
   private static let homeStageBottomPadding: CGFloat = 26
   private static let homeStageAnimation = Animation.spring(response: 0.46, dampingFraction: 0.86)
-  private static let appsPopupMaxWidth: CGFloat = 1040
-  private static let appsPopupMaxHeight: CGFloat = 600
-  private static let appsPopupMinWidth: CGFloat = 360
-  private static let appsPopupMinHeight: CGFloat = 360
-  private static let appsPopupHorizontalMargin: CGFloat = 48
-  private static let appsPopupVerticalMargin: CGFloat = 32
-  private static let appsPopupCornerRadius: CGFloat = 22
   private static let homeConnectSheetHorizontalMargin: CGFloat = 56
   private static let homeConnectSheetVerticalMargin: CGFloat = 44
   private static let homeConnectSheetMinWidth: CGFloat = 360
@@ -316,7 +304,7 @@ struct DashboardPage: View {
   }
 
   private var isHomeModalPresented: Bool {
-    isShowingAppsPopup || homeConnectSheetIsPresented
+    homeConnectSheetIsPresented
   }
 
   private var legacySelectedCatalogApp: Binding<OmiApp?> {
@@ -379,27 +367,19 @@ struct DashboardPage: View {
 
   private var homeSurface: some View {
     Group {
-      if useLegacyHomeDesign && !routesChatToPrimaryShell {
+      if useLegacyHomeDesign && useOldestHomeDesign && !routesChatToPrimaryShell {
         legacyHome
       } else {
         redesignedHome
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(useLegacyHomeDesign ? Color.clear : HomePalette.paper)
+    // `PageGlassLane.panel` supplies the ground for older Home surfaces; keep this clear to match it.
+    .background(Color.clear)
   }
 
   private func applyHomeSheets<Content: View>(to content: Content) -> some View {
     content
-      .sheet(item: $citedConversation) { conversation in
-        ConversationDetailView(
-          conversation: conversation,
-          onBack: {
-            citedConversation = nil
-          }
-        )
-        .frame(minWidth: 500, minHeight: 500)
-      }
       .sheet(isPresented: $showingAllGoals) {
         AllGoalsSheet(
           store: intelligenceStore,
@@ -452,23 +432,6 @@ struct DashboardPage: View {
           }
         )
         .frame(width: 520, height: 620)
-      }
-      .overlay {
-        if isLoadingCitation {
-          ZStack {
-            // Home fills the content area, so this dim was window-wide too — the sweep missed it.
-            ShellModalScrim()
-            VStack(spacing: OmiSpacing.md) {
-              ProgressView()
-              Text("Loading source...")
-                .scaledFont(size: OmiType.body)
-                .foregroundColor(Ink.primary)
-            }
-            .padding(OmiSpacing.xl)
-            // A modal over the transcript is a free-floating object: real glass.
-            .glassFloatingBar(cornerRadius: OmiChrome.smallControlRadius)
-          }
-        }
       }
   }
 
@@ -650,12 +613,17 @@ struct DashboardPage: View {
       ChatDraftScope(draft: chatProvider.composerDraft) { draft in
         ChatInputView(
           onSend: { text in
-            AnalyticsManager.shared.chatMessageSent(
-              messageLength: text.count,
-              hasSelectedAppContext: selectedApp != nil,
-              source: "dashboard_chat"
-            )
-            Task { await chatProvider.sendMainDraft(text) }
+            Task {
+              await chatProvider.sendMainDraft(
+                text,
+                onAccepted: {
+                  AnalyticsManager.shared.chatMessageSent(
+                    messageLength: text.count,
+                    hasSelectedAppContext: selectedApp != nil,
+                    source: "dashboard_chat"
+                  )
+                })
+            }
           },
           onStop: {
             chatProvider.stopAgent(owner: .mainChat)
@@ -672,6 +640,10 @@ struct DashboardPage: View {
           },
           onAttachmentRemoved: { id in
             chatProvider.removePendingAttachment(id: id)
+          },
+          references: chatProvider.pendingComposerReferences,
+          onReferenceRemoved: { id in
+            chatProvider.removeComposerReference(id: id)
           }
         )
         .padding(.horizontal, OmiSpacing.section)
@@ -721,13 +693,6 @@ struct DashboardPage: View {
         // Capture/Listening now live in the shell's constant top bar (see
         // DesktopTopBar), so the home no longer renders its own header copy.
 
-        appsPopupOverlay(
-          contentWidth: proxy.size.width,
-          panelWidth: panelWidth,
-          panelHeight: panelHeight,
-          panelTop: panelTop
-        )
-
         homeConnectSheetOverlay(
           contentWidth: proxy.size.width,
           panelWidth: panelWidth,
@@ -747,7 +712,6 @@ struct DashboardPage: View {
           }
         }
       }
-      .omiAnimation(.easeOut(duration: 0.2), value: isShowingAppsPopup)
       .omiAnimation(.easeOut(duration: 0.2), value: homeConnectSheetIsPresented)
       .omiAnimation(Self.homeStageAnimation, value: homeMode)
     }
@@ -998,7 +962,7 @@ struct DashboardPage: View {
 
   private var homeKnowsTaskCandidates: [HomeKnowsTaskCandidate] {
     (viewModel.overdueTasks + viewModel.todaysTasks + viewModel.recentTasks)
-      .filter { !$0.completed && $0.deleted != true }
+      .filter { !$0.completed && !$0.isRetired }
       .map { HomeKnowsTaskCandidate(id: $0.id, text: $0.description) }
   }
 
@@ -1245,7 +1209,8 @@ struct DashboardPage: View {
   private var homeSuggestedQuestions: [String] {
     HomeSuggestionComposer.compose(
       personalized: homeSuggestionsStore.personalizedQuestions,
-      onboarding: PostOnboardingPromptSuggestions.suggestions()
+      onboarding: PostOnboardingPromptSuggestions.suggestions(),
+      dayZero: .live()
     )
   }
 
@@ -1310,8 +1275,14 @@ struct DashboardPage: View {
   /// of whatever surface Home was resting on.
   private func consumePendingMainChatOpenRequest() {
     guard MainChatNavigationRequestStore.shared.consume() else { return }
+    let draft = MainChatNavigationRequestStore.shared.consumeDraft()
+    if let draft {
+      // Prefill, focus, and stop: the user reads the suggestion and decides to send it.
+      chatProvider.draftText = draft
+      homeAskFieldFocused = true
+    }
     guard !useLegacyHomeDesign else { return }
-    openHomeChat()
+    openHomeChat(focusInput: draft == nil)
   }
   private func openHomeChat(focusInput: Bool = true) {
     if let onOpenPrimaryChat {
@@ -1391,113 +1362,71 @@ struct DashboardPage: View {
     if let onOpenPrimaryChat {
       onOpenPrimaryChat()
       guard !chatProvider.isSending else { return }
-      AnalyticsManager.shared.chatMessageSent(
-        messageLength: text.count,
-        hasSelectedAppContext: selectedApp != nil,
-        source: "home_ask_bar"
-      )
-      Task { await chatProvider.sendMainDraft(draft) }
+      Task {
+        await chatProvider.sendMainDraft(
+          draft,
+          onAccepted: {
+            AnalyticsManager.shared.chatMessageSent(
+              messageLength: text.count,
+              hasSelectedAppContext: selectedApp != nil,
+              source: "home_ask_bar"
+            )
+          })
+      }
       return
     }
     openHomeChat(focusInput: false)
-    AnalyticsManager.shared.chatMessageSent(
-      messageLength: text.count,
-      hasSelectedAppContext: selectedApp != nil,
-      source: "home_ask_bar"
-    )
-    if chatProvider.isSending {
-      return
-    } else {
-      Task { await chatProvider.sendMainDraft(draft) }
+    if !chatProvider.isSending {
+      Task {
+        await chatProvider.sendMainDraft(
+          draft,
+          onAccepted: {
+            AnalyticsManager.shared.chatMessageSent(
+              messageLength: text.count,
+              hasSelectedAppContext: selectedApp != nil,
+              source: "home_ask_bar"
+            )
+          })
+      }
     }
   }
 
   private func askHomeSuggestion(_ suggestion: String) {
+    if DayZeroChips.isDraftPrompt(suggestion) {
+      // "Remember that I…" is a sentence for the user to finish, not a question to fire.
+      chatProvider.draftText = DayZeroChips.draftText(for: suggestion)
+      if onOpenPrimaryChat == nil { openHomeChat(focusInput: true) }
+      homeAskFieldFocused = true
+      return
+    }
     if let onOpenPrimaryChat {
       onOpenPrimaryChat()
       guard !chatProvider.isSending else { return }
-      AnalyticsManager.shared.chatMessageSent(
-        messageLength: suggestion.count,
-        hasSelectedAppContext: selectedApp != nil,
-        source: "home_suggested_question"
-      )
-      Task { await chatProvider.sendMessage(suggestion) }
+      Task {
+        _ = await chatProvider.sendMessage(
+          suggestion,
+          onAccepted: {
+            AnalyticsManager.shared.chatMessageSent(
+              messageLength: suggestion.count,
+              hasSelectedAppContext: selectedApp != nil,
+              source: "home_suggested_question"
+            )
+          })
+      }
       return
     }
     openHomeChat(focusInput: false)
-    AnalyticsManager.shared.chatMessageSent(
-      messageLength: suggestion.count,
-      hasSelectedAppContext: selectedApp != nil,
-      source: "home_suggested_question"
-    )
-    Task { await chatProvider.sendMessage(suggestion) }
-  }
-
-  @ViewBuilder
-  private func appsPopupOverlay(
-    contentWidth: CGFloat,
-    panelWidth: CGFloat,
-    panelHeight: CGFloat,
-    panelTop: CGFloat
-  ) -> some View {
-    ZStack {
-      if isShowingAppsPopup {
-        // Home owns its panels, so this page is handed the whole content area — a full-bleed dim
-        // here reaches the window's edges, and the window is transparent. `ShellModalScrim` reads
-        // that from `PageGlassLane` and puts the dim on the lane Home's own panels take.
-        ShellModalScrim(onTap: dismissAppsPopup)
-          .transition(.opacity)
-          .zIndex(2)
-
-        let popupSize = appsPopupSize(panelWidth: panelWidth, panelHeight: panelHeight)
-
-        AppsPage(
-          appProvider: appProvider,
-          appState: appState,
-          connectorStatusStore: homeStatusStore.connectorStatusStore,
-          initialSection: appsPopupInitialSection,
-          onDismiss: {
-            dismissAppsPopup()
-          },
-          onSelectApp: { app in
-            openAppFromAppsPopup(app)
-          },
-          onSelectConnector: { connector in
-            openImportConnectorFromAppsPopup(connector)
-          },
-          onSelectDestination: { destination in
-            openExportDestinationFromAppsPopup(destination)
-          }
-        )
-        .id(appsPopupPresentationID)
-        .frame(width: popupSize.width, height: popupSize.height)
-        // The popup is a bounded card with its own ground, so a sheet opened *inside* it dims the
-        // card rather than the lane behind it.
-        .shellModalScrimBounds(.ownSurface)
-        .background(Ink.surface)
-        .clipShape(RoundedRectangle(cornerRadius: Self.appsPopupCornerRadius, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: Self.appsPopupCornerRadius, style: .continuous)
-            .stroke(Ink.separator, lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.12), radius: 20, y: 8)
-        .position(x: contentWidth / 2, y: panelTop + panelHeight / 2)
-        .transition(.scale(scale: 0.95).combined(with: .opacity))
-        .accessibilityAddTraits(.isModal)
-        .zIndex(3)
-
-        // Only the topmost modal owns Esc; the connect sheet takes over
-        // while it is presented (including the brief crossfade overlap).
-        if appsPopupAcceptsInput && !homeConnectSheetIsPresented {
-          OverlayModalEscapeCatcher {
-            dismissAppsPopup()
-          }
-          .zIndex(3)
-        }
-      }
+    Task {
+      _ = await chatProvider.sendMessage(
+        suggestion,
+        onAccepted: {
+          AnalyticsManager.shared.chatMessageSent(
+            messageLength: suggestion.count,
+            hasSelectedAppContext: selectedApp != nil,
+            source: "home_suggested_question"
+          )
+        })
     }
-    .allowsHitTesting(appsPopupAcceptsInput && !homeConnectSheetIsPresented)
-    .zIndex(2)
   }
 
   @ViewBuilder
@@ -1595,19 +1524,6 @@ struct DashboardPage: View {
     }
   }
 
-  private func appsPopupSize(panelWidth: CGFloat, panelHeight: CGFloat) -> CGSize {
-    CGSize(
-      width: min(
-        Self.appsPopupMaxWidth,
-        max(Self.appsPopupMinWidth, panelWidth - (Self.appsPopupHorizontalMargin * 2))
-      ),
-      height: min(
-        Self.appsPopupMaxHeight,
-        max(Self.appsPopupMinHeight, panelHeight - (Self.appsPopupVerticalMargin * 2))
-      )
-    )
-  }
-
   private var homeHeader: some View {
     let transcriptionUnavailable = appState.transcriptionServiceError != nil
 
@@ -1678,7 +1594,7 @@ struct DashboardPage: View {
         openOmiDeviceWebsite()
       }
       HomeAIChoiceButton(title: "More", systemImage: "plus") {
-        openAppsPopup(initialSection: .imports)
+        openAppsPage()
       }
     }
   }
@@ -1713,7 +1629,7 @@ struct DashboardPage: View {
         openExportDestination(.hermes)
       }
       HomeAIChoiceButton(title: "More", systemImage: "plus") {
-        openAppsPopup(initialSection: .exports)
+        openAppsPage()
       }
     }
   }
@@ -1723,35 +1639,11 @@ struct DashboardPage: View {
     AnalyticsManager.shared.tabChanged(tabName: item.title)
   }
 
-  private func openAppsPopup(initialSection: AppsCatalogInitialSection) {
-    // Filters left behind by earlier catalog visits (a category, a search,
-    // "Installed") would otherwise replace the Imports/Exports sections
-    // this popup exists to show.
+  private func openAppsPage() {
+    // The Apps page is the sole catalog owner. Contextual "More" actions clear
+    // stale filters, then navigate there instead of mounting a bounded copy.
     appProvider.clearFilters()
-    appsPopupInitialSection = initialSection
-    appsPopupPresentationID = UUID()
-    appsPopupAcceptsInput = true
-    isShowingAppsPopup = true
-  }
-
-  private func dismissAppsPopup() {
-    appsPopupAcceptsInput = false
-    isShowingAppsPopup = false
-  }
-
-  private func openAppFromAppsPopup(_ app: OmiApp) {
-    dismissAppsPopup()
-    presentCatalogApp(app)
-  }
-
-  private func openImportConnectorFromAppsPopup(_ connector: ImportConnector) {
-    dismissAppsPopup()
-    presentImportConnector(connector)
-  }
-
-  private func openExportDestinationFromAppsPopup(_ destination: MemoryExportDestination) {
-    dismissAppsPopup()
-    presentExportDestination(destination)
+    navigate(to: .apps)
   }
 
   private func openImportConnector(_ connectorID: String) {
@@ -1853,29 +1745,19 @@ struct DashboardPage: View {
     .padding(.vertical, OmiSpacing.section)
   }
 
-  /// Handle tapping on a citation card — opens the cited conversation in a sheet.
+  /// Conversation citations use the same root handoff as every other source.
+  /// The Memory hub owns the only conversation browser/detail presentation.
   private func handleCitationTap(_ citation: Citation) {
     guard citation.sourceType == .conversation else {
       log("Citation tapped: \(citation.title) (memory - no detail view)")
       return
     }
 
-    isLoadingCitation = true
-
-    Task {
-      do {
-        let conversation = try await APIClient.shared.getConversation(id: citation.id)
-        await MainActor.run {
-          citedConversation = conversation
-          isLoadingCitation = false
-        }
-      } catch {
-        logError("Failed to fetch cited conversation", error: error)
-        await MainActor.run {
-          isLoadingCitation = false
-        }
-      }
-    }
+    ConversationDetailAutomationState.shared.requestOpen(
+      conversationId: citation.id,
+      showTranscript: false
+    )
+    NotificationCenter.default.post(name: .desktopAutomationOpenConversationRequested, object: nil)
   }
 
   private func openRecommendation(_ recommendation: DashboardRecommendation) async -> Bool {
@@ -2214,6 +2096,13 @@ struct DashboardPage: View {
 
   private func handleSuggestedPrompt(_ suggestion: String) {
     PostOnboardingPromptSuggestions.consume()
+    if DayZeroChips.isDraftPrompt(suggestion) {
+      // A sentence for the user to finish: prefill and focus, never send.
+      chatProvider.draftText = DayZeroChips.draftText(for: suggestion)
+      openHomeChat(focusInput: true)
+      homeAskFieldFocused = true
+      return
+    }
     FloatingControlBarManager.shared.openAIInputWithQuery(suggestion)
   }
 

@@ -14,6 +14,8 @@ import {
   beginBackendReconcile,
   beginBackendReconcilesForOwner,
   clearJournalConversation,
+  chatFirstMaterializationDeferrals,
+  chatFirstWireRejectionMessage,
   classifyBackendTurnResultDisposition,
   drainBackendConversationDeleteOutbox,
   drainBackendTurnOutbox,
@@ -242,6 +244,102 @@ describe("kernel conversation journal", () => {
     fixture.store.close();
   });
 
+  it("poison item contract: one bad item never blocks the rest and returns a typed rejection", () => {
+    const fixture = newSurface("main_chat", "chat", "chat-first-poison-isolation");
+    const batch = materializeChatFirstIntents(fixture.store, [
+      {
+        ownerId: fixture.ownerId, conversationId: fixture.conversationId, controlGeneration: 9,
+        intentId: "intent-poison", continuityKey: "intent-poison", source: "capture_arrival",
+        blocks: [{ type: "notARealBlock" }], nowMs: 100,
+      },
+      {
+        ownerId: fixture.ownerId, conversationId: fixture.conversationId, controlGeneration: 9,
+        intentId: "intent-after-poison", continuityKey: "intent-after-poison", source: "capture_arrival",
+        blocks: [{ type: "captureLink", conversation_id: "capture-2", summary: "Capture" }], nowMs: 101,
+      },
+    ]);
+
+    expect(batch.stoppedByTail).toBe(false);
+    expect(batch.results[0]).toMatchObject({
+      accepted: false, rejected: true, rejectionCode: "invalid_intent", turn: null, receipt: null,
+    });
+    expect(batch.results[1]).toMatchObject({ accepted: true, rejected: false, turn: { role: "assistant" } });
+    expect(fixture.store.getRow("SELECT COUNT(*) AS count FROM conversation_turns").count).toBe(1);
+    expect(fixture.store.getRow("SELECT COUNT(*) AS count FROM chat_first_materialization_receipts").count).toBe(1);
+    fixture.store.close();
+  });
+
+  it("generation validation failures remain transient typed kernel rejections", () => {
+    const fixture = newSurface("main_chat", "chat", "chat-first-generation-transient");
+    const batch = materializeChatFirstIntents(fixture.store, [{
+      ownerId: fixture.ownerId, conversationId: fixture.conversationId, controlGeneration: -1,
+      intentId: "intent-stale-generation", continuityKey: "intent-stale-generation", source: "capture_arrival",
+      blocks: [{ type: "captureLink", conversation_id: "capture-1", summary: "Capture" }], nowMs: 100,
+    }]);
+
+    expect(batch.results[0]).toMatchObject({
+      rejected: true,
+      rejectionCode: "kernel_materialization_failed",
+      rejectionMessage: "Chat-first materialization requires a valid control generation",
+    });
+    fixture.store.close();
+  });
+
+  it("wire rejection messages are bounded before leaving the kernel", () => {
+    expect(chatFirstWireRejectionMessage(new Error("x".repeat(500)))).toHaveLength(300);
+  });
+
+  it("shares the stable chat-first turn identity vector with the backend", () => {
+    const fixture = newSurface("main_chat", "chat", "chat-first-shared-vector");
+    const result = materializeChatFirstIntent(fixture.store, {
+      ownerId: fixture.ownerId, conversationId: fixture.conversationId, controlGeneration: 7,
+      intentId: "intent-shared-vector", continuityKey: "shared-vector", source: "capture_arrival",
+      blocks: [{ type: "captureLink", conversation_id: "capture-1", summary: "Capture" }], nowMs: 100,
+    });
+    expect(result.turn?.turnId).toBe("turn_cfi_df211fb1b31c4b849c6bb6b2");
+    fixture.store.close();
+  });
+
+  it("adopts an imported stable chat-first turn and records its receipt by identity", () => {
+    const fixture = newSurface("main_chat", "chat", "chat-first-import-adoption");
+    const intentId = "intent-imported-elsewhere";
+    const stableTurnId = `turn_cfi_${createHash("sha256").update(intentId).digest("hex").slice(0, 24)}`;
+    const imported = importRemoteJournalTurn(fixture.store, {
+      ownerId: fixture.ownerId,
+      conversationId: fixture.conversationId,
+      remoteId: "remote-imported-intent",
+      canonicalTurnId: stableTurnId,
+      role: "assistant",
+      surfaceKind: "main_chat",
+      content: "",
+      contentBlocks: [{ type: "captureLink", id: "remote-block", conversationId: "capture-1", summary: "Capture" }],
+      metadataJson: JSON.stringify({ chatFirstIntentId: intentId }),
+      createdAtMs: 90,
+      nowMs: 91,
+      source: "backend_reconcile",
+    });
+
+    const materialized = materializeChatFirstIntent(fixture.store, {
+      ownerId: fixture.ownerId,
+      conversationId: fixture.conversationId,
+      controlGeneration: 9,
+      intentId,
+      continuityKey: intentId,
+      source: "capture_arrival",
+      blocks: [{ type: "captureLink", conversation_id: "capture-1", summary: "Different local payload" }],
+      nowMs: 100,
+    });
+
+    expect(imported.turn).toMatchObject({ turnId: stableTurnId, origin: "backend_import" });
+    expect(materialized).toMatchObject({
+      accepted: true, duplicate: true, rejected: false,
+      turn: { turnId: stableTurnId, origin: "backend_import" },
+      receipt: { intentId },
+    });
+    expect(fixture.store.getRow("SELECT COUNT(*) AS count FROM conversation_turns").count).toBe(1);
+    fixture.store.close();
+  });
+
   it("suppresses a materialization batch behind a streaming assistant tail", () => {
     const fixture = newSurface("main_chat", "chat", "chat-first-streaming-tail");
     recordStreamingAssistantPlaceholder(fixture, "streaming-tail");
@@ -251,8 +349,15 @@ describe("kernel conversation journal", () => {
       blocks: [{ type: "captureLink", conversation_id: "capture-1", summary: "Capture" }], nowMs: 100,
     }]);
     expect(batch).toMatchObject({ stoppedByTail: true, results: [{
-      accepted: false, suppressedByStreamingTail: true, turn: null,
+      accepted: false, rejected: false, suppressedByStreamingTail: true, turn: null,
     }] });
+    expect(chatFirstMaterializationDeferrals(
+      [{ intentId: "intent-late" }, { intentId: "intent-after-streaming-item" }],
+      batch,
+    )).toEqual([
+      { intentId: "intent-late", code: "streaming_tail" },
+      { intentId: "intent-after-streaming-item", code: "tail_question" },
+    ]);
     fixture.store.close();
   });
 
@@ -1920,6 +2025,137 @@ describe("kernel conversation journal", () => {
       "SELECT status, last_error_code FROM backend_turn_outbox WHERE turn_id = ?",
       ["turn-discard-guard"],
     )).toEqual({ status: "failed", last_error_code: "discarded_terminal_projection" });
+    fixture.store.close();
+  });
+
+  // Characterization of the accept/reject boundary the desktop failed-turn
+  // fallback runs into. The Swift side reconstructs a failure notice and asks
+  // the journal to record it; whether that survives relaunch depends entirely
+  // on whether the runtime already terminalized the row.
+  it("rejects a late failure notice on a pre-terminalized empty failed turn but accepts one on a live turn", () => {
+    const fixture = newSurface("main_chat", "chat", "failure-notice");
+    const notice = "Omi's AI service declined this request.";
+
+    // (1) REJECT — the runtime discarded the turn first (user Stop, watchdog,
+    // owner revocation, or a throw escaping the run), leaving an empty
+    // `failed` row. This is the state the Swift fallback is written for.
+    const cancelledRun = fixture.store.insertRun({
+      sessionId: fixture.sessionId,
+      runId: "run_notice_cancelled",
+      clientId: "main-chat",
+      requestId: "failure-notice-cancelled",
+      status: "cancelled",
+      mode: "act",
+    });
+    const cancelledAttempt = fixture.store.insertAttempt({
+      attemptId: "att_notice_cancelled",
+      runId: cancelledRun.runId,
+      attemptNo: 1,
+      status: "cancelled",
+      adapterId: "fake",
+      adapterInstanceId: "fake:notice-cancelled",
+    });
+    recordJournalTurn(fixture.store, {
+      ownerId: fixture.ownerId,
+      conversationId: fixture.conversationId,
+      turnId: "turn-notice-discarded",
+      role: "assistant",
+      surfaceKind: "main_chat",
+      origin: "agent_runtime",
+      status: "streaming",
+      content: "",
+      contentBlocks: [],
+      producingRunId: cancelledRun.runId,
+      producingAttemptId: cancelledAttempt.attemptId,
+      createdAtMs: 50,
+    });
+    terminalizeJournalTurn(fixture.store, {
+      ownerId: fixture.ownerId,
+      conversationId: fixture.conversationId,
+      turnId: "turn-notice-discarded",
+      producingRunId: cancelledRun.runId,
+      producingAttemptId: cancelledAttempt.attemptId,
+      disposition: "discard",
+      nowMs: 51,
+    });
+
+    // The `journal_update_turn` route Swift takes when it has no correlated
+    // terminal result. (`index.ts` refuses it even earlier, because the turn
+    // carries a producing run id at all.)
+    expect(() => assertPublicJournalUpdatePolicy(fixture.store, {
+      ownerId: fixture.ownerId,
+      conversationId: fixture.conversationId,
+      turnId: "turn-notice-discarded",
+      status: "failed",
+      content: notice,
+    })).toThrow(/rejects every public update/i);
+
+    // And the terminalize route cannot re-terminalize it with new material.
+    expect(() => terminalizeJournalTurn(fixture.store, {
+      ownerId: fixture.ownerId,
+      conversationId: fixture.conversationId,
+      turnId: "turn-notice-discarded",
+      producingRunId: cancelledRun.runId,
+      producingAttemptId: cancelledAttempt.attemptId,
+      disposition: "accept",
+      content: notice,
+      nowMs: 52,
+    })).toThrow(/already terminalized with different canonical material/i);
+
+    // So the durable row stays the empty `failed` placeholder that the desktop
+    // journal projection deletes on the next refresh — the notice is lost.
+    expect(fixture.store.getRow(
+      "SELECT status, content FROM conversation_turns WHERE turn_id = ?",
+      ["turn-notice-discarded"],
+    )).toEqual({ status: "failed", content: "" });
+
+    // (2) ACCEPT — an ordinary upstream failure never pre-terminalizes, so the
+    // same notice reaches durable storage through the terminalize route.
+    const failedRun = fixture.store.insertRun({
+      sessionId: fixture.sessionId,
+      runId: "run_notice_failed",
+      clientId: "main-chat",
+      requestId: "failure-notice-failed",
+      status: "failed",
+      mode: "act",
+    });
+    const failedAttempt = fixture.store.insertAttempt({
+      attemptId: "att_notice_failed",
+      runId: failedRun.runId,
+      attemptNo: 1,
+      status: "failed",
+      adapterId: "fake",
+      adapterInstanceId: "fake:notice-failed",
+    });
+    recordJournalTurn(fixture.store, {
+      ownerId: fixture.ownerId,
+      conversationId: fixture.conversationId,
+      turnId: "turn-notice-live",
+      role: "assistant",
+      surfaceKind: "main_chat",
+      origin: "agent_runtime",
+      status: "streaming",
+      content: "",
+      contentBlocks: [],
+      producingRunId: failedRun.runId,
+      producingAttemptId: failedAttempt.attemptId,
+      createdAtMs: 60,
+    });
+    terminalizeJournalTurn(fixture.store, {
+      ownerId: fixture.ownerId,
+      conversationId: fixture.conversationId,
+      turnId: "turn-notice-live",
+      producingRunId: failedRun.runId,
+      producingAttemptId: failedAttempt.attemptId,
+      disposition: "accept",
+      content: notice,
+      nowMs: 61,
+    });
+
+    expect(fixture.store.getRow(
+      "SELECT status, content FROM conversation_turns WHERE turn_id = ?",
+      ["turn-notice-live"],
+    )).toEqual({ status: "failed", content: notice });
     fixture.store.close();
   });
 

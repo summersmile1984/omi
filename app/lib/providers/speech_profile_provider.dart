@@ -55,6 +55,13 @@ class SpeechProfileProvider extends ChangeNotifier
   Timer? _reconnectTimer;
   bool _reconnecting = false;
 
+  /// Consecutive closes with code 1011 (server-side STT failure) while no
+  /// user speech has been captured yet. This combination means the STT
+  /// backend is down, not that the socket hiccuped, so retrying it forever
+  /// only spins in place — see _maxSttUnavailableCloses below.
+  int _sttUnavailableCloseCount = 0;
+  static const int _maxSttUnavailableCloses = 3;
+
   bool isInitialising = false;
   bool isInitialised = false;
 
@@ -179,12 +186,7 @@ class SpeechProfileProvider extends ChangeNotifier
         SharedPreferencesUtil().hasSetPrimaryLanguage ? SharedPreferencesUtil().userPrimaryLanguage : "multi";
     int rate = sampleRate ?? (codec.isOpusSupported() ? 16000 : 8000);
 
-    _socket = await openSpeechProfileSocket(
-      codec: codec,
-      sampleRate: rate,
-      language: language,
-      force: force,
-    );
+    _socket = await openSpeechProfileSocket(codec: codec, sampleRate: rate, language: language, force: force);
     if (_socket == null) {
       throw Exception("Can not create new speech profile socket");
     }
@@ -521,6 +523,14 @@ class SpeechProfileProvider extends ChangeNotifier
     Logger.debug('Speech profile socket closed with code: $closeCode');
     // Only notify error if we're still recording and not completed
     if (startedRecording && !profileCompleted && !uploadingProfile) {
+      final sttUnavailable = closeCode == 1011 && segments.isEmpty;
+      _sttUnavailableCloseCount = sttUnavailable ? _sttUnavailableCloseCount + 1 : 0;
+      if (sttUnavailable && _sttUnavailableCloseCount >= _maxSttUnavailableCloses) {
+        _reconnectTimer?.cancel();
+        _reconnectTimer = null;
+        notifyError('STT_UNAVAILABLE');
+        return;
+      }
       notifyError('SOCKET_DISCONNECTED');
       _scheduleReconnect();
     }

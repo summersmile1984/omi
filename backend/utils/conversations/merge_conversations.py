@@ -10,9 +10,10 @@ This module provides functions for merging multiple conversations into one.
 
 import copy
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import database.conversations as conversations_db
 from database._client import db as firestore_db
@@ -37,8 +38,17 @@ from utils.other.storage import (
     list_audio_chunks,
     _get_storage_client,
     private_cloud_sync_bucket,
-    _get_extension_for_path,
 )
+
+try:
+    from utils.other.storage import owner_storage_write_gate
+except ImportError:
+    # Narrow test-double compatibility for import-isolated merge tests whose
+    # storage module predates the owner-write fence.
+    def owner_storage_write_gate(uid: Any, bucket: Any = None) -> Any:
+        return nullcontext()
+
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -264,6 +274,12 @@ def perform_merge_async(
         # Private cloud sync: True if any has it
         private_cloud_sync_enabled = any(c.get("private_cloud_sync_enabled", False) for c in sorted_convs)
 
+        # Custom STT: True if any source was transcribed on a third-party
+        # provider, so the merged conversation stays behind the Omi-paid LLM
+        # post-processing gate (#7690). A custom-STT source must not be able to
+        # shed the marker by merging with a normal-STT one.
+        uses_custom_stt = any(c.get('uses_custom_stt', False) for c in sorted_convs)
+
         # Discarded: only if ALL are discarded
         discarded = all(c.get("discarded", False) for c in sorted_convs)
 
@@ -304,6 +320,7 @@ def perform_merge_async(
             geolocation=geolocation,
             visibility=visibility,
             private_cloud_sync_enabled=private_cloud_sync_enabled,
+            uses_custom_stt=uses_custom_stt,
             discarded=discarded,
             status=ConversationStatus.processing,
             client_device_id=client_device_id,
@@ -532,7 +549,8 @@ def _copy_audio_chunks_for_merge(
             original_filename = chunk["path"].split("/")[-1]
             new_path = f"chunks/{uid}/{new_conversation_id}/{original_filename}"
             source_blob = bucket.blob(chunk["path"])
-            bucket.copy_blob(source_blob, bucket, new_path)
+            with owner_storage_write_gate(uid, bucket):
+                bucket.copy_blob(source_blob, bucket, new_path)
 
     # Create AudioFile records from copied chunks
     if has_chunks:

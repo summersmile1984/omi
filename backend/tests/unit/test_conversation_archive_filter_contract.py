@@ -11,6 +11,17 @@ from testing.import_isolation import AutoMockModule, load_module_fresh, stub_mod
 
 _BACKEND = Path(__file__).resolve().parents[2]
 
+# database.conversations imports the list-read budget seam at module level
+# (#11831). The seam is stdlib-only and budget-optional, so load the real
+# module (under a private name) and install it as the stubbed submodule; a bare
+# AutoMock would swallow the rows budgeted_stream_iter must yield.
+import importlib.util as _importlib_util
+
+_list_budget_path = _BACKEND / "utils" / "other" / "list_budget.py"
+_list_budget_spec = _importlib_util.spec_from_file_location("_omi_real_list_budget", str(_list_budget_path))
+list_budget_real = _importlib_util.module_from_spec(_list_budget_spec)
+_list_budget_spec.loader.exec_module(list_budget_real)
+
 
 class _FieldFilter:
     def __init__(self, field_path, op_string, value):
@@ -24,6 +35,7 @@ class _Snapshot:
 
     def __init__(self, row):
         self._row = row
+        self.id = row['id']
 
     def to_dict(self):
         return dict(self._row)
@@ -42,6 +54,7 @@ class _Query:
         self._order_field = None
         self._limit = None
         self._offset = 0
+        self.selected_fields = None
 
     def where(self, *, filter):
         self.filters.append((filter.field_path, filter.op_string, filter.value))
@@ -51,6 +64,11 @@ class _Query:
     def order_by(self, field_path, direction=None):
         self._order_field = field_path
         self.events.append(("order_by", field_path, direction))
+        return self
+
+    def select(self, field_paths):
+        self.selected_fields = list(field_paths)
+        self.events.append(("select", tuple(field_paths)))
         return self
 
     def limit(self, value):
@@ -136,6 +154,10 @@ def conversations_db():
     database_client.delete_collection_recursive = MagicMock()
     database_client.get_firestore_client = MagicMock()
     database_client.run_transactional = MagicMock()
+    firestore_read_metrics = ModuleType("database.firestore_read_metrics")
+    firestore_read_metrics.FirestoreReadOutcome = SimpleNamespace(HIT="hit", MISS="miss")
+    firestore_read_metrics.FirestoreReadSite = SimpleNamespace(UNATTRIBUTED="unattributed")
+    firestore_read_metrics.record_document_read = MagicMock()
     database_helpers = ModuleType("database.helpers")
     database_helpers.set_data_protection_level = MagicMock()
     database_helpers.prepare_for_write = _decorator
@@ -157,6 +179,7 @@ def conversations_db():
         "google.api_core": google_api_core,
         "google.api_core.exceptions": exceptions_module,
         "database._client": database_client,
+        "database.firestore_read_metrics": firestore_read_metrics,
         "database.helpers": database_helpers,
         "database.users": AutoMockModule("database.users"),
         "models": models,
@@ -168,6 +191,7 @@ def conversations_db():
         "utils.encryption": AutoMockModule("utils.encryption"),
         "utils.other": utils_other,
         "utils.other.hume": AutoMockModule("utils.other.hume"),
+        "utils.other.list_budget": list_budget_real,
         "utils.other.storage": AutoMockModule("utils.other.storage"),
     }
 
@@ -273,3 +297,38 @@ def test_sources_omitted_preserves_legacy_filter_chain(conversations_db):
 
     assert [row["id"] for row in results] == ["discarded-omi", "friend", "omi"]
     assert firestore.queries[0].filters == [("status", "in", ["processing", "completed"])]
+
+
+def test_hosted_mcp_list_uses_transcript_and_photo_free_projection(conversations_db):
+    module, firestore = conversations_db
+    firestore.rows = [
+        {
+            **_conversation("conversation-1", created_at=1, source="omi"),
+            "started_at": 1,
+            "finished_at": 2,
+            "language": "en",
+            "structured": {"title": "A card", "overview": "Small", "action_items": [{"large": True}]},
+            "transcript_segments": [{"text": "large transcript"}],
+            "photos": [{"base64": "large photo"}],
+        }
+    ]
+
+    result = module.get_mcp_conversation_cards(
+        "user-1",
+        20,
+        0,
+        firestore_client=firestore,
+    )
+
+    assert [row["id"] for row in result] == ["conversation-1"]
+    selected_fields = set(firestore.queries[0].selected_fields)
+    assert "structured.title" in selected_fields
+    assert "structured.overview" in selected_fields
+    assert "transcript_segments" not in selected_fields
+    assert "photos" not in selected_fields
+    assert "structured.action_items" not in selected_fields
+    assert ("select", tuple(module._MCP_CONVERSATION_CARD_FIELD_PATHS)) in firestore.queries[0].events
+    transcript_fields = set(module._MCP_CONVERSATION_TRANSCRIPT_FIELD_PATHS)
+    assert "transcript_segments" in transcript_fields
+    assert "photos" not in transcript_fields
+    assert "structured.action_items" not in transcript_fields

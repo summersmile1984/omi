@@ -28,6 +28,7 @@ struct ConversationRowView: View {
   @State private var isDeleting = false
   @State private var isUpdatingTitle = false
   @State private var isCopyingLink = false
+  @State private var isReprocessing = false
 
   /// The timestamp to display (prefer startedAt, fall back to createdAt)
   private var displayDate: Date {
@@ -82,6 +83,16 @@ struct ConversationRowView: View {
   private var folderName: String? {
     guard let folderId = conversation.folderId else { return nil }
     return folders.first(where: { $0.id == folderId })?.name
+  }
+
+  /// Title color — dim non-titled placeholders (Processing / Locked /
+  /// Untitled) so they visually read as secondary text, not as the real
+  /// title of the conversation.
+  private var titleColor: Color {
+    switch conversation.displayState {
+    case .titled: return Ink.primary
+    default: return Ink.secondary
+    }
   }
 
   /// Label for the conversation source
@@ -155,6 +166,40 @@ struct ConversationRowView: View {
     isDeleting = false
   }
 
+  /// Re-runs LLM processing for this conversation. Used when a conversation
+  /// finished processing but ended up with no title — usually a transient
+  /// LLM failure that resolves on retry. Replaces the row with the refreshed
+  /// payload so the badge/CTA also update (a `.failed` conversation that
+  /// reprocesses successfully should flip to `.completed`, not just gain a
+  /// title — otherwise `displayState` keeps returning `.failed`).
+  private func reprocessConversation() async {
+    guard !isReprocessing else { return }
+    isReprocessing = true
+
+    AnalyticsManager.shared.conversationReprocessedDefault(conversationId: conversation.id)
+
+    do {
+      let refreshed = try await APIClient.shared.reprocessConversation(
+        conversationId: conversation.id)
+
+      // Sync to local SQLite cache so a reload doesn't revert the new title.
+      try? await TranscriptionStorage.shared.updateTitleByBackendId(
+        conversation.id, title: refreshed.structured.title)
+
+      await MainActor.run {
+        // Replace the whole conversation, not just the title — `status`,
+        // `structured.overview`, action items etc. all change on reprocess
+        // and the row's display state derives from `status` AND title.
+        appState.replaceConversation(refreshed)
+      }
+      log("Reprocessed conversation \(conversation.id) → \(refreshed.structured.title)")
+    } catch {
+      log("Failed to reprocess conversation \(conversation.id): \(error)")
+    }
+
+    isReprocessing = false
+  }
+
   private func updateTitle() async {
     guard !isUpdatingTitle, !editedTitle.isEmpty else { return }
     isUpdatingTitle = true
@@ -165,47 +210,55 @@ struct ConversationRowView: View {
     isUpdatingTitle = false
   }
 
-  // MARK: - Inline Action Buttons
+  // MARK: - Row Actions
 
-  private var inlineActionButtons: some View {
-    HStack(spacing: OmiSpacing.xxs) {
-      // Edit title
-      Button(action: {
+  private var inlineActionMenu: some View {
+    Menu {
+      if conversation.canReprocess {
+        Button {
+          Task { await reprocessConversation() }
+        } label: {
+          Label(
+            isReprocessing ? "Reprocessing…" : "Reprocess title & summary",
+            systemImage: isReprocessing ? "arrow.triangle.2.circlepath" : "wand.and.stars")
+        }
+        .disabled(isReprocessing)
+      }
+
+      Button {
         editedTitle = conversation.title
         showEditDialog = true
-      }) {
-        Image(systemName: "pencil")
-          .scaledFont(size: OmiType.caption)
-          .foregroundColor(Ink.secondary)
-          .frame(width: 22, height: 22)
-          .background(Circle().fill(Ink.rowFill))
+      } label: {
+        Label("Edit title…", systemImage: "pencil")
       }
-      .buttonStyle(.plain)
-      .help("Edit title")
 
-      // Copy link
-      Button(action: { Task { await copyLink() } }) {
-        Image(systemName: isCopyingLink ? "arrow.triangle.2.circlepath" : "link")
-          .scaledFont(size: OmiType.caption)
-          .foregroundColor(Ink.secondary)
-          .frame(width: 22, height: 22)
-          .background(Circle().fill(Ink.rowFill))
+      Button(action: copyTranscript) {
+        Label("Copy transcript", systemImage: "doc.on.doc")
       }
-      .buttonStyle(.plain)
+
+      Button {
+        Task { await copyLink() }
+      } label: {
+        Label(
+          isCopyingLink ? "Generating link…" : "Copy share link",
+          systemImage: isCopyingLink ? "arrow.triangle.2.circlepath" : "link")
+      }
       .disabled(isCopyingLink)
-      .help("Copy share link — anyone with the link can view")
 
-      // Move to folder (if folders exist)
       if !folders.isEmpty {
         Menu {
           if conversation.folderId != nil {
-            Button(action: { Task { await onMoveToFolder(conversation.id, nil) } }) {
+            Button {
+              Task { await onMoveToFolder(conversation.id, nil) }
+            } label: {
               Label("Remove from Folder", systemImage: "folder.badge.minus")
             }
             Divider()
           }
           ForEach(folders) { folder in
-            Button(action: { Task { await onMoveToFolder(conversation.id, folder.id) } }) {
+            Button {
+              Task { await onMoveToFolder(conversation.id, folder.id) }
+            } label: {
               HStack {
                 Text(folder.name)
                 if conversation.folderId == folder.id {
@@ -216,29 +269,46 @@ struct ConversationRowView: View {
             .disabled(conversation.folderId == folder.id)
           }
         } label: {
-          Image(systemName: conversation.folderId != nil ? "folder.fill" : "folder")
-            .scaledFont(size: OmiType.caption)
-            .foregroundColor(conversation.folderId != nil ? Ink.primary : Ink.secondary)
-            .frame(width: 22, height: 22)
-            .background(Circle().fill(Ink.rowFill))
+          Label("Move to folder", systemImage: "folder")
         }
-        .tint(Ink.primary)
-        .menuStyle(.borderlessButton)
-        .frame(width: 22)
-        .help("Move to folder")
       }
 
-      // Delete
-      Button(action: { showDeleteConfirmation = true }) {
-        Image(systemName: "trash")
-          .scaledFont(size: OmiType.caption)
-          .foregroundColor(Ink.errorRed)
-          .frame(width: 22, height: 22)
-          .background(Circle().fill(Ink.rowFill))
+      Divider()
+
+      Button(role: .destructive) {
+        showDeleteConfirmation = true
+      } label: {
+        Label("Delete conversation…", systemImage: "trash")
       }
-      .buttonStyle(.plain)
-      .help("Delete")
+    } label: {
+      Image(systemName: "ellipsis")
+        .scaledFont(size: OmiType.caption, weight: .semibold)
+        .foregroundColor(Ink.secondary)
+        .frame(width: 26, height: 26)
+        .background(Circle().fill(Ink.rowFill))
     }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .help("Conversation actions")
+    .accessibilityLabel("Actions for \(conversation.displayTitle)")
+    .accessibilityIdentifier("conversation-row-actions-\(conversation.id)")
+  }
+
+  private var starButton: some View {
+    Button {
+      Task { await toggleStar() }
+    } label: {
+      Image(systemName: conversation.starred ? "star.fill" : "star")
+        .scaledFont(size: isCompactView ? OmiType.caption : OmiType.body)
+        .foregroundColor(conversation.starred ? PageGlass.starred : Ink.secondary)
+        .opacity(isStarring ? 0.5 : 1.0)
+        .frame(width: 26, height: 26)
+    }
+    .buttonStyle(.plain)
+    .disabled(isStarring)
+    .help(conversation.starred ? "Remove from Starred" : "Add to Starred")
+    .accessibilityLabel(conversation.starred ? "Remove from Starred" : "Add to Starred")
   }
 
   // MARK: - Compact Row (single line)
@@ -263,20 +333,17 @@ struct ConversationRowView: View {
       // Title + metadata below
       VStack(alignment: .leading, spacing: OmiSpacing.hairline) {
         HStack(spacing: OmiSpacing.sm) {
-          Text(conversation.title)
+          Text(conversation.displayTitle)
             .scaledFont(size: OmiType.body, weight: .medium)
-            .foregroundColor(Ink.primary)
+            .foregroundColor(titleColor)
             .lineLimit(1)
+
+          ConversationStatusBadge(state: conversation.displayState)
 
           if isNewlyCreated {
             NewBadge()
           }
 
-          // Inline action buttons (show on hover)
-          if isHovering && !isMultiSelectMode {
-            inlineActionButtons
-              .transition(.opacity)
-          }
         }
 
         HStack(spacing: OmiSpacing.xs) {
@@ -295,17 +362,7 @@ struct ConversationRowView: View {
       }
 
       Spacer()
-
-      // Star button
-      Button(action: {
-        Task { await toggleStar() }
-      }) {
-        Image(systemName: conversation.starred ? "star.fill" : "star")
-          .scaledFont(size: OmiType.caption)
-          .foregroundColor(conversation.starred ? PageGlass.starred : Ink.secondary)
-          .opacity(isStarring ? 0.5 : 1.0)
-      }
-      .buttonStyle(.plain)
+      Color.clear.frame(width: 58, height: 26)
     }
     .padding(.horizontal, OmiSpacing.md)
     .padding(.vertical, OmiSpacing.md)
@@ -338,20 +395,17 @@ struct ConversationRowView: View {
       // Title + time/duration below
       VStack(alignment: .leading, spacing: OmiSpacing.hairline) {
         HStack(spacing: OmiSpacing.sm) {
-          Text(conversation.title)
+          Text(conversation.displayTitle)
             .scaledFont(size: OmiType.subheading, weight: .medium)
-            .foregroundColor(Ink.primary)
+            .foregroundColor(titleColor)
             .lineLimit(1)
+
+          ConversationStatusBadge(state: conversation.displayState)
 
           if isNewlyCreated {
             NewBadge()
           }
 
-          // Inline action buttons (show on hover)
-          if isHovering && !isMultiSelectMode {
-            inlineActionButtons
-              .transition(.opacity)
-          }
         }
 
         HStack(spacing: OmiSpacing.xs) {
@@ -370,17 +424,7 @@ struct ConversationRowView: View {
       }
 
       Spacer()
-
-      // Star button
-      Button(action: {
-        Task { await toggleStar() }
-      }) {
-        Image(systemName: conversation.starred ? "star.fill" : "star")
-          .scaledFont(size: OmiType.body)
-          .foregroundColor(conversation.starred ? PageGlass.starred : Ink.secondary)
-          .opacity(isStarring ? 0.5 : 1.0)
-      }
-      .buttonStyle(.plain)
+      Color.clear.frame(width: 58, height: 26)
     }
     .padding(OmiSpacing.lg)
     // The shared row states: nothing at rest, a wash under the pointer, the heavier
@@ -392,26 +436,39 @@ struct ConversationRowView: View {
   }
 
   var body: some View {
-    Button(action: {
-      if isMultiSelectMode {
-        onToggleSelection?()
-      } else {
-        onTap()
-      }
-    }) {
-      Group {
-        if isCompactView {
-          // Compact mode: single line with all info
-          compactRowContent
+    ZStack(alignment: .trailing) {
+      Button(action: {
+        if isMultiSelectMode {
+          onToggleSelection?()
         } else {
-          // Expanded mode: title + overview with metadata below
-          expandedRowContent
+          onTap()
         }
+      }) {
+        Group {
+          if isCompactView {
+            // Compact mode: single line with all info
+            compactRowContent
+          } else {
+            // Expanded mode: title + overview with metadata below
+            expandedRowContent
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .contentShape(Rectangle())
+      .buttonStyle(.plain)
+
+      if !isMultiSelectMode {
+        HStack(spacing: OmiSpacing.xxs) {
+          if isHovering {
+            inlineActionMenu
+              .transition(.opacity)
+          }
+          starButton
+        }
+        .padding(.trailing, isCompactView ? OmiSpacing.md : OmiSpacing.lg)
+      }
     }
-    .buttonStyle(.plain)
     .onHover { hovering in
       isHovering = hovering
       if hovering {
@@ -440,6 +497,18 @@ struct ConversationRowView: View {
         showEditDialog = true
       }) {
         Label("Edit Title", systemImage: "pencil")
+      }
+
+      // Reprocess — surfaced in the menu (in addition to the inline hover
+      // button) so it's discoverable even without hovering. Only enabled when
+      // there's something to recover (canReprocess).
+      if conversation.canReprocess {
+        Button(action: { Task { await reprocessConversation() } }) {
+          Label(
+            isReprocessing ? "Reprocessing…" : "Reprocess Title & Summary",
+            systemImage: isReprocessing ? "arrow.triangle.2.circlepath" : "wand.and.stars")
+        }
+        .disabled(isReprocessing)
       }
 
       // Move to Folder submenu

@@ -207,6 +207,17 @@ class PostHogManager {
     return PostHogSDK.shared.getFeatureFlag(flag)
   }
 
+  /// Get the JSON payload configured on a feature flag
+  func getFeatureFlagPayload(_ flag: String) -> Any? {
+    guard isInitialized else { return nil }
+    return PostHogSDK.shared.getFeatureFlagResult(flag)?.payload
+  }
+
+  /// The SDK's own flag-delivery signal (posted on the main queue after the
+  /// initial preload and after every reload) — re-exported so observers get a
+  /// compile-checked symbol instead of a raw notification-name string.
+  static var featureFlagsDidLoad: Notification.Name { PostHogSDK.didReceiveFeatureFlags }
+
   /// Reload feature flags
   func reloadFeatureFlags() {
     guard isInitialized else { return }
@@ -269,16 +280,6 @@ extension PostHogManager {
 
   func signedOut() {
     track("Signed Out")
-  }
-
-  // MARK: - Monitoring Events
-
-  func monitoringStarted() {
-    track("Monitoring Started")
-  }
-
-  func monitoringStopped() {
-    track("Monitoring Stopped")
   }
 
   // MARK: - Recording Events
@@ -501,14 +502,21 @@ extension PostHogManager {
   // but it actually tracks when a conversation/recording is created, not a "memory".
   // This matches Flutter's naming for analytics consistency.
 
-  func conversationCreated(conversationId _: String, source: String, durationSeconds: Int? = nil) {
+  static func conversationCreatedProperties(source: String, durationSeconds: Int?) -> [String: Any] {
     var properties: [String: Any] = [
-      "source": source
+      "conversation_source": source
     ]
     if let duration = durationSeconds {
       properties["duration_seconds"] = duration
     }
-    track("Memory Created", properties: properties)
+    return properties
+  }
+
+  func conversationCreated(conversationId _: String, source: String, durationSeconds: Int? = nil) {
+    track(
+      "Memory Created",
+      properties: Self.conversationCreatedProperties(source: source, durationSeconds: durationSeconds)
+    )
   }
 
   func memoryDeleted(conversationId: String) {
@@ -623,6 +631,17 @@ extension PostHogManager {
       ])
   }
 
+  /// Reprocess fired without a specific app (one-tap row affordance for
+  /// untitled/failed conversations). Separate event so we can distinguish
+  /// from the existing "reprocess-with-app" funnel in product metrics.
+  func conversationReprocessedDefault(conversationId: String) {
+    track(
+      "Conversation Reprocessed Default",
+      properties: [
+        "conversation_id": conversationId
+      ])
+  }
+
   // MARK: - Settings Events (Additional)
 
   func settingToggled(setting: String, enabled: Bool) {
@@ -665,6 +684,21 @@ extension PostHogManager {
       properties: [
         "feedback_length": feedbackLength
       ])
+  }
+
+  func desktopRatingSubmitted(rating: Int, revision: Int? = nil) {
+    var properties: [String: Any] = [
+      "rating": rating,
+      "trigger": "third_question",
+    ]
+    // The prompt revision the client saw, so copy experiments are separable.
+    // The comment NEVER travels to PostHog — Firestore only, admin-only read.
+    if let revision {
+      properties["revision"] = revision
+    }
+    track(
+      "Desktop Rating Submitted",
+      properties: properties)
   }
 
   // MARK: - Rewind Events (Desktop-specific)
@@ -1017,7 +1051,8 @@ extension PostHogManager {
     assistantId: String,
     surface: String,
     dismissalKind: NotificationDismissalKind,
-    suggestionIdentity: SuggestionAssistantTelemetry.NotificationIdentity? = nil
+    suggestionIdentity: SuggestionAssistantTelemetry.NotificationIdentity? = nil,
+    attention: InterjectAttention? = nil
   ) {
     var properties = notificationProperties(
       notificationId: notificationId,
@@ -1026,10 +1061,35 @@ extension PostHogManager {
       surface: surface
     )
     properties["dismissal_kind"] = dismissalKind.rawValue
+    if let attention {
+      properties["attention"] = attention.rawValue
+    }
     appendSuggestionNotificationIdentity(suggestionIdentity, to: &properties)
     track(
       "Notification Dismissed",
       properties: properties)
+  }
+
+  func notificationHovered(
+    notificationId: String,
+    assistantId: String,
+    suggestionIdentity: SuggestionAssistantTelemetry.NotificationIdentity? = nil
+  ) {
+    var properties: [String: Any] = [
+      "notification_id": notificationId,
+      "assistant_id": assistantId,
+    ]
+    appendSuggestionNotificationIdentity(suggestionIdentity, to: &properties)
+    track("Notification Hovered", properties: properties)
+  }
+
+  func suggestionFeedbackRecorded(
+    verb: String,
+    suggestionIdentity: SuggestionAssistantTelemetry.NotificationIdentity? = nil
+  ) {
+    var properties: [String: Any] = ["verb": verb]
+    appendSuggestionNotificationIdentity(suggestionIdentity, to: &properties)
+    track("Suggestion Feedback Recorded", properties: properties)
   }
 
   private func notificationProperties(

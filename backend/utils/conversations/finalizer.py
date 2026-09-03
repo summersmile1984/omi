@@ -10,24 +10,34 @@ import logging
 from enum import Enum
 
 from database import conversations as conversations_db
+from database.firestore_read_metrics import FirestoreReadSite
 from database.redis_db import get_cached_user_geolocation
 from models.conversation_enums import ConversationStatus
 from models.geolocation import Geolocation
 from utils.app_integrations import trigger_external_integrations
 from utils.conversations.factory import deserialize_conversation
 from utils.conversations.location import async_resolve_geolocation
-from utils.conversations.meeting_treatment import is_meeting_treatment_eligible
+from utils.conversations.meeting_receipt import record_and_persist_finalized_meeting_receipt
 from utils.conversations.process_conversation import extract_memories, process_conversation
 from utils.conversations import lifecycle as lifecycle_service
 from utils.executors import db_executor, postprocess_executor, run_blocking
+from utils.jit_rollout import JITDecisionStage
 from utils.log_sanitizer import sanitize_pii
-from utils.task_intelligence.proactive_engine import persist_capture_arrival_intent, recommended_meeting_action_items
+from utils.observability.finalization import classify_finalization_failure, record_finalization_failure
+from utils.task_intelligence.proactive_engine import persist_capture_arrival_intent
+from services.conversation_keyframes import ensure_conversation_keyframe_job, reconcile_conversation_keyframe_jobs
+from utils.retrieval.frame_request_authority import resolve_frame_request_authority
+from utils.observability.fallback import record_fallback
 
 logger = logging.getLogger(__name__)
 
 
 class ConversationFinalizationError(RuntimeError):
     """A retryable persisted-conversation finalization failure."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
 
 
 class ConversationFinalizationDisposition(str, Enum):
@@ -44,14 +54,25 @@ async def finalize_persisted_conversation(
     dispatch_generation: int,
     lease_epoch: int,
     force_process: bool = False,
+    final_attempt: bool = False,
 ) -> ConversationFinalizationDisposition:
     """Finalize persisted data once the caller has acquired the job lease.
 
     The pusher WebSocket request already installs request-scoped BYOK context
     before calling this helper.  Cloud Tasks never does, so it cannot silently
     substitute platform credentials for a BYOK job.
+
+    `final_attempt` says the job has no retry left, so a failed external
+    integration delivery is dropped rather than dead-lettering the whole
+    conversation for a third-party endpoint that is down.
     """
-    conversation_data = await run_blocking(db_executor, conversations_db.get_conversation, uid, conversation_id)
+    conversation_data = await run_blocking(
+        db_executor,
+        conversations_db.get_conversation,
+        uid,
+        conversation_id,
+        read_site=FirestoreReadSite.FINALIZER_JOB_REPLAY,
+    )
     if not conversation_data:
         # A prior delivery can have durably completed fanout just before the
         # worker crashes.  Preserve that acknowledgement even if the row is
@@ -84,11 +105,25 @@ async def finalize_persisted_conversation(
         conversation.status = ConversationStatus.processing
 
     try:
-        geolocation = await run_blocking(db_executor, get_cached_user_geolocation, uid)
-        if geolocation:
-            geolocation = Geolocation(**geolocation)
-            # Keep the cached coordinates when the geocode lookup misses instead of dropping them.
-            conversation.geolocation = await async_resolve_geolocation(geolocation)
+        # A location persisted with the recording session or WAL is the
+        # canonical start-time snapshot. Redis remains only a compatibility
+        # fallback for clients released before that contract.
+        persisted_geolocation = getattr(conversation, 'geolocation', None)
+        if isinstance(persisted_geolocation, Geolocation):
+            conversation.geolocation = await async_resolve_geolocation(persisted_geolocation)
+        else:
+            geolocation = await run_blocking(db_executor, get_cached_user_geolocation, uid)
+            if geolocation:
+                record_fallback(
+                    component='conversation_finalization',
+                    from_mode='conversation_snapshot',
+                    to_mode='redis_user_cache',
+                    reason='other',
+                    outcome='degraded',
+                    log=logger,
+                )
+                geolocation = Geolocation(**geolocation)
+                conversation.geolocation = await async_resolve_geolocation(geolocation)
 
         # The post-processing bulkhead preserves request context (including
         # validated live BYOK keys) while isolating this expensive sync path
@@ -163,28 +198,50 @@ async def finalize_persisted_conversation(
             conversation,
             idempotency_key=fanout['fanout_key'],
             require_delivery=True,
+            last_delivery_attempt=final_attempt,
         )
         # Publish the content-free capture-arrival intent before marking the
         # durable fanout projection completed. Desktop waits on that projection
         # before waking Chat; ordering the marker first closes the small window
         # where a completed projection existed without a notes-ready intent.
+        await run_blocking(
+            db_executor,
+            record_and_persist_finalized_meeting_receipt,
+            uid,
+            conversation,
+            finalization_job_id=finalization_job_id,
+        )
+        # This is a metadata-only durable outbox write. Pixels remain local and
+        # an offline desktop can satisfy it on a later screen-sync recovery.
+        if not getattr(conversation, 'discarded', False):
+            decision = await resolve_frame_request_authority(
+                uid,
+                stage=JITDecisionStage.INGRESS,
+                force_refresh=True,
+            )
+            if decision.enabled and decision.account_generation is not None:
+                keyframe_eligible = await run_blocking(
+                    db_executor,
+                    ensure_conversation_keyframe_job,
+                    uid,
+                    conversation,
+                )
+                device_id = str(getattr(conversation, 'client_device_id', None) or '').strip()
+                if keyframe_eligible and device_id:
+                    await run_blocking(
+                        db_executor,
+                        reconcile_conversation_keyframe_jobs,
+                        uid,
+                        device_id=device_id,
+                        account_generation=decision.account_generation,
+                    )
         source = getattr(conversation, 'source', None)
         source_value = getattr(source, 'value', source)
-        meeting_treatment_eligible = is_meeting_treatment_eligible(conversation)
-        if (source_value == 'omi' and not getattr(conversation, 'discarded', False)) or meeting_treatment_eligible:
+        if source_value == 'omi' and not getattr(conversation, 'discarded', False):
             try:
                 structured = getattr(conversation, 'structured', None)
                 summary = getattr(structured, 'title', '') or getattr(structured, 'overview', '') or ''
-                if meeting_treatment_eligible:
-                    persist_capture_arrival_intent(
-                        uid,
-                        conversation_id=conversation_id,
-                        summary=summary,
-                        is_desktop_meeting=True,
-                        recommended_action_items=recommended_meeting_action_items(structured),
-                    )
-                else:
-                    persist_capture_arrival_intent(uid, conversation_id=conversation_id, summary=summary)
+                persist_capture_arrival_intent(uid, conversation_id=conversation_id, summary=summary)
             except Exception as error:
                 logger.warning(
                     'chat-first capture arrival intent failed during finalization uid=%s error=%s',
@@ -197,17 +254,18 @@ async def finalize_persisted_conversation(
             finalization_job_id,
             dispatch_generation,
             lease_epoch,
-            meeting_treatment_eligible=meeting_treatment_eligible,
         )
         if not fanout_completed:
             raise ConversationFinalizationError('fanout_completion_conflict')
         return ConversationFinalizationDisposition.completed
     except Exception as error:
         # Provider and validation exceptions can contain transcript excerpts.
-        # The job stores and logs only a bounded failure code.
+        # Collapse them onto a closed operational vocabulary before emitting a
+        # metric or log; never include the exception message or user identity.
+        reason = classify_finalization_failure(error)
+        record_finalization_failure(reason)
         logger.error(
-            'persisted conversation finalization failed uid=%s conversation=%s failure=processing_failed',
-            uid,
-            conversation_id,
+            'persisted conversation finalization failed failure=processing_failed reason=%s',
+            reason.value,
         )
         raise ConversationFinalizationError('processing_failed') from error

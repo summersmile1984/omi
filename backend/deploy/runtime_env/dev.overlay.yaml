@@ -8,6 +8,9 @@ overlay:
   gke:
     backend-listen:
       env:
+        REFERRAL_PUBLIC_BASE_URL:
+          value: https://api.omiapi.com
+          category: service_discovery
         HOSTED_PARAKEET_API_URL:
           value: http://parakeet.omiapi.com
         HOSTED_TRANSLATION_API_URL:
@@ -41,7 +44,13 @@ overlay:
         CONVERSATION_OCR_CONTEXT_ENABLED:
           value: 'true'
           category: rollout
+        GOOGLE_CALENDAR_AUTO_LINK_ENABLED:
+          value: 'true'
+          category: rollout
     pusher:
+      capabilities:
+      - conversation.finalize.persisted
+      - memory.canonical.mutate
       values_file: backend/charts/pusher/dev_omi_pusher_values.yaml
       env:
         OMI_LLM_GATEWAY_URL:
@@ -63,6 +72,8 @@ overlay:
           secret:
             name: dev-omi-backend-secrets
             key: OMI_LLM_GATEWAY_SERVICE_TOKEN
+        MEMORY_ENABLED:
+          value: 'on'
         GITHUB_TOKEN:
           secret:
             name: dev-omi-backend-secrets
@@ -112,7 +123,7 @@ overlay:
           value: parakeet,modulate-velma-2
           category: stt_policy
         STT_SERVICE_MODELS:
-          value: dg-nova-3,modulate-velma-2,parakeet
+          value: modulate-velma-2,soniox,dg-nova-3,parakeet
           category: stt_policy
         GOOGLE_CLOUD_PROJECT:
           value: based-hardware-dev
@@ -190,7 +201,7 @@ overlay:
           value: parakeet,modulate-velma-2
         STT_SERVICE_MODELS:
           source: literal
-          value: dg-nova-3,modulate-velma-2,parakeet
+          value: modulate-velma-2,soniox,dg-nova-3,parakeet
         TYPESENSE_HOST:
           source: environment
         TWILIO_ACCOUNT_SID:
@@ -210,6 +221,11 @@ overlay:
     - .github/workflows/gcp_notifications_job.yml
     - .github/workflows/gcp_memory_maintenance_job.yml
     - .github/workflows/gcp_memory_maintenance_job_auto_dev.yml
+    - .github/workflows/gcp_frame_request_retention_job.yml
+    - .github/workflows/gcp_daily_memory_sweep_job.yml
+    - .github/workflows/gcp_daily_memory_sweep_job_auto_dev.yml
+    - .github/workflows/gcp_day3_reengagement_email_job.yml
+    - .github/workflows/gcp_day3_reengagement_email_job_auto_dev.yml
     network:
       flags:
         --network: omi-dev-vpc-1
@@ -469,3 +485,54 @@ overlay:
             value: '25'
           PINECONE_INDEX_NAME:
             value: memories-backend-dev
+      frame-request-retention-job:
+        flags:
+          --task-timeout: 900s
+          --max-retries: '3'
+        env:
+          GOOGLE_CLOUD_PROJECT:
+            value: based-hardware
+      daily-memory-sweep-job:
+        flags:
+          --task-timeout: 3600s
+        env:
+          GOOGLE_CLOUD_PROJECT:
+            value: based-hardware
+          MEMORY_ENABLED:
+            value: 'on'
+          MEMORY_DAILY_MEMORY_SWEEP_ENABLED:
+            value: 'true'
+          MEMORY_DAILY_MEMORY_SWEEP_KILL_SWITCH:
+            value: 'false'
+          MEMORY_DAILY_MEMORY_SWEEP_MODEL_ENABLED:
+            value: 'true'
+          # Declaration interlock: must equal get_model('memories') or the run
+          # refuses the provider call. Keep both in step when the route moves.
+          MEMORY_DAILY_MEMORY_SWEEP_MODEL_NAME:
+            value: gpt-5.6-luna
+          MEMORY_DAILY_MEMORY_SWEEP_MAX_MODEL_CANDIDATES:
+            value: '8'
+          # Worst-case pre-call ceiling for a maximal day, including phase B's
+          # clamped draft/reason/lookup overhead. Typical days cost cents.
+          MEMORY_DAILY_MEMORY_SWEEP_MAX_MODEL_COST_USD:
+            value: '0.80'
+          # A disabled or unnamed cohort is a closed rollout, not all-users:
+          # enrolment is one PostHog boolean flag, evaluated per uid.
+          MEMORY_DAILY_MEMORY_SWEEP_COHORT_ENABLED:
+            value: 'true'
+          MEMORY_DAILY_MEMORY_SWEEP_COHORT_FLAG:
+            value: daily-memory-sweep-v1
+          MEMORY_DAILY_MEMORY_SWEEP_COHORT_TIMEOUT_SECONDS:
+            value: '3'
+          MEMORY_DAILY_MEMORY_SWEEP_TIMEZONE_RECONCILIATION_ENABLED:
+            value: 'true'
+      day3-reengagement-email-job:
+        flags:
+          --task-timeout: 900s
+        env:
+          BASE_API_URL:
+            value: https://api.omiapi.com
+          DAY3_REENGAGEMENT_EMAIL_ENABLED:
+            value: 'false'
+          DAY3_REENGAGEMENT_EMAIL_KILL_SWITCH:
+            value: 'false'

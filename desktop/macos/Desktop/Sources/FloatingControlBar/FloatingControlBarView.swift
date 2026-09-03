@@ -95,7 +95,6 @@ struct FloatingControlBarView: View {
   @State private var notchSwitcherProgress: CGFloat = 0
   /// Last reported text-editor height so inputViewHeight can be recomputed
   /// when the pill list changes while the input is open. (Cubic P2.)
-  @State private var lastInputEditorHeight: CGFloat = 0
   private let agentChatSwitchTransition = Animation.easeOut(duration: 0.10)
   private var isChatChromePinned: Bool {
     NotchChromeLayout.isChatPinned(
@@ -565,16 +564,158 @@ struct FloatingControlBarView: View {
   /// normal notification card.
   @ViewBuilder
   private func barNotification(_ notification: FloatingBarNotification) -> some View {
-    if notification.assistantId == "reach_error" {
+    if let feedbackContext = notification.jitFeedbackContext {
+      jitFeedbackCard(notification, context: feedbackContext)
+    } else if notification.assistantId == "reach_error" {
       reachErrorCard(notification)
     } else if notification.assistantId == NotchMoment.receiptAssistantId {
       notchReceiptCard(notification)
     } else if notification.assistantId == NotchMoment.endAssistantId {
       notchEndCard(notification)
+    } else if notification.assistantId == MeetingActionItemBannerPolicy.assistantID,
+      case .meetingSummaryShare(let conversationID, let recipients)? = notification.action
+    {
+      MeetingSummaryShareCard(
+        notification: notification, conversationID: conversationID, recipients: recipients)
     } else if notification.assistantId == "suggestion" {
       suggestionCard(notification)
+    } else if notification.assistantId == IntegrationNudgeCoordinator.assistantID,
+      case .connectIntegration(let telemetryID, let triggerID)? = notification.action,
+      let entry = IntegrationNudgeCatalog.entry(telemetryID: telemetryID)
+    {
+      IntegrationNudgeCard(notification: notification, entry: entry, triggerID: triggerID)
+    } else if notification.assistantId == FirstRealAppCardCoordinator.assistantID,
+      case .askOmiPrefilled(let prompt)? = notification.action
+    {
+      FirstRealAppCard(notification: notification, prompt: prompt)
     } else {
       notificationView(notification)
+    }
+  }
+
+  /// Concrete, explicit-only controls for a planned trigger. Each action is
+  /// submitted through the delivery actor; dismissing or ignoring the card
+  /// never calls this path.
+  private func jitFeedbackCard(
+    _ notification: FloatingBarNotification,
+    context: JITTriggerFeedbackContext
+  ) -> some View {
+    VStack(alignment: .leading, spacing: OmiSpacing.sm) {
+      Button {
+        FloatingControlBarManager.shared.openNotificationAsChat(notification)
+      } label: {
+        HStack(alignment: .top, spacing: OmiSpacing.md) {
+          Image(systemName: "bell.badge.fill")
+            .font(.system(size: 18, weight: .semibold))
+            .foregroundColor(.white)
+            .frame(width: 44, height: 44)
+            .background(Color.white.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+
+          VStack(alignment: .leading, spacing: 3) {
+            Text(notification.title)
+              .scaledFont(size: OmiType.subheading, weight: .semibold)
+              .foregroundColor(.white)
+              .lineLimit(1)
+            Text(notification.message)
+              .scaledFont(size: OmiType.body)
+              .foregroundColor(.white.opacity(0.78))
+              .lineLimit(3)
+              .multilineTextAlignment(.leading)
+            if InterjectFeature.isEnabled {
+              Text(InterjectReplyHint.text(tokens: ShortcutSettings.shared.pttShortcut.displayTokens))
+                .scaledFont(size: OmiType.micro, weight: .medium)
+                .foregroundColor(.white.opacity(0.45))
+                .lineLimit(1)
+            }
+          }
+          Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+
+      HStack(spacing: OmiSpacing.xs) {
+        jitFeedbackButton("Useful", systemImage: "hand.thumbsup.fill") {
+          submitJITFeedback(.useful, notification: notification, context: context)
+        }
+        jitFeedbackButton("Not relevant", systemImage: "hand.thumbsdown.fill") {
+          submitJITFeedback(.falsePositive, notification: notification, context: context)
+        }
+        jitFeedbackButton("Snooze", systemImage: "zzz") {
+          submitJITFeedback(
+            .snooze, notification: notification, context: context,
+            snoozedUntil: Date().addingTimeInterval(24 * 60 * 60))
+        }
+        jitFeedbackButton("Disable", systemImage: "bell.slash.fill") {
+          submitJITFeedback(.disable, notification: notification, context: context)
+        }
+        jitFeedbackButton("Missed", systemImage: "clock.badge.exclamationmark") {
+          submitJITFeedback(.missedOrLate, notification: notification, context: context)
+        }
+      }
+    }
+    .padding(.horizontal, OmiSpacing.lg)
+    .padding(.vertical, OmiSpacing.md + 2)
+    .overlay(alignment: .topTrailing) {
+      Button {
+        FloatingControlBarManager.shared.dismissCurrentNotification()
+      } label: {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundColor(.white.opacity(0.62))
+          .frame(width: 18, height: 18)
+          .background(Color.white.opacity(0.08))
+          .clipShape(Circle())
+      }
+      .buttonStyle(.plain)
+      .padding(.horizontal, OmiSpacing.md)
+      .padding(.vertical, OmiSpacing.md)
+      .accessibilityLabel("Dismiss notification")
+    }
+  }
+
+  private func jitFeedbackButton(
+    _ title: String,
+    systemImage: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      Label(title, systemImage: systemImage)
+        .scaledFont(size: OmiType.micro, weight: .semibold)
+        .foregroundColor(.white.opacity(0.9))
+        .padding(.horizontal, OmiSpacing.xs)
+        .padding(.vertical, OmiSpacing.xxs)
+        .background(Color.white.opacity(0.12))
+        .clipShape(Capsule())
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func submitJITFeedback(
+    _ action: JITTriggerFeedbackAction,
+    notification: FloatingBarNotification,
+    context: JITTriggerFeedbackContext,
+    snoozedUntil: Date? = nil
+  ) {
+    guard
+      let authorizationSnapshot = RuntimeOwnerIdentity.captureAuthorizationSnapshot(
+        expectedOwnerID: context.ownerID
+      )
+    else { return }
+    let identity = notification.feedbackIdentity
+    Task {
+      await FloatingControlBarManager.shared.recordInterjectJITVerdictIfEnabled(
+        identity: identity,
+        verb: action.interjectVerb)
+      await JITTriggerFeedbackActionRouter.record(
+        action,
+        context: context,
+        snoozedUntil: snoozedUntil,
+        authorizationSnapshot: authorizationSnapshot)
+      await MainActor.run {
+        FloatingControlBarManager.shared.dismissCurrentNotification()
+      }
     }
   }
 
@@ -618,6 +759,13 @@ struct FloatingControlBarView: View {
             .multilineTextAlignment(.leading)
             .lineSpacing(1.5)
             .fixedSize(horizontal: false, vertical: true)
+
+          if InterjectFeature.isEnabled {
+            Text(InterjectReplyHint.text(tokens: ShortcutSettings.shared.pttShortcut.displayTokens))
+              .scaledFont(size: OmiType.micro, weight: .medium)
+              .foregroundColor(.white.opacity(0.45))
+              .lineLimit(1)
+          }
         }
 
         Spacer(minLength: OmiSpacing.xs)
@@ -853,8 +1001,11 @@ struct FloatingControlBarView: View {
         }
         .zIndex(1)
       } else {
+        // `.mainInput` has no composer: the notch never takes typed text. The surface still exists
+        // for the agent-pills header; the body under it is empty.
         mainConversationContainer {
-          aiInputView
+          Color.clear
+            .frame(height: 0)
             .id("input")
         }
         .zIndex(1)
@@ -1055,6 +1206,7 @@ struct FloatingControlBarView: View {
   }
 
   private func handleBarHover(_ hovering: Bool) {
+    FloatingControlBarManager.shared.interjectBarHoverChanged(hovering)
     if state.usesNotchIsland {
       (window as? FloatingControlBarWindow)?.updateNotchPointerFromGlobalMouse()
       let showsHoverChrome = hovering && !state.isVoicePresentationActive
@@ -1139,44 +1291,22 @@ struct FloatingControlBarView: View {
     // nothing. Wrapping the whole card in a single Button with
     // contentShape(Rectangle()) makes every pixel clickable. The dismiss
     // (X) button sits in an overlay on top so it keeps its own hit region.
-    Button {
+    let copy = FloatingControlBarManager.notificationCardCopy(
+      title: notification.title,
+      message: notification.message,
+      kind: notification.kind
+    )
+    return Button {
       FloatingControlBarManager.shared.openNotificationAsChat(notification)
     } label: {
       HStack(alignment: .top, spacing: OmiSpacing.md) {
-        ZStack {
-          RoundedRectangle(cornerRadius: 13, style: .continuous)
-            .fill(
-              LinearGradient(
-                colors: [Color.white.opacity(0.18), Color.white.opacity(0.08)],
-                startPoint: .top,
-                endPoint: .bottom
-              )
-            )
-            .overlay(
-              RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-            )
-            .frame(width: 44, height: 44)
-
-          Image(systemName: "bell.badge.fill")
-            .font(.system(size: 18, weight: .semibold))
-            .foregroundColor(.white)
-        }
-
-        VStack(alignment: .leading, spacing: 3) {
-          Text(notification.title)
-            .scaledFont(size: OmiType.subheading, weight: .semibold)
-            .foregroundColor(.white)
-            .lineLimit(1)
-
-          Text(notification.message)
-            .scaledFont(size: OmiType.body)
-            .foregroundColor(.white.opacity(0.78))
-            .lineLimit(3)
-            .lineSpacing(1.5)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-
+        FloatingBarNotificationCardLead(
+          copy: copy,
+          messageLineLimit: interjectInsightTeaserLimit(notification),
+          footer: InterjectFeature.isEnabled
+            ? InterjectReplyHint.text(tokens: ShortcutSettings.shared.pttShortcut.displayTokens)
+            : nil
+        )
         Spacer(minLength: 0)
 
         // Reserve space so text never runs under the overlaid action buttons.
@@ -1482,77 +1612,35 @@ struct FloatingControlBarView: View {
         .scaledFont(size: 12, weight: .semibold)
         .foregroundColor(.white)
 
-      if state.isVoiceLocked && state.pttHintText.isEmpty {
-        Image(systemName: "lock.fill")
-          .scaledFont(size: OmiType.micro, weight: .bold)
+      if let title = state.interjectReplyingToTitle, InterjectFeature.isEnabled {
+        Text(InterjectReplyHint.listeningChip(title: title))
+          .scaledFont(size: OmiType.micro, weight: .medium)
+          .foregroundColor(.white.opacity(0.72))
+          .lineLimit(1)
+      }
+
+      // Locked mode is a mode the user has to be able to see at a glance: a bare glyph
+      // read as decoration, and gating it on an empty hint hid it for most of the turn.
+      // Restores the pre-2b416572c0 badge, always shown while locked.
+      if state.isVoiceLocked {
+        Text("LOCKED")
+          .scaledFont(size: 10, weight: .bold)
           .foregroundColor(.orange)
-          .frame(width: 18, height: 18)
+          .padding(.horizontal, 6)
+          .padding(.vertical, 2)
           .background(Color.orange.opacity(0.2))
           .cornerRadius(4)
       }
     }
   }
 
-  private var aiInputView: some View {
-    AskAIInputView(
-      userInput: Binding(
-        get: { state.aiInputText },
-        set: { state.aiInputText = $0 }
-      ),
-      canClearVisibleConversation: false,
-      onSend: { message in
-        (window as? FloatingControlBarWindow)?
-          .beginVisibleMainQuery(message, fromVoice: false, animated: true)
-        onSendQuery(message)
-      },
-      onClearVisibleConversation: onClearVisibleConversation,
-      onEscape: onEscape,
-      onHeightChange: { [self] height in
-        lastInputEditorHeight = height
-        recomputeUnifiedInputHeight()
-      }
+  private func interjectInsightTeaserLimit(_ notification: FloatingBarNotification) -> Int {
+    FloatingControlBarGeometry.interjectInsightTeaserLineLimit(
+      kindIsInsight: InterjectFeature.isEnabled && notification.kind == .insight,
+      isHovering: isHovering,
+      interjectBarHovering: state.interjectBarHovering,
+      interjectPTTHoldActive: state.interjectReplyingToTitle != nil
     )
-    .onChange(of: agentPills.pills.count) {
-      // The agent-pills header budget depends on whether pills exist, so
-      // recompute the input height when the pill list changes while the
-      // input/chat view is open. Without this the budget goes stale and
-      // causes clipping or extra empty space. (Cubic P2.)
-      recomputeUnifiedInputHeight()
-    }
-    .transition(
-      .asymmetric(
-        insertion: .move(edge: .top).combined(with: .opacity),
-        removal: .move(edge: .top).combined(with: .opacity)
-      ))
-  }
-
-  /// Recompute inputViewHeight from the last known editor height and the
-  /// current agent-pills presence. Called on editor height change and on
-  /// pill-list change so the shared expanded surface budget never goes stale.
-  private func recomputeUnifiedInputHeight() {
-    // Guard against stale zero editor height: the editor has not reported
-    // its size yet (or was just re-created after a surface switch), so
-    // recomputing now would shrink the window and clip input/send
-    // controls. Fall back to the minimum content height so the panel
-    // keeps a usable size until a real height arrives. (Cubic P2.)
-    let height =
-      lastInputEditorHeight > 0
-      ? lastInputEditorHeight
-      : FloatingControlBarWindow.notchInputPanelMinimumContentHeight
-    let topBand =
-      (state.usesNotchIsland || state.showingAIConversation)
-      ? notchChromeHeight
-      : FloatingControlBarWindow.pillSurfaceTopPadding
-    let statusBanner =
-      showingPTTStatusBanner
-      ? FloatingControlBarWindow.pttStatusBannerBudget
-      : 0
-    let baseHeight = topBand + statusBanner + height + FloatingControlBarWindow.notchInputPanelVerticalPadding
-    let headerBudget =
-      !agentPills.pills.isEmpty
-      ? FloatingControlBarWindow.notchChatHeaderVerticalBudget
-      : 0
-    state.inputViewHeight = baseHeight + headerBudget
   }
 
   private var floatingChatProvider: ChatProvider? {
@@ -2704,5 +2792,299 @@ private struct NotchAgentStatusOrb: View {
       )
       .frame(width: size, height: size)
       .frame(width: size + 6, height: size + 6)
+  }
+}
+
+/// Post-meeting summary share card. Persistent by contract: it is presented
+/// with `isPersistent: true`, so the only exits are the user's — Copy link,
+/// Send to <participant>, See summary, or the close button. Chrome matches the
+/// other proactive cards (suggestion/insight): icon tile + eyebrow + title,
+/// with the dismiss circle top-trailing.
+private struct MeetingSummaryShareCard: View {
+  let notification: FloatingBarNotification
+  let conversationID: String
+  let recipients: [ConversationShareRecipient]
+
+  private enum Phase: Equatable {
+    case idle
+    case copying
+    case sending
+    case done(String)
+    case failed(String)
+  }
+
+  @State private var phase: Phase = .idle
+  @State private var isAddressing = false
+  @State private var recipientEmail: String = ""
+  @FocusState private var recipientFieldFocused: Bool
+
+  /// Shape-only: the address is the owner's to choose, so this rejects an
+  /// obvious typo without pretending to know the mailbox exists.
+  private var typedEmailIsSendable: Bool {
+    let value = recipientEmail.trimmingCharacters(in: .whitespaces)
+    guard !value.contains(" "), let at = value.firstIndex(of: "@"), at != value.startIndex else { return false }
+    let domain = value[value.index(after: at)...]
+    return !domain.isEmpty && domain.contains(".") && !domain.hasSuffix(".") && !domain.contains("@")
+  }
+
+  private var isBusy: Bool { phase == .copying || phase == .sending }
+
+  var body: some View {
+    HStack(alignment: .top, spacing: OmiSpacing.md) {
+      ZStack {
+        RoundedRectangle(cornerRadius: 13, style: .continuous)
+          .fill(
+            LinearGradient(
+              colors: [Color.white.opacity(0.18), Color.white.opacity(0.08)],
+              startPoint: .top,
+              endPoint: .bottom
+            )
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+              .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+          )
+          .frame(width: 44, height: 44)
+
+        Image(systemName: "text.document")
+          .font(.system(size: 17, weight: .semibold))
+          .foregroundColor(.white)
+      }
+
+      VStack(alignment: .leading, spacing: 3) {
+        Text(notification.title)
+          .scaledFont(size: OmiType.caption, weight: .semibold)
+          .foregroundColor(.white.opacity(0.5))
+          .lineLimit(1)
+
+        if !notification.message.isEmpty {
+          Text(notification.message)
+            .scaledFont(size: OmiType.subheading, weight: .medium)
+            .foregroundColor(.white)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+
+        switch phase {
+        case .done(let confirmation):
+          Label(confirmation, systemImage: "checkmark")
+            .scaledFont(size: 12, weight: .medium)
+            .foregroundColor(.white.opacity(0.85))
+            .padding(.top, 5)
+        case .failed(let message):
+          Text(message)
+            .scaledFont(size: 11)
+            .foregroundColor(.white.opacity(0.7))
+            .padding(.top, 2)
+          actionRow
+        default:
+          actionRow
+        }
+      }
+
+      Spacer(minLength: OmiSpacing.xs)
+
+      // Reserve room so copy never runs under the overlaid dismiss button.
+      Color.clear
+        .frame(width: 28, height: 20)
+    }
+    .padding(.horizontal, OmiSpacing.lg)
+    .padding(.vertical, OmiSpacing.md + 2)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .overlay(alignment: .topTrailing) {
+      Button {
+        FloatingControlBarManager.shared.dismissCurrentNotification()
+      } label: {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundColor(.white.opacity(0.62))
+          .frame(width: 18, height: 18)
+          .background(Color.white.opacity(0.08))
+          .clipShape(Circle())
+      }
+      .buttonStyle(.plain)
+      .padding(.horizontal, OmiSpacing.md)
+      .padding(.vertical, OmiSpacing.md)
+      .accessibilityLabel("Dismiss meeting summary notification")
+    }
+    .onReceive(NotificationCenter.default.publisher(for: .meetingSummaryShareBeginAddressing)) { _ in
+      beginAddressing()
+    }
+    .onReceive(NotificationCenter.default.publisher(for: .meetingSummaryShareSubmit)) { note in
+      if let address = note.object as? String, !address.isEmpty {
+        recipientEmail = address
+      }
+      isAddressing = true
+      sendSummary()
+    }
+  }
+
+  private var actionRow: some View {
+    Group {
+      if isAddressing {
+        addressRow
+      } else {
+        HStack(spacing: 9) {
+          Button {
+            beginAddressing()
+          } label: {
+            HStack(spacing: 4) {
+              Image(systemName: "lock.fill")
+                .font(.system(size: 9, weight: .semibold))
+              Text("Share")
+            }
+            .scaledFont(size: 12, weight: .semibold)
+            .foregroundColor(.black)
+            .padding(.horizontal, 11).padding(.vertical, 4)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+          }
+          .buttonStyle(.plain)
+          .disabled(isBusy)
+          .help("Email these notes to someone")
+          .accessibilityIdentifier("meeting-summary-share-send")
+
+          Button {
+            copyLink()
+          } label: {
+            Group {
+              if phase == .copying {
+                ProgressView().controlSize(.mini)
+              } else {
+                Image(systemName: "link")
+                  .font(.system(size: 11, weight: .semibold))
+              }
+            }
+            .foregroundColor(.white)
+            .frame(width: 26, height: 21)
+            .background(Color.white.opacity(0.18))
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+          }
+          .buttonStyle(.plain)
+          .disabled(isBusy)
+          .help("Copy the share link")
+          .accessibilityIdentifier("meeting-summary-share-copy")
+
+          // Text-style link, deliberately chrome-free beside the two controls.
+          Button {
+            FloatingControlBarManager.shared.dismissCurrentNotification()
+            MeetingSummaryShareActions.openSummary(conversationID: conversationID)
+          } label: {
+            Text("See summary")
+              .scaledFont(size: 12, weight: .medium)
+              .foregroundColor(.white.opacity(0.55))
+              .underline()
+          }
+          .buttonStyle(.plain)
+          .disabled(isBusy)
+          .accessibilityIdentifier("meeting-summary-share-open")
+        }
+      }
+    }
+    .padding(.top, 6)
+  }
+
+  /// The Share affordance in its open state: one address field and one send.
+  private var addressRow: some View {
+    HStack(spacing: 7) {
+      TextField("name@company.com", text: $recipientEmail)
+        .textFieldStyle(.plain)
+        .scaledFont(size: 12, weight: .medium)
+        .foregroundColor(.white)
+        .focused($recipientFieldFocused)
+        .onSubmit { sendSummary() }
+        .padding(.horizontal, 9).padding(.vertical, 4)
+        .background(Color.white.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .frame(maxWidth: 210)
+        .accessibilityIdentifier("meeting-summary-share-email-field")
+
+      Button {
+        sendSummary()
+      } label: {
+        HStack(spacing: 4) {
+          if phase == .sending {
+            ProgressView().controlSize(.mini)
+          }
+          Text("Send")
+        }
+        .scaledFont(size: 12, weight: .semibold)
+        .foregroundColor(.black)
+        .padding(.horizontal, 11).padding(.vertical, 4)
+        .background(Color.white.opacity(typedEmailIsSendable ? 1 : 0.35))
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+      }
+      .buttonStyle(.plain)
+      .disabled(isBusy || !typedEmailIsSendable)
+      .accessibilityIdentifier("meeting-summary-share-email-send")
+
+      Button {
+        isAddressing = false
+        recipientFieldFocused = false
+      } label: {
+        Text("Cancel")
+          .scaledFont(size: 12, weight: .medium)
+          .foregroundColor(.white.opacity(0.55))
+      }
+      .buttonStyle(.plain)
+      .disabled(isBusy)
+      .accessibilityIdentifier("meeting-summary-share-email-cancel")
+    }
+  }
+
+  /// Detection now only prefills the field: the owner still confirms or
+  /// replaces the address before anything is sent, which is what keeps a
+  /// mis-identified participant from being emailed by one click.
+  func beginAddressing() {
+    guard !isBusy else { return }
+    if recipientEmail.isEmpty, let suggested = recipients.first?.email {
+      recipientEmail = suggested
+    }
+    isAddressing = true
+    FloatingControlBarManager.shared.focusBarWindowForTextEntry()
+    recipientFieldFocused = true
+  }
+
+  private func copyLink() {
+    guard !isBusy else { return }
+    phase = .copying
+    Task { @MainActor in
+      let feedback = await MeetingSummaryShareActions.copyLink(conversationID: conversationID)
+      if feedback == .copied {
+        finish(confirmation: "Link copied")
+      } else {
+        phase = .failed("Couldn't copy the link — try again")
+      }
+    }
+  }
+
+  private func sendSummary() {
+    let address = recipientEmail.trimmingCharacters(in: .whitespaces)
+    guard !isBusy, typedEmailIsSendable else { return }
+    phase = .sending
+    recipientFieldFocused = false
+    Task { @MainActor in
+      do {
+        let sent = try await MeetingSummaryShareActions.sendSummary(
+          conversationID: conversationID, recipientEmails: [address])
+        let label = ConversationShareRecipient(name: nil, email: address).shortLabel
+        finish(confirmation: sent.count > 1 ? "Sent to \(label) +\(sent.count - 1)" : "Sent to \(label)")
+      } catch {
+        isAddressing = true
+        phase = .failed("Couldn't send — try again")
+      }
+    }
+  }
+
+  /// Success shows a short confirmation, then the card dismisses itself. The
+  /// dismissal goes through the manager so queue advancement and bar re-hide
+  /// keep their single owner.
+  private func finish(confirmation: String) {
+    phase = .done(confirmation)
+    Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 1_400_000_000)
+      FloatingControlBarManager.shared.dismissCurrentNotification()
+    }
   }
 }

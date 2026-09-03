@@ -34,7 +34,7 @@ def test_gateway_route_overrides_do_not_change_the_legacy_model_profile():
     assert get_model('conv_discard') == 'gpt-5-nano'
     assert get_model('memories') == 'gpt-5.6-luna'
     assert get_model('fair_use') == 'gpt-5.6-luna'
-    assert get_model('chat_agent') == 'claude-sonnet-4-6'
+    assert get_model('chat_agent') == 'gpt-5.6-luna'
 
     assert config.route_artifacts['route.conv_discard.model_config.001'].primary.model == 'gpt-5-nano'
     assert config.route_artifacts['route.memories.model_config.001'].primary.model == 'gpt-5.6-luna'
@@ -43,6 +43,9 @@ def test_gateway_route_overrides_do_not_change_the_legacy_model_profile():
     assert config.route_artifacts['route.chat_agent.model_config.001'].primary.model == 'gpt-5.6-luna'
     assert config.route_artifacts['route.memory_l2.model_config.001'].provider_options['reasoning_effort'] == 'medium'
     assert config.route_artifacts['route.chat_agent.model_config.001'].provider_options == {'reasoning_effort': 'none'}
+    assert config.route_artifacts['route.wake_word_adjudication.model_config.001'].provider_options == {
+        'reasoning_effort': 'high'
+    }
     chat_agent_lane = config.lanes['omi:auto:chat-agent']
     assert chat_agent_lane.surface == Surface.OPENAI_CHAT_COMPLETIONS
     assert chat_agent_lane.capabilities.streaming is True

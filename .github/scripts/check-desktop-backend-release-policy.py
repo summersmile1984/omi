@@ -48,6 +48,7 @@ def _validate_production_python_runtime(text: str, *, workflow: str) -> list[str
         "GOOGLE_CLOUD_PROJECT=${{ vars.GCP_PROJECT_ID }}",
         "GCP_LOCATION=us-central1",
         "/secrets/firebase/service-account.json=SERVICE_ACCOUNT_JSON:latest",
+        "POSTHOG_PROJECT_API_KEY=POSTHOG_PROJECT_API_KEY:latest",
         "GEMINI_API_KEY=DESKTOP_GEMINI_API_KEY:latest",
         "FIREBASE_API_KEY=DESKTOP_FIREBASE_API_KEY:latest",
         "REDIS_DB_PASSWORD=DESKTOP_REDIS_DB_PASSWORD:latest",
@@ -85,15 +86,58 @@ def _validate_production_python_runtime(text: str, *, workflow: str) -> list[str
     )
     return errors
 
+
 def _validate_private_network_egress(text: str, *, workflow: str, request_step: str) -> list[str]:
+    """Pin the desktop backend to the backend VPC that carries the LLM gateway.
+
+    This used to require ``--network=default``, which dated from the retired
+    per-user Agent VMs. The LLM gateway is only published on an internal L7
+    load balancer inside ``CLOUD_RUN_VPC_NETWORK`` and that VPC has no peering
+    with ``default``, so the desktop backend could not reach it and silently
+    served managed chat straight from Anthropic. Keep the service on the same
+    VPC as the other backend Cloud Run services.
+    """
     errors: list[str] = []
     request_block = _step_block(text, request_step)
     if request_block is None:
         errors.append(f"{workflow}: missing request service deployment step for private network egress")
         return errors
-    for fragment in ("--network=default", "--subnet=default", "--vpc-egress=private-ranges-only"):
+    for fragment in (
+        "--network=${{ vars.CLOUD_RUN_VPC_NETWORK }}",
+        "--subnet=${{ vars.CLOUD_RUN_VPC_SUBNET }}",
+        "--vpc-egress=private-ranges-only",
+    ):
         if fragment not in request_block:
             errors.append(f"{workflow}: request service missing private network egress contract {fragment!r}")
+    return errors
+
+
+def _validate_llm_gateway_wiring(text: str, *, workflow: str, request_step: str) -> list[str]:
+    """Keep managed desktop chat on the gateway instead of a direct provider.
+
+    ``should_route_features_through_gateway`` treats an unset feature mode as
+    "direct", so omitting these bindings does not fail loudly - it bills
+    Anthropic. It also raises outside dev/local when the feature mode is on
+    without ``ALLOW_PROD_FEATURE_MODE`` and a URL, so the three must land
+    together. The URL is resolved by the gateway serving gate, which fails the
+    deploy when the data plane is not actually serving.
+    """
+    errors: list[str] = []
+    if "verify-llm-gateway-serving.py" not in text:
+        errors.append(f"{workflow}: missing LLM gateway serving gate before deployment")
+    request_block = _step_block(text, request_step)
+    if request_block is None:
+        errors.append(f"{workflow}: missing request service deployment step for LLM gateway wiring")
+        return errors
+    for fragment in (
+        "OMI_LLM_GATEWAY_URL=${{ steps.gateway-serving.outputs.gateway_url }}",
+        "OMI_LLM_GATEWAY_FEATURE_MODE=gateway",
+        "OMI_LLM_GATEWAY_ALLOW_PROD_FEATURE_MODE=true",
+        "OMI_LLM_CHAT_AGENT_ROUTE=gateway",
+        "OMI_LLM_GATEWAY_SERVICE_TOKEN=OMI_LLM_GATEWAY_SERVICE_TOKEN:latest",
+    ):
+        if fragment not in request_block:
+            errors.append(f"{workflow}: request service missing LLM gateway binding {fragment!r}")
     return errors
 
 
@@ -107,6 +151,12 @@ def validate_deploy_workflow(text: str, *, production: bool) -> list[str]:
         "verify_desktop_backend_image_lineage.py",
         "voice-provider-probe.sh",
         "wait_cloud_run_candidate_readiness.py",
+        "attach_cloud_run_gmp_sidecar.py",
+        "cloud_run_gmp_sidecar.yaml",
+        "PROMETHEUS_SIDECAR_PORT=9090",
+        "METRICS_SECRET=METRICS_SECRET:latest",
+        "POSTHOG_PROJECT_API_KEY=POSTHOG_PROJECT_API_KEY:latest",
+        "Attach Managed Prometheus sidecar",
         "Verify candidate image lineage",
         "@${{ steps.build-image.outputs.digest }}",
         '--build-image-ref="$BUILD_IMAGE_REF"',
@@ -130,6 +180,32 @@ def validate_deploy_workflow(text: str, *, production: bool) -> list[str]:
     for fragment in required:
         if fragment not in text:
             errors.append(f"{workflow}: missing release boundary {fragment!r}")
+
+    # Bound to the step, not to the file. attach_cloud_run_gmp_sidecar.py made
+    # --expected-env-state required and only the backend caller was updated;
+    # argparse exits before the attach runs, so both desktop deploy paths failed
+    # at the same step while every fragment above was still present.
+    attach_name = (
+        "Attach Managed Prometheus sidecar to production candidate"
+        if production
+        else "Attach Managed Prometheus sidecar to development candidate"
+    )
+    attach_step = _step_block(text, attach_name)
+    if attach_step is None:
+        errors.append(f"{workflow}: missing step {attach_name!r}")
+    elif "--expected-env-state=" not in attach_step:
+        errors.append(
+            f"{workflow}: {attach_name!r} must pass --expected-env-state; the sidecar script requires it"
+        )
+
+    render_name = "Render desktop backend expected env state"
+    render_step = _step_block(text, render_name)
+    if render_step is None:
+        errors.append(f"{workflow}: missing step {render_name!r}")
+    elif "--desktop-state-output" not in render_step:
+        errors.append(f"{workflow}: {render_name!r} must render the state with --desktop-state-output")
+    elif attach_step is not None and text.find(render_name) > text.find(attach_name):
+        errors.append(f"{workflow}: {render_name!r} must run before {attach_name!r}")
     if ":latest" in "\n".join(line for line in text.splitlines() if "image:" in line or "tags:" in line):
         errors.append(f"{workflow}: deployment image must use an immutable source tag")
 
@@ -155,6 +231,7 @@ def validate_deploy_workflow(text: str, *, production: bool) -> list[str]:
             text,
             (
                 "Capture current serving revision",
+                "Attach Managed Prometheus sidecar",
                 "Wait for no-traffic candidate readiness",
                 "Verify candidate image lineage",
                 "Resolve exact no-traffic candidate URL",
@@ -172,6 +249,7 @@ def validate_deploy_workflow(text: str, *, production: bool) -> list[str]:
         "Deploy production candidate at zero traffic" if production else "Deploy desktop-backend to Cloud Run"
     )
     errors.extend(_validate_private_network_egress(text, workflow=workflow, request_step=request_step))
+    errors.extend(_validate_llm_gateway_wiring(text, workflow=workflow, request_step=request_step))
     if production:
         for fragment in (
             "on:\n  workflow_dispatch:",
@@ -237,9 +315,7 @@ def validate_deploy_workflow(text: str, *, production: bool) -> list[str]:
             )
         if "FIREBASE_AUTH_PROJECT_ID: based-hardware-dev" in text or "FIREBASE_PROJECT_ID=based-hardware-dev" in text:
             errors.append(f"{workflow}: development serving must retain the production Firebase project")
-        dev_runtime_steps = (
-            "Deploy desktop-backend to Cloud Run",
-        )
+        dev_runtime_steps = ("Deploy desktop-backend to Cloud Run",)
         dev_runtime_env = (
             "FIREBASE_AUTH_PROJECT_ID=${{ env.FIREBASE_AUTH_PROJECT_ID }}",
             "FIREBASE_PROJECT_ID=${{ env.FIREBASE_AUTH_PROJECT_ID }}",
