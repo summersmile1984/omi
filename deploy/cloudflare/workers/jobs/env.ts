@@ -87,6 +87,17 @@ export type JobsEnv = {
   INTERNAL_ASSERTION_SECRET?: string;
   /** Exact destination manifest admitted by this isolated deployment. */
   ACCOUNT_CUTOVER_MANIFEST_ID?: string;
+  /**
+   * Operator-tunable ceilings for /v2/sync-local-files and
+   * /v2/sync-capture-manifest, independent of the mobile client's own
+   * per-request batch size. Defaults (20 files, 40 MiB/file, 100,000,000
+   * bytes/request) match what this Worker has actually shipped and been
+   * tested against -- see sync-local-files.ts's maxSyncFiles/maxSyncFileBytes/
+   * maxSyncRequestBytes.
+   */
+  SYNC_MAX_FILES?: string;
+  SYNC_MAX_FILE_BYTES?: string;
+  SYNC_MAX_REQUEST_BYTES?: string;
   OPENAI_API_KEY?: string;
   /**
    * Canonical chat files use R2 plus Workers AI by default. Set false only

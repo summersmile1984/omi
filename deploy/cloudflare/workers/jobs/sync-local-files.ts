@@ -28,9 +28,31 @@ import {
   type SyncFileIdentity,
 } from "./sync-audio";
 
-const MAX_SYNC_FILES = 20;
-const MAX_SYNC_FILE_BYTES = 40 * 1024 * 1024;
-const MAX_SYNC_REQUEST_BYTES = 100_000_000;
+// Server-side safety ceilings, independent of the mobile client's own
+// per-request batch size (app/lib/services/wals/local_wal_sync.dart's
+// _syncUploadBatchLimit, currently 5 -- a client tuning knob, not a server
+// validation boundary). Env-overridable per operator; these three defaults
+// match the values this Worker has actually shipped and been tested against.
+const DEFAULT_MAX_SYNC_FILES = 20;
+const DEFAULT_MAX_SYNC_FILE_BYTES = 40 * 1024 * 1024;
+const DEFAULT_MAX_SYNC_REQUEST_BYTES = 100_000_000;
+
+function envInt(value: string | undefined, fallback: number): number {
+  const parsed = value ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function maxSyncFiles(env: JobsEnv): number {
+  return envInt(env.SYNC_MAX_FILES, DEFAULT_MAX_SYNC_FILES);
+}
+
+function maxSyncFileBytes(env: JobsEnv): number {
+  return envInt(env.SYNC_MAX_FILE_BYTES, DEFAULT_MAX_SYNC_FILE_BYTES);
+}
+
+function maxSyncRequestBytes(env: JobsEnv): number {
+  return envInt(env.SYNC_MAX_REQUEST_BYTES, DEFAULT_MAX_SYNC_REQUEST_BYTES);
+}
 const FRESH_MAX_AGE_SECONDS = 6 * 60 * 60;
 const BACKFILL_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const MAX_FUTURE_SKEW_SECONDS = 5 * 60;
@@ -379,8 +401,8 @@ function normalizedDevice(request: Request): {
   };
 }
 
-function validateClaims(value: unknown): ManifestClaim[] | null {
-  if (!Array.isArray(value) || !value.length || value.length > MAX_SYNC_FILES)
+function validateClaims(value: unknown, env: JobsEnv): ManifestClaim[] | null {
+  if (!Array.isArray(value) || !value.length || value.length > maxSyncFiles(env))
     return null;
   const claims: ManifestClaim[] = [];
   const names = new Set<string>();
@@ -464,7 +486,7 @@ async function verifyManifest(
     ) {
       return null;
     }
-    return validateClaims(payload.files);
+    return validateClaims(payload.files, env);
   } catch {
     return null;
   }
@@ -593,10 +615,10 @@ async function stageSyncFiles(
     await parseFormData(
       request,
       {
-        maxFiles: MAX_SYNC_FILES,
-        maxFileSize: MAX_SYNC_FILE_BYTES,
-        maxParts: MAX_SYNC_FILES + 4,
-        maxTotalSize: MAX_SYNC_REQUEST_BYTES,
+        maxFiles: maxSyncFiles(env),
+        maxFileSize: maxSyncFileBytes(env),
+        maxParts: maxSyncFiles(env) + 4,
+        maxTotalSize: maxSyncRequestBytes(env),
       },
       async (file: FileUpload) => {
         if (file.fieldName !== "files") return null;
@@ -2373,7 +2395,7 @@ export function registerSyncRoutes(
       typeof body?.conversation_id === "string"
         ? body.conversation_id.trim()
         : "";
-    const claims = validateClaims(body?.files);
+    const claims = validateClaims(body?.files, c.env);
     if (!conversationId || conversationId.length > 128 || !claims)
       return c.json({ error: "invalid capture manifest request" }, 400);
     const trusted = await conversationMatchesCapture(
@@ -2458,7 +2480,7 @@ export function registerSyncRoutes(
     const declaredLength = Number(c.req.header("content-length"));
     if (
       Number.isFinite(declaredLength) &&
-      declaredLength > MAX_SYNC_REQUEST_BYTES
+      declaredLength > maxSyncRequestBytes(c.env)
     )
       return c.json({ error: "Audio upload is too large" }, 413);
     const conversationIdRaw = c.req.query("conversation_id")?.trim() || null;
