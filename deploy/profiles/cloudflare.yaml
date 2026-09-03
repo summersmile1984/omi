@@ -1,0 +1,57 @@
+# Cloudflare Workers deployment. A second backend implementation, not a second
+# product: it aligns one-way to the upstream API contract that self_hosted
+# implements. Cloudflare-internal mechanisms (Worker-to-Worker assertions,
+# Durable Objects, D1) never enter the client contract.
+schema_version: 1
+target: cloudflare
+identity_provider: better_auth
+managed: false
+
+capabilities:
+  allow_direct_model_providers: false
+  allow_byok: false
+  allow_google_connectors: true    # served through the Jobs Worker
+  allow_cloud_connectors: true
+  marketplace_enabled: false
+  model_downloads: false
+  account_activation_fence: false  # migration-tool state, not a client contract
+  embedding_dims: 1536             # Vectorize ceiling
+  sync_upload_batch_limit: 2       # Workers cap a request at 100 MB
+  max_request_bytes: 104857600
+  push_provider: webhook
+  tts_provider: workers_ai
+  realtime_relay: realtime_worker
+  stt_providers: [workers_ai_whisper, operator_mimo]
+
+data_plane:
+  store: d1
+  object_store: r2
+  queue: cf_queues
+  vector: vectorize
+  cache: durable_objects
+
+stages:
+  production:
+    api_base_url: "{api}/"
+    auth_base_url: "{auth}"
+    web_base_url: "{web}"
+    mcp_base_url: "{mcp}"
+    share_base_url: "{share}"
+    objects_base_url: "{objects}"
+    auth_callback_scheme: "{scheme}"
+  beta:
+    api_base_url: "{api}/"
+    auth_base_url: "{auth}"
+    web_base_url: "{web}"
+    mcp_base_url: "{mcp}"
+    share_base_url: "{share}"
+    objects_base_url: "{objects}"
+    auth_callback_scheme: "{scheme}-beta"
+  local:
+    api_base_url: http://127.0.0.1:8787/
+    auth_base_url: http://127.0.0.1:8788
+    web_base_url: http://127.0.0.1:8789
+    mcp_base_url: http://127.0.0.1:8787
+    share_base_url: http://127.0.0.1:8787
+    objects_base_url: http://127.0.0.1:8787
+    auth_callback_scheme: "{scheme}-dev"

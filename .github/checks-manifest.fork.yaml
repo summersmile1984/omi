@@ -20,3 +20,9 @@ checks:
     triggers: ["scripts/fork/check-upstream-touch.py", "scripts/fork/test_check_upstream_touch.py", "dev/unified-main/upstream-touch-allowlist.yaml"]
     lanes: ["local", "ci"]
     reason: "the guard is only a guard while its own refusals stay covered; its glob matcher already had a bug that let upstream tests through"
+
+  - id: fork-profile-tables
+    command: ["python3", "scripts/profiles/check_tables.py"]
+    triggers: ["deploy/profiles/**", "scripts/profiles/**", "app/lib/env/environment_profile.dart", "app/lib/env/fork/**", "desktop/macos/Desktop/Sources/Generated/**", "desktop/windows/src/shared/fork/**", "web/app/src/lib/fork/**", "backend/fork/deployment_profiles.generated.json"]
+    lanes: ["local", "ci"]
+    reason: "one profile source drives four platforms; omi_cloud must still reproduce upstream's environment_profile.dart literals, so upstream retuning them fails here on the next sync instead of drifting silently"

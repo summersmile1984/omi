@@ -1,0 +1,63 @@
+# Upstream's own managed deployment. Never published by this fork; it exists so
+# `render.py --target omi_cloud` must reproduce upstream's literals exactly,
+# which is the regression that proves the generator has not drifted.
+schema_version: 1
+target: omi_cloud
+identity_provider: firebase
+managed: true            # managed credentials (PostHog, Intercom, Maps, Sentry) allowed
+
+capabilities:
+  allow_direct_model_providers: true
+  allow_byok: true
+  allow_google_connectors: true
+  allow_cloud_connectors: true
+  marketplace_enabled: true
+  model_downloads: true
+  account_activation_fence: false
+  embedding_dims: 3072
+  sync_upload_batch_limit: 5
+  max_request_bytes: 0     # 0 = no fork-imposed cap
+  push_provider: firebase
+  tts_provider: elevenlabs
+  realtime_relay: openai
+  stt_providers: []        # empty = upstream policy decides
+
+data_plane:
+  store: firestore
+  object_store: gcs
+  queue: cloud_tasks
+  vector: pinecone
+  cache: redis
+
+stages:
+  production:
+    api_base_url: https://api.omi.me/
+    auth_callback_scheme: omi
+    firebase_project_id: based-hardware
+    uses_firebase_auth_emulator: false
+  beta:
+    api_base_url: https://api.omiapi.com/
+    auth_callback_scheme: omi-beta
+    firebase_project_id: based-hardware
+    uses_firebase_auth_emulator: false
+    # Beta serves from the dev plane but keeps production identity, so OAuth
+    # must stay pinned to the production host.
+    auth_api_base_url: https://api.omi.me/
+  local:
+    api_base_url: http://127.0.0.1:8000/
+    auth_callback_scheme: omi-dev
+    firebase_project_id: demo-omi-local
+    uses_firebase_auth_emulator: true
+
+# Upstream also ships `local_prod`: a debug-only combination of the local API
+# with production Firebase identity. It does not fit the target x stage axis
+# (it is neither a stage property nor a target property), so it is carried as an
+# explicit legacy alias rather than bending the axis. Upstream-only; no fork
+# target defines aliases.
+legacy_aliases:
+  local_prod:
+    api_base_url: http://127.0.0.1:8000/
+    auth_callback_scheme: omi
+    firebase_project_id: based-hardware
+    uses_firebase_auth_emulator: false
+    allows_production_data: true
