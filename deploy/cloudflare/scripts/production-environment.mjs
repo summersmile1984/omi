@@ -111,9 +111,15 @@ export function assertProductionConfirmation(env = process.env) {
 export function resolveWorkersSubdomain(
   raw = process.env.CLOUDFLARE_WORKERS_SUBDOMAIN,
 ) {
-  const value = String(raw || "summersmile1984")
-    .trim()
-    .toLowerCase();
+  // No default: a silent fallback here would bake one specific Cloudflare
+  // account's workers.dev subdomain into every brand's production config
+  // that forgets to set this. Every deploy caller must name its own account.
+  if (!raw || !String(raw).trim()) {
+    throw new Error(
+      "CLOUDFLARE_WORKERS_SUBDOMAIN is required (no default subdomain)",
+    );
+  }
+  const value = String(raw).trim().toLowerCase();
   if (!SUBDOMAIN.test(value)) {
     throw new Error("invalid Cloudflare workers.dev subdomain");
   }

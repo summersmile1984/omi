@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PRODUCTION_CONFIRMATION,
   PRODUCTION_DEPLOYMENTS,
@@ -19,6 +19,10 @@ const appDatabaseId = "22222222-2222-4222-8222-222222222222";
 const authDatabaseId = "11111111-1111-4111-8111-111111111111";
 
 describe("independent Cloudflare production environment", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("requires the exact production confirmation", () => {
     expect(() => assertProductionConfirmation({})).toThrow(
       PRODUCTION_CONFIRMATION,
@@ -40,6 +44,27 @@ describe("independent Cloudflare production environment", () => {
     expect(() => resolveWorkersSubdomain("bad.domain")).toThrow(
       "invalid Cloudflare",
     );
+  });
+
+  it("refuses to substitute one account's subdomain for an operator who forgot to set theirs", () => {
+    // A brand that never configures CLOUDFLARE_WORKERS_SUBDOMAIN must fail
+    // its deploy, not silently inherit the fork author's own workers.dev
+    // account -- the exact incident this branch's own
+    // ".summersmile1984.workers.dev" assertion above was already guarding
+    // against, just not at the source.
+    expect(() => resolveWorkersSubdomain(undefined)).toThrow(
+      "CLOUDFLARE_WORKERS_SUBDOMAIN is required",
+    );
+    expect(() => resolveWorkersSubdomain("")).toThrow(
+      "CLOUDFLARE_WORKERS_SUBDOMAIN is required",
+    );
+    vi.stubEnv("CLOUDFLARE_WORKERS_SUBDOMAIN", "");
+    expect(() =>
+      renderProductionConfig(
+        readFileSync(resolve(root, "workers/auth/wrangler.jsonc"), "utf8"),
+        { appDatabaseId, authDatabaseId },
+      ),
+    ).toThrow("CLOUDFLARE_WORKERS_SUBDOMAIN is required");
   });
 
   it.each([
@@ -71,11 +96,11 @@ describe("independent Cloudflare production environment", () => {
   it("disables unauthenticated DCR and legacy external owners in production", () => {
     const auth = renderProductionConfig(
       readFileSync(resolve(root, "workers/auth/wrangler.jsonc"), "utf8"),
-      { appDatabaseId, authDatabaseId },
+      { appDatabaseId, authDatabaseId, subdomain: "omi-prod" },
     );
     const jobs = renderProductionConfig(
       readFileSync(resolve(root, "workers/jobs/wrangler.jsonc"), "utf8"),
-      { appDatabaseId, authDatabaseId },
+      { appDatabaseId, authDatabaseId, subdomain: "omi-prod" },
     );
     expect(auth).toContain('"MCP_ALLOW_UNAUTHENTICATED_DCR": "false"');
     expect(jobs).toContain(
