@@ -1,0 +1,85 @@
+# T1 白名单：允许被 fork 修改的上游文件（唯一来源）
+#
+# 规则（见 00-upstream-touch-policy.md）：
+#   - 默认零改动。不在本表中的上游文件出现在 PR diff 中 → fork-upstream-touch 失败。
+#   - 每条必须有 max_added_lines（≤3，AGENTS 指针类 ≤1）、reason、upstream_pr。
+#   - 只减不增：上游接受对应 PR 后，删除该条并回退 fork 的改动。
+#   - backend/**、上游测试、锁文件/依赖清单、生成文件、机器人写入文件、CI 工作流：永远不得入表。
+schema_version: 1
+
+forbidden_patterns:            # 命中即失败，白名单也不能豁免（T2）
+  - "backend/**"
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/*_test.*"
+  - "**/*.test.*"
+  - "**/Tests/**"
+  - "backend/pylock*.toml"
+  - "backend/requirements*.txt"
+  - "app/pubspec.lock"
+  - "web/*/package-lock.json"
+  - "**/*.g.dart"
+  - "**/*.gen.dart"
+  - "app/lib/l10n/app_localizations*.dart"
+  - ".github/workflows/**"
+  - ".github/checks-manifest.yaml"
+  - ".github/guardrail-pulse-history.jsonl"
+  - "config/deployment-setting-classification.json"
+  - "desktop/macos/CHANGELOG.json"
+  - "community-plugin-stats.json"
+
+allow:
+  - path: desktop/macos/Desktop/Sources/AppBuild.swift
+    max_added_lines: 3
+    reason: 生产族 bundle id 与非生产判定改读 Info.plist 键（Swift 无运行时补丁能力）
+    upstream_pr: "make production-family identifiers Info.plist-driven"
+    owner: S3/B1
+
+  - path: desktop/macos/Desktop/Sources/DesktopBackendEnvironment.swift
+    max_added_lines: 3
+    reason: 四个后端 URL 常量改读 Sources/Generated 的 profile 表
+    upstream_pr: "backend endpoints from bundle configuration"
+    owner: S3
+
+  - path: desktop/macos/Desktop/Sources/AuthService.swift
+    max_added_lines: 3
+    reason: 身份提供方 switch 增加 Better Auth 分支（实现在 Sources/Fork/）
+    upstream_pr: "identity provider seam"
+    owner: M1-mac
+
+  - path: desktop/macos/scripts/app-config.sh
+    max_added_lines: 3
+    reason: 命名 bundle 的前缀校验改读品牌配置（当前硬拒非 omi- 前缀）
+    upstream_pr: "configurable bundle-id prefix for named bundles"
+    owner: B1
+
+  - path: app/lib/main.dart
+    max_added_lines: 1
+    reason: localizationsDelegates 追加品牌委托（替代改 190 个 ARB 键）
+    upstream_pr: "ARB {appName} parameterization"   # 接受后删除本条
+    owner: B3
+
+  - path: web/app/next.config.js
+    max_added_lines: 5
+    reason: VINEXT_BUILD 条件别名（Cloudflare 构建）+ 认证提供方开关；纯加法
+    upstream_pr: "pluggable auth provider / Workers build"
+    owner: S4
+
+  - path: web/app/src/lib/firebase.ts
+    max_added_lines: 3
+    reason: isFirebaseAuthConfigured 改读 deployment profile
+    upstream_pr: "pluggable auth provider"
+    owner: S4
+
+  - path: omi/firmware/omi/src/lib/core/nfc.c
+    max_added_lines: 1
+    reason: NFC 配对 URL 改读 Kconfig（当前为写死的 friend.based.com 字面量）
+    upstream_pr: "Kconfig-driven NFC pairing URL"
+    owner: B7
+
+  # AGENTS.md pointers were tried on 2026-09-03 and removed the same day.
+  # Upstream keeps these files at their guardrail ceiling -- app/AGENTS.md was
+  # 11288/11500 bytes and backend/AGENTS.md 38997/39000 -- so a one-line fork
+  # pointer fails agents-md-lean as soon as upstream grows into the headroom.
+  # Fork rules live in fork-owned AGENTS.fork.md files with no pointer from the
+  # upstream file; discovery comes from dev/unified-main/ and this policy doc.
