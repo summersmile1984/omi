@@ -14,16 +14,37 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from dataclasses import dataclass
-from typing import Mapping, Optional
-from urllib.parse import urlparse
+from typing import Mapping
+from urllib.parse import urlsplit
 
 from config.prerecorded_stt import PrerecordedSTTConfigurationError, PrerecordedSTTService
+
+
+class ForkPrerecordedSTTService(PrerecordedSTTService):
+    """Upstream's provider constants plus the ones only this fork serves.
+
+    The shim branch added these three names to upstream's class, which made
+    every upstream sync a conflict in a file the fork has no other reason to
+    touch. Subclassing keeps one import for callers -- upstream's DEEPGRAM and
+    MOSS still resolve -- while the fork-only names live in fork code.
+
+    Values are the wire/config strings operators already set in
+    ``STT_SERVICE_MODELS``, so they must not be renamed casually.
+    """
+
+    SENSEVOICE = 'sensevoice'
+    MIMO = 'mimo'
+    MLX_MOSS_DIARIZE = 'mlx_moss_diarize'
+
 
 # Upstream keeps these private-network tables in config/prerecorded_stt.py; the
 # fork re-derives them here rather than reaching into a private name.
 _RFC1918_NETWORKS = tuple(ipaddress.ip_network(cidr) for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
-_LEGACY_IPV4_LITERAL = "0.0.0.0"
+# Legacy integer/octal/hex IPv4 spellings that ``ipaddress`` rejects but URL
+# clients and OS resolvers still accept -- e.g. 0x7f.1 or 2130706433.
+_LEGACY_IPV4_LITERAL = re.compile(r'(?:0[xX][0-9a-fA-F]+|[0-9]+)(?:\.(?:0[xX][0-9a-fA-F]+|[0-9]+)){0,3}')
 
 _PRIVATE_HTTP_HOST_SUFFIXES = ('.internal', '.local', '.svc', '.svc.cluster.local')
 
@@ -119,12 +140,12 @@ def get_mlx_moss_diarize_config(env: Mapping[str, str] | None = None) -> MlxMoss
     api_key = (source.get('MLX_MOSS_DIARIZE_API_KEY') or '').strip() or None
     if not endpoint:
         raise PrerecordedSTTConfigurationError(
-            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            ForkPrerecordedSTTService.MLX_MOSS_DIARIZE,
             'MLX_MOSS_DIARIZE_ENDPOINT',
         )
     if not model:
         raise PrerecordedSTTConfigurationError(
-            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            ForkPrerecordedSTTService.MLX_MOSS_DIARIZE,
             'MLX_MOSS_DIARIZE_MODEL',
         )
 
@@ -141,7 +162,7 @@ def get_mlx_moss_diarize_config(env: Mapping[str, str] | None = None) -> MlxMoss
     )
     if invalid_url:
         raise PrerecordedSTTConfigurationError(
-            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            ForkPrerecordedSTTService.MLX_MOSS_DIARIZE,
             'MLX_MOSS_DIARIZE_ENDPOINT',
         )
     if (
@@ -152,17 +173,17 @@ def get_mlx_moss_diarize_config(env: Mapping[str, str] | None = None) -> MlxMoss
         or hostname.endswith('.omi.me')
     ):
         raise PrerecordedSTTConfigurationError(
-            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            ForkPrerecordedSTTService.MLX_MOSS_DIARIZE,
             'MLX_MOSS_DIARIZE_ENDPOINT',
         )
     if parsed.scheme == 'http' and not is_private_operator_hostname(hostname):
         raise PrerecordedSTTConfigurationError(
-            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            ForkPrerecordedSTTService.MLX_MOSS_DIARIZE,
             'MLX_MOSS_DIARIZE_ENDPOINT',
         )
     if parsed.scheme == 'https' and not is_private_operator_hostname(hostname) and api_key is None:
         raise PrerecordedSTTConfigurationError(
-            PrerecordedSTTService.MLX_MOSS_DIARIZE,
+            ForkPrerecordedSTTService.MLX_MOSS_DIARIZE,
             'MLX_MOSS_DIARIZE_API_KEY',
         )
     return MlxMossDiarizeConfig(endpoint=endpoint, model=model, api_key=api_key)

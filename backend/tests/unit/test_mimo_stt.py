@@ -12,7 +12,7 @@ from utils.mimo_pipeline.config import MimoConfigurationError, validate_mimo_bas
 from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, infer_audio_format
 from utils.mimo_pipeline.config import mimo_is_configured
 from utils.mimo_pipeline.socket import MimoSttSocket, pcm16_to_wav
-from config.prerecorded_stt import PrerecordedSTTService
+from fork.prerecorded_stt_config import ForkPrerecordedSTTService
 from config.stt_provider_policy import MIMO_PROVIDER, STTServingSurface, provider_is_enabled
 from fork.egress_policy import EgressPolicyUnavailable
 from utils.mimo_pipeline.prerecorded_provider import MimoPrerecordedProvider
@@ -77,7 +77,7 @@ def test_client_resolves_explicit_tokenplan_endpoint(monkeypatch):
 def test_prerecorded_select_routes_to_mimo_when_configured(monkeypatch):
     monkeypatch.setenv('STT_PRERECORDED_MODEL', 'mimo')
     service, language, model = get_prerecorded_service('zh-CN')
-    assert service == PrerecordedSTTService.MIMO
+    assert service == ForkPrerecordedSTTService.MIMO
     assert language == 'zh'
     assert model == 'mimo-v2.5-asr'
 

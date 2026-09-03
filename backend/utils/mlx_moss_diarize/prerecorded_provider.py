@@ -17,8 +17,13 @@ import httpx
 import numpy as np
 from pydub import AudioSegment  # type: ignore[reportMissingImports]  # pydub is untyped
 
-from config.prerecorded_stt import PrerecordedSTTService, TranscriptionOutcome
-from fork.prerecorded_stt_config import MlxMossDiarizeConfig, get_mlx_moss_diarize_config, is_private_operator_hostname
+from config.prerecorded_stt import TranscriptionOutcome
+from fork.prerecorded_stt_config import (
+    ForkPrerecordedSTTService,
+    MlxMossDiarizeConfig,
+    get_mlx_moss_diarize_config,
+    is_private_operator_hostname,
+)
 from config.stt_provider_policy import normalized_stt_language
 from utils.executors import run_blocking, sync_executor
 from utils.http_client import (
@@ -30,7 +35,12 @@ from utils.http_client import (
 )
 from utils.observability.fallback import record_fallback
 from utils.stt.outcomes import TranscriptionFailure
-from utils.stt.speaker_embedding import MIN_EMBEDDING_AUDIO_DURATION, SPEAKER_MATCH_THRESHOLD, async_extract_embedding_from_bytes, compare_embeddings
+from utils.stt.speaker_embedding import (
+    MIN_EMBEDDING_AUDIO_DURATION,
+    SPEAKER_MATCH_THRESHOLD,
+    async_extract_embedding_from_bytes,
+    compare_embeddings,
+)
 from fork.speaker_embedding import SpeakerEmbeddingUnavailable, validate_speaker_embedding_configuration
 
 MAX_AUDIO_BYTES = 256 * 1024 * 1024
@@ -67,7 +77,7 @@ class _AudioChunk:
 def _invalid_input(error: BaseException | None = None) -> TranscriptionFailure:
     failure = TranscriptionFailure(
         TranscriptionOutcome.INVALID_INPUT,
-        provider=PrerecordedSTTService.MLX_MOSS_DIARIZE,
+        provider=ForkPrerecordedSTTService.MLX_MOSS_DIARIZE,
         retryable=False,
     )
     if error is not None:
@@ -78,7 +88,7 @@ def _invalid_input(error: BaseException | None = None) -> TranscriptionFailure:
 def _upstream_failure(error: BaseException | None = None) -> TranscriptionFailure:
     failure = TranscriptionFailure(
         TranscriptionOutcome.UPSTREAM_ERROR,
-        provider=PrerecordedSTTService.MLX_MOSS_DIARIZE,
+        provider=ForkPrerecordedSTTService.MLX_MOSS_DIARIZE,
     )
     if error is not None:
         failure.__cause__ = error
@@ -88,7 +98,7 @@ def _upstream_failure(error: BaseException | None = None) -> TranscriptionFailur
 def _timeout_failure(error: BaseException | None = None) -> TranscriptionFailure:
     failure = TranscriptionFailure(
         TranscriptionOutcome.TIMEOUT,
-        provider=PrerecordedSTTService.MLX_MOSS_DIARIZE,
+        provider=ForkPrerecordedSTTService.MLX_MOSS_DIARIZE,
     )
     if error is not None:
         failure.__cause__ = error
@@ -98,7 +108,7 @@ def _timeout_failure(error: BaseException | None = None) -> TranscriptionFailure
 def _config_failure(error: BaseException | None = None) -> TranscriptionFailure:
     failure = TranscriptionFailure(
         TranscriptionOutcome.CONFIG_ERROR,
-        provider=PrerecordedSTTService.MLX_MOSS_DIARIZE,
+        provider=ForkPrerecordedSTTService.MLX_MOSS_DIARIZE,
         retryable=False,
     )
     if error is not None:

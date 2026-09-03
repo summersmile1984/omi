@@ -11,10 +11,12 @@ the old shim branch; moving them here leaves that file byte-identical.
 
 from __future__ import annotations
 
+import io
 import os
 import threading
 import wave
-from typing import Any, Tuple
+from pathlib import Path
+from typing import Any, Optional, Tuple
 
 import numpy as np
 
@@ -34,6 +36,11 @@ _local_extractor_lock = threading.Lock()
 
 
 _local_extractor_inference_lock = threading.Lock()
+
+# Cached sherpa-onnx extractor plus the (model path, thread count) it was
+# built for, so a changed model path rebuilds instead of serving stale vectors.
+_local_extractor_identity: Optional[Tuple[str, int]] = None
+_local_extractor: Any = None
 
 
 class SpeakerEmbeddingUnavailable(RuntimeError):
@@ -86,8 +93,8 @@ def validate_speaker_embedding_configuration() -> str:
     if provider == "disabled":
         raise SpeakerEmbeddingUnavailable("Speaker embedding is disabled for this deployment")
     if provider == "http":
-        if not os.getenv("SPEAKER_EMBEDDING_API_URL", "").strip():
-            raise SpeakerEmbeddingUnavailable("SPEAKER_EMBEDDING_API_URL is required for the http provider")
+        if not os.getenv("HOSTED_SPEAKER_EMBEDDING_API_URL", "").strip():
+            raise SpeakerEmbeddingUnavailable("HOSTED_SPEAKER_EMBEDDING_API_URL is required for the http provider")
         return provider
     _local_model_identity()
     return provider
@@ -167,7 +174,7 @@ def _validate_embedding(values: Any) -> np.ndarray[Any, Any]:
     return (embedding / norm).reshape(1, -1)
 
 
-def _extract_local_embedding(audio_data: bytes) -> np.ndarray[Any, Any]:
+def extract_local_embedding(audio_data: bytes) -> np.ndarray[Any, Any]:
     extractor = _get_local_extractor()
     samples = _wav_to_float_samples(audio_data)
     # One process-wide extractor is shared by live and prerecorded sessions.

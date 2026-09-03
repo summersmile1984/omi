@@ -18,10 +18,21 @@ import tempfile
 import wave
 from typing import Any, Callable, Dict, List, Optional
 
-from .mimo_client import MimoAPIError, MimoClient
+from .mimo_client import MimoAPIError, MimoClient, mimo_configuration_ready
 from utils.stt.socket import STTSocket
 
 logger = logging.getLogger(__name__)
+
+
+def mimo_available() -> bool:
+    """True when MiMo streaming STT can actually be reached.
+
+    The name the live-selection path imports. It delegates rather than
+    re-deriving, because MiMo ships no vendor endpoint default: a runtime with
+    ``MIMO_API_KEY`` but no operator ``MIMO_API_BASE`` would be selected and then
+    fail at connect time.
+    """
+    return mimo_configuration_ready()
 
 
 def pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int) -> bytes:

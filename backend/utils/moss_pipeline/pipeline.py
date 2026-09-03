@@ -82,7 +82,7 @@ def _default_embedding_extractor() -> EmbeddingExtractor:
     """Embedding extractor backed by the configured HTTP embedding API.
 
     Returns a callable ``(wav_bytes) -> (1, D) np.ndarray``. The configured
-    endpoint (``SPEAKER_EMBEDDING_API_URL``) is the diarizer's
+    endpoint (``HOSTED_SPEAKER_EMBEDDING_API_URL``) is the diarizer's
     ``/v2/embedding`` (wespeaker resnet34) — works with or without a local
     GPU because the diarizer service falls back to CPU.
     """
