@@ -109,3 +109,38 @@ jobs:
 ```
 
 冲突为 0 时该 PR 只需 CI 绿 + 一人批准即可合并；冲突 > 0 时由值周人接手分支解冲突。
+
+
+## 7. 同步 PR 的固定样板（2026-09-03 首次实战确认）
+
+一次 1500 提交量级的上游同步，必然触发下面 5 项与"改动规模"挂钩的检查。它们与代码质量无关，是同步 PR 的样板工作，PR 正文模板里应预留位置：
+
+| 检查 | 为什么会触发 | 处置 |
+|---|---|---|
+| `product-invariants` | diff 覆盖 3000+ 文件，几乎命中全部不变量 path glob | 在正文列出全部 ID（本次 17 个，含 `INV-AGENT-*`），并说明"守卫代码是上游的，本 PR 不改其行为" |
+| `failure-class-protocol` | 区间里有大量上游 `fix:` 提交 | `Failure-Class: none`，并说明 fork 自己的提交无 `fix:` |
+| `product-file-line-count-ratchet` | ratchet 与落后 1500 提交的 `origin/main` 比较，把上游两周增长算到本 PR 头上 | 用它自带的 `Line-Count-Exception:` 批量豁免（本次 59 条），理由统一为"上游增长、原样导入"；并确认 fork 自己的提交未触碰这些文件 |
+| `desktop-changelog-entry` | 上游桌面源码随同步进入 | 加 `desktop/macos/changelog/unreleased/<date>-upstream-sync.json`，内容 `{"kind": "none"}`（2026-08-19 那次同步已用过同一手法） |
+| `desktop-e2e-flow-coverage` | 上游新增的 Swift 文件若自带 e2e 覆盖缺口，同步 PR 就会红；该检查**无豁免机制** | **不得编造 e2e 流程**。在正文列出未覆盖文件、注明其为上游新增且 fork 未触碰，作为已知缺口报告 |
+
+生成豁免行的命令：
+
+```bash
+scripts/pr-preflight --lane local --base origin/main --pr-body-file <draft>.md 2>&1 \
+  | awk '/==> product-file-line-count-ratchet/{f=1} f&&/^- /{print} /<== FAIL product-file-line-count-ratchet/{exit}' \
+  | sed -E "s/^- ([^:]+): grew from ([0-9]+) to ([0-9]+) lines.*/Line-Count-Exception: \1 | \2 -> \3 | upstream growth imported by this sync; not authored here/"
+```
+
+## 8. `git rerere` 会静默套用旧解法（务必复核）
+
+本仓库 `rerere.enabled=true`，且已积累 152 条缓存解法。后果：一部分冲突会被**自动解决且不留冲突标记**，`grep '<<<<<<<'` 完全查不出来。2026-09-03 的 13 个冲突里有 6 个是这样被处理的。
+
+规则：
+- 以 `git status --short` 的 `UU` 为冲突清单，**不要**用 `grep '<<<<<<<'`。
+- 合并输出里的 `Resolved '<file>' using previous resolution.` 逐行核对：旧解法未必符合当期策略（例如本次策略是"web/admin 一律取上游"，而缓存里存的是上一次的手工合并结果）。
+- 想临时关掉：`git -c rerere.enabled=false merge …`。
+
+## 9. 本机环境注意
+
+- 系统 `python3` 若低于 3.10，`check-manifest-contract` 会因 `.github/scripts/git_bash.py` 的 `str | None` 语法直接崩溃。用 3.12 跑：`ln -sf $(command -v python3.12) /tmp/py312bin/python3 && PATH=/tmp/py312bin:$PATH scripts/pr-preflight …`
+- `backend/test.sh` 的 fast-unit CPU 时间守卫（fail 阈值 0.30s）在全量并行下会因机器争用误报。判定方法：单独跑该文件；若通过即为争用，**不要**去改上游的 `tests/fast_unit_duration_allowlist.txt`。

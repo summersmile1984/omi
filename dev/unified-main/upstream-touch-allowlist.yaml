@@ -77,23 +77,9 @@ allow:
     upstream_pr: "Kconfig-driven NFC pairing URL"
     owner: B7
 
-  - path: AGENTS.md
-    max_added_lines: 1
-    reason: 指向 AGENTS.fork.md 的一行指针
-    upstream_pr: null
-    owner: C1
-  - path: backend/AGENTS.md
-    max_added_lines: 1
-    reason: 指向 backend/AGENTS.fork.md 的一行指针
-    upstream_pr: null
-    owner: C1
-  - path: app/AGENTS.md
-    max_added_lines: 1
-    reason: 指向 app/AGENTS.fork.md 的一行指针
-    upstream_pr: null
-    owner: C1
-  - path: desktop/macos/AGENTS.md
-    max_added_lines: 1
-    reason: 指向 desktop/macos/AGENTS.fork.md 的一行指针
-    upstream_pr: null
-    owner: C1
+  # AGENTS.md pointers were tried on 2026-09-03 and removed the same day.
+  # Upstream keeps these files at their guardrail ceiling -- app/AGENTS.md was
+  # 11288/11500 bytes and backend/AGENTS.md 38997/39000 -- so a one-line fork
+  # pointer fails agents-md-lean as soon as upstream grows into the headroom.
+  # Fork rules live in fork-owned AGENTS.fork.md files with no pointer from the
+  # upstream file; discovery comes from dev/unified-main/ and this policy doc.

@@ -84,7 +84,7 @@ backend/fork/
 
 ### CI、配置、文档
 
-- 全部走独立文件：`fork-*.yml`、`checks-manifest.fork.yaml`、`deployment-setting-classification.fork.json`、`Makefile.fork`、`AGENTS.fork.md`（上游 `AGENTS.md` 只加一行指针——这一行是 T1 白名单项）。
+- 全部走独立文件：`fork-*.yml`、`checks-manifest.fork.yaml`、`deployment-setting-classification.fork.json`、`Makefile.fork`、`AGENTS.fork.md`（**上游 `AGENTS.md` 零改动、不加指针**——预算无余量，见 §4 第 9 条）。
 
 ## 4. T1 白名单（初始版，目标随上游 PR 接受逐条删除）
 
@@ -98,9 +98,9 @@ backend/fork/
 | 6 | `web/app/next.config.js` | 5 | vinext 条件别名 + 认证提供方开关 | "pluggable auth provider / Workers build" |
 | 7 | `web/app/src/lib/firebase.ts` | 3 | `isFirebaseAuthConfigured` 改读 profile | 同 6 |
 | 8 | `omi/firmware/omi/src/lib/core/nfc.c` | 1 | 配对 URL 改 Kconfig | "Kconfig-driven NFC pairing URL" |
-| 9 | `AGENTS.md`、`backend/AGENTS.md`、`app/AGENTS.md`、`desktop/macos/AGENTS.md` | 1 各 | 指向 `*.fork.md` 的一行 | （不提上游） |
+| ~~9~~ | ~~`AGENTS.md` 系列~~ | — | **已作废**（2026-09-03 实测）：上游把这些文件维护在预算天花板上（`app/AGENTS.md` 11288/11500、`backend/AGENTS.md` 38997/39000），加一行指针即触发 `agents-md-lean` 失败。fork 规则放独立的 `*.fork.md`，上游文件零改动、不加指针 | — |
 
-后端 `backend/**`：**0 条**。上游 CI/测试/锁文件：**0 条**。
+后端 `backend/**`：**0 条**。上游 CI/测试/锁文件：**0 条**。上游 `AGENTS.md`：**0 条**（见上）。
 
 ## 5. 两条测试通道（上游测试永不修改）
 
@@ -116,3 +116,13 @@ shim 分支上那 164 个测试改动的等价断言，全部落到 fork 模式�
 - `scripts/fork/check-upstream-touch.py --base upstream/main --allowlist dev/unified-main/upstream-touch-allowlist.yaml`：对 PR diff 中存在于 `upstream/main` 树的每个文件——不在白名单 → 失败；在白名单但超行数 → 失败；命中 T2 类别 → 失败，并输出对应的 T0 做法提示。进 `checks-manifest.fork.yaml`（`fork-upstream-touch`）。
 - 每次上游同步 PR 自动评论"被 fork 修改的上游文件总数"（`comm -12 <(git log --no-merges --name-only --format= upstream/main..main | sort -u) <(git ls-tree -r --name-only upstream/main | sort)`），目标 = 白名单条目数（≤ 12），趋势只降不升。
 - 上游 PR 队列记录在 `dev/unified-main/upstream-prs.md`：每接受一个，删一条白名单。
+
+
+## 7. 首次实战校正（2026-09-03，S0 同步）
+
+第一次按本策略执行同步时暴露的四条，已回写进上面的规则：
+
+1. **上游把受预算约束的文件维护在天花板上。** `app/AGENTS.md` 11288/11500 字节、`backend/AGENTS.md` 38997/39000、`backend/utils/other` 12/12 个源文件。fork 只要加一行或一个文件就会把上游的守卫压垮，而且是**延迟引爆**：加的时候还有余量，上游长满后才炸。推论：fork 文件绝不能放进受阈值约束的上游包，指针也不能加进 AGENTS.md。本次据此把 `storage_minio.py` 移入新建的 `backend/fork/`。
+2. **`git rerere` 会静默套用旧解法。** 本仓库 `rerere.enabled=true` 且有 152 条缓存，本次 13 个冲突里有 6 个被自动"解决"且**不留冲突标记**——`grep '<<<<<<<'` 查不出来。同步流程必须以 `git status` 的 `UU` 为准，并逐个复核 rerere 的结果是否符合当期策略。
+3. **同步 PR 会稳定触发 5 项与"改动量"挂钩的检查**，与代码质量无关，属于流程样板（见 `06-upstream-sync.md` §7）。
+4. **`desktop-e2e-flow-coverage` 无豁免机制**，上游新增 Swift 文件若自带覆盖缺口，同步 PR 就会红；不得为了变绿而编造 e2e 流程。
