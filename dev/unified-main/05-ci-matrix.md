@@ -128,6 +128,17 @@ runs:
 - **两条测试通道**：上游组件测试（`backend/test.sh`、`app/test.sh`、Swift/Windows 测试、`web-checks`）在"上游模式"运行，不设任何 shim/profile 环境变量、不启用 `pubspec_overrides`/`vite.fork.config`，证明 fork 未改变上游行为；fork 测试目录在 `self_hosted`/`cloudflare` 模式运行。上游测试文件永不修改。
 - `release-eligibility.yml` 沿用：它证明 `main` 上每个提交通过了全部 ci 通道检查；fork 的部署工作流以它为前置（`workflow_run` 或读取其 check-run 状态）。
 
+### 7.1 已知红：`desktop-beta-admission-firestore-contention`（上游缺陷，M1 首次撞上）
+
+**任何往仓库里新增 `package.json` 的 fork PR 都会让 `Desktop Swift Static & Test Contracts` 变红**，原因与该 PR 的内容无关：
+
+1. 上游 `.github/scripts/run_checks.py` 的 `_matches()` 用 `PurePath(path).match(pattern)`，而 `PurePath` 对不含斜杠的模式是**从右往左匹配**。清单里为仓库根写的触发器 `package.json`，因此会被 `auth-server/package.json`（M1 新增）命中。
+2. 被选中之后该检查必然失败：`run.sh` 只在没有 `backend/.venv` 时才走 `uv run --no-project --with google-cloud-firestore --with prometheus-client`，而 `firestore_contention_test.py` 的导入链是 `database.staged_tasks` → `database.action_items` → `utils.observability.fallback` → `utils.metrics` → **`fastapi`**，不在那个依赖集里。开发者本地有 `.venv`，走的是另一条分支，所以这个缺陷至今没被发现。
+
+已在 `origin/main` 的干净工作树上用同一条 `uv run` 命令复现，与 fork 改动无关。加上 `--with "fastapi==0.121.0"` 后脚本跑完全部导入。
+
+**fork 不修它**：`backend/**` 是 T2 禁改区（`upstream-touch-allowlist.yaml` 的 `forbidden_patterns`），`.github/checks-manifest.yaml` 与 `.github/workflows/**` 同样禁改，所以两个缺陷 fork 侧都没有合法修法。两条修复已进 `upstream-prs.md`（#13、#14）。在上游接受之前，带 `package.json` 的 fork PR 以此条为准判定该检查为**已知红**，不得为了变绿去改上游文件，也不得因此放宽 T2。
+
 ## 8. 落地 PR（对应 `07-pr-plan.md` 的 C 系列）
 
 | PR | 内容 | 验收 |
