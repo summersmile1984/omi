@@ -28,6 +28,11 @@ forbidden_patterns:            # 命中即失败，白名单也不能豁免（T2
   - "desktop/macos/CHANGELOG.json"
   - "community-plugin-stats.json"
 
+forbidden_exceptions:        # 精确路径（禁通配符）。豁免的只是"绝不修改"这一条；
+                             # 该文件仍必须在下面 allow: 里有条目和行数预算。
+                             # 只减不增：上游接受修复后立刻删除本条与对应改动。
+  - "backend/testing/desktop_beta_admission/run.sh"
+
 allow:
   - path: desktop/macos/Desktop/Sources/AppBuild.swift
     max_added_lines: 3
@@ -70,6 +75,12 @@ allow:
     reason: isFirebaseAuthConfigured 改读 deployment profile
     upstream_pr: "pluggable auth provider"
     owner: S4
+
+  - path: backend/testing/desktop_beta_admission/run.sh
+    max_added_lines: 1
+    reason: 上游 bug——该检查的 uv 依赖集缺 fastapi，导入链经 database.staged_tasks 必然到达；fork 无其它修法（详见 05-ci-matrix.md §7.1）
+    upstream_pr: "add fastapi to the desktop beta admission contention check dependencies"
+    owner: C-系列
 
   - path: omi/firmware/omi/src/lib/core/nfc.c
     max_added_lines: 1

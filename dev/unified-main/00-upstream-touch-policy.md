@@ -26,6 +26,18 @@
 | **T1 白名单钩子** | 上游文件里单点、≤3 行、只做"读配置/调用 fork 钩子"，附理由与上游 PR 链接；白名单只减不增 | `AppBuild.swift` 的生产族 bundle id 改读 Info.plist；`next.config.js` 的条件别名；`main.dart` 的 `localizationsDelegates` 包装一行；`app-config.sh` 前缀校验；`nfc.c` 配对 URL 改 Kconfig | `upstream-touch-allowlist.yaml` 逐条限行数 |
 | **T2 禁止** | 改上游测试、锁文件/依赖清单、生成文件、机器人写入文件、CI 工作流、`AGENTS.md` 正文、纯格式化、把业务实现内联进上游文件 | shim 分支的 164 个测试改动、`tts_provider.py` +345 | 同上，命中即失败 |
 
+### 2.1 T2 的唯一开口：`forbidden_exceptions`
+
+T2 原本是绝对的。M1 撞到一个它没预见的情形：**上游自身的缺陷，落在 T2 区里，而 fork 侧不存在任何合法修法**——`backend/testing/desktop_beta_admission/run.sh` 的依赖集缺 `fastapi`，修它得改 `backend/**`，绕开它得改 `.github/checks-manifest.yaml` 或 `.github/workflows/**`，三处都是 T2（诊断见 `05-ci-matrix.md` §7.1）。
+
+处理办法不是放松 `backend/**` 那条模式，而是给 T2 开一个**必须两处同时登记**的窄口：
+
+- `upstream-touch-allowlist.yaml` 新增 `forbidden_exceptions:`，**只接受精确路径**；写通配符会被解析器直接拒绝（退出码 2），因为一个模式就能把整类禁令悄悄打开。
+- 例外只豁免"绝不修改"这一条。该文件**仍然必须**在 `allow:` 里有自己的条目和 `max_added_lines` 预算，超预算照样红。
+- 守卫在每次通过时把该路径标成 `[forbidden_exceptions]` 打印出来——一条只靠"检查是绿的"来体现的豁免，等于没人再复审它。
+
+入选门槛（三条同时成立才允许）：**(1)** 被改的是上游自身的缺陷，不是 fork 的需求；**(2)** fork 侧确实无合法修法，且已把不可行的替代方案写清楚；**(3)** 同一个 PR 里已把修复排进 `upstream-prs.md`，上游接受后立刻删除例外与改动。想让 CI 变绿、想省事、fork 自己的功能需求，都不构成理由。
+
 ## 3. T0 技术目录（按平台）
 
 ### 后端（Python）——目标：`backend/**` 上游文件改动 = 0
