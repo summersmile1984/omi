@@ -1,0 +1,16 @@
+# Stage axis: the environment a build points at, independent of deploy target.
+# Combined as "<target>.<stage>" in OMI_APP_PROFILE / OMI_DEPLOYMENT_PROFILE.
+schema_version: 1
+stages:
+  production:
+    allows_production_data: true
+    requires_https: true
+    allows_env_url_override: false   # production-family builds bake their URLs
+  beta:
+    allows_production_data: true
+    requires_https: true
+    allows_env_url_override: false
+  local:
+    allows_production_data: false
+    requires_https: false            # loopback and private ranges only
+    allows_env_url_override: true

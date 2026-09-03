@@ -1,0 +1,57 @@
+# Operator-run deployment: upstream's Python monolith plus the fork's shims,
+# on any server. The reference implementation of the client contract.
+schema_version: 1
+target: self_hosted
+identity_provider: better_auth
+managed: false           # no upstream-managed credentials reach this build
+
+capabilities:
+  allow_direct_model_providers: false
+  allow_byok: false
+  allow_google_connectors: false   # Omi-owned OAuth apps are not the operator's
+  allow_cloud_connectors: false
+  marketplace_enabled: false       # first release ships curated integrations only
+  model_downloads: false
+  account_activation_fence: false
+  embedding_dims: 3072             # Qdrant has no dimension ceiling
+  sync_upload_batch_limit: 5
+  max_request_bytes: 0
+  push_provider: webhook
+  tts_provider: mimo
+  realtime_relay: operator
+  stt_providers: [operator_mimo, operator_moss, sensevoice_local]
+
+data_plane:
+  store: firestore_pg
+  object_store: minio
+  queue: redis
+  vector: qdrant
+  cache: redis
+
+# URLs are templated from the brand manifest's domains; {api}, {auth}, {web},
+# {mcp}, {share}, {objects} are substituted by render.py.
+stages:
+  production:
+    api_base_url: "{api}/"
+    auth_base_url: "{auth}"
+    web_base_url: "{web}"
+    mcp_base_url: "{mcp}"
+    share_base_url: "{share}"
+    objects_base_url: "{objects}"
+    auth_callback_scheme: "{scheme}"
+  beta:
+    api_base_url: "{api}/"
+    auth_base_url: "{auth}"
+    web_base_url: "{web}"
+    mcp_base_url: "{mcp}"
+    share_base_url: "{share}"
+    objects_base_url: "{objects}"
+    auth_callback_scheme: "{scheme}-beta"
+  local:
+    api_base_url: http://127.0.0.1:8100/
+    auth_base_url: http://127.0.0.1:3000
+    web_base_url: http://127.0.0.1:3001
+    mcp_base_url: http://127.0.0.1:8100
+    share_base_url: http://127.0.0.1:8100
+    objects_base_url: http://127.0.0.1:9000
+    auth_callback_scheme: "{scheme}-dev"
