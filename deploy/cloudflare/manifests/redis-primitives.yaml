@@ -136,7 +136,7 @@ families:
     target_owner: auth
     migration_state: staging-owned
   - id: signed-url-cache
-    source_symbols: [cache_signed_url, get_cached_signed_url]
+    source_symbols: [cache_signed_url, get_cached_signed_url, delete_cached_signed_url]
     key_patterns: ["urls:{blob_path}"]
     legacy_features: [get, set, ttl]
     consistency: stale-ok
@@ -641,21 +641,86 @@ families:
     migration_state: retired
   - id: goal-extraction-locks
     source_symbols:
-      [try_acquire_goal_extraction_lock, try_acquire_conversation_goal_lock]
+      [
+        try_acquire_goal_extraction_lock,
+        try_acquire_conversation_goal_lock,
+        release_conversation_goal_lock,
+      ]
     key_patterns:
       [
         "users:{uid}:goal_extraction_lock",
         "users:{uid}:conv_goal_lock:{conversation_id}",
       ]
-    legacy_features: [set-if-absent, ttl]
+    legacy_features: [set-if-absent, ttl, delete]
     consistency: strongly-consistent
     # Extraction is the explicit goals:extract route policy on the shared
     # rate-limit DO plus UNIQUE (uid, goal_id, sequence) on progress events;
     # CF conversation finalization performs no goal extraction, so the
-    # per-conversation lock has no counterpart to hold.
+    # per-conversation lock has no counterpart to hold or release.
     target: durable-object
     target_owner: rate-limit
     migration_state: staging-owned
+  - id: proactive-rate-limit
+    source_symbols:
+      [
+        reserve_proactive_rate_limit,
+        renew_proactive_rate_limit,
+        finalize_proactive_rate_limit,
+        release_proactive_rate_limit,
+      ]
+    key_patterns: ["rl:proactive_lease:{policy}:{key}"]
+    legacy_features: [set-if-absent, get, ttl, lua]
+    consistency: strongly-consistent
+    # Reserve/renew/finalize/release lease semantics for proactive-notification
+    # quota, added to upstream after this branch's fork point (2026-08-24).
+    # No CF Worker sends proactive notifications yet -- there is no owning
+    # route to attach this to -- but the natural home is the same shared
+    # rate-limit DO the sibling goal-extraction-locks family already uses; a
+    # Workers KV get-then-set cannot give the atomicity the reserve/renew/
+    # finalize protocol needs. Blocked on that route existing, not on this
+    # primitive's design.
+    target: durable-object
+    target_owner: rate-limit
+    migration_state: blocked
+  - id: proactive-message-push
+    source_symbols: [publish_proactive_message]
+    key_patterns: ["pubsub:proactive_message:listen"]
+    legacy_features: [publish]
+    consistency: strongly-consistent
+    # Redis PUBLISH to push a proactive-app message onto an already-open
+    # /v4/listen WebSocket (backend/routers/listen/registry.py subscribes per
+    # connection). Workers has no pub/sub primitive; the equivalent is the
+    # realtime Durable Object broadcasting to its own live session, which is
+    # exactly what CF's workers/realtime already does for its other message
+    # types -- but nothing constructs a proactive message to push yet.
+    target: durable-object
+    target_owner: realtime
+    migration_state: blocked
+  - id: screen-frame-adjudication
+    source_symbols:
+      [
+        try_consume_screen_frame_jti,
+        reserve_screen_frame_adjudication_attempt,
+        get_screen_frame_adjudication_response,
+        store_screen_frame_adjudication_response,
+      ]
+    key_patterns:
+      [
+        "screen_frame:jti:{jti}",
+        "screen_frame:adjudication:{uid}:{purpose}:{attempt_id}",
+      ]
+    legacy_features: [set-if-absent, get, set, ttl]
+    consistency: strongly-consistent
+    # One-use jti replay defense plus idempotent attempt/response caching for
+    # screen-frame consent approval, added to upstream after this branch's
+    # fork point. Zero CF references anywhere (grep confirmed) -- this is a
+    # genuinely unbuilt surface, not a rename or relocation. SETNX-with-TTL
+    # replay defense needs the same strict atomicity Workers KV cannot give
+    # across its eventually-consistent network; a Durable Object is the
+    # architecturally consistent choice once this is built.
+    target: durable-object
+    target_owner: api-core
+    migration_state: blocked
 direct_legacy_callers:
   # Process-local cache + pubsub invalidation for a multi-instance FastAPI
   # fleet; Workers read D1 per request, so the tier is obsolete.
@@ -806,4 +871,15 @@ direct_legacy_callers:
       target: d1,
       target_owner: jobs,
       migration_state: staging-owned,
+    }
+  # share_email_quota:{uid}:{yyyymmdd} daily outbound-share-email counter
+  # (backend/utils/conversations/share_email.py), added to upstream after this
+  # branch's fork point. The route it guards has no CF owner yet. It fails
+  # open on a Redis outage already (see the call site's record_fallback),
+  # which is the KV-shaped tolerance profile, not a DO-shaped one.
+  - {
+      path: backend/utils/conversations/share_email.py,
+      target: kv,
+      target_owner: api-core,
+      migration_state: blocked,
     }

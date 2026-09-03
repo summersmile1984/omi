@@ -299,7 +299,43 @@ describe("Cloudflare migration manifests", () => {
       resolve(repoRoot, "backend/utils/rate_limit_config.py"),
       "utf8",
     );
+    // Edge-only defense-in-depth policies with no rate_limit_config.py
+    // counterpart by design -- the backend enforces these routes some other
+    // way (e.g. a per-summary generic-cache cooldown, not the shared policy
+    // table), so there is nothing in the backend source for this loop to
+    // match against. Do not "fix" a failure here by adding a matching
+    // literal to backend/utils/rate_limit_config.py: that file is upstream's,
+    // editing it to satisfy a fork-only Edge policy is exactly the kind of
+    // CF-invented contract dev/unified-main/03-deploy-targets.md says to
+    // withdraw, not encode into an upstream file.
+    // Every name below is a real upstream route (confirmed against
+    // manifests/routes.yaml / backend-routes.json); none is CF-invented.
+    // They lack a backend/utils/rate_limit_config.py mirror because upstream
+    // protects each one some other way (a bespoke cooldown, quota gate, or
+    // nothing at all for an anonymous surface) rather than through the
+    // shared policy table these numbers were checked against.
+    const edgeOnlyPolicies = new Set([
+      "apps:generate_app", // /v1/app/generate
+      "apps:generate_description", // /v1/app/generate-description
+      "apps:generate_description_emoji", // /v1/app/generate-description-emoji
+      "apps:generate_icon", // /v1/app/generate-icon
+      "conversations:finalize", // /v1/conversations/:conversationId/finalize
+      "daily_summary:regenerate", // /v1/users/daily-summaries/:id/regenerate;
+      // upstream's real guard is a 30s per-summary cooldown in the generic
+      // cache (backend/routers/users.py regenerate_daily_summary), not this
+      // table -- 2/60s here is Edge's own looser burst guard ahead of it.
+      "gemini:proxy", // /v1/proxy/gemini(-stream)/*; upstream's admission
+      // limit lives in the API-AI D1 ledger, this DO policy is only the
+      // short-lived edge burst window in front of it.
+      "phone:numbers_verify", // /v1/phone/numbers/verify
+      "phone:numbers_verify_check", // /v1/phone/numbers/verify/check
+      "phone:token", // /v1/phone/token
+      "public_shared_chat:global", // anonymous public-chat surface, applied
+      "public_shared_chat:per_ip", // programmatically (no routes.yaml entry)
+      // since it is IP-keyed rather than per-user like the rest of the table.
+    ]);
     for (const [name, policy] of Object.entries(EDGE_RATE_LIMIT_POLICIES)) {
+      if (edgeOnlyPolicies.has(name)) continue;
       const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const match = backendPolicies.match(
         new RegExp(`["]${escapedName}["]\\s*:\\s*\\((\\d+),\\s*(\\d+)\\)`),

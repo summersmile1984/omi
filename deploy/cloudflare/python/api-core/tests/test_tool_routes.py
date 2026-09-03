@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import base64
 import hashlib
 import hmac
@@ -300,13 +301,19 @@ def test_tool_action_mutations_share_vector_lifecycle_and_validation_envelope():
     invalid = run(create_action_item(FakeRequest(env, body={})))
     assert invalid.status_code == 422
 
+    # The route rejects a due_at more than a day in the past (relative to
+    # wall-clock `now`), so this fixture must float with the test run rather
+    # than naming a fixed date -- a hardcoded absolute date here rots the
+    # moment real time passes it, the same failure class as
+    # FC-hardcoded-absolute-date-bound.
+    due_at = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     created = run(
         create_action_item(
             FakeRequest(
                 env,
                 body={
                     "description": "Ship the Worker search routes",
-                    "due_at": "2026-09-01T12:00:00Z",
+                    "due_at": due_at,
                 },
             )
         )

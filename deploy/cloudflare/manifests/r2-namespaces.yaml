@@ -108,3 +108,20 @@ namespaces:
     data_classification: public-release-artifact
     lifecycle: permanent
     migration_state: copying
+  - id: screen-frames
+    # Added to upstream after this branch's fork point
+    # (backend/utils/screen_frames/{writer,approval}.py). The writer module's
+    # own header says the required IAM split -- a service account scoped to
+    # this bucket only -- "is infrastructure that must exist before this code
+    # is trusted with real traffic, not something a PR can create," so this
+    # is genuinely blocked rather than merely unscheduled. Retention is
+    # caller-supplied per approval (writer.py's `retention` parameter), not a
+    # fixed value, hence prefix-specific rather than a single lifecycle.
+    legacy_env: BUCKET_SCREEN_FRAMES
+    target_binding: SCREEN_FRAMES
+    target_bucket_pattern: omi-cf-screen-frames-{environment}
+    object_patterns:
+      ["{uid}/{conversation_id}/{frame_id}.jpg", "{uid}/{conversation_id}/{frame_id}_thumb.jpg"]
+    data_classification: customer-content
+    lifecycle: prefix-specific
+    migration_state: blocked
