@@ -1,0 +1,106 @@
+version: 1
+resources:
+  - kind: d1
+    name: omi-cf-auth-staging
+    owner: auth
+    environment: staging
+  - kind: d1
+    name: omi-cf-app-staging
+    owner: api-core
+    environment: staging
+  - kind: r2
+    name: omi-cf-staging
+    owner: api-core
+    environment: staging
+  - kind: r2
+    name: omi-cf-chat-files-staging
+    owner: jobs
+    environment: staging
+  - kind: r2
+    name: omi-cf-conversation-recordings-staging
+    owner: jobs
+    environment: staging
+  - kind: r2
+    name: omi-cf-speech-profiles-staging
+    owner: api-core
+    environment: staging
+  - kind: r2
+    name: omi-cf-desktop-updates-staging
+    owner: jobs
+    environment: staging
+  - kind: worker
+    name: omi-cf-edge-staging
+    owner: edge
+    environment: staging
+  - kind: worker
+    name: omi-cf-rate-limit-staging
+    owner: rate-limit
+    environment: staging
+  - kind: durable-object
+    name: omi-cf-rate-limit-windows-staging
+    owner: rate-limit
+    environment: staging
+  - kind: worker
+    name: omi-cf-auth-staging
+    owner: auth
+    environment: staging
+  - kind: worker
+    name: omi-cf-api-core-staging
+    owner: api-core
+    environment: staging
+  - kind: worker
+    name: omi-cf-api-ai-staging
+    owner: api-ai
+    environment: staging
+  - kind: worker
+    name: omi-cf-realtime-staging
+    owner: realtime
+    environment: staging
+  - kind: queue
+    name: omi-cf-jobs-staging
+    owner: jobs
+    environment: staging
+  - kind: queue
+    name: omi-cf-jobs-dlq-staging
+    owner: jobs
+    environment: staging
+  - kind: queue
+    name: omi-cf-sync-fresh-staging
+    owner: jobs
+    environment: staging
+  - kind: queue
+    name: omi-cf-sync-backfill-staging
+    owner: jobs
+    environment: staging
+  - kind: worker
+    name: omi-cf-jobs-staging
+    owner: jobs
+    environment: staging
+  - kind: vectorize
+    name: omi-cf-conversations-v2
+    owner: jobs
+    environment: staging
+  - kind: vectorize
+    name: omi-cf-memories-v2
+    owner: jobs
+    environment: staging
+  - kind: vectorize
+    name: omi-cf-action-items-v2
+    owner: jobs
+    environment: staging
+  - kind: vectorize
+    name: omi-cf-transcript-chunks-v2
+    owner: jobs
+    environment: staging
+  - kind: vectorize
+    name: omi-cf-workstreams-v1
+    owner: jobs
+    environment: staging
+  - kind: vectorize
+    name: omi-cf-screen-activity-v1
+    owner: jobs
+    environment: staging
+  - kind: vectorize
+    name: omi-cf-x-posts-v2
+    owner: jobs
+    environment: staging

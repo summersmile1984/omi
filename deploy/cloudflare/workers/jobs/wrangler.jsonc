@@ -1,0 +1,187 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "omi-cf-jobs-staging",
+  "main": "index.ts",
+  "compatibility_date": "2026-08-27",
+  "compatibility_flags": ["nodejs_compat"],
+  "alias": {
+    "opus-decoder": "./opus-decoder-core.ts",
+    "@wasm-audio-decoders/common": "./wasm-audio-common.ts",
+  },
+  "workers_dev": false,
+  "preview_urls": false,
+  "limits": { "cpu_ms": 300000 },
+  "vars": {
+    "PUBLIC_API_BASE_URL": "https://omi-cf-edge-staging.summersmile1984.workers.dev",
+    "ACCOUNT_CUTOVER_MANIFEST_ID": "isolated-staging-v1",
+    "WORKERS_AI_VECTOR_MODEL": "@cf/baai/bge-m3",
+    "WORKERS_AI_X_MEMORY_MODEL": "@cf/meta/llama-3.2-3b-instruct",
+    "WORKERS_AI_WRAPPED_MODEL": "@cf/meta/llama-3.2-3b-instruct",
+    "MCP_APP_OAUTH_STAGING_ENABLED": "false",
+    "MCP_APP_LEGACY_EXACT_STAGING_ENABLED": "true",
+    "LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED": "true",
+    "TWITTER_OWNERSHIP_STAGING_ENABLED": "false",
+    "TWITTER_OWNERSHIP_EXACT_STAGING_ENABLED": "false",
+    "APP_OWNER_MIGRATION_STAGING_ENABLED": "false",
+    "APP_OWNER_MIGRATION_EXACT_STAGING_ENABLED": "false",
+    "FIREBASE_IDENTITY_PROJECTION_STAGING_ENABLED": "false",
+    "APP_OWNER_MIGRATION_EXECUTOR_STAGING_ENABLED": "false",
+    "APP_OWNER_MIGRATION_DATA_ATTESTATION_STAGING_ENABLED": "false",
+    "PHONE_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "CHAT_ATTACHMENT_ENVELOPE_STAGING_ENABLED": "false",
+    "CHAT_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "CHAT_FILE_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "MEMORY_ARCHIVE_IMPORT_STAGING_ENABLED": "false",
+    "WRAPPED_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "DESKTOP_RELEASE_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "WINDOWS_RELEASE_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "PERSONA_APP_HISTORY_IMPORT_STAGING_ENABLED": "false",
+    "HUME_TASK_PROJECTION_STAGING_ENABLED": "false",
+    "DLQ_REPLAY_STAGING_ENABLED": "false",
+    "LEGACY_CHAT_FILES_STAGING_ENABLED": "false",
+    "CHAT_WORKERS_AI_ATTACHMENTS_ENABLED": "true",
+    "CHAT_FILES_WORKERS_AI_ENABLED": "true",
+    "WORKERS_AI_CHAT_MODEL": "@cf/meta/llama-3.2-3b-instruct",
+    "FREE_CHAT_QUESTIONS_PER_MONTH": "30",
+  },
+  // Secrets provisioned with `wrangler secret put`: ADMIN_KEY, APPS_ADMIN_KEY,
+  // FIREBASE_SERVICE_ACCOUNT_JSON, INTERNAL_ASSERTION_SECRET, Stripe secrets,
+  // X_OAUTH_CLIENT_ID, X_OAUTH_CLIENT_SECRET, X_OAUTH_REDIRECT_URI,
+  // X_TOKEN_ENCRYPTION_SECRET, TASK_INTEGRATION_TOKEN_ENCRYPTION_SECRET,
+  // GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET (optional shared Better Auth client),
+  // GOOGLE_CALENDAR_CLIENT_ID, GOOGLE_CALENDAR_CLIENT_SECRET,
+  // GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET,
+  // TODOIST_CLIENT_ID/TODOIST_CLIENT_SECRET, ASANA_CLIENT_ID/ASANA_CLIENT_SECRET,
+  // GOOGLE_TASKS_CLIENT_ID/GOOGLE_TASKS_CLIENT_SECRET,
+  // CLICKUP_CLIENT_ID/CLICKUP_CLIENT_SECRET, HUME_WEBHOOK_SIGNING_KEY,
+  // CHAT_FILE_THUMBNAIL_SECRET is optional and only needed for private image
+  // thumbnails. OpenAI secrets are not required by the canonical chat-file or
+  // Workers AI attachment paths; RAPID_API_HOST/RAPID_API_KEY remains an
+  // optional explicitly enabled integration.
+  // WRAPPED_HISTORY_IMPORT_STAGING_ENABLED remains false by default; the
+  // reviewed Wrapped history apply route uses ADMIN_KEY and never reads a
+  // Firestore export or invokes a provider.
+  // DESKTOP_RELEASE_HISTORY_IMPORT_STAGING_ENABLED remains false by default;
+  // the reviewed apply route only calls API Core's immutable manifest contract
+  // after an operator-approved plan.
+  // WINDOWS_RELEASE_HISTORY_IMPORT_STAGING_ENABLED remains false by default;
+  // its reviewed plan only mirrors Windows artifacts into DESKTOP_UPDATES and
+  // never mutates a public channel pointer or release authority.
+  // PERSONA_APP_HISTORY_IMPORT_STAGING_ENABLED remains false by default;
+  // PERSONA_APP_HISTORY_IMPORT_SIGNING_SECRET must be at least 32 bytes when
+  // the reviewed public Persona/App catalog apply route is enabled.
+  // CHAT_HISTORY_IMPORT_SIGNING_SECRET is required together with the explicit
+  // chat-history apply staging gate; it must be at least 32 bytes.
+  // CHAT_FILE_HISTORY_IMPORT_SIGNING_SECRET and
+  // CHAT_FILE_HISTORY_PROVIDER_ATTESTATION_SECRET are required together with
+  // the explicit chat-file history review/apply gate; both must be at least
+  // 32 bytes. Provider attestations bind the historical OpenAI file id to the
+  // uid, R2 key, checksum, size and account generation.
+  // MEMORY_ARCHIVE_IMPORT_SIGNING_SECRET is required together with the
+  // explicit memory Archive review/apply gate; it must be at least 32 bytes.
+  // DLQ_REPLAY_SIGNING_SECRET is required together with the explicit DLQ
+  // replay staging gate; it must be at least 32 bytes. The DLQ consumer stores
+  // only bounded, hash-bound JobMessage envelopes in D1.
+  // MCP_APP_TOKEN_ENCRYPTION_SECRET is required when either the namespaced
+  // or exact legacy external-MCP OAuth staging gate is explicitly enabled.
+  // LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED additionally requires
+  // Firebase API/identity verification through the Auth service binding.
+  "services": [
+    { "binding": "AUTH", "service": "omi-cf-auth-staging" },
+    { "binding": "API_CORE", "service": "omi-cf-api-core-staging" },
+  ],
+  "d1_databases": [
+    {
+      "binding": "APP_DB",
+      "database_name": "omi-cf-app-staging",
+      "migrations_dir": "../../migrations/app",
+    },
+  ],
+  "r2_buckets": [
+    { "binding": "ASSETS", "bucket_name": "omi-cf-staging" },
+    {
+      "binding": "CHAT_FILES",
+      "bucket_name": "omi-cf-chat-files-staging",
+    },
+    {
+      "binding": "CONVERSATION_RECORDINGS",
+      "bucket_name": "omi-cf-conversation-recordings-staging",
+    },
+    {
+      "binding": "SPEECH_PROFILES",
+      "bucket_name": "omi-cf-speech-profiles-staging",
+    },
+    {
+      "binding": "DESKTOP_UPDATES",
+      "bucket_name": "omi-cf-desktop-updates-staging",
+    },
+  ],
+  "ai": { "binding": "AI" },
+  // Cloudflare Images transforms private R2 bytes into the 128px JPEG
+  // thumbnail required by the legacy FileChat response.  The upload handler
+  // remains fail-closed when the account or thumbnail HMAC secret is absent.
+  "images": { "binding": "IMAGES" },
+  "vectorize": [
+    { "binding": "MEMORY_VECTORS", "index_name": "omi-cf-memories-v2" },
+    {
+      "binding": "ACTION_ITEM_VECTORS",
+      "index_name": "omi-cf-action-items-v2",
+    },
+    {
+      "binding": "CONVERSATION_VECTORS",
+      "index_name": "omi-cf-conversations-v2",
+    },
+    {
+      "binding": "TRANSCRIPT_CHUNK_VECTORS",
+      "index_name": "omi-cf-transcript-chunks-v2",
+    },
+    { "binding": "X_POST_VECTORS", "index_name": "omi-cf-x-posts-v2" },
+    { "binding": "WORKSTREAM_VECTORS", "index_name": "omi-cf-workstreams-v1" },
+    {
+      "binding": "SCREEN_ACTIVITY_VECTORS",
+      "index_name": "omi-cf-screen-activity-v1",
+    },
+  ],
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "queues": {
+    "producers": [
+      { "binding": "JOBS", "queue": "omi-cf-jobs-staging" },
+      { "binding": "SYNC_FRESH", "queue": "omi-cf-sync-fresh-staging" },
+      { "binding": "SYNC_BACKFILL", "queue": "omi-cf-sync-backfill-staging" },
+    ],
+    "consumers": [
+      {
+        "queue": "omi-cf-jobs-staging",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "retry_delay": 10,
+        "dead_letter_queue": "omi-cf-jobs-dlq-staging",
+      },
+      {
+        "queue": "omi-cf-sync-fresh-staging",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3,
+        "retry_delay": 10,
+        "dead_letter_queue": "omi-cf-jobs-dlq-staging",
+      },
+      {
+        "queue": "omi-cf-sync-backfill-staging",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3,
+        "retry_delay": 30,
+        "max_concurrency": 4,
+        "dead_letter_queue": "omi-cf-jobs-dlq-staging",
+      },
+      {
+        "queue": "omi-cf-jobs-dlq-staging",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "retry_delay": 10,
+      },
+    ],
+  },
+}

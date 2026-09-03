@@ -1,0 +1,46 @@
+# Copy to .dev.vars locally. Never commit real values.
+BETTER_AUTH_SECRET=replace-with-at-least-32-random-bytes
+BETTER_AUTH_URL=http://localhost:3000
+ALLOWED_ORIGINS=http://localhost:3000
+INTERNAL_ASSERTION_SECRET=replace-with-a-different-random-secret
+# Optional Better Auth social providers. A provider is hidden unless both
+# client ID and secret are configured.
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+# Dedicated Google Calendar OAuth app for the Jobs Worker. Its callback is
+# /v2/integrations/google-calendar/callback on the public Edge origin.
+GOOGLE_CALENDAR_CLIENT_ID=
+GOOGLE_CALENDAR_CLIENT_SECRET=
+GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET=
+APPLE_CLIENT_ID=
+APPLE_CLIENT_SECRET=
+APPLE_APP_BUNDLE_IDENTIFIER=
+# Required together only when testing imported Firebase password envelopes.
+AUTH_FIREBASE_SCRYPT_SIGNER_KEY=
+AUTH_FIREBASE_SCRYPT_SALT_SEPARATOR=
+AUTH_FIREBASE_SCRYPT_ROUNDS=
+AUTH_FIREBASE_SCRYPT_MEM_COST=
+# Debug-only Flutter bridge; leave empty for normal local auth.
+AUTH_DEV_ISSUER_SECRET=
+# Native transcription/chat/realtime use the Workers AI binding and do not need
+# an external ASR or AI provider key. Leave these compatibility-only values
+# empty unless a separately approved non-native integration is being tested.
+ASR_WS_URL=
+ASR_API_KEY=
+ASR_API_BASE_URL=
+AI_API_BASE_URL=
+AI_API_KEY=
+GITHUB_TOKEN=
+FIREBASE_API_KEY=
+GOOGLE_CALENDAR_API_KEY=
+DESKTOP_LEGACY_ANTHROPIC_KEY=
+# Staging-only announcement publishing key; never use a release/client secret here.
+ANNOUNCEMENTS_ADMIN_KEY=
+# Staging-only desktop preview publish/delist key.
+DESKTOP_PREVIEW_PUBLISH_KEY=
+# Team-only notification API key; configure on the Jobs Worker only.
+ADMIN_KEY=
+# DLQ replay stays disabled unless a disposable staging positive-probe window
+# is explicitly approved. The signing secret is required when that gate is on.
+DLQ_REPLAY_STAGING_ENABLED=false
+DLQ_REPLAY_SIGNING_SECRET=

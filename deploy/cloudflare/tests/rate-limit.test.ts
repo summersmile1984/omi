@@ -1,0 +1,576 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  EDGE_RATE_LIMIT_POLICIES,
+  edgeRateLimitPolicyForRequest,
+  enforceEdgeRateLimit,
+} from "../workers/edge/rate-limit";
+import { SharedRateLimitDurableObject } from "../workers/rate-limit/index";
+
+class FakeDurableObjectStorage {
+  private values = new Map<string, unknown>();
+  private transactionTail: Promise<void> = Promise.resolve();
+  alarmAt?: number;
+
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.values.get(key) as T | undefined;
+  }
+
+  async put(key: string, value: unknown): Promise<void> {
+    this.values.set(key, structuredClone(value));
+  }
+
+  async delete(key: string): Promise<boolean> {
+    return this.values.delete(key);
+  }
+
+  async list<T>(options?: { prefix?: string }): Promise<Map<string, T>> {
+    const prefix = options?.prefix || "";
+    return new Map(
+      [...this.values.entries()]
+        .filter(([key]) => key.startsWith(prefix))
+        .map(([key, value]) => [key, structuredClone(value) as T]),
+    );
+  }
+
+  async setAlarm(timestamp: number): Promise<void> {
+    this.alarmAt = timestamp;
+  }
+
+  async deleteAlarm(): Promise<void> {
+    this.alarmAt = undefined;
+  }
+
+  async transaction<T>(
+    callback: (transaction: DurableObjectTransaction) => Promise<T>,
+  ): Promise<T> {
+    const previous = this.transactionTail;
+    let release: () => void = () => undefined;
+    this.transactionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await callback(this as unknown as DurableObjectTransaction);
+    } finally {
+      release();
+    }
+  }
+}
+
+function createLimiter() {
+  const storage = new FakeDurableObjectStorage();
+  const limiter = new SharedRateLimitDurableObject(
+    {
+      storage,
+    } as unknown as DurableObjectState,
+    {} as never,
+  );
+  return { limiter, storage };
+}
+
+function checkRequest(maxRequests: number, windowSeconds: number) {
+  return new Request("https://rate-limit.internal/check", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      policy: "tts:synthesize",
+      max_requests: maxRequests,
+      window_seconds: windowSeconds,
+    }),
+  });
+}
+
+function ttsCheckRequest(
+  charCount: number,
+  profile: "desktop" | "mobile" = "desktop",
+) {
+  return new Request("https://rate-limit.internal/tts/check", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ char_count: charCount, profile }),
+  });
+}
+
+function reserveRequest(maxRequests: number, windowSeconds: number) {
+  return new Request("https://rate-limit.internal/reserve", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      policy: "desktop_reasoning",
+      max_requests: maxRequests,
+      window_seconds: windowSeconds,
+    }),
+  });
+}
+
+function releaseRequest(reservationId: unknown) {
+  return new Request("https://rate-limit.internal/release", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ reservation_id: reservationId }),
+  });
+}
+
+describe("SharedRateLimitDurableObject", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("serializes concurrent checks so the limit cannot be oversubscribed", async () => {
+    const { limiter } = createLimiter();
+    const responses = await Promise.all(
+      Array.from({ length: 301 }, () => limiter.fetch(checkRequest(300, 3600))),
+    );
+    const results = await Promise.all(
+      responses.map(
+        (response) =>
+          response.json() as Promise<{ allowed: boolean; remaining: number }>,
+      ),
+    );
+
+    expect(results.filter((result) => result.allowed)).toHaveLength(300);
+    expect(results.filter((result) => !result.allowed)).toEqual([
+      expect.objectContaining({ remaining: 0 }),
+    ]);
+  });
+
+  it("resets an expired window and removes expired state on alarm", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-28T00:00:00Z"));
+    const { limiter, storage } = createLimiter();
+
+    expect(
+      await (await limiter.fetch(checkRequest(2, 60))).json(),
+    ).toMatchObject({
+      allowed: true,
+      remaining: 1,
+    });
+    expect(
+      await (await limiter.fetch(checkRequest(2, 60))).json(),
+    ).toMatchObject({
+      allowed: true,
+      remaining: 0,
+    });
+    expect(
+      await (await limiter.fetch(checkRequest(2, 60))).json(),
+    ).toMatchObject({
+      allowed: false,
+      retryAfter: 60,
+    });
+
+    vi.advanceTimersByTime(60_001);
+    await limiter.alarm();
+    expect(await storage.get("window")).toBeUndefined();
+    expect(
+      await (await limiter.fetch(checkRequest(2, 60))).json(),
+    ).toMatchObject({
+      allowed: true,
+      remaining: 1,
+    });
+  });
+
+  it("rejects malformed or unbounded policies", async () => {
+    const { limiter } = createLimiter();
+    const malformed = await limiter.fetch(
+      new Request("https://rate-limit.internal/check", {
+        method: "POST",
+        body: "not-json",
+      }),
+    );
+    const unbounded = await limiter.fetch(checkRequest(1_000_001, 60));
+
+    expect(malformed.status).toBe(400);
+    expect(unbounded.status).toBe(400);
+  });
+
+  it("atomically reserves concurrent slots and returns a release token", async () => {
+    const { limiter, storage } = createLimiter();
+    const responses = await Promise.all(
+      Array.from({ length: 101 }, () => limiter.fetch(reserveRequest(100, 60))),
+    );
+    const results = await Promise.all(
+      responses.map(
+        (response) =>
+          response.json() as Promise<{
+            reserved: boolean;
+            reservationId: string | null;
+            remaining: number;
+          }>,
+      ),
+    );
+
+    const admitted = results.filter((result) => result.reserved);
+    expect(admitted).toHaveLength(100);
+    expect(new Set(admitted.map((result) => result.reservationId))).toHaveLength(100);
+    expect(results.filter((result) => !result.reserved)).toEqual([
+      expect.objectContaining({ remaining: 0, reservationId: null }),
+    ]);
+    expect((await storage.get("window")) as { count: number }).toMatchObject({
+      count: 100,
+    });
+  });
+
+  it("releases only its own reservation, is idempotent, and admits a replacement", async () => {
+    const { limiter } = createLimiter();
+    const first = (await (await limiter.fetch(reserveRequest(2, 60))).json()) as {
+      reservationId: string;
+    };
+    const second = (await (await limiter.fetch(reserveRequest(2, 60))).json()) as {
+      reservationId: string;
+    };
+    expect(
+      (await (await limiter.fetch(reserveRequest(2, 60))).json()) as {
+        reserved: boolean;
+      },
+    ).toMatchObject({ reserved: false });
+
+    expect(
+      await (await limiter.fetch(releaseRequest(first.reservationId))).json(),
+    ).toEqual(expect.objectContaining({ released: true, remaining: 1 }));
+    expect(
+      await (await limiter.fetch(releaseRequest(first.reservationId))).json(),
+    ).toEqual(expect.objectContaining({ released: false, remaining: 1 }));
+
+    const replacement = (await (await limiter.fetch(reserveRequest(2, 60))).json()) as {
+      reserved: boolean;
+      reservationId: string;
+      remaining: number;
+    };
+    expect(replacement).toMatchObject({ reserved: true, remaining: 0 });
+    expect(replacement.reservationId).not.toBe(first.reservationId);
+    expect(
+      await (await limiter.fetch(releaseRequest(second.reservationId))).json(),
+    ).toEqual(expect.objectContaining({ released: true, remaining: 1 }));
+  });
+
+  it("does not release a stale token into a new window and cleans expired markers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-28T00:00:00Z"));
+    const { limiter, storage } = createLimiter();
+    const first = (await (await limiter.fetch(reserveRequest(1, 60))).json()) as {
+      reservationId: string;
+    };
+
+    vi.advanceTimersByTime(60_001);
+    await limiter.alarm();
+    expect(await storage.get(`reservation:${first.reservationId}`)).toBeUndefined();
+    expect(await storage.get("window")).toBeUndefined();
+
+    const next = (await (await limiter.fetch(reserveRequest(1, 60))).json()) as {
+      reserved: boolean;
+      reservationId: string;
+    };
+    expect(next.reserved).toBe(true);
+    expect(
+      await (await limiter.fetch(releaseRequest(first.reservationId))).json(),
+    ).toEqual(expect.objectContaining({ released: false, remaining: 1 }));
+    expect(
+      await (await limiter.fetch(releaseRequest(next.reservationId))).json(),
+    ).toEqual(expect.objectContaining({ released: true, remaining: 0 }));
+  });
+
+  it("rejects malformed release requests and fails closed on storage errors", async () => {
+    const { limiter } = createLimiter();
+    expect((await limiter.fetch(releaseRequest("bad token"))).status).toBe(400);
+    expect((await limiter.fetch(releaseRequest(""))).status).toBe(400);
+
+    const failingStorage = {
+      transaction: async () => {
+        throw new Error("storage unavailable");
+      },
+    };
+    const failingLimiter = new SharedRateLimitDurableObject(
+      { storage: failingStorage } as unknown as DurableObjectState,
+      {} as never,
+    );
+    expect((await failingLimiter.fetch(reserveRequest(1, 60))).status).toBe(503);
+    expect(
+      (await failingLimiter.fetch(releaseRequest("reservation-1"))).status,
+    ).toBe(503);
+  });
+
+  it("serializes the TTS rolling burst window without oversubscription", async () => {
+    const { limiter } = createLimiter();
+    const responses = await Promise.all(
+      Array.from({ length: 21 }, () => limiter.fetch(ttsCheckRequest(1))),
+    );
+    const results = await Promise.all(
+      responses.map(
+        (response) =>
+          response.json() as Promise<{
+            status: number;
+            burstRemaining: number;
+          }>,
+      ),
+    );
+
+    expect(results.filter((result) => result.status === 0)).toHaveLength(20);
+    expect(results.filter((result) => result.status === 1)).toEqual([
+      expect.objectContaining({ burstRemaining: 0 }),
+    ]);
+  });
+
+  it("enforces the atomic daily TTS character budget and resets at UTC midnight", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-28T23:59:58Z"));
+    const { limiter } = createLimiter();
+    const responses = await Promise.all(
+      Array.from({ length: 13 }, () => limiter.fetch(ttsCheckRequest(4_096))),
+    );
+    const results = await Promise.all(
+      responses.map(
+        (response) => response.json() as Promise<{ status: number }>,
+      ),
+    );
+
+    expect(results.filter((result) => result.status === 0)).toHaveLength(12);
+    expect(results.filter((result) => result.status === 2)).toHaveLength(1);
+    vi.advanceTimersByTime(2_001);
+    expect(
+      await (await limiter.fetch(ttsCheckRequest(4_096))).json(),
+    ).toMatchObject({ status: 0, dailyCharsRemaining: 45_904 });
+  });
+
+  it("expires the TTS rolling burst while preserving the current UTC-day counter", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-28T12:00:00Z"));
+    const { limiter, storage } = createLimiter();
+    for (let index = 0; index < 20; index += 1) {
+      expect(
+        await (await limiter.fetch(ttsCheckRequest(10))).json(),
+      ).toMatchObject({ status: 0 });
+    }
+    expect(
+      await (await limiter.fetch(ttsCheckRequest(10))).json(),
+    ).toMatchObject({ status: 1 });
+
+    vi.advanceTimersByTime(60_001);
+    await limiter.alarm();
+    expect(await storage.get("tts-burst")).toBeUndefined();
+    expect(await storage.get("tts-daily")).toMatchObject({ chars: 200 });
+    expect(
+      await (await limiter.fetch(ttsCheckRequest(10))).json(),
+    ).toMatchObject({ status: 0, dailyCharsRemaining: 49_790 });
+  });
+
+  it("rejects invalid TTS character counts", async () => {
+    const { limiter } = createLimiter();
+    expect((await limiter.fetch(ttsCheckRequest(0))).status).toBe(400);
+    expect((await limiter.fetch(ttsCheckRequest(4_097))).status).toBe(400);
+    expect((await limiter.fetch(ttsCheckRequest(5_000, "mobile"))).status).toBe(
+      200,
+    );
+    expect((await limiter.fetch(ttsCheckRequest(5_001, "mobile"))).status).toBe(
+      400,
+    );
+  });
+
+  it("preserves the mobile 50-per-minute and 10,000-character policies", async () => {
+    const burst = createLimiter().limiter;
+    const burstResults = await Promise.all(
+      Array.from({ length: 51 }, async () =>
+        (await burst.fetch(ttsCheckRequest(1, "mobile"))).json(),
+      ),
+    );
+    expect(
+      burstResults.filter(
+        (result) => (result as { status: number }).status === 0,
+      ),
+    ).toHaveLength(50);
+    expect(
+      burstResults.filter(
+        (result) => (result as { status: number }).status === 1,
+      ),
+    ).toHaveLength(1);
+
+    const daily = createLimiter().limiter;
+    expect(
+      await (await daily.fetch(ttsCheckRequest(5_000, "mobile"))).json(),
+    ).toMatchObject({ status: 0, dailyCharsRemaining: 5_000 });
+    expect(
+      await (await daily.fetch(ttsCheckRequest(5_000, "mobile"))).json(),
+    ).toMatchObject({ status: 0, dailyCharsRemaining: 0 });
+    expect(
+      await (await daily.fetch(ttsCheckRequest(1, "mobile"))).json(),
+    ).toMatchObject({ status: 2, dailyCharsRemaining: 0 });
+  });
+
+  it("maps every Cloudflare-owned request shape to the legacy policy", () => {
+    const cases = [
+      ["POST", "/v2/messages", "chat:send_message"],
+      ["POST", "/v2/cf/chat/completions", "chat:send_message"],
+      ["POST", "/v1/initial-message", "chat:initial"],
+      ["POST", "/v2/initial-message", "chat:initial"],
+      ["POST", "/v2/chat/initial-message", "chat:initial"],
+      ["POST", "/v2/chat/generate-title", "chat:initial"],
+      ["GET", "/v1/app/generate-prompts", "apps:generate_prompts"],
+      ["POST", "/v1/app/generate", "apps:generate_app"],
+      ["POST", "/v1/app/generate-description", "apps:generate_description"],
+      [
+        "POST",
+        "/v1/app/generate-description-emoji",
+        "apps:generate_description_emoji",
+      ],
+      ["POST", "/v1/stt/transcribe", "stt:transcribe"],
+      ["POST", "/v1/stt/transcribe-async", "stt:transcribe"],
+      ["POST", "/v1/stt/transcribe-workers-ai", "stt:transcribe"],
+      ["POST", "/v2/voice-message/transcribe", "stt:transcribe"],
+      ["POST", "/v1/tools/conversations/search", "tools:search"],
+      ["POST", "/v1/tools/conversations/search-chunks", "tools:search"],
+      ["POST", "/v1/tools/memories/search", "tools:search"],
+      ["POST", "/v1/tools/action-items", "tools:mutate"],
+      ["PATCH", "/v1/tools/action-items/action-1", "tools:mutate"],
+      ["POST", "/v1/conversations/search", "conversations:search"],
+      [
+        "POST",
+        "/v1/conversations/from-segments",
+        "conversations:from-segments",
+      ],
+      ["POST", "/v1/memories/extract", "memories:extract"],
+      ["POST", "/v1/connectors/synthesize", "connectors:synthesize"],
+      ["POST", "/v1/conversations/topic", "conversations:topic"],
+      [
+        "POST",
+        "/v1/users/ai-profile/synthesize",
+        "users:ai_profile_synthesize",
+      ],
+      ["GET", "/v1/goals/suggest", "goals:suggest"],
+      ["GET", "/v1/goals/advice", "goals:advice"],
+      ["GET", "/v1/goals/goal-1/advice", "goals:advice"],
+      ["POST", "/v1/goals/extract-progress", "goals:extract"],
+      ["POST", "/v3/memories", "memories:create"],
+      ["POST", "/v3/memories/batch", "memories:batch"],
+      ["POST", "/v1/mcp/memories", "memories:create"],
+      ["POST", "/v1/mcp/action-items", "action_items:write"],
+      ["POST", "/v1/mcp/action-items/action-1/complete", "action_items:write"],
+      ["PATCH", "/v1/mcp/action-items/action-1", "action_items:write"],
+      ["DELETE", "/v1/mcp/action-items/action-1", "action_items:write"],
+      ["POST", "/v1/dev/user/memories", "memories:create"],
+      ["POST", "/v1/dev/user/memories/batch", "memories:batch"],
+      ["PATCH", "/v1/dev/user/memories/memory-1", "memories:modify"],
+      ["DELETE", "/v1/dev/user/memories/memory-1", "memories:delete"],
+      ["POST", "/v1/dev/user/action-items", "action_items:write"],
+      ["POST", "/v1/dev/user/action-items/batch", "action_items:write"],
+      ["PATCH", "/v1/dev/user/action-items/action-1", "action_items:write"],
+      ["DELETE", "/v1/dev/user/action-items/action-1", "action_items:write"],
+      ["POST", "/v1/dev/user/conversations", "dev:conversations"],
+      ["POST", "/v1/dev/user/conversations/from-segments", "dev:conversations"],
+      [
+        "PATCH",
+        "/v1/dev/user/conversations/conversation-1",
+        "dev:conversations",
+      ],
+      [
+        "DELETE",
+        "/v1/dev/user/conversations/conversation-1",
+        "dev:conversations",
+      ],
+      ["POST", "/v1/dev/user/goals", "dev:goals_write"],
+      ["PATCH", "/v1/dev/user/goals/goal-1", "dev:goals_write"],
+      ["PATCH", "/v1/dev/user/goals/goal-1/progress", "dev:goals_write"],
+      ["DELETE", "/v1/dev/user/goals/goal-1", "dev:goals_write"],
+      ["DELETE", "/v3/memories", "memories:delete_all"],
+      ["DELETE", "/v3/memories/batch", "memories:delete_batch"],
+      ["DELETE", "/v3/memories/memory-1", "memories:delete"],
+      ["PATCH", "/v3/memories/memory-1", "memories:modify"],
+      ["PATCH", "/v3/memories/memory-1/visibility", "memories:modify"],
+      ["PATCH", "/v3/memories/memory-1/read", "memories:modify"],
+      ["PATCH", "/v3/memories/memory-1/baseline", "memories:modify"],
+      ["POST", "/v3/memories/memory-1/review", "memories:modify"],
+      [
+        "POST",
+        "/v1/users/daily-summaries/summary-1/regenerate",
+        "daily_summary:regenerate",
+      ],
+      ["POST", "/v1/tts/synthesize", "tts:synthesize"],
+      ["POST", "/v1/tts/synthesize-workers-ai", "tts:synthesize"],
+      ["POST", "/v2/tts/synthesize", "tts:synthesize"],
+      ["POST", "/v1/proxy/gemini/models/gemini-2.5-flash:generateContent", "gemini:proxy"],
+      ["POST", "/v1/proxy/gemini-stream/models/gemini-2.5-flash:streamGenerateContent", "gemini:proxy"],
+    ] as const;
+
+    for (const [method, path, policy] of cases) {
+      expect(edgeRateLimitPolicyForRequest(method, path)?.name).toBe(policy);
+    }
+    expect(edgeRateLimitPolicyForRequest("GET", "/v3/memories")).toBeNull();
+    expect(
+      edgeRateLimitPolicyForRequest("DELETE", "/v3/memories/a/b"),
+    ).toBeNull();
+  });
+
+  it("applies the legacy boost knob and returns the FastAPI-compatible 429 body", async () => {
+    let checkBody: Record<string, unknown> | undefined;
+    const env = {
+      RATE_LIMIT_BOOST: "0.5",
+      RATE_LIMITS: {
+        idFromName: (name: string) => name,
+        get: () => ({
+          fetch: async (request: Request) => {
+            checkBody = (await request.json()) as Record<string, unknown>;
+            return Response.json({
+              allowed: false,
+              limit: 60,
+              remaining: 0,
+              retryAfter: 30,
+              resetAt: Date.now() + 30_000,
+            });
+          },
+        }),
+      },
+    } as never;
+    const response = await enforceEdgeRateLimit(
+      env,
+      {
+        uid: "user-1",
+        authority: "better-auth",
+        requestId: "request-1",
+      },
+      EDGE_RATE_LIMIT_POLICIES["chat:send_message"],
+      "request-1",
+    );
+
+    expect(checkBody?.max_requests).toBe(60);
+    expect(response?.status).toBe(429);
+    expect(await response?.json()).toEqual({
+      detail: "Rate limit exceeded. Try again in 30s.",
+    });
+  });
+
+  it("preserves the legacy shadow-mode knob without logging a UID", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const env = {
+      RATE_LIMIT_SHADOW_MODE: "true",
+      RATE_LIMITS: {
+        idFromName: (name: string) => name,
+        get: () => ({
+          fetch: () =>
+            Response.json({
+              allowed: false,
+              limit: 60,
+              remaining: 0,
+              retryAfter: 30,
+              resetAt: Date.now() + 30_000,
+            }),
+        }),
+      },
+    } as never;
+    const response = await enforceEdgeRateLimit(
+      env,
+      {
+        uid: "user-1",
+        authority: "better-auth",
+        requestId: "request-1",
+      },
+      EDGE_RATE_LIMIT_POLICIES["stt:transcribe"],
+      "request-1",
+    );
+
+    expect(response).toBeNull();
+    expect(JSON.parse(String(warning.mock.calls[0]?.[0]))).toMatchObject({
+      event: "rate_limit_shadow",
+      policy: "stt:transcribe",
+      retry_after: 30,
+      request_id: "request-1",
+    });
+    expect(String(warning.mock.calls[0]?.[0])).not.toContain("user-1");
+    warning.mockRestore();
+  });
+});

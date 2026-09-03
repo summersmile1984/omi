@@ -1,0 +1,74 @@
+{
+  "registration_request": {
+    "client_name": "Omi",
+    "redirect_uris": ["https://edge.example.test/v1/apps/mcp/callback"],
+    "grant_types": ["authorization_code", "refresh_token"],
+    "response_types": ["code"],
+    "token_endpoint_auth_method": "none",
+    "scope": "tools.read"
+  },
+  "registration_response": {
+    "client_id": "mcp-client-fixture",
+    "client_secret": "opaque-client-secret"
+  },
+  "authorization_request": {
+    "response_type": "code",
+    "client_id": "mcp-client-fixture",
+    "redirect_uri": "https://edge.example.test/v1/apps/mcp/callback",
+    "state": "opaque-state-fixture",
+    "code_challenge": "opaque-s256-challenge",
+    "code_challenge_method": "S256"
+  },
+  "token_response": {
+    "access_token": "opaque-access-token",
+    "refresh_token": "opaque-refresh-token",
+    "token_type": "Bearer",
+    "expires_in": 3600
+  },
+  "mcp_initialize_request": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-03-26",
+      "capabilities": {},
+      "clientInfo": { "name": "Omi", "version": "1.0.0" }
+    }
+  },
+  "mcp_initialize_response": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "protocolVersion": "2025-03-26",
+      "capabilities": { "tools": {} },
+      "serverInfo": { "name": "fixture-mcp", "version": "1.0.0" }
+    }
+  },
+  "mcp_tools_list_response": {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "tools": [
+        {
+          "name": "fixture_search",
+          "description": "Search the fixture MCP server.",
+          "inputSchema": {
+            "type": "object",
+            "properties": { "query": { "type": "string" } },
+            "required": ["query"]
+          }
+        }
+      ]
+    }
+  },
+  "negative_cases": [
+    "invalid_state",
+    "expired_state",
+    "replayed_state",
+    "pkce_mismatch",
+    "cross_owner_app",
+    "provider_401_without_refresh_token",
+    "provider_401_refresh_then_discovery_failure",
+    "oversized_or_malformed_tools_list"
+  ]
+}
