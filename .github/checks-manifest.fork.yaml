@@ -44,3 +44,9 @@ checks:
     triggers: ["brand/**", "scripts/brand/**"]
     lanes: ["local", "ci"]
     reason: "apply.py --brand omi-upstream must stay a zero-diff no-op as generators land in B1-B7 -- this is the regression guarantee the design doc's B0 acceptance criteria names"
+
+  - id: fork-brand-desktop-app-config
+    command: ["bash", "desktop/macos/tests/test-app-config-brand.sh"]
+    triggers: ["desktop/macos/scripts/app-config.sh", "desktop/macos/scripts/app-config.brand.sh", "desktop/macos/tests/test-app-config-brand.sh", "scripts/brand/generators/desktop.py"]
+    lanes: ["local", "ci"]
+    reason: "app-config.sh's named-bundle prefix is now brand-configurable; upstream's own test-app-config.sh only covers the default and must stay byte-identical to upstream, so the override path is asserted here instead"
