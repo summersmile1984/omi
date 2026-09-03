@@ -1,0 +1,22 @@
+# Fork-owned deterministic checks.
+#
+# Same schema as .github/checks-manifest.yaml, kept as a separate file so the
+# upstream manifest stays byte-identical and never conflicts on a sync. It is
+# executed explicitly:
+#
+#   .github/scripts/run_checks.py --manifest .github/checks-manifest.fork.yaml --lane <local|ci>
+#
+# which `scripts/fork/preflight` and `.github/workflows/fork-checks.yml` both do.
+# Every entry declares both lanes, as the upstream runner's validator requires.
+checks:
+  - id: fork-upstream-touch
+    command: ["python3", "scripts/fork/check-upstream-touch.py", "--base", "{base}"]
+    triggers: ["all"]
+    lanes: ["local", "ci"]
+    reason: "every upstream file this fork edits is a future merge conflict; the default is zero and exceptions are budgeted in dev/unified-main/upstream-touch-allowlist.yaml"
+
+  - id: fork-upstream-touch-tests
+    command: ["python3", "scripts/fork/test_check_upstream_touch.py"]
+    triggers: ["scripts/fork/check-upstream-touch.py", "scripts/fork/test_check_upstream_touch.py", "dev/unified-main/upstream-touch-allowlist.yaml"]
+    lanes: ["local", "ci"]
+    reason: "the guard is only a guard while its own refusals stay covered; its glob matcher already had a bug that let upstream tests through"
