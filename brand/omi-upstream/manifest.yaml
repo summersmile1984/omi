@@ -64,7 +64,10 @@ identifiers:
 theme:
   accent: "#000000"                    # upstream ships no single documented brand accent hex; placeholder, not enforced until B8
   forbidden_hue_families: ["purple"]   # matches INV-UI-1, which this manifest does not override
-  fonts: { sans: "Inter", mono: "SF Mono", license: "self-owned" }   # observed defaults, not independently verified against a licensing doc; refine in B8
+  fonts:
+    sans: "Inter"
+    mono: "SF Mono"
+    license: "self-owned"   # observed defaults, not independently verified against a licensing doc; refine in B8
 
 assets:
   icon_master: assets/icon-master.png    # placeholders: omi-upstream never runs apply.py --only flutter|desktop|... in B0 (no generator reads these paths yet)
@@ -78,7 +81,7 @@ device:
   dis_manufacturer: "Based Hardware"                          # omi/firmware/omi/omi.conf CONFIG_BT_DIS_MANUF
   dis_model_cv1: "Omi CV 1"                                    # omi/firmware/omi/omi.conf CONFIG_BT_DIS_MODEL
   firmware_release_prefix: "Omi_CV1_v"                          # .github/workflows/firmware_release.yml
-  service_uuid_base: ""                                          # empty = upstream's own 19b10000-e8f2-537e-4f6c-d104768a1214 (transport.c); this IS that value, so empty is correct for the equivalence record
+  service_uuid_base: "19b10000-e8f2-537e-4f6c-d104768a1214"      # transport.c BT_UUID_128_ENCODE -- recorded literally here since this manifest IS upstream, not a brand deferring to it (other brands leave this empty for the same BLE interop, per the schema comment)
   # Stale pre-rebrand domain baked into the firmware's NFC pairing record
   # (omi/firmware/omi/src/lib/core/nfc.c:94) -- "friend.based.com", not
   # omi.me. Recorded faithfully: this is what upstream's firmware ships
@@ -96,20 +99,32 @@ distribution:
   sparkle_feed_url: https://api.omi.me/v2/desktop/appcast.xml   # not independently verified against a live endpoint; matches domains.api_base convention
   sparkle_public_ed_key: "UNVERIFIED_PLACEHOLDER"                 # live signing key, not committed in any source file found; refine in B1 with the real CI secret name
   github_releases_repo: BasedHardware/omi
-  macos_artifacts: { zip: "Omi.zip", dmg: "omi.dmg", beta_zip: "Omi.Beta.zip", beta_dmg: "omi-beta.dmg" }
+  macos_artifacts:
+    zip: "Omi.zip"
+    dmg: "omi.dmg"
+    beta_zip: "Omi.Beta.zip"
+    beta_dmg: "omi-beta.dmg"
   windows_artifact: "Omi-Setup-${version}.exe"
 
 analytics:
   # Known to exist upstream (plaintext keys in source, per prior fork
   # research) but the exact host/project were not re-verified for this
   # manifest -- refine in B4/B6 rather than block B0 on it.
-  posthog: { host: https://us.i.posthog.com, key: "env:UNVERIFIED_PLACEHOLDER" }
+  posthog:
+    host: https://us.i.posthog.com
+    key: "env:UNVERIFIED_PLACEHOLDER"
   sentry_dsn: "env:UNVERIFIED_PLACEHOLDER"
 
 plans:
-  display_names: { basic: "Basic", plus: "Plus", unlimited: "Unlimited", operator: "Operator", architect: "Architect" }
+  display_names:
+    basic: "Basic"
+    plus: "Plus"
+    unlimited: "Unlimited"
+    operator: "Operator"
+    architect: "Architect"
 
-marketplace: { enabled: true }
+marketplace:
+  enabled: true
 
 mcp:
   package_name: mcp-server-omi     # PyPI, not npm -- mcp/pyproject.toml. The design doc's own example ("memweft-mcp") does not require an npm package; this field is ecosystem-neutral.

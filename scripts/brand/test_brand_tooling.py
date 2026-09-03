@@ -20,6 +20,7 @@ REPO_ROOT = BRAND_SCRIPTS.parents[1]
 
 sys.path.insert(0, str(BRAND_SCRIPTS))
 from schema_validate import validate  # noqa: E402
+from yaml_lite import YamlError, load_yaml  # noqa: E402
 
 MINIMAL_SCHEMA = {
     "type": "object",
@@ -32,6 +33,59 @@ MINIMAL_SCHEMA = {
         "tags": {"type": "array", "minItems": 1, "items": {"type": "string"}},
     },
 }
+
+
+class YamlLiteTests(unittest.TestCase):
+    def write(self, tmp: Path, text: str) -> Path:
+        p = tmp / "doc.yaml"
+        p.write_text(text)
+        return p
+
+    def fixture_dir(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return Path(tmp.name)
+
+    def test_nested_mappings_by_indentation(self):
+        doc = self.write(self.fixture_dir(), "a:\n  b:\n    c: 1\n  d: 2\n")
+        self.assertEqual(load_yaml(doc), {"a": {"b": {"c": 1}, "d": 2}})
+
+    def test_block_list_under_a_key_is_a_list_not_a_dict(self):
+        # The exact ambiguity this reader has to resolve by lookahead: "key:"
+        # with nothing after it could start a nested mapping OR a block list.
+        doc = self.write(self.fixture_dir(), "words:\n  - Omi\n  - Friend\n")
+        self.assertEqual(load_yaml(doc), {"words": ["Omi", "Friend"]})
+
+    def test_empty_key_with_no_following_list_item_is_a_mapping(self):
+        doc = self.write(self.fixture_dir(), "a:\n  b: 1\n")
+        self.assertEqual(load_yaml(doc), {"a": {"b": 1}})
+
+    def test_quoted_keys_are_unquoted_but_not_type_coerced(self):
+        doc = self.write(self.fixture_dir(), '"true":\n  x: 1\n')
+        result = load_yaml(doc)
+        self.assertIn("true", result)  # the string "true", not the boolean True
+        self.assertNotIn(True, result)
+
+    def test_inline_flow_list_and_quoted_values(self):
+        doc = self.write(self.fixture_dir(), 'a: ["x", "y"]\nb: "quoted # not a comment"\n')
+        self.assertEqual(load_yaml(doc), {"a": ["x", "y"], "b": "quoted # not a comment"})
+
+    def test_trailing_comment_is_stripped_from_an_unquoted_value(self):
+        doc = self.write(self.fixture_dir(), "a: value   # trailing comment\n")
+        self.assertEqual(load_yaml(doc), {"a": "value"})
+
+    def test_bool_and_null_scalars(self):
+        doc = self.write(self.fixture_dir(), "a: true\nb: false\nc: null\nd: ~\n")
+        self.assertEqual(load_yaml(doc), {"a": True, "b": False, "c": None, "d": None})
+
+    def test_list_item_outside_a_list_key_raises(self):
+        doc = self.write(self.fixture_dir(), "a: 1\n- b\n")
+        with self.assertRaises(YamlError):
+            load_yaml(doc)
+
+    def test_missing_file_raises(self):
+        with self.assertRaises(YamlError):
+            load_yaml(self.fixture_dir() / "does-not-exist.yaml")
 
 
 class SchemaValidateTests(unittest.TestCase):
@@ -90,12 +144,12 @@ class RepoFixture:
         manifest_src = (BRAND_SCRIPTS.parent.parent / "brand/omi-upstream/manifest.yaml").read_text()
         (root / "brand/omi-upstream/manifest.yaml").write_text(manifest_src)
 
-        for name in ("apply.py", "check.py", "schema_validate.py", "lexicon.yaml"):
+        for name in ("apply.py", "check.py", "schema_validate.py", "yaml_lite.py", "lexicon.yaml"):
             (root / "scripts/brand" / name).write_text((BRAND_SCRIPTS / name).read_text())
 
         (root / "brand/_allow.yaml").write_text(
             "schema_version: 1\nexemptions:\n"
-            "  - glob: \"app/lib/l10n/allowed.arb\"\n"
+            "  \"app/lib/l10n/allowed.arb\":\n"
             "    words: [\"Omi\"]\n"
             "    reason: \"test fixture: deliberately exempted file\"\n"
         )
@@ -172,7 +226,7 @@ class BrandToolingTests(unittest.TestCase):
         # Proves the exemption in the previous test is load-bearing: remove
         # it and the same fixture must report one more leak.
         fx = self.fixture()
-        (fx.root / "brand/_allow.yaml").write_text("schema_version: 1\nexemptions: []\n")
+        (fx.root / "brand/_allow.yaml").write_text("schema_version: 1\nexemptions:\n")
         proc = fx.run_check("a-real-fork-brand")
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["lexicon_matches"], 3)

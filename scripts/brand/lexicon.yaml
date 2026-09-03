@@ -56,12 +56,9 @@ service_identifiers:
   - firebase.omi.me
   - a.run.app                 # Cloud Run default hostnames; a brand on Cloudflare or self-hosted should never ship one
 
-# Allowed even though they match the lists above -- see brand/_allow.yaml
-# for the per-file, per-reason exemption format check.py actually reads.
-# This section only documents the *policy*: an entry belongs in
-# brand/_allow.yaml, never as a silent code-level skip in check.py itself.
-known_exemptions_policy: |
-  A match is a real leak unless brand/_allow.yaml names the exact file
-  (or a glob) and a one-line reason. Historical changelog entries, competitor
-  names in comparison copy, and this lexicon file itself are the expected
-  shape of an exemption -- not "check.py doesn't look there."
+# A match against any list above is a real leak unless brand/_allow.yaml
+# names the exact file (or a glob) and a reason -- the per-file exemption
+# format check.py actually reads. Historical changelog entries, competitor
+# names in comparison copy, and this lexicon file itself are the expected
+# shape of an exemption; never add a silent code-level skip in check.py
+# itself instead of a named entry there.

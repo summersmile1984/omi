@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from yaml_lite import load_yaml as _load_yaml  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LEXICON_PATH = Path(__file__).resolve().parent / "lexicon.yaml"
@@ -96,9 +97,7 @@ class Exemption:
 
 
 def load_yaml(path: Path) -> dict:
-    import yaml
-
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return _load_yaml(path) or {}
 
 
 def load_exemptions() -> list[Exemption]:
@@ -106,9 +105,9 @@ def load_exemptions() -> list[Exemption]:
         return []
     data = load_yaml(ALLOW_PATH)
     out = []
-    for entry in data.get("exemptions", []):
+    for glob, entry in data.get("exemptions", {}).items():
         words = entry.get("words")
-        out.append(Exemption(glob=entry["glob"], words=frozenset(words) if words else None, reason=entry["reason"]))
+        out.append(Exemption(glob=glob, words=frozenset(words) if words else None, reason=entry["reason"]))
     return out
 
 

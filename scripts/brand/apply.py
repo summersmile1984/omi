@@ -29,6 +29,7 @@ from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from schema_validate import validate  # noqa: E402
+from yaml_lite import load_yaml  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "brand/_schema/manifest.schema.json"
@@ -56,15 +57,13 @@ class ApplyError(RuntimeError):
 
 
 def load_manifest(brand_id: str) -> dict:
-    import yaml
-
     manifest_path = BRAND_ROOT / brand_id / "manifest.yaml"
     if not manifest_path.exists():
         raise ApplyError(
             f"no manifest at {manifest_path.relative_to(REPO_ROOT)}. "
             f"Known brands: {sorted(p.name for p in BRAND_ROOT.iterdir() if (p / 'manifest.yaml').exists())}"
         )
-    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest = load_yaml(manifest_path)
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     errors = validate(manifest, schema)
     if errors:
