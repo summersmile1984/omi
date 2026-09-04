@@ -13,6 +13,11 @@ The consumer sends the internal administrator bearer only to that origin,
 refuses redirects, and has a five-second request timeout. It does not forward
 the caller's JWT or interpret a service outage as a missing identity.
 
+UIDs remain one encoded path segment. Exact `.` and `..` values accepted by the
+Firebase importer are explicitly percent-encoded, because `quote()` preserves
+dots and HTTPX otherwise resolves them as path navigation. Literal percent
+characters remain encoded once; Express decodes the route parameter once.
+
 | Operation | Accepted response |
 | --- | --- |
 | `DELETE /internal/users/{uid}` | HTTP200 with exactly `{"success":true}`, or HTTP404 with exactly `{"error":"user_not_found"}` |

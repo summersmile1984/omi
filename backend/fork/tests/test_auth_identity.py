@@ -101,3 +101,21 @@ def test_missing_authority_never_attempts_firebase_or_network(authority, monkeyp
     with pytest.raises(auth_identity.IdentityAuthorityUnavailable):
         auth_identity.delete_account('existing-user')
     assert calls == []
+
+
+@pytest.mark.parametrize('uid,segment', [('.', '%2E'), ('..', '%2E%2E'), ('%2E%2E', '%252E%252E')])
+def test_imported_dot_identity_survives_actual_http_request_normalization(authority, monkeypatch, uid, segment):
+    requests = []
+
+    def transport(request):
+        requests.append(request)
+        suffix = '/residuals' if request.method == 'GET' else ''
+        if request.url.raw_path != f'/internal/users/{segment}{suffix}'.encode():
+            return httpx.Response(404, json={'error': 'route_missing'})
+        payload = {'users': 0, 'sessions': 0, 'accounts': 0} if suffix else {'success': True}
+        return httpx.Response(200, json=payload)
+
+    with httpx.Client(transport=httpx.MockTransport(transport)) as client:
+        monkeypatch.setattr(auth_identity.httpx, 'request', client.request)
+        assert auth_identity.delete_account(uid) == {'message': 'User deleted'}
+    assert [request.method for request in requests] == ['DELETE', 'GET']

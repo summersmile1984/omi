@@ -56,3 +56,23 @@ this result. Auth/PG/MinIO/Qdrant calls were real; embedding inference was not
 part of this package. The shared AUTH manifest runs the new hermetic regression
 file, including live-user residuals, booleans/malformed counts, missing routes,
 wrong credentials, timeout and legacy-profile selection.
+
+## Imported dot identity review correction
+
+Independent review reproduced HTTPX resolving a UID of `.` or `..` into a
+different route. The consumer now explicitly percent-encodes those two exact
+segments. Three regressions use actual HTTPX request construction and a controlled
+transport, including literal `%2E%2E`; the complete identity file passes 17 cases
+(`dot-identity-tests.log`).
+
+`dot-live.py` then used the unchanged standard AMD64 Auth image's real Firebase
+importer to validate/apply/verify the two exact dot UIDs against the disposable
+PG service. Both signed in with their imported password and preserved UID,
+issued a JWT, passed internal verification, were deleted through the updated
+production Python consumer over actual HTTP, proved zero residuals, accepted
+repeat deletion, and rejected the old JWT. All synthetic identities were removed.
+The corrected Python module ran from the host checkout; the earlier backend
+image above is not claimed to include this later path-encoding correction.
+`dot-live.log` records this successful run. A separate three-UID input exposed a
+locale-versus-database ordering mismatch in import reconciliation before commit;
+that failed import rolled back and is separate from the two-UID deletion proof.

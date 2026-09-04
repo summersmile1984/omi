@@ -27,9 +27,14 @@ def _authority():
 def _request(method, uid, authority, suffix=''):
     base_url, secret = authority
     try:
+        segment = quote(validate_uid(uid), safe='')
+        # quote() always preserves dots; HTTPX otherwise resolves these valid
+        # imported identity values as parent/current path components.
+        if segment in {'.', '..'}:
+            segment = segment.replace('.', '%2E')
         response = httpx.request(
             method,
-            f'{base_url}/internal/users/{quote(validate_uid(uid), safe="")}{suffix}',
+            f'{base_url}/internal/users/{segment}{suffix}',
             headers={'authorization': f'Bearer {secret}'},
             timeout=5,
             follow_redirects=False,
