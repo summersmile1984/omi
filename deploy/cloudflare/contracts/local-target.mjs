@@ -160,9 +160,15 @@ export async function startLocalTarget({
     inferenceControl = await startInferenceControl();
     port ??= await freePort();
     const namespace = `cf-${brandId}-${randomBytes(4).toString("hex")}`;
+    const brandRuntime = {
+      brand_id: brandId,
+      display_name: "Local Atlas",
+      ai_persona_name: "Mira",
+    };
     const { origin, configs } = localConfigs({
       root,
       brandId,
+      brandRuntime,
       namespace,
       port,
       asrPort: asr.address().port,
@@ -314,6 +320,7 @@ export async function startLocalTarget({
     };
     privateJson(resolve(output, "metadata.json"), metadata);
     privateJson(resolve(output, "fixture.json"), {
+      brand_runtime: brandRuntime,
       schema_version: 1,
       source_commit: git(resolve(root, "../.."), ["rev-parse", "HEAD"]),
       source_status: git(resolve(root, "../.."), ["status", "--porcelain"]),

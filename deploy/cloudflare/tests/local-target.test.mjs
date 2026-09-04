@@ -29,6 +29,11 @@ afterEach(() =>
 const inputs = {
   root,
   brandId: "fixture",
+  brandRuntime: {
+    brand_id: "fixture",
+    display_name: "Atlas",
+    ai_persona_name: "Mira",
+  },
   namespace: "local-fixture-123",
   port: 34000,
   asrPort: 34001,
@@ -59,6 +64,19 @@ describe("disposable actual Cloudflare target", () => {
   });
   it("projects all seven production owners and isolates every storage and queue binding", () => {
     const { configs, origin } = localConfigs(inputs);
+    for (const role of ["api-core", "api-ai"])
+      expect(JSON.parse(configs[role].vars.BRAND_RUNTIME_JSON)).toEqual(
+        inputs.brandRuntime,
+      );
+    expect(() => localConfigs({ ...inputs, brandRuntime: undefined })).toThrow(
+      /brand runtime/,
+    );
+    expect(() =>
+      localConfigs({
+        ...inputs,
+        brandRuntime: { ...inputs.brandRuntime, brand_id: "foreign" },
+      }),
+    ).toThrow(/brand runtime/);
     expect(Object.keys(configs).sort()).toEqual([
       "api-ai",
       "api-core",

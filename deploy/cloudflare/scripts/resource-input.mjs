@@ -98,6 +98,25 @@ export function resourceKeys() {
     "queue:jobs-dlq",
   ];
 }
+export function validateBrandRuntime(value, brandId) {
+  exactKeys(
+    value,
+    ["brand_id", "display_name", "ai_persona_name"],
+    "brand runtime",
+  );
+  if (
+    value.brand_id !== brandId ||
+    !Object.values(value).every(
+      (item) =>
+        typeof item === "string" &&
+        item.trim() &&
+        !/[\u0000-\u001f\u007f]/u.test(item),
+    ) ||
+    !/^[a-z0-9-]+$/.test(value.brand_id)
+  )
+    throw new Error("brand runtime must match the rendered brand identity");
+  return value;
+}
 export function validateResourceInput(input, projected) {
   exactKeys(
     input,
@@ -117,6 +136,9 @@ export function validateResourceInput(input, projected) {
     "resource inventory",
   );
   const { brand_id: brand, profile } = projected;
+  validateBrandRuntime(projected.brand_runtime, brand);
+  if (projected.product_name !== projected.brand_runtime.display_name)
+    throw new Error("brand runtime and Web product identity differ");
   if (
     input.schema_version !== 1 ||
     input.brand !== brand ||

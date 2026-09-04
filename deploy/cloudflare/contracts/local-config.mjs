@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { readWorkerTemplates } from "../scripts/resource-configs.mjs";
-import { STORAGE_BINDINGS } from "../scripts/resource-input.mjs";
+import {
+  STORAGE_BINDINGS,
+  validateBrandRuntime,
+} from "../scripts/resource-input.mjs";
 
 // This projection is exclusively a disposable loopback test target. It consumes
 // production Worker/binding owners, never a resource inventory or deployment
@@ -9,6 +12,7 @@ import { STORAGE_BINDINGS } from "../scripts/resource-input.mjs";
 export function localConfigs({
   root,
   brandId,
+  brandRuntime,
   namespace,
   port,
   asrPort,
@@ -21,6 +25,7 @@ export function localConfigs({
     !/^[a-z0-9-]{1,50}$/.test(namespace)
   )
     throw new Error("invalid local brand or namespace");
+  validateBrandRuntime(brandRuntime, brandId);
   for (const value of [port, asrPort])
     if (!Number.isInteger(value) || value < 1024 || value > 65535)
       throw new Error("invalid loopback port");
@@ -98,6 +103,8 @@ export function localConfigs({
       ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED: "false",
       MCP_ALLOW_UNAUTHENTICATED_DCR: "false",
     };
+    if (["api-core", "api-ai"].includes(role))
+      config.vars.BRAND_RUNTIME_JSON = JSON.stringify(brandRuntime);
     delete config.vars.ORIGIN_BACKEND_URL;
     for (const key of Object.keys(config.vars))
       if (key.endsWith("_STAGING_ENABLED")) config.vars[key] = "false";

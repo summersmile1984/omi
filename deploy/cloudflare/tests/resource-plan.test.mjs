@@ -109,7 +109,16 @@ function resourceFixture(brand = "alpha", stage = "beta", index = 1) {
   return {
     root,
     input,
-    projected: { brand_id: brand, product_name: `${brand} fixture`, profile },
+    projected: {
+      brand_id: brand,
+      product_name: `${brand} fixture`,
+      brand_runtime: {
+        brand_id: brand,
+        display_name: `${brand} fixture`,
+        ai_persona_name: "Mira",
+      },
+      profile,
+    },
     sourceCommit,
     web: {
       config: {
@@ -155,6 +164,8 @@ describe("one brand/stage Cloudflare resource authority", () => {
       ),
     );
     manifest.brand.id = "cf-alpha";
+    manifest.brand.display_name = "Atlas 中文";
+    manifest.brand.ai_persona_name = "Mira";
     manifest.identifiers.url_scheme = "cf-alpha";
     manifest.deployments = { cloudflare: {} };
     for (const stage of ["local", "beta", "production"]) {
@@ -199,6 +210,14 @@ describe("one brand/stage Cloudflare resource authority", () => {
           ),
         );
       const plan = render(fixture);
+      for (const role of ["api-core", "api-ai"])
+        expect(
+          JSON.parse(plan.configs[role].config.vars.BRAND_RUNTIME_JSON),
+        ).toEqual({
+          brand_id: "cf-alpha",
+          display_name: "Atlas 中文",
+          ai_persona_name: "Mira",
+        });
       expect(plan.configs.auth.config.vars.AUTH_JWT_ISSUER).toBe(
         fixture.projected.profile.auth_base_url,
       );
@@ -212,6 +231,45 @@ describe("one brand/stage Cloudflare resource authority", () => {
         fixture.projected.profile.web_base_url,
       );
     }
+  });
+
+  it("rejects absent, malformed and cross-brand runtime projections before rendering", () => {
+    const good = resourceFixture();
+    for (const invalid of [
+      undefined,
+      null,
+      {},
+      { ...good.projected.brand_runtime, brand_id: "foreign" },
+      { ...good.projected.brand_runtime, display_name: true },
+      { ...good.projected.brand_runtime, ai_persona_name: " \t" },
+      { ...good.projected.brand_runtime, ai_persona_name: "Mira\nInjected" },
+      { ...good.projected.brand_runtime, extra: "owner" },
+    ]) {
+      const fixture = resourceFixture();
+      fixture.projected.brand_runtime = invalid;
+      expect(() => render(fixture)).toThrow(/brand runtime/);
+    }
+  });
+
+  it("rejects a Web product display name from a second naming authority", () => {
+    const fixture = resourceFixture();
+    fixture.projected.product_name = "Other product";
+    expect(() => render(fixture)).toThrow("Web product identity differ");
+  });
+
+  it("keeps direct Wrangler development identity aligned with its actual manifest", () => {
+    const manifest = YAML.parse(
+      readFileSync(
+        resolve(root, "../../brand/omi-upstream/manifest.yaml"),
+        "utf8",
+      ),
+    );
+    const { id, display_name, ai_persona_name } = manifest.brand;
+    const templates = readWorkerTemplates(root);
+    for (const role of ["api-core", "api-ai"])
+      expect(
+        JSON.parse(templates[role].config.vars.BRAND_RUNTIME_JSON),
+      ).toEqual({ brand_id: id, display_name, ai_persona_name });
   });
 
   it("renders real templates across all stages with auth, MCP, CORS and dependency ownership", () => {

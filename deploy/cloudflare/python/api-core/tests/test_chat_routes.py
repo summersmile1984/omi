@@ -78,6 +78,10 @@ class FakeDb:
 
 class FakeRequest:
     def __init__(self, env, headers=None, query=None, body=None):
+        if not hasattr(env, "BRAND_RUNTIME_JSON"):
+            env.BRAND_RUNTIME_JSON = json.dumps(
+                {"brand_id": "omi-upstream", "display_name": "Omi", "ai_persona_name": "Omi"}
+            )
         self.scope = {"env": env}
         self.headers = headers or {}
         self.query_params = query or {}
@@ -437,3 +441,54 @@ def test_unmigrated_principal_without_session_keeps_app_scoped_history_and_clear
     assert [row['id'] for row in asyncio.run(get_messages(request))] == ['legacy']
     assert asyncio.run(clear_messages(request))['chat_session_id'] is None
     assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_messages').fetchone()[0] == 0
+
+
+def test_manifest_persona_greeting_and_unconfigured_legacy_deployment_fail_closed():
+    db = FakeDb()
+    env = type(
+        "Env",
+        (),
+        {
+            "APP_DB": db,
+            "INTERNAL_ASSERTION_SECRET": "secret",
+            "BRAND_RUNTIME_JSON": json.dumps(
+                {"brand_id": "atlas", "display_name": "Atlas 中文", "ai_persona_name": "Mira"}
+            ),
+        },
+    )()
+    request = FakeRequest(env, signed_headers("secret"))
+    assert asyncio.run(get_messages(request))[0]["text"] == "Hi! I'm Mira. How can I help?"
+    assert asyncio.run(clear_messages(request))["text"] == "Hi! I'm Mira. How can I help?"
+    db.connection.execute(
+        "INSERT INTO cf_chat_messages (uid, id, app_id, created_at, message_json) VALUES (?, ?, NULL, 1, ?)",
+        (
+            "chat-user",
+            "brand-message",
+            json.dumps({"id": "brand-message", "sender": "human", "text": "Omi stays literal"}),
+        ),
+    )
+    db.connection.commit()
+    for supplied_name, expected_name in [(None, "Atlas 中文 user"), ("Omi Research", "Omi Research")]:
+        shared = asyncio.run(
+            share_chat_messages(
+                FakeRequest(
+                    env, signed_headers("secret", display_name=supplied_name), body={"message_ids": ["brand-message"]}
+                )
+            )
+        )
+        preview = asyncio.run(get_shared_chat_messages(FakeRequest(env), shared["token"]))
+        assert preview["sender_name"] == expected_name
+        assert preview["messages"][0]["text"] == "Omi stays literal"
+    # An existing deployment without the newly required public metadata cannot
+    # greet as upstream or mutate history before reporting its configuration fault.
+    db.connection.execute(
+        "INSERT INTO cf_chat_sessions (id, uid, created_at, updated_at) VALUES ('owned', 'chat-user', 1, 1)"
+    )
+    db.connection.commit()
+    for raw in [None, "{}", "not-json"]:
+        env.BRAND_RUNTIME_JSON = raw
+        for operation in [get_messages, clear_messages]:
+            response = asyncio.run(operation(request))
+            assert response.status_code == 503
+            assert json.loads(response.body) == {"error": "brand runtime is not configured"}
+        assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions").fetchone()[0] == 1

@@ -26,7 +26,11 @@ export class Provider extends WorkerEntrypoint<{
         if (!response.ok) throw new Error("controlled inference wait failed");
       }
       return {
-        response: "Synthetic chat 回答\n" + reference.join("\n"),
+        response:
+          "Synthetic chat 回答\n" +
+          (reference.at(-1)?.startsWith("[fixture:brand-prompt]")
+            ? messages.map((message) => message.content).join("\n")
+            : reference.join("\n")),
         usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
       };
     }

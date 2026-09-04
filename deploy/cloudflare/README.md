@@ -170,6 +170,31 @@ Python Workers, then verifies the frozen modules with locked Wrangler.
 
 ## Brand and stage resource plans
 
+The default chat identity is public deployment configuration, projected from the
+same validated manifest as the Web profile. `profile_input.py` emits
+`brand_runtime = {brand_id, display_name, ai_persona_name}`; CF3 verifies its brand
+binding and display-name agreement with the Web input, then writes
+`BRAND_RUNTIME_JSON` to Core and AI. Generated resource/configuration hashes in
+release candidates therefore include this identity. Direct Wrangler development
+configs explicitly select the checked-in `omi-upstream` manifest; the template
+contract tests compare their values with that manifest.
+
+Core's default greeting and unnamed share sender use that identity. AI's default
+chat, initial-message, stateless reply and CF completion prompts use the persona;
+quota text and unnamed app labels use the product display name. Existing user,
+plugin and persisted message text is not searched or replaced. A missing,
+malformed, extra-field, non-string, empty or control-character configuration
+returns HTTP 503 before chat quota/session/provider effects. There is no upstream
+brand fallback for an unconfigured Cloudflare deployment: regenerate the resource
+plan/rebuild the Worker before use. An otherwise valid configuration retains the
+existing provider and storage error classification.
+
+This covers default text chat identity, not every white-label product surface.
+App-generation platform descriptions, share URL routing, OAuth/email templates
+and the remaining CF4 route capabilities require their own owner verification.
+The old chat-share URL constant is not made correct by changing a display name.
+
+
 `npm run resources -- --manifest /path/to/brand.json --inventory /path/to/resources.json --web-build /path/to/web-build --output /path/to/plan`
 renders the eight current Worker/Web configurations, both D1 migration authorities,
 secret **name** mappings, and a plan-bound rollback contract. It consumes the same
