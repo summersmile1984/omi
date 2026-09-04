@@ -24,7 +24,7 @@ from database.firestore_index_registry import INDEX_REQUIREMENTS
 from .engine import KNOWN_COLLECTIONS, create_composite_indexes, get_engine
 from .sql import build_ddl, resolve_collection
 
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 3
 MIGRATION_LOCK_ID = 7_362_737_641_104_927_311
 MIGRATION_TABLE = 'firestore_pg_schema_migrations'
 COLLECTION_TABLE = 'firestore_pg_collections'
@@ -186,6 +186,11 @@ STATIC_HASHED_COLLECTION_IDS_V2 = frozenset(
 )
 
 
+# Schema v3 records collections introduced by the upstream frame-request and
+# chat-first workflows. Keep v1/v2 frozen so existing physical mappings survive.
+STATIC_HASHED_COLLECTION_IDS_V3 = frozenset({'chat_first_dead_letters', 'conversation_keyframe_jobs', 'frame_requests'})
+
+
 class SchemaNotCurrent(RuntimeError):
     """The database has not been admitted by the explicit migration owner."""
 
@@ -208,7 +213,7 @@ def _declared_known_collections() -> set[str]:
 
 
 def _assert_known_inventory_versioned() -> None:
-    versioned = LEGACY_RAW_COLLECTION_IDS_V1 | STATIC_HASHED_COLLECTION_IDS_V2
+    versioned = LEGACY_RAW_COLLECTION_IDS_V1 | STATIC_HASHED_COLLECTION_IDS_V2 | STATIC_HASHED_COLLECTION_IDS_V3
     declared = _declared_known_collections()
     added = declared - versioned
     if added:
@@ -226,7 +231,9 @@ def _assert_known_inventory_versioned() -> None:
 def known_collections() -> tuple[str, ...]:
     """Return every frozen statically-known production collection ID."""
     _assert_known_inventory_versioned()
-    return tuple(sorted(LEGACY_RAW_COLLECTION_IDS_V1 | STATIC_HASHED_COLLECTION_IDS_V2))
+    return tuple(
+        sorted(LEGACY_RAW_COLLECTION_IDS_V1 | STATIC_HASHED_COLLECTION_IDS_V2 | STATIC_HASHED_COLLECTION_IDS_V3)
+    )
 
 
 def validate_collection_id(collection_id: Any) -> str:
@@ -334,6 +341,12 @@ def _apply_v2(conn: Connection) -> None:
     create_composite_indexes(conn, collection_table_name)
 
 
+def _apply_v3(conn: Connection) -> None:
+    for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V3):
+        _register_collection(conn, collection_id)
+    create_composite_indexes(conn, collection_table_name)
+
+
 def migrate(engine: Optional[Engine] = None) -> SchemaStatus:
     """Apply every unapplied forward migration under one advisory lock."""
     _assert_known_inventory_versioned()
@@ -359,6 +372,12 @@ def migrate(engine: Optional[Engine] = None) -> SchemaStatus:
                 text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (2, :name)'),
                 {'name': 'production_static_collection_inventory'},
             )
+        if 3 not in applied:
+            _apply_v3(conn)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (3, :name)'),
+                {'name': 'frame_requests_and_chat_first_dead_letters'},
+            )
     return check_schema(engine)
 
 
@@ -371,9 +390,7 @@ def provision_collections(collection_ids: Iterable[str], engine: Optional[Engine
         _bootstrap_ledger(conn)
         version = conn.execute(text(f'SELECT max(version) FROM {MIGRATION_TABLE}')).scalar()
         if int(version or 0) != LATEST_SCHEMA_VERSION:
-            raise SchemaNotCurrent(
-                'run `python scripts/firestore_pg_migrate.py migrate` before provisioning collections'
-            )
+            raise SchemaNotCurrent('run `python -m fork.migrate migrate` before provisioning collections')
         registered_tables = {
             str(row[0]) for row in conn.execute(text(f'SELECT table_name FROM {COLLECTION_TABLE}')).fetchall()
         }

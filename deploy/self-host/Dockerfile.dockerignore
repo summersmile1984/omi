@@ -1,0 +1,9 @@
+# Fork-owned context filter: no local environments or secrets enter images.
+.git
+**/.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.env
+**/.env.*
+**/*credentials*.json

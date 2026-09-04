@@ -62,6 +62,11 @@ def current() -> dict:
     feature. Tests call `reset()`.
     """
     table = _load_table()
+    if table.get("schema_version") != 1:
+        raise ProfileError("unsupported deployment profile schema_version")
+    requested_brand = os.getenv("OMI_BRAND", "").strip()
+    if requested_brand and requested_brand != table.get("brand"):
+        raise ProfileError("OMI_BRAND does not match the image's generated profile table")
     profiles = table.get("profiles", {})
     name = _requested_name()
 
@@ -75,6 +80,11 @@ def current() -> dict:
         )
 
     row = profiles[name]
+    if row.get("name") != name or row.get("target") != table.get("target"):
+        raise ProfileError("profile row identity does not match the generated table")
+    selected_target = os.getenv("OMI_DEPLOYMENT_TARGET", "").strip()
+    if selected_target and selected_target != row.get("target"):
+        raise ProfileError("OMI_DEPLOYMENT_TARGET conflicts with OMI_DEPLOYMENT_PROFILE")
     identity = row.get("identity_provider")
     # The same fail-closed pairing the renderer enforces, re-checked here because
     # the table is a build artifact and the image could have been mismatched.

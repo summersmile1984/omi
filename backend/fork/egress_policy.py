@@ -96,7 +96,12 @@ class EgressPolicyUnavailable(httpx.RequestError):
 
 
 def _is_neutral_profile() -> bool:
-    return os.environ.get('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in NEUTRAL_DEPLOYMENT_PROFILES
+    selected = os.environ.get('OMI_DEPLOYMENT_PROFILE', '').strip().lower()
+    return (
+        selected in NEUTRAL_DEPLOYMENT_PROFILES
+        or selected in {'self_hosted.local', 'self_hosted.beta', 'self_hosted.production'}
+        or os.environ.get('OMI_DEPLOYMENT_TARGET') == 'self_hosted'
+    )
 
 
 def _is_official_host(host: str) -> bool:

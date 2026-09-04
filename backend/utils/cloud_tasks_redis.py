@@ -30,9 +30,11 @@ from typing import Any, Dict, Optional, Tuple, cast
 import httpx
 import redis
 
+from fork.queue_config import QUEUES
+
 logger = logging.getLogger(__name__)
 
-QUEUE_ALIASES = ("sync", "audio-merge", "account-deletion", "finalization")
+QUEUE_ALIASES = tuple(queue.name for queue in QUEUES)
 
 _client: Optional[redis.Redis] = None
 _client_config: Optional[Tuple[str, int, Optional[str]]] = None
@@ -114,12 +116,7 @@ def enqueue_listen_finalization_job(job_id: str, dispatch_generation: int) -> No
 # Worker
 # ---------------------------------------------------------------------------
 
-HANDLER_URL_ENV = {
-    "sync": "SYNC_TASKS_HANDLER_URL",
-    "audio-merge": "AUDIO_MERGE_HANDLER_URL",
-    "account-deletion": "ACCOUNT_DELETION_HANDLER_URL",
-    "finalization": "LISTEN_FINALIZATION_HANDLER_URL",
-}
+HANDLER_URL_ENV = {queue.name: queue.handler_env for queue in QUEUES}
 
 
 def _worker(queue_name: str) -> None:

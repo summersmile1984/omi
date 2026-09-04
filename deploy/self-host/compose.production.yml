@@ -129,14 +129,16 @@ services:
     platform: ${BACKEND_PLATFORM:?BACKEND_PLATFORM is required}
     build:
       context: ../..
-      dockerfile: backend/Dockerfile
+      dockerfile: deploy/self-host/Dockerfile
       args:
-        PYTHON_BASE_IMAGE: python:3.11.10-slim-bookworm@sha256:840e180ebcc6e5c8efab209c43f5e40fd2af98cb49db5c7103c90539c56bb30e
+        UPSTREAM_BACKEND_IMAGE: ${BACKEND_RUNTIME_IMAGE:?BACKEND_RUNTIME_IMAGE is required}
+        BRAND_MANIFEST: ${SELF_HOST_BRAND_MANIFEST:?SELF_HOST_BRAND_MANIFEST is required}
+        DEPLOYMENT_STAGE: ${SELF_HOST_STAGE:-production}
         OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
         OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
     image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
     restart: "no"
-    command: ["python", "scripts/firestore_pg_migrate.py", "migrate"]
+    command: ["python", "-m", "fork.migrate", "migrate"]
     environment:
       - FIRESTORE_PG_DSN=postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
     depends_on:
@@ -183,9 +185,11 @@ services:
     platform: ${BACKEND_PLATFORM:?BACKEND_PLATFORM is required}
     build:
       context: ../..
-      dockerfile: backend/Dockerfile
+      dockerfile: deploy/self-host/Dockerfile
       args:
-        PYTHON_BASE_IMAGE: python:3.11.10-slim-bookworm@sha256:840e180ebcc6e5c8efab209c43f5e40fd2af98cb49db5c7103c90539c56bb30e
+        UPSTREAM_BACKEND_IMAGE: ${BACKEND_RUNTIME_IMAGE:?BACKEND_RUNTIME_IMAGE is required}
+        BRAND_MANIFEST: ${SELF_HOST_BRAND_MANIFEST:?SELF_HOST_BRAND_MANIFEST is required}
+        DEPLOYMENT_STAGE: ${SELF_HOST_STAGE:-production}
         OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
         OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
     image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
@@ -193,8 +197,7 @@ services:
     labels:
       com.omi.runtime.config-sha256: ${OMI_RUNTIME_CONFIG_SHA256:-unattributed}
     environment:
-      - OMI_ENV_STAGE=prod
-      - OMI_DEPLOYMENT_PROFILE=self_hosted
+      - OMI_DEPLOYMENT_PROFILE=self_hosted.${SELF_HOST_STAGE:-production}
       - ENVIRONMENT=production
       - BASE_API_URL=${PUBLIC_BACKEND_URL:?PUBLIC_BACKEND_URL is required}
       - API_BASE_URL=${PUBLIC_BACKEND_URL:?PUBLIC_BACKEND_URL is required}
@@ -367,19 +370,20 @@ services:
     platform: ${BACKEND_PLATFORM:?BACKEND_PLATFORM is required}
     build:
       context: ../..
-      dockerfile: backend/Dockerfile
+      dockerfile: deploy/self-host/Dockerfile
       args:
-        PYTHON_BASE_IMAGE: python:3.11.10-slim-bookworm@sha256:840e180ebcc6e5c8efab209c43f5e40fd2af98cb49db5c7103c90539c56bb30e
+        UPSTREAM_BACKEND_IMAGE: ${BACKEND_RUNTIME_IMAGE:?BACKEND_RUNTIME_IMAGE is required}
+        BRAND_MANIFEST: ${SELF_HOST_BRAND_MANIFEST:?SELF_HOST_BRAND_MANIFEST is required}
+        DEPLOYMENT_STAGE: ${SELF_HOST_STAGE:-production}
         OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
         OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
     image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
     restart: unless-stopped
     labels:
       com.omi.runtime.config-sha256: ${OMI_RUNTIME_CONFIG_SHA256:-unattributed}
-    command: ["python", "-m", "utils.cloud_tasks_redis", "--all"]
+    command: ["python", "-m", "fork.worker"]
     environment:
-      - OMI_ENV_STAGE=prod
-      - OMI_DEPLOYMENT_PROFILE=self_hosted
+      - OMI_DEPLOYMENT_PROFILE=self_hosted.${SELF_HOST_STAGE:-production}
       - SELF_HOST_EGRESS_ALLOWLIST=${SELF_HOST_EGRESS_ALLOWLIST:?SELF_HOST_EGRESS_ALLOWLIST is required}
       - FIRESTORE_PG_DSN=postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
       - REDIS_DB_HOST=redis
@@ -420,7 +424,7 @@ services:
       typesense:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "kill -0 1"]
+      test: ["CMD", "python", "-m", "fork.worker", "--check"]
       interval: 10s
       timeout: 5s
       retries: 10
