@@ -3,6 +3,8 @@
 > 日期：2026-09-02 · 状态：待决策签字（`07-pr-plan.md` §1）后开工
 > 前置研究：`omi-repo-topology.md`（为什么是单主线）、`omi-white-label-strategy.md`（品牌触点全清单）、`omi-cloud-neutral-postgres-migration.md`、`dev/cloudflare-adaptation-plan.md`、`dev/cloud-neutral-overview.md`。本目录是"怎么做"，那些文档是"为什么"。
 
+> **2026-09-04 实测更新**：以上日期与待签状态保留原始规划语境；当前代码进度和下一步以三路审计为准：[标准服务器](audit-2026-09-04/01-self-host-action-plan.md)、[Cloudflare](audit-2026-09-04/02-cloudflare-action-plan.md)、[白牌终端](audit-2026-09-04/03-whitelabel-action-plan.md)。审计基线是 `origin/main@d238a85af9`，区分已经验证、失败和未覆盖的路径。下文 D3/Next.js 的事实前提已过时：该主线及本次检查的上游都已使用 Moonshine/Bun，Web 双目标交付由三路计划中的 `WEB-1` 重新验证。
+
 ## 一句话
 
 把 `codex/cloudflare-adaptation` 与 `feature/cloud-neutral-shim` 各自的**接缝**（客户端认证、部署 profile、Web 构建、限流/检查清单）在 `main` 上重写成一份，把它们的**新增目录**（`deploy/cloudflare/` 616 文件、`deploy/self-host/` 24 文件、`backend/firestore_pg/`、`auth-server/`）直接检出，把**不该合的**（Moonshine 重写、上游文件格式化、上游测试改动、上游不变量改动）归档；之后部署目标由 `deploy/<target>/` + profile 表达，品牌由 `brand/<id>/` 表达，CI 跑 品牌 × 目标 矩阵，上游每周合一次、真实冲突 ≤5 个文件；**上游文件默认零改动**，例外只在 T1 白名单里（`00`）；契约权威是上游 API 与自托管参考实现，Cloudflare 单向对齐；Web 保持上游 Next.js，不引入 Bun。
