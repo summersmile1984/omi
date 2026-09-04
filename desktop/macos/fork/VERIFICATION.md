@@ -36,6 +36,17 @@ app already in this base. All changes are fork-owned. Logs are under
   explicit 20-file native scope above. Log:
   `make-preflight-cumulative-with-body.log`.
 
+The first committed 20-file diff subsequently exposed a changelog gate gap:
+`desktop-changelog-entry` internally reads committed diff rather than the runner’s
+staged file selection, so its earlier “No desktop changes” result was not the
+actual release-marker check. The committed invocation passed nine checks
+(including one history SKIP), then failed the tenth check for a missing fragment;
+four remaining upstream checks and the fork phase were not reached in that run.
+Log: `postcommit-preflight.log`. The follow-up adds an internal `kind:none`
+fragment for this local fork build package; it does not claim an upstream Omi
+release change and does not edit generated `CHANGELOG.json`. The committed-range
+wrapper is rerun with that fragment, recorded in `postcommit-preflight-final.log`.
+
 ## Actual native artifact and services
 
 `build.py` was run against a temporary **different brand** (`Fixture Notebook`),
