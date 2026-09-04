@@ -37,6 +37,11 @@ export const STAGING_DEPLOYMENTS = [
 ];
 
 const STAGING_DEPENDENCIES = {
+  "omi-cf-realtime-staging": [
+    "omi-cf-auth-staging",
+    "omi-cf-api-core-staging",
+    "omi-cf-rate-limit-staging",
+  ],
   "omi-cf-api-ai-staging": ["omi-cf-rate-limit-staging"],
   "omi-cf-jobs-staging": ["omi-cf-auth-staging"],
   "omi-cf-edge-staging": [

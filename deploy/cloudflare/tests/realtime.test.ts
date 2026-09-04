@@ -1,8 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSignedAuthContext } from "../workers/shared/auth-context";
 import { createRealtimeBootstrap } from "../workers/shared/realtime-bootstrap";
-import { createRealtimeTicket } from "../workers/shared/realtime-ticket";
 import realtime, { RealtimeSession } from "../workers/realtime/index";
+
+const productToken = "signed.product.jwt";
+function sessionAuthority(allowed = true, authority = "better-auth") {
+  return {
+    fetch: vi.fn(async (_request: Request) => ({
+      ok: allowed,
+      json: async () => ({
+        uid: "user-1",
+        authority,
+        sessionGeneration: authority === "better-auth" ? "session-1" : undefined,
+      }),
+    })),
+  };
+}
 
 async function realtimeContext(path = "/v4/listen") {
   return createSignedAuthContext(
@@ -154,6 +167,7 @@ describe("realtime gateway", () => {
     runtime.WebSocket = originalWebSocket;
     globalThis.Response = originalResponse;
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it("rejects a forged internal context before the websocket upgrade", async () => {
@@ -356,7 +370,7 @@ describe("realtime gateway", () => {
     expect(pair?.client.sent).toEqual([]);
   });
 
-  it("authenticates the browser first message before opening ASR", async () => {
+  it.each(["better-auth", "firebase"])("authenticates the admitted %s browser principal before opening ASR", async (authority) => {
     installFakeWebSockets();
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const upstream = new FakeSocket();
@@ -379,6 +393,7 @@ describe("realtime gateway", () => {
       } as unknown as DurableObjectState,
       {
         INTERNAL_ASSERTION_SECRET: "test-secret",
+        AUTH: sessionAuthority(true, authority),
         ASR_WS_URL: "wss://asr.example/listen",
         ASR_API_KEY: "provider-key",
       } as never,
@@ -399,18 +414,10 @@ describe("realtime gateway", () => {
     );
     expect(replay.status).toBe(409);
 
-    const ticket = await createRealtimeTicket(
-      {
-        uid: "user-1",
-        authority: "better-auth",
-        requestId: "req-1",
-      },
-      "test-secret",
-    );
     await pair?.server.dispatch("message", {
       data: JSON.stringify({
         type: "auth",
-        ticket,
+        token: productToken,
         device_id_hash: "device-1",
       }),
     });
@@ -431,6 +438,209 @@ describe("realtime gateway", () => {
     expect(upstream.sent).toEqual([audio]);
   });
 
+  it.each([
+    [
+      "legacy ticket",
+      JSON.stringify({ type: "auth", ticket: "retired-ticket" }),
+    ],
+    ["missing token", JSON.stringify({ type: "auth" })],
+    [
+      "opaque session instead of JWT",
+      JSON.stringify({ type: "auth", token: "session-secret" }),
+    ],
+    ["audio before auth", new ArrayBuffer(4)],
+    ["malformed JSON", "{"],
+    ["oversized first frame", "x".repeat(16_385)],
+  ])(
+    "rejects %s before opening the identity or ASR provider",
+    async (_label, data) => {
+      installFakeWebSockets();
+      const work: Promise<unknown>[] = [];
+      const authority = sessionAuthority();
+      const ai = { run: vi.fn() };
+      const session = new RealtimeSession(
+        durableState(work).state as never,
+        {
+          AUTH: authority,
+          AI: ai,
+          INTERNAL_ASSERTION_SECRET: "test-secret",
+        } as never,
+      );
+      await session.fetch(
+        new Request("https://realtime.test/v4/web/listen", {
+          headers: { upgrade: "websocket" },
+        }),
+      );
+      const socket = FakeWebSocketPair.last!.server;
+      await socket.dispatch("message", { data });
+      await Promise.all(work);
+      expect(socket.closeCode).toBe(4001);
+      expect(authority.fetch).not.toHaveBeenCalled();
+      expect(ai.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it("asks the live session authority on every reconnect and never forwards rejected JWTs", async () => {
+    installFakeWebSockets();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const authority = sessionAuthority();
+    for (const accepted of [true, false]) {
+      authority.fetch.mockImplementation(async () => ({
+        ok: accepted,
+        json: async () => ({
+          uid: "user-1",
+          authority: "better-auth",
+          sessionGeneration: "session-1",
+        }),
+      }));
+      const upstream = new FakeSocket();
+      const ai = { run: vi.fn(async () => ({ webSocket: upstream })) };
+      const work: Promise<unknown>[] = [];
+      const session = new RealtimeSession(
+        durableState(work).state as never,
+        {
+          AUTH: authority,
+          AI: ai,
+          INTERNAL_ASSERTION_SECRET: "test-secret",
+          APP_DB: meterDatabase(),
+        } as never,
+      );
+      await session.fetch(
+        new Request(
+          "https://realtime.test/v4/web/listen?codec=pcm16&sample_rate=16000",
+          { headers: { upgrade: "websocket" } },
+        ),
+      );
+      const socket = FakeWebSocketPair.last!.server;
+      await socket.dispatch("message", {
+        data: JSON.stringify({ type: "auth", token: productToken }),
+      });
+      await Promise.all(work);
+      expect(ai.run).toHaveBeenCalledTimes(accepted ? 1 : 0);
+      if (accepted) {
+        await socket.dispatch("message", {
+          data: JSON.stringify({ type: "auth", token: productToken }),
+        });
+        await Promise.all(work);
+        expect(upstream.sent).toEqual([]);
+        expect(socket.sent).toContain(
+          JSON.stringify({
+            type: "auth_response",
+            success: false,
+            error: "duplicate_auth_message",
+          }),
+        );
+      } else {
+        expect(socket.sent).toContain(
+          JSON.stringify({
+            type: "auth_response",
+            success: false,
+            error: "unauthorized",
+          }),
+        );
+      }
+      expect(socket.closeCode).toBe(4001);
+    }
+    expect(authority.fetch).toHaveBeenCalledTimes(2);
+    const request = authority.fetch.mock.calls[0][0];
+    expect(new URL(request.url).pathname).toBe("/internal/verify");
+    expect(request.headers.get("authorization")).toBe(`Bearer ${productToken}`);
+    expect(request.headers.get("cookie")).toBeNull();
+  });
+
+  it.each(["admission", "migration fence"])(
+    "applies browser %s before starting ASR",
+    async (policy) => {
+      installFakeWebSockets();
+      const work: Promise<unknown>[] = [];
+      const ai = { run: vi.fn() };
+      const core = { fetch: vi.fn(async () => ({ ok: false })) };
+      const limiter = {
+        idFromName: (name: string) => name,
+        get: () => ({
+          fetch: async () => ({
+            ok: true,
+            json: async () => ({
+              allowed: policy !== "admission",
+              retryAfter: 60,
+            }),
+          }),
+        }),
+      };
+      const session = new RealtimeSession(
+        durableState(work).state as never,
+        {
+          AUTH: sessionAuthority(),
+          AI: ai,
+          API_CORE: core,
+          RATE_LIMITS: limiter,
+          ACCOUNT_ACTIVATION_FENCE_ENABLED: "true",
+          INTERNAL_ASSERTION_SECRET: "test-secret",
+        } as never,
+      );
+      await session.fetch(
+        new Request("https://realtime.test/v4/web/listen", {
+          headers: { upgrade: "websocket" },
+        }),
+      );
+      const socket = FakeWebSocketPair.last!.server;
+      await socket.dispatch("message", {
+        data: JSON.stringify({ type: "auth", token: productToken }),
+      });
+      await Promise.all(work);
+      expect(socket.closeCode).toBe(4001);
+      expect(socket.sent).toContain(
+        JSON.stringify({
+          type: "auth_response",
+          success: false,
+          error: policy === "admission" ? "rate_limited" : "account_not_active",
+        }),
+      );
+      expect(ai.run).not.toHaveBeenCalled();
+      expect(core.fetch).toHaveBeenCalledTimes(policy === "admission" ? 0 : 1);
+    },
+  );
+
+  it("does not open ASR if JWT verification completes after the auth timeout", async () => {
+    installFakeWebSockets();
+    vi.useFakeTimers();
+    const work: Promise<unknown>[] = [];
+    let finish!: (value: unknown) => void;
+    const authority = {
+      fetch: () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    };
+    const ai = { run: vi.fn() };
+    const session = new RealtimeSession(
+      durableState(work).state as never,
+      {
+        AUTH: authority,
+        AI: ai,
+        INTERNAL_ASSERTION_SECRET: "test-secret",
+      } as never,
+    );
+    await session.fetch(
+      new Request("https://realtime.test/v4/web/listen", {
+        headers: { upgrade: "websocket" },
+      }),
+    );
+    const socket = FakeWebSocketPair.last!.server;
+    await socket.dispatch("message", {
+      data: JSON.stringify({ type: "auth", token: productToken }),
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    finish({
+      ok: true,
+      json: async () => ({ uid: "user-1", authority: "better-auth" }),
+    });
+    await Promise.all(work);
+    expect(socket.closeCode).toBe(4001);
+    expect(ai.run).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
   it("streams PCM8 through Workers AI and emits metered Omi segments", async () => {
     installFakeWebSockets();
     const upstream = new FakeSocket();
@@ -442,6 +652,7 @@ describe("realtime gateway", () => {
       state as unknown as DurableObjectState,
       {
         INTERNAL_ASSERTION_SECRET: "test-secret",
+        AUTH: sessionAuthority(),
         APP_DB: database,
         AI: {
           run: async (...args: unknown[]) => {
@@ -458,16 +669,8 @@ describe("realtime gateway", () => {
       ),
     );
     const pair = FakeWebSocketPair.last;
-    const ticket = await createRealtimeTicket(
-      {
-        uid: "user-1",
-        authority: "better-auth",
-        requestId: "req-1",
-      },
-      "test-secret",
-    );
     await pair?.server.dispatch("message", {
-      data: JSON.stringify({ type: "auth", ticket }),
+      data: JSON.stringify({ type: "auth", token: productToken }),
     });
     await Promise.all(work);
 

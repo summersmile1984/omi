@@ -7,7 +7,9 @@ import {
 import { readFairUseRestriction } from "../shared/fair-use-enforcement";
 import { recordFallback } from "../shared/fallback";
 import { defaultStreamingPolicy } from "../shared/provider-policy";
-import { verifyRealtimeTicket } from "../shared/realtime-ticket";
+import { verifyBearer } from "../shared/session-authority";
+import { enforceSessionAdmission } from "../shared/realtime-admission";
+import { cloudflareProductTrafficDenial } from "../edge/cutover";
 import type { RealtimeEnv } from "./env";
 
 const AUTH_TIMEOUT_MS = 15_000;
@@ -34,7 +36,7 @@ function pendingMeterKey(sourceId: string): string {
 
 type FirstMessageAuth = {
   type: "auth";
-  ticket: string;
+  token: string;
   deviceIdHash?: string;
 };
 
@@ -68,14 +70,14 @@ function parseFirstMessageAuth(data: string): FirstMessageAuth | null {
   try {
     const value = JSON.parse(data) as {
       type?: unknown;
-      ticket?: unknown;
+      token?: unknown;
       device_id_hash?: unknown;
     };
     if (
       value.type !== "auth" ||
-      typeof value.ticket !== "string" ||
-      value.ticket.length < 1 ||
-      value.ticket.length > 32_768 ||
+      typeof value.token !== "string" ||
+      !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value.token) ||
+      value.token.length > 32_768 ||
       (value.device_id_hash !== undefined &&
         (typeof value.device_id_hash !== "string" ||
           value.device_id_hash.length > 256))
@@ -84,7 +86,7 @@ function parseFirstMessageAuth(data: string): FirstMessageAuth | null {
     }
     return {
       type: "auth",
-      ticket: value.ticket,
+      token: value.token,
       deviceIdHash: value.device_id_hash,
     };
   } catch {
@@ -374,6 +376,7 @@ export class RealtimeSession {
   private upstreamAudioTransform: AudioTransform = "none";
   private authContext?: AuthContext;
   private requestUrl?: string;
+  private upgradeRequest?: Request;
   private firstMessageAuth = false;
   private authInFlight = false;
   private authTimeout?: ReturnType<typeof setTimeout>;
@@ -417,6 +420,7 @@ export class RealtimeSession {
     this.client = server;
     this.clientMessageChain = Promise.resolve();
     this.requestUrl = request.url;
+    this.upgradeRequest = request;
     this.firstMessageAuth = firstMessageAuth;
     if (firstMessageAuth) this.webBootstrapClaimed = true;
     this.authContext = this.firstMessageAuth
@@ -457,7 +461,7 @@ export class RealtimeSession {
     socket: WebSocket,
     data: ClientMessage,
   ): Promise<void> {
-    if (this.client !== socket) return;
+    if (this.client !== socket || socket.readyState !== WebSocket.OPEN) return;
     if (!this.authContext) {
       if (!this.firstMessageAuth || typeof data !== "string") {
         this.failAuthentication(socket, "invalid_auth_message");
@@ -473,14 +477,44 @@ export class RealtimeSession {
         return;
       }
       this.authInFlight = true;
-      const context = await verifyRealtimeTicket(
-        auth.ticket,
-        this.env.INTERNAL_ASSERTION_SECRET,
+      const requestId =
+        this.upgradeRequest?.headers.get("x-request-id") || crypto.randomUUID();
+      const context = await verifyBearer(
+        new Request(this.requestUrl!, {
+          headers: { authorization: `Bearer ${auth.token}` },
+        }),
+        this.env,
+        requestId,
       );
       this.authInFlight = false;
-      if (this.client !== socket) return;
+      if (this.client !== socket || socket.readyState !== WebSocket.OPEN)
+        return;
       if (!context) {
         this.failAuthentication(socket, "unauthorized");
+        return;
+      }
+      // JWT signature and live session ownership come from AUTH-1. Browser
+      // sessions then pass the same admission and migration fence as native WS.
+      const limited = await enforceSessionAdmission(
+        this.env,
+        context.uid,
+        requestId,
+      );
+      const denial =
+        limited ||
+        (await cloudflareProductTrafficDenial(
+          this.upgradeRequest!,
+          this.env,
+          context,
+          requestId,
+        ));
+      if (this.client !== socket || socket.readyState !== WebSocket.OPEN)
+        return;
+      if (denial) {
+        this.failAuthentication(
+          socket,
+          limited ? "rate_limited" : "account_not_active",
+        );
         return;
       }
       this.authContext = context;
@@ -504,6 +538,18 @@ export class RealtimeSession {
       return;
     }
 
+    // Credentials have a single consumer. Re-authentication cannot leak a JWT
+    // into an ASR provider's control stream or switch an established identity.
+    if (this.firstMessageAuth && typeof data === "string") {
+      try {
+        if (JSON.parse(data)?.type === "auth") {
+          this.failAuthentication(socket, "duplicate_auth_message");
+          return;
+        }
+      } catch {
+        /* Other provider control frames retain their existing handling. */
+      }
+    }
     if (!(await this.enforceFairUse(socket, false))) return;
     const size = messageBytes(data);
     if (size > MAX_PENDING_AUDIO_BYTES) {

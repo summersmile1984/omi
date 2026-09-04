@@ -146,3 +146,24 @@ Developer scope/rate admission plus conversation/transcript retrieval, authorita
 | Method | Path |
 |---|---|
 | POST | `/v1/dev/user/ask` |
+
+## CF-4 Live Model Session
+
+`POST /v2/realtime/session` is a real upstream route (`backend/routers/desktop_realtime.py:142`),
+with OpenAI/Gemini ephemeral session token and error contracts. CF-2 retires the
+fork-only `POST /v1/realtime/web-ticket` and its HMAC ticket, but retains this
+registered route. It now returns a bounded, authenticated 409 capability denial
+with `reason`, `provider`, `backend_route`, and `retryable` for the two real
+providers; invalid provider is 400. It cannot return an STT ticket as a live model
+credential. This correction exposes one existing false ownership claim: the
+612-route inventory is now 576 staging-owned + 36 blocked, with no registrations
+dropped.
+
+Owner: CF AI/realtime adapter, jointly with CLIENT-1 live-model client owner.
+The missing contract is interactive live-model transport, model selection,
+quota, usage recording, cancellation and provider failure semantics. A pure CF
+implementation must prove an equivalent native provider/client transport before
+this route can be marked owned. The target profile's
+`allow_direct_model_providers: false` must gate both visible Web controls and
+the token-request entry point (CLIENT-1); this is a retained delivery obligation,
+not a permanent removal of the user's live-model goal.
