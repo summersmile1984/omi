@@ -35,7 +35,12 @@ no broken symlink. `metadata.json` contains `api_origin`, `auth_origin`, `target
 `brand_id`, and `trace_dir`. `--run-core`, `--run-recording` and `--run-chat` select the executable
 suites and stop the target afterward. Otherwise SIGINT/SIGTERM stops it. Startup,
 commands and teardown share one process-group owner: cancellation prevents later
-stages, kills descendants, and never adopts an already-running endpoint. The recording signup driver honors one server-provided, bounded
+stages, kills descendants, and never adopts an already-running endpoint. Each
+command has a detached supervisor that stays alive until the tool's exit result
+has reached the parent, which then kills the owned group. The supervisor forwards
+the caller's standard streams and extra control descriptors unchanged; its IPC
+uses a separate final descriptor. A cleanup denial is a failure carrying the
+original tool result, not an uncaught callback or an accepted success. The recording signup driver honors one server-provided, bounded
 `X-Retry-After` response when the shared loopback signup rate limit is reached;
 that 429 remains in the trace and no auth rule is disabled. Each
 command has a five-minute deadline, readiness two minutes, and an interactive
@@ -50,6 +55,11 @@ credentials from child environments and replaces deployment origins/secrets with
 loopback/per-run values. It never consumes a release inventory or approval.
 `fixture.json` records source revision/status, npm/Python locks, tool versions,
 normal migration files, exact frozen module hashes and configuration hashes.
+`cache-owner.json` is written before startup, including on a failed run. By
+default the fixture creates its own private `pyodide/` directory before workerd
+starts; an explicit `CLOUDFLARE_PYODIDE_CACHE_DIR` must already be an ordinary
+directory and is recorded as external reuse. The runner never creates or deletes
+an explicit external cache. Workerd still verifies cached package integrity.
 
 The ASR WebSocket and structured/text inference provider are controlled; application
 routes, Auth sessions/JWT, data ownership, D1 storage and Queue delivery are real.
@@ -60,6 +70,15 @@ schema compatibility, every product route and client platform remain unproved.
 Fresh Python package/cache downloads require network and valid TLS; a verified
 local Pyodide cache may be reused via `CLOUDFLARE_PYODIDE_CACHE_DIR`. A cache failure
 fails the runner; it never starts a Core stub or returns a substitute success.
+
+The 2026-09-04 integrated Node 22 run exposed both the absent default cache and
+an exited-group cleanup race: workerd rejected the missing directory, then
+Wrangler's close callback replaced that failure with `kill EPERM`. The same
+frozen command reproduced that cleanup error in four of five immediate reaps;
+holding the live supervisor preserves the actual tool status. The SQLite import
+dry-run test also compares stderr with a clean in-memory `node:sqlite` process
+on the same Node executable: only its exact experimental warning is accepted,
+and additional application diagnostics remain failures.
 
 These reports always set `release_qualified: false`. They do not implement or
 replace CF5's pending complete-product, dual-target or prior-schema qualifiers.
