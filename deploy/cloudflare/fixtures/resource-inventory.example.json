@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "brand": "cf-alpha",
+  "target": "cloudflare",
+  "stage": "beta",
+  "account_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "routing": {
+    "mode": "custom_domains",
+    "workers_subdomain": null
+  },
+  "allocation": "new",
+  "d1_ids": {
+    "auth": "00000001-1111-4111-8111-111111111111",
+    "app": "00000001-2222-4222-8222-222222222222"
+  },
+  "secret_refs": {
+    "auth": {
+      "BETTER_AUTH_SECRET": "CF_ALPHA_BETA_AUTH_BETTER_AUTH_SECRET",
+      "INTERNAL_ASSERTION_SECRET": "CF_ALPHA_BETA_SHARED_INTERNAL"
+    },
+    "rate-limit": {},
+    "api-core": {
+      "ANNOUNCEMENTS_ADMIN_KEY": "CF_ALPHA_BETA_API_CORE_ANNOUNCEMENTS_ADMIN_KEY",
+      "FAIR_USE_ADMIN_KEY": "CF_ALPHA_BETA_API_CORE_FAIR_USE_ADMIN_KEY",
+      "INTERNAL_ASSERTION_SECRET": "CF_ALPHA_BETA_SHARED_INTERNAL"
+    },
+    "api-ai": {
+      "INTERNAL_ASSERTION_SECRET": "CF_ALPHA_BETA_SHARED_INTERNAL"
+    },
+    "realtime": {
+      "INTERNAL_ASSERTION_SECRET": "CF_ALPHA_BETA_SHARED_INTERNAL"
+    },
+    "jobs": {
+      "ADMIN_KEY": "CF_ALPHA_BETA_JOBS_ADMIN_KEY",
+      "APPS_ADMIN_KEY": "CF_ALPHA_BETA_JOBS_APPS_ADMIN_KEY",
+      "GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET": "CF_ALPHA_BETA_JOBS_GOOGLE_CALENDAR_TOKEN_ENCRYPTION_SECRET",
+      "MCP_APP_TOKEN_ENCRYPTION_SECRET": "CF_ALPHA_BETA_JOBS_MCP_APP_TOKEN_ENCRYPTION_SECRET",
+      "STRIPE_CONNECT_REFRESH_SECRET": "CF_ALPHA_BETA_JOBS_STRIPE_CONNECT_REFRESH_SECRET",
+      "TASK_INTEGRATION_TOKEN_ENCRYPTION_SECRET": "CF_ALPHA_BETA_JOBS_TASK_INTEGRATION_TOKEN_ENCRYPTION_SECRET",
+      "INTERNAL_ASSERTION_SECRET": "CF_ALPHA_BETA_SHARED_INTERNAL"
+    },
+    "edge": {
+      "BYOK_FINGERPRINT_PEPPER": "CF_ALPHA_BETA_EDGE_BYOK_FINGERPRINT_PEPPER",
+      "INTERNAL_ASSERTION_SECRET": "CF_ALPHA_BETA_SHARED_INTERNAL"
+    },
+    "web": {}
+  },
+  "existing_names": {},
+  "migration_lineage": "cf-alpha-beta-native-v1"
+}

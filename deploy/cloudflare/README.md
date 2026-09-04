@@ -181,6 +181,16 @@ release commands above still contain the retired Next/vinext Web publisher;
 CF-5 must connect the current shared Moonshine builder before they qualify the
 unified main for a new release.
 
+## Brand and stage resource plans
+
+`npm run resources -- --manifest /path/to/brand.json --inventory /path/to/resources.json --web-build /path/to/web-build --output /path/to/plan`
+renders the eight current Worker/Web configurations, both D1 migration authorities,
+secret **name** mappings, and a plan-bound rollback contract. It consumes the same
+rendered profile as the Moonshine builder. See [resource plan input and validation](resources.md)
+for the complete local workflow, existing-resource ownership, and qualification limits.
+Rendering performs no Cloudflare API call and never creates, renames, or deletes resources.
+Historical publishers below do not yet consume this plan; that integration remains CF-5.
+
 ## Staging resources
 
 Resource names are deliberately isolated from existing account resources:
