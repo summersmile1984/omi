@@ -3,7 +3,9 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -344,6 +346,20 @@ describe("one brand/stage Cloudflare resource authority", () => {
         }.fixture-account.workers.dev`,
       );
     expect(render(fixture).configs.edge.config.workers_dev).toBe(true);
+    for (const subdomain of [null, true, 123]) {
+      const invalid = structuredClone(fixture);
+      invalid.input.routing.workers_subdomain = subdomain;
+      for (const key of ["api", "auth", "web", "mcp", "share", "objects"])
+        changedProfile(
+          invalid,
+          `${key}_base_url`,
+          fixture.projected.profile[`${key}_base_url`].replace(
+            "fixture-account",
+            String(subdomain),
+          ),
+        );
+      expect(() => render(invalid)).toThrow("explicit subdomain");
+    }
   });
 
   it("preserves explicitly allocated existing resource names and Durable Object migration histories", () => {
@@ -444,6 +460,63 @@ describe("one brand/stage Cloudflare resource authority", () => {
         webArtifact: web,
       }),
     ).toThrow("digest mismatch");
+
+    // Real filesystem links, including dangling leaves, must be rejected before
+    // any output is rewritten. /tmp may itself be an OS alias above the root.
+    for (const [relative, broken] of [
+      ["workers/auth/wrangler.json", true],
+      ["workers/auth/wrangler.json", false],
+      ["workers/auth", false],
+      ["workers", false],
+      ["resource-plan.json", true],
+      ["workers/api-core/python_modules", true],
+      ["", false],
+    ]) {
+      const bundle = resolve(temporaryDirectory(), "bundle");
+      materializeResourceBundle(plan, {
+        root: source,
+        output: bundle,
+        webArtifact: web,
+      });
+      const marker = resolve(bundle, "resource-plan.json");
+      const originalMarker = readFileSync(marker, "utf8") + "\n";
+      writeFileSync(marker, originalMarker);
+      const outside = temporaryDirectory(),
+        sentinel = resolve(outside, "sentinel");
+      writeFileSync(sentinel, "outside-owned");
+      if (relative === "")
+        writeFileSync(
+          resolve(outside, "resource-plan.json"),
+          JSON.stringify(plan),
+        );
+      const target = resolve(bundle, relative);
+      rmSync(target, { recursive: true, force: true });
+      symlinkSync(
+        broken
+          ? resolve(outside, "missing")
+          : relative.endsWith(".json")
+          ? sentinel
+          : outside,
+        target,
+      );
+      const before = readdirSync(outside, { recursive: true }).sort();
+      for (const check of [true, false]) {
+        expect(() =>
+          materializeResourceBundle(plan, {
+            root: source,
+            output: bundle,
+            webArtifact: web,
+            check,
+          }),
+        ).toThrow(/symlink|link.*owner/);
+        expect(readdirSync(outside, { recursive: true }).sort()).toEqual(
+          before,
+        );
+        expect(readFileSync(sentinel, "utf8")).toBe("outside-owned");
+        if (relative !== "" && relative !== "resource-plan.json")
+          expect(readFileSync(marker, "utf8")).toBe(originalMarker);
+      }
+    }
   });
 
   it("ties rollback versions to one release attempt and retains D1 rather than inventing a schema reversal", () => {

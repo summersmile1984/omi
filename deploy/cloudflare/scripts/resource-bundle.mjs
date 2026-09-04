@@ -8,13 +8,40 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { canonical, digest, exactKeys } from "./resource-input.mjs";
 
 export function assertPlanIntegrity(plan) {
   const { plan_digest, ...body } = plan;
   if (typeof plan_digest !== "string" || digest(body) !== plan_digest)
     throw new Error("resource plan digest mismatch");
+}
+
+// Check the selected output root and every existing descendant before reading
+// or writing. lstat sees dangling links that existsSync intentionally hides.
+// System aliases above the selected root (for example macOS /tmp) are allowed.
+function outputEntry(destination, path, ownedLink = false) {
+  const suffix = relative(destination, path);
+  if (isAbsolute(suffix) || suffix === ".." || suffix.startsWith(`..${sep}`))
+    throw new Error("generated path is outside its output owner");
+  let current = destination;
+  const segments = suffix ? suffix.split(sep) : [];
+  for (let index = 0; index <= segments.length; index++) {
+    if (index) current = resolve(current, segments[index - 1]);
+    const entry = lstatSync(current, { throwIfNoEntry: false });
+    if (!entry) return undefined;
+    const leaf = index === segments.length;
+    if (entry.isSymbolicLink() && !(leaf && ownedLink))
+      throw new Error(
+        "generated output root, ancestors and files cannot be symlinks",
+      );
+    if (
+      (!leaf && !entry.isDirectory()) ||
+      (leaf && !ownedLink && !entry.isFile())
+    )
+      throw new Error("generated output path has a different file owner");
+    if (leaf) return entry;
+  }
 }
 export function rollbackSnapshot(plan, observations) {
   assertPlanIntegrity(plan);
@@ -109,13 +136,14 @@ export function materializeResourceBundle(
   assertPlanIntegrity(plan);
   const destination = resolve(output);
   const marker = resolve(destination, "resource-plan.json");
+  const markerEntry = outputEntry(destination, marker);
   if (
     existsSync(destination) &&
     readdirSync(destination).length &&
-    !existsSync(marker)
+    !markerEntry
   )
     throw new Error("nonempty output has no resource-plan ownership marker");
-  if (existsSync(marker)) {
+  if (markerEntry) {
     const previous = JSON.parse(readFileSync(marker, "utf8"));
     if (
       ["brand", "target", "stage", "account_id"].some(
@@ -201,19 +229,15 @@ export function materializeResourceBundle(
   const changed = [];
   for (const [path, content] of files) {
     const full = resolve(destination, path);
-    if (existsSync(full) && lstatSync(full).isSymbolicLink())
-      throw new Error("generated configuration path cannot be a symlink");
-    if (!existsSync(full) || readFileSync(full, "utf8") !== content)
-      changed.push(path);
+    const entry = outputEntry(destination, full);
+    if (!entry || readFileSync(full, "utf8") !== content) changed.push(path);
   }
   for (const [path, target] of links) {
     const full = resolve(destination, path);
-    if (
-      existsSync(full) &&
-      (!lstatSync(full).isSymbolicLink() || readlinkSync(full) !== target)
-    )
+    const entry = outputEntry(destination, full, true);
+    if (entry && (!entry.isSymbolicLink() || readlinkSync(full) !== target))
       throw new Error("Python module link has a different owner");
-    if (!existsSync(full)) changed.push(path);
+    if (!entry) changed.push(path);
   }
   if (!check) {
     for (const [path, content] of files) {
@@ -223,7 +247,8 @@ export function materializeResourceBundle(
     }
     for (const [path, target] of links) {
       const full = resolve(destination, path);
-      if (!existsSync(full)) symlinkSync(target, full, "dir");
+      if (!lstatSync(full, { throwIfNoEntry: false }))
+        symlinkSync(target, full, "dir");
     }
   }
   return {

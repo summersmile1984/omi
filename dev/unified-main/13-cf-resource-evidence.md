@@ -84,3 +84,29 @@ SQL 夹具执行全部文件，并在最后一项迁移前建立旧 user/session
 - CLIENT-1 / 白牌 owner：四端真实终端与资产/分发闭环；本包仅证明资源/Web 构建维度可隔离。
 - 无远端创建/改名/删除、无生产部署、无 push/PR/merge；旧本地 Auth/Edge/Core/Realtime
   联调工作树与服务保持原样。
+
+## CF3 独立 review 后的输出归属修复
+
+基包 `dee3ca1f394437184bc020704e910a17c283b677` 的 review 发现两个可复现边界：
+正则隐式把 null/boolean/number 当作 workers.dev 子域字符串；`existsSync` 看不到
+断链，也不能阻止 `workers/auth` 目录链接把配置写到输出根目录以外。
+旧生产物化函数使用真实 Alpha plan 的临时夹具实测，两种链接都产生
+`escaped_write=true`（`fix-filesystem-before.log`）。追加回归后是 2 failed / 10 passed
+（`fix-regression-before.log`），不是仅凭源码推断的风险。
+
+修复保持同一输入和写入 owner：子域先严格检查字符串类型；`lstat` 沿选定输出根目录
+及每一级已存在后代检查类型，写入前拒绝链接。只有精确指向本 source 的 Python
+module 叶子链接被允许。上层系统目录别名仍可用；本包没有声明对并发恶意文件系统
+替换提供原子事务保证。
+
+原 12 项资源测试增加 null/true/123 以及七种真实文件系统链接负例，每种同时运行
+check/write，验证外部文件与已有 marker 均不变化。`fix-regression-after.log` 为
+12 passed。基于当前提交源重新运行 Moonshine builder 得到 26 routes
+（`fix-alpha-web-build.log`）；正式 `render-resources.mjs` render / `--check` 均 exit 0
+（`fix-alpha-render.log`、`fix-alpha-check.log`）。随后在正式 CLI 输出中插入 broken
+leaf 或 ancestor link，两模式共四次均 exit 1 且外部目录与 marker 不变
+（`fix-cli-boundary.log`）。全部夹具只在 `/tmp`，完成后清除。
+
+这次不改变任何 Worker 配置或迁移语义，原 16 dry-run 和 D1 证据不冒称是重跑结果。
+最终提交消息记录此小修复的精确 candidate、完整组件/manifest 门禁、命令与日志；
+原远端发布和历史 Worker/schema 未证明项保持不变。

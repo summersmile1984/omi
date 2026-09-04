@@ -89,6 +89,12 @@ Repeat `--compare /path/other/resource-plan.json` to reject cross-brand/stage
 resource names, D1 IDs, public origin or secret-reference collisions before writing.
 Nonempty output directories need a matching deployment identity marker; an output
 owned by another brand/stage/account is rejected. `--check` compares without writing.
+The selected output root, existing descendant directories and configuration files
+must not be symbolic links, including dangling links. Validation finishes before
+any output is rewritten. Only the declared Python module link leaves may point
+to their exact source directory. System directory aliases above the selected
+output root, such as macOS `/tmp`, remain usable. workers.dev requires a string
+subdomain; JSON nulls, booleans and numbers are not coerced into account names.
 
 The bundle contains `resource-plan.json`, eight `workers/<role>/wrangler.json`
 files, two `migrations/<authority>.json` files, and `rollback-contract.json`.

@@ -193,7 +193,8 @@ export function validateResourceInput(input, projected) {
     throw new Error("routing mode must match the deployment stage");
   if (
     input.routing.mode === "workers_dev"
-      ? !NAME.test(input.routing.workers_subdomain)
+      ? typeof input.routing.workers_subdomain !== "string" ||
+        !NAME.test(input.routing.workers_subdomain)
       : input.routing.workers_subdomain !== null
   )
     throw new Error(
