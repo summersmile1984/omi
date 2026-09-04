@@ -296,19 +296,20 @@ the OAuth URL, then navigates that window after the request completes. This is
 required for browsers that block a popup opened after an asynchronous request;
 if a popup is blocked, the flow falls back to the current tab.
 
-Better Auth browser sessions are cookie-only: the same-origin auth proxy
-forwards `Set-Cookie` but removes the session token from successful sign-in and
-sign-up JSON. The public Better Auth base path is `/api/auth`; keeping
-that path and the Web Worker origin through provider callbacks lets the
-encrypted OAuth state and session cookies remain same-origin. The API proxy
-forwards the httpOnly session cookie only over the `EDGE`
-service binding; its public local-development fallback accepts bearer tokens
-and never receives browser cookies. Web recording exchanges the cookie at
-`POST /v1/realtime/web-ticket` for a signed 30-second ticket. The browser sends
-that ticket as its first WebSocket message, and the isolated Durable Object
-claims it once, so the Realtime Worker never receives a long-lived Better Auth
-session token or an Auth service binding. MCP OAuth discovery, login
-continuation, and consent stay on the same Web origin. The historical root
+The unified Web builder (`deploy/web/`) uses CLIENT-1's explicit profile Auth
+origin and session bearer. It does not use the retired cookie-only Web proxy.
+Web recording obtains an AUTH-1 product JWT, then sends
+`{ "type": "auth", "token": "<JWT>" }` to `/v4/web/listen`. Realtime calls the
+Auth service binding for signature plus current session/user ownership, then
+applies uid admission, the optional account migration fence and fair-use policy
+before starting ASR. Its internal signed bootstrap only admits the isolated
+upgrade; it is never a browser credential. The fork web-ticket endpoint is
+retired. Native `/v4/listen` and `/v2/voice-message/transcribe-stream` retain
+their shipped Bearer upgrade protocol. See `contracts/realtime/web-listen.md`
+for the source wire contract and verification boundaries.
+
+MCP retains a separate issuer and explicit profile origin; the unified Web
+MCP browser/callback flow still needs its own qualification. The historical root
 `GET/POST /authorize` and `POST /token` paths are aliases to Better Auth's
 `/api/auth/oauth2/*` provider, so older MCP clients use the same D1
 client/consent/token authority instead of the legacy Firebase-backed handler.
@@ -804,9 +805,8 @@ POST /v1/stt/transcribe-workers-ai
                               Edge → Python API AI → Workers AI binding (raw audio)
 POST /v2/voice-message/transcribe
                               Edge → Python API AI → Workers AI binding (Web/Flutter multipart or desktop PCM)
-POST /v2/realtime/session     Edge → signed Workers AI ticket → Realtime DO
+POST /v2/realtime/session     Edge → explicit 409 live-model capability denial (CF-4 owner pending)
 POST /v2/realtime/usage       Edge → Python API AI → D1 usage projection
-POST /v1/realtime/web-ticket  Edge cookie session → 30-second signed WebSocket ticket
 POST /v1/stt/transcribe-async
                               Edge → Jobs → R2 → Queue → Workers AI Whisper
 GET  /v1/stt/transcribe-async/{jobId}

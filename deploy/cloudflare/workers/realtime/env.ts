@@ -7,6 +7,9 @@ export type StreamingAiBinding = {
 };
 
 export type RealtimeEnv = {
+  AUTH: Fetcher;
+  API_CORE: Fetcher;
+  ACCOUNT_ACTIVATION_FENCE_ENABLED?: string;
   REALTIME_SESSIONS: DurableObjectNamespace;
   APP_DB: D1Database;
   AI?: StreamingAiBinding;

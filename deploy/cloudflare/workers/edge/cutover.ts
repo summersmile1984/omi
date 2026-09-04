@@ -13,7 +13,12 @@ export const ACCOUNT_CUTOVER_CONTROL_PATH = "/v1/account/cutover/control";
 
 export async function cloudflareProductTrafficDenial(
   clientRequest: Request,
-  env: EdgeEnv,
+  env: Pick<
+    EdgeEnv,
+    | "API_CORE"
+    | "INTERNAL_ASSERTION_SECRET"
+    | "ACCOUNT_ACTIVATION_FENCE_ENABLED"
+  >,
   auth: AuthContext,
   requestId: string,
 ): Promise<Response | null> {
