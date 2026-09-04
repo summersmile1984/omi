@@ -6,6 +6,8 @@ import base64
 import json
 import time
 
+from brand_runtime import load_brand_runtime
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -95,9 +97,9 @@ APP_CATEGORIES = (
     ("Utilities", "utilities-and-tools"),
     ("Other", "other"),
 )
-APP_GENERATOR_SYSTEM_PROMPT = """You are an expert app designer for Omi, an AI-powered wearable device that records conversations and provides intelligent insights.
+APP_GENERATOR_SYSTEM_PROMPT = """You are an expert app designer for {display_name}, an AI-powered wearable device that records conversations and provides intelligent insights.
 
-Design an app based on the user's description. Omi apps can have two capabilities:
+Design an app based on the user's description. {display_name} apps can have two capabilities:
 1. Chat apps (capability: "chat"): a persona or assistant with a detailed chat_prompt.
 2. Conversation/memory apps (capability: "memories"): analysis with a detailed memory_prompt.
 An app can have both capabilities when appropriate.
@@ -445,7 +447,11 @@ async def generate_app(request: Request, payload: GenerateAppRequest):
     if len(prompt) < 10:
         return JSONResponse({"detail": "Prompt is too short. Please provide more details."}, status_code=422)
     categories = "\n".join(f"- {title} (id: {category})" for title, category in APP_CATEGORIES)
-    system_prompt = APP_GENERATOR_SYSTEM_PROMPT.format(categories=categories)
+    try:
+        brand = load_brand_runtime(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
+    system_prompt = APP_GENERATOR_SYSTEM_PROMPT.format(categories=categories, display_name=brand.display_name)
     try:
         generated = await _run_generation(
             request.scope["env"],
@@ -485,7 +491,9 @@ async def generate_app_icon(request: Request, payload: GenerateAppIconRequest):
         return JSONResponse({"detail": "App description is required"}, status_code=422)
 
     prompt_prefix = "Create a polished square app icon for an AI companion app. "
-    prompt_suffix = " Use a single clear symbol, strong contrast, clean modern design, no words, no letters, no watermark."
+    prompt_suffix = (
+        " Use a single clear symbol, strong contrast, clean modern design, no words, no letters, no watermark."
+    )
     prompt_details = f"App name: {name[:500]}. Category: {category[:200]}. Description: "
     description_limit = max(0, MAX_ICON_PROMPT_CHARS - len(prompt_prefix) - len(prompt_details) - len(prompt_suffix))
     prompt = prompt_prefix + prompt_details + description[:description_limit] + prompt_suffix

@@ -17,7 +17,8 @@ locked Wrangler/workerd, then executes:
   and denial after logout. This is not the full dual-target recording matrix.
 - `chat.mjs`, the current upstream Web `api.ts` get/send/clear functions against
   actual HTTP/SSE, Python model RPC and D1: configured brand greeting/default
-  system prompt (via an inference-only echo), preservation of user text,
+  system prompt (via an inference-only echo), app-generator platform identity,
+  goal-advice assistant labels with cross-user denial, preservation of user text,
   UTF-8/newline decoding, selected
   session/app history, cross-user 404, provider failure without partial history,
   explicit clear retaining the session, and terminal deletion. A controlled
