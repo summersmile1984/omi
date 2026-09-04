@@ -41,3 +41,37 @@ def validate(value):
         if type(value[field]) is not int or not 1 <= value[field] <= ceiling:
             raise ValueError(f'embedding {field} must be a bounded positive integer')
     return EmbeddingContract(**value)
+
+
+@dataclass(frozen=True)
+class SpeechContract:
+    runtime_version: str
+    stt_model: str
+    tts_model: str
+    bundle_digest: str
+    stt_archive_digest: str
+    tts_archive_digest: str
+    vad_digest: str
+
+    def as_dict(self):
+        from dataclasses import asdict
+
+        return asdict(self)
+
+
+def validate_speech(value):
+    """The optional bundle enables exactly the two reviewed CPU providers."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != set(SpeechContract.__dataclass_fields__):
+        raise ValueError('speech requires an explicit runtime, model pair and four artifact digests')
+    if (
+        value['runtime_version'] != '1.13.4'
+        or value['stt_model'] != 'sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17'
+        or value['tts_model'] != 'kokoro-multi-lang-v1_0'
+    ):
+        raise ValueError('speech model/runtime combination has not been admitted')
+    for name in ('bundle_digest', 'stt_archive_digest', 'tts_archive_digest', 'vad_digest'):
+        if not isinstance(value[name], str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', value[name]):
+            raise ValueError('speech artifact identity requires full SHA-256 digests')
+    return SpeechContract(**value)

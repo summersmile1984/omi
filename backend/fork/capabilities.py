@@ -20,14 +20,15 @@ class CapabilityDisabled(RuntimeError):
 
 def validate(row):
     caps = row.get('capabilities', {})
-    if (
-        caps.get('stt_providers') != []
-        or caps.get('tts_provider') != 'disabled'
-        or caps.get('push_provider') != 'disabled'
+    from .model_contract import validate_speech
+
+    speech = validate_speech(row.get('speech'))
+    if caps.get('push_provider') != 'disabled':
+        raise ValueError('self-host push has no admitted provider')
+    if caps.get('stt_providers') != (['sensevoice'] if speech else []) or caps.get('tts_provider') != (
+        'kokoro' if speech else 'disabled'
     ):
-        raise ValueError(
-            'self-host STT/TTS/push have no admitted provider; enable them with a verified provider contract'
-        )
+        raise ValueError('speech capabilities must match the admitted model bundle')
 
 
 def reject(capability):

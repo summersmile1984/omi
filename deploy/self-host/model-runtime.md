@@ -1,10 +1,11 @@
 # Current local model runtime
 
-The self-host reference enables BGE-M3 embeddings. STT, TTS and push remain
-explicitly disabled in this intermediate package. The older full-cutover
-sections of README.md and their scripts are not evidence of implemented audio
-providers. An enabled recording/transcription/playback path remains SH3 work;
-full provider/cutover attestation remains SH4 work.
+The self-host reference enables BGE-M3 embeddings and selects the pinned local
+SenseVoice/Kokoro speech bundle described in [speech-runtime.md](speech-runtime.md).
+Push and speaker identification remain disabled. The older full-cutover
+sections of README.md and their scripts are not deployment attestation.
+Full conversation/LLM processing and provider/cutover evidence remain separate
+SH3/SH4 work; a model inference or PTT response does not prove those workflows.
 
 `deploy/profiles/self_hosted.yaml` is the public model owner. The renderer derives
 `capabilities.embedding_dims` from its embedding contract; clients, backend,
@@ -43,7 +44,7 @@ wrong-model results fail rather than returning a successful empty search.
 Upstream Tasks still preserve their already-committed row if later indexing
 fails; that existing best-effort behavior does not prove indexing succeeded.
 
-Disabled speech requests return HTTP 503 with
+When the optional speech bundle is absent, speech requests return HTTP 503 with
 `deployment_capability_disabled`, the capability and `retryable: false`.
 Streaming speech completes the handshake then closes 1008 / `stt_disabled`.
 Background STT selection throws the same typed disabled condition. Public

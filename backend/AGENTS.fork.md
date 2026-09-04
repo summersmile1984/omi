@@ -86,3 +86,11 @@ startup runner are `deploy/self-host/Dockerfile` and `build-images.sh`; upstream
   collections with identical metadata before serving; no in-place rebind or
   independent EMBEDDING_DIMENSION is permitted. The startup lane includes model
   and disabled-capability behavior; real CPU/HTTP evidence remains separate.
+
+- Local speech uses the same `fork/model_contract.py` and profile owner as
+  embeddings. Run `deploy/self-host/prepare-speech.py` before deployment; mount
+  the verified bundle read-only via `SPEECH_MODEL_STORE`. Bootstrap pins model,
+  thread, ITN, window and local-VAD configuration before imports. Do not restore
+  vendor fallbacks or infer readiness from file existence. Existing startup
+  local/CI tests cover normalized PCM, artifact faults, actual HTTP/WS consumers
+  and disabled mode; native recordings remain separately verified evidence.
