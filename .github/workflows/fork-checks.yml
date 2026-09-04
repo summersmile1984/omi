@@ -36,6 +36,10 @@ jobs:
           cache: npm
           cache-dependency-path: deploy/cloudflare/package-lock.json
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
       # The guard classifies a file as "upstream" by its presence in
       # upstream/main, so without this ref it can only skip. Fetch it explicitly
       # rather than letting the check pass on an empty definition.
