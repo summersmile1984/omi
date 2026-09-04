@@ -54,3 +54,21 @@ with npm's `Exit handler never called!`; its log remains `build.log`. ARM64
 success is not an AMD64 qualification. Python backend AMD64 success is separate
 SH2/SH4 evidence. External OAuth, signed native delivery, full provider erasure,
 and production cutover remain outside this package.
+
+## AMD64 retry checkpoint
+
+The unchanged Dockerfile and dependency pins subsequently built successfully
+for Linux AMD64. The source is `1be55bf3bd`; the image
+`memweft-auth-pg-upgrade-amd64:20260904` has OCI index
+`sha256:106839c697d229489ebfeb929d71f7c0096a233208ee8c666e24ca64c402db32`.
+The retry log is `pg-upgrade/build-amd64-retry.log` beside the initial failure.
+
+A separate fresh PostgreSQL/Auth project, `memweft-pg-upgrade-amd64-20260904`,
+used that image directly without source mounts, with Auth on 33070 and PG on
+55470. The same `live.py` completed all five checkpoints: fresh schema and
+repeat import, incorrect/correct/native login, actual SQL write fault and
+recovery, legacy signing migration plus live session/revocation checks, and
+retired-key rejection with zero synthetic identity residuals. Its full evidence
+is under `/tmp/memweft-implementation/auth/pg-upgrade-amd64/`. This qualifies
+the bounded Auth flow on both architectures; the wider Linux product and
+release acceptance remains pending.
