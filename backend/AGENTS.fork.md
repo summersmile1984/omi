@@ -66,3 +66,10 @@ startup runner are `deploy/self-host/Dockerfile` and `build-images.sh`; upstream
   `firestore_pg/tests/test_transaction_semantics.py` separately against disposable
   PG for actual serialization/worker evidence. Never interpret provider stubs or
   a minimal completion receipt as proof of complete external-account erasure.
+
+
+- The self-host Auth image's `self-host-runtime.mjs` selects NODE_ENV from the
+  same SELF_HOST_STAGE used by profile generation; beta/production cannot be
+  relaxed by ambient NODE_ENV. Compose and migration gates invoke this owner
+  for both serve and migrate. Its tests run under the existing Auth contracts
+  lane (`auth-server/test/self-host-runtime.test.js`).

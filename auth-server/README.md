@@ -45,6 +45,18 @@ npm run migrate
 npm start
 ```
 
+The self-host Docker image routes both serving and migration through
+`self-host-runtime.mjs`: `SELF_HOST_STAGE=local` selects development; `beta` and
+`production` select production before Auth modules import. The default is
+production, unknown stages/commands fail, and ambient `NODE_ENV` cannot relax
+production or beta. Use `node self-host-runtime.mjs migrate [--check]` and
+`node self-host-runtime.mjs serve` inside this image. The source helper lives at
+`deploy/self-host/auth-runtime.mjs` and is copied beside `src` during the build.
+Direct `npm start` remains the component development command shown above.
+
+Source commit/tree labels are applied after dependency and source layers;
+changing attribution alone must reuse the locked `npm ci` layer.
+
 Production Compose owns this ordering with the one-shot `auth-migrate` service
 and `condition: service_completed_successfully`. `npm run migrate` is idempotent
 and fails unless a post-migration schema read reports zero pending tables or

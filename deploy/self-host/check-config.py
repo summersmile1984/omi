@@ -24,6 +24,7 @@ REQUIRED_SOURCE = (
     'backend/fork/bootstrap.py', 'backend/fork/main.py', 'backend/fork/profile.py',
     'backend/fork/worker.py', 'backend/fork/migrate.py', 'backend/fork/queue_config.py',
     'backend/firestore_pg/migrations.py', 'backend/Dockerfile',
+    'deploy/self-host/auth-runtime.mjs',
     'deploy/self-host/Dockerfile', 'deploy/self-host/build-images.sh',
     'deploy/self-host/operations.sh', 'deploy/self-host/compose-clean-env.sh',
     'deploy/self-host/volume-snapshot.py', 'deploy/self-host/runtime-evidence.py',
@@ -49,6 +50,12 @@ def check_sources(root: Path = ROOT) -> None:
             module = command[2]
             if not (root / 'backend' / (module.replace('.', '/') + '.py')).is_file():
                 raise ValueError(f'{name}: Python entrypoint missing: {module}')
+    for name, role in (('auth-server', 'serve'), ('auth-migrate', 'migrate')):
+        service = compose['services'][name]
+        if service.get('command') != ['node', 'self-host-runtime.mjs', role]:
+            raise ValueError(f'{name}: stage-aware Auth entrypoint is required')
+        if 'SELF_HOST_STAGE=${SELF_HOST_STAGE:-production}' not in service.get('environment', []):
+            raise ValueError(f'{name}: Auth stage must come from SELF_HOST_STAGE')
     for name in ('backend', 'queue-worker', 'firestore-pg-migrate'):
         if compose['services'][name]['build']['dockerfile'] != 'deploy/self-host/Dockerfile':
             raise ValueError(f'{name}: the self-host profile image layer is required')
