@@ -43,7 +43,9 @@ it('only grants the current renderer its selected API origin, including prefligh
     statusLine: 'HTTP/1.1 200 OK',
     responseHeaders: {
       'access-control-allow-origin': [contents],
-      'access-control-allow-headers': ['authorization, content-type']
+      'access-control-allow-headers': [
+        expect.stringContaining('x-app-platform, x-app-version, x-device-id-hash')
+      ]
     }
   })
   expect(after.mock.calls[0][0].responseHeaders['Access-Control-Allow-Origin']).toBeUndefined()
@@ -51,7 +53,13 @@ it('only grants the current renderer its selected API origin, including prefligh
   for (const altered of [
     { url: 'https://api.omi.me/v2/apps' },
     { url: 'http://127.0.0.1:34810/api/auth/sign-in/email' },
-    { requestHeaders: { Origin: 'https://untrusted.example.invalid' } }
+    { requestHeaders: { Origin: 'https://untrusted.example.invalid' } },
+    {
+      requestHeaders: {
+        Origin: contents,
+        'Access-Control-Request-Headers': 'authorization, x-unreviewed'
+      }
+    }
   ]) {
     before.mockClear()
     after.mockClear()

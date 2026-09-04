@@ -1,0 +1,1 @@
+{"changes":["Fixed local dual-target desktop API requests being blocked when they include the application's platform, version, device, or BYOK headers."]}

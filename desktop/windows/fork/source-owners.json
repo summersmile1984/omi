@@ -114,6 +114,7 @@
   "src/renderer/src/pages/Memories.tsx": "58181dd24947765ad5dc7485e917c47b1e1598a664508694ae9fd8a354c0bdfa",
   "src/renderer/src/pages/Onboarding.tsx": "fae72ad002b05439ebb9fd4076260202ea33fc5a263a71f6d302cf63b01d1a68",
   "src/renderer/src/pages/Settings.tsx": "cdf667183f7aa4a1fb02982212d45c825a9530d7ac243642ecea179250325021",
+  "src/shared/byok.ts": "a0713a37df448f0318a2aa2a4cddc653124c739885490d6e467631e341f40f92",
   "src/shared/types.ts": "6f35fe0d2bb159558a5e6329f4095dc6d5b21058bae37cc07298fb3decad7f9a",
   "tailwind.config.ts": "af4077772a1847f966d8799b879ef80466e111bee1936fc10d9c419e237cdbe9",
   "tsconfig.node.json": "eb01d98d1f9cd2793c9447499c88555a0b57e431a609f57d62e19dc0e2b509cb",

@@ -23,7 +23,8 @@
   renderer 无权推 opaque、owner 用户 ID、任意 API origin 或后台会话。
 - `native/apiAccess.ts` 接管上游已有的 Electron API CORS 边界，仅作用于当前 profile
   API 与当前应用 renderer 的精确 origin，保留 webSecurity。Auth 路径不走此边界。
-  源码中的上游 API/analytics 通配名单不进入本地工件。
+  源码中的上游 API/analytics 通配名单不进入本地工件。生产 Axios 的平台、版本、
+  设备与共享 BYOK 请求头进入明确白名单；未知 preflight header 不获得原生放行。
 - `renderer/identity.ts` 是所有原有身份调用者的公共 facade。保留同 owner 的 User
   对象身份，保护现有跨 await 请求边界；不重复触发仅由 JWT refresh 导致的登录回调。
   姓名仅在服务器确认后投影；API 401 重试也不能把 A 的请求改用 B 的身份重放。
