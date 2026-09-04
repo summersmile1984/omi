@@ -1,21 +1,14 @@
 # 06 · 上游同步 Runbook（每周一次，冲突可度量、可下降）
 
-> 适用：单主线拓扑落地后的常态运维。目标：`upstream/main → main` 每周一次，人只解真实冲突，冲突文件数从今天的 13 降到 ≤5 并保持。
-> 今日基线（2026-09-02，`git merge-tree --write-tree main upstream/main`，只计真实冲突）：**13 个文件**；其中 6 个是 fork 自己的格式化提交造成的，3 个是 fork 的 shim 注入点，2 个是机器人/忽略文件，2 个是文档与测试。
+> 适用：单主线拓扑落地后的常态运维。目标：`upstream/main → main` 每周一次，人只解真实冲突。
 
-## 1. 今天的 13 个冲突文件与永久处置
+## 1. 分歧文件清单
 
-| 文件 | 冲突原因 | 永久处置（做一次，以后不再冲突） |
-|---|---|---|
-| `web/admin/app/api/omi/stats/{k-factor/posthog,profitability,viral-metrics}/route.ts`、`web/admin/grafana/build_dashboards.py`、`web/admin/grafana/dashboards/omi-tv.json`、`web/admin/lib/__tests__/platform-scope-routes.test.ts` | fork 提交 `c27893743e`/`a8d062cf45`/`93fae0b4eb` "style(admin): format …" 用不同版本的 prettier 重排上游文件 | **回退这三个提交的内容**（恢复为上游版本）；钉住格式化工具版本与上游 `.pre-commit-config.yaml` 一致；pre-commit 钩子只对 fork 自有路径格式化（见 §4） |
-| `.github/guardrail-pulse-history.jsonl` | fork 与上游的 `guardrail-baseline-pulse.yml` 机器人各自每周追加同一文件 | 在 fork 的 GitHub Actions 界面**禁用** `guardrail-baseline-pulse.yml`；同步时该文件一律取上游版本（`git checkout --theirs`） |
-| `.gitignore` | fork 追加了本地代理工具目录（`.codex/.loopx/...`，提交 `19e82722f4`） | 移到 `.git/info/exclude`（不入库）或 `dev/.gitignore`；根 `.gitignore` 恢复上游版本 |
-| `backend/AGENTS.md` | fork 在上游文件里加了 shim 说明 | **取上游、不加指针**；正文移入 `backend/AGENTS.fork.md`（指针方案 2026-09-03 实测失败，预算无余量，见 §7 与 `00-upstream-touch-policy.md` §4 第 9 条） |
-| `backend/config/stt_provider_policy.py`、`backend/utils/stt/streaming.py` | fork 加了 MiMo/MOSS/SenseVoice provider（`cc80aefad5`、`5c1dcd346f`、`ba3adaf967`） | provider 实现迁到 `backend/fork/stt/`，由 `backend/fork/main.py` 的补丁注册表在导入时注入到上游的 provider 表；**上游文件恢复原样（零改动）**；同时向上游提"provider 注册表"PR |
-| `backend/utils/cloud_tasks.py` | fork 插入 `QUEUE_BACKEND=redis` 分发（`83e627b428`） | 同上：`backend/fork/patches/queue.py` 在导入时替换 `utils.cloud_tasks` 的派发函数，实现在 `backend/fork/cloud_tasks_redis.py`；上游文件零改动 |
-| `backend/tests/unit/test_conversation_notes_v2.py` | fork 改了上游测试以适配 shim | 不改上游测试；shim 差异用 fork 自有测试文件覆盖（`backend/tests/unit/fork/`） |
+**2026-09-03 首次实战时这里曾经是一张写死的"13 个冲突文件与永久处置"表，当一次性快照处理——写完就再没人回来对过账，等到 2026-09-04 才发现表里 8 条"永久处置"一条都没真正执行完（细节见下方链接文档的历史记录）。** 现在改为指向一份每次同步都要重新生成、手工核对更新的活清单：
 
-预期：处置完毕后 `backend/**` 上游文件改动为 0，真实冲突降到 **0**（此后冲突只可能来自 T1 白名单那十来行，见 `00-upstream-touch-policy.md` §4）。
+→ **[09-upstream-diverged-files.md](09-upstream-diverged-files.md)**——怎么生成（一条命令，复用 `check-upstream-touch.py`）、当前 38 条真实分歧按子系统分组、每条的已知原因与处置方案、状态。
+
+每周同步的第 3 步（下方）先查这份清单里有没有"待处置"条目匹配到当次遇到的冲突文件——大部分冲突应该是清单里已经分析过的老问题重新浮现，而不是全新的。同步做完后回去更新清单状态，而不是把处置方案重新发明一遍。
 
 ## 2. 每周流程（约 30~60 分钟）
 

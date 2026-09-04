@@ -17,10 +17,11 @@
 | [03-deploy-targets.md](03-deploy-targets.md) | `deploy/self-host/` 与 `deploy/cloudflare/` 各自的目录契约、合入时的调整、混合部署、共享服务端资产、Web 运行时决策 D3、Cloudflare 未移植清单 | 目录契约 |
 | [04-brand-layer.md](04-brand-layer.md) | 白牌层怎么落地：`brand/manifest.yaml` schema、`apply.py`/`check.py` 规范、每平台生成物、B0–B8 PR 拆分、契约组、私有 overlay | 实施规范 |
 | [05-ci-matrix.md](05-ci-matrix.md) | 上游工作流如何处置（禁用脚本）、fork 检查清单与本地入口、`deploy/matrix.json`、fork 工作流一览、密钥门、标签命名空间 | CI 设计 + 骨架 |
-| [06-upstream-sync.md](06-upstream-sync.md) | 每周同步流程、13 个现存冲突的永久处置、"不修改上游文件"清单、按类别的冲突处置规则、度量与自动化 | Runbook |
+| [06-upstream-sync.md](06-upstream-sync.md) | 每周同步流程、"不修改上游文件"清单、按类别的冲突处置规则、度量与自动化 | Runbook |
 | [decisions.md](decisions.md) | **待签决策清单**：逐条的问题、选项与后果、推荐、阻塞什么、改主意的代价；按紧迫度分组，末尾有签字栏 | 决策 |
 | [07-pr-plan.md](07-pr-plan.md) | 决策登记 D1–D11、S/M/C/B 四个系列的 PR 表（依赖、人日、验收证据）、10 周排期、PR 模板、执行期风险 | 计划 |
 | [08-m2-cloudflare-followups.md](08-m2-cloudflare-followups.md) | M2 落地时实测发现、判断为需独立 PR 的 5 个 Cloudflare 缺口（JWKS 本地校验、web-ticket 撤回、auth/shared 抽取、资源名品牌化、CI 契约套件）——GitHub Issues 在本 fork 被禁用，改走本文档 | 追踪 |
+| [09-upstream-diverged-files.md](09-upstream-diverged-files.md) | fork 现在到底改了哪些上游文件、按 `check-upstream-touch.py` 核算的活清单（一条命令重新生成）、按子系统分组的原因与处置方案、每次同步前查/同步后更新 | 活清单 |
 | [upstream-touch-allowlist.yaml](upstream-touch-allowlist.yaml) | 唯一允许被 fork 修改的上游文件清单（T1，逐条限行数）+ 永不可改的 T2 模式 | 守卫数据 |
 | [upstream-prs.md](upstream-prs.md) | 回推上游的 PR 队列；每被接受一个就删一条白名单 | 队列 |
 | [templates/sync-pr-body.md](templates/sync-pr-body.md) | 同步 PR 的描述模板 | 模板 |
