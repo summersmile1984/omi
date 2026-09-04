@@ -2,6 +2,7 @@
 // LIFECYCLE: permanent
 // Fail-closed Firebase Auth export -> Better Auth identity migration.
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -299,8 +300,12 @@ export function planFirebaseIdentityImport(source, hashConfig) {
       );
     }
   }
-  users.sort((left, right) => left.id.localeCompare(right.id));
-  accounts.sort((left, right) => left.id.localeCompare(right.id));
+  // Reconciliation reads PostgreSQL ORDER BY id COLLATE "C". Both sides
+  // must compare UTF-8 bytes rather than a host's language-sensitive order.
+  const compareIdentityBytes = (left, right) =>
+    Buffer.compare(Buffer.from(left.id, "utf8"), Buffer.from(right.id, "utf8"));
+  users.sort(compareIdentityBytes);
+  accounts.sort(compareIdentityBytes);
   const canonical = { users, accounts };
   return Object.freeze({
     users,

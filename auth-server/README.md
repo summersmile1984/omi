@@ -131,6 +131,12 @@ Google and Apple accounts are imported only when their operator OAuth pairs are 
 Sessions are intentionally not migrated; clients must establish a new signed
 Better Auth session after cutover.
 
+The import digest orders opaque IDs by UTF-8 bytes, matching PostgreSQL's
+[`COLLATE "C"` ordering](https://www.postgresql.org/docs/16/collation.html).
+Do not replace this with locale-sensitive sorting: mixed-case, punctuation and
+Unicode IDs must reconcile identically on every migration host. Successful
+existing receipts retain the same digest; failed transactions leave no receipt.
+
 ## Enable in the backend
 
 ```bash

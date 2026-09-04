@@ -90,6 +90,29 @@ test("plans password, Google, and Apple identities while preserving Firebase uid
   );
 });
 
+test("canonical import order matches PostgreSQL C collation for opaque UIDs", () => {
+  // PostgreSQL C orders UTF-8 character bytes, independently of host locale.
+  // The real importer rolled back this mixed UID fixture under localeCompare.
+  const expected = ["%2E%2E", ".", "..", "Z", "a", "ä", "中", "😀"];
+  const users = [...expected].reverse().map((localId, index) => ({
+    localId,
+    email: `ordering-${index}@example.invalid`,
+    createdAt: "1700000000000",
+    passwordHash,
+    salt: "42xEC+ixf3L2lw==",
+  }));
+  const first = planFirebaseIdentityImport({ users }, config);
+  assert.deepEqual(
+    first.users.map((user) => user.id),
+    expected,
+  );
+  const second = planFirebaseIdentityImport(
+    { users: [...users].reverse() },
+    config,
+  );
+  assert.equal(first.canonicalSha256, second.canonicalSha256);
+});
+
 test("CLI rejects symlinked or group/world-readable Firebase import artifacts", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "omi-auth-import-"));
   try {

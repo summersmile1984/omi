@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "FC-canonical-digest-orders-by-host-locale",
+  "violated_contract": "A reconciliation digest must order opaque identities by the same explicit byte order at its producer and verifier. Host-language collation must not change a canonical content hash or reject an otherwise identical imported dataset.",
+  "canonical_prevention": "Sort imported identity rows by UTF-8 bytes to match the PostgreSQL verifier's COLLATE C query, and exercise mixed punctuation, case and Unicode identities through the production planner and real migration transaction.",
+  "evidence_prs": [],
+  "scope_hints": [
+    "auth-server/src/import-firebase-users.js",
+    "auth-server/test/import-firebase-users.test.js"
+  ],
+  "status": "open",
+  "canonical_prevention_artifact": [
+    "auth-server/src/import-firebase-users.js",
+    "auth-server/test/import-firebase-users.test.js"
+  ]
+}
