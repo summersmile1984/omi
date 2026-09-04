@@ -1,7 +1,10 @@
+import { spawnSync } from "node:child_process";
+import { digest } from "../scripts/resource-input.mjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -11,10 +14,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   activeVersion,
+  WRANGLER_PROCESS_TIMEOUT_MS,
   WranglerReleaseAdapter,
 } from "../scripts/release-wrangler.mjs";
 import {
   pendingQualifiers,
+  QUALIFIER_PROCESS_TIMEOUT_MS,
+  RELEASE_QUALIFIERS,
   runReleaseQualifiers,
 } from "../scripts/release-qualification.mjs";
 
@@ -23,6 +29,7 @@ const account = "a".repeat(32),
   version = "11111111-1111-4111-8111-111111111111";
 const directories = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const path of directories.splice(0))
     rmSync(path, { force: true, recursive: true });
 });
@@ -93,6 +100,75 @@ describe("locked Wrangler release adapter", () => {
     expect(existsSync(secretPath)).toBe(false);
     expect(JSON.stringify(result)).not.toMatch(/secret|sensitive|credential/);
   });
+  it("bounds a hanging real launcher and kills its descendant process group without exposing output", () => {
+    const kill = vi.spyOn(process, "kill");
+    let actual;
+    const spawn = vi.fn((command, _args, options) => {
+      expect(options.timeout).toBe(WRANGLER_PROCESS_TIMEOUT_MS);
+      expect(options.killSignal).toBe("SIGKILL");
+      expect(options.detached).toBe(true);
+      actual = spawnSync(
+        command,
+        [
+          "-e",
+          `
+        const { spawn } = require('node:child_process');
+        const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+        console.log(child.pid);
+        process.on('SIGTERM', () => {});
+        setInterval(() => {}, 1000);
+      `,
+        ],
+        { ...options, timeout: 250 },
+      );
+      return actual;
+    });
+    const adapter = fixture({ spawn });
+    expect(adapter.command(["deploy"])).toEqual({
+      exit: null,
+      signal: "SIGKILL",
+    });
+    expect(actual.error.code).toBe("ETIMEDOUT");
+    expect(Number(actual.stdout.trim())).toBeGreaterThan(0);
+    expect(kill).toHaveBeenCalledWith(-actual.pid, "SIGKILL");
+    expect(spawn).toHaveBeenCalledOnce();
+  });
+
+  it("rejects valid-looking evidence from a timed-out real qualification process", () => {
+    const directory = mkdtempSync(
+      resolve(tmpdir(), "cf-release-qualification-timeout-"),
+    );
+    directories.push(directory);
+    const candidate = { candidate_digest: "b".repeat(64) };
+    const proof = {
+      schema_version: 1,
+      candidate_digest: candidate.candidate_digest,
+      observation_digest: digest({}),
+      cases: [{ id: "fixture", result: "pass" }],
+    };
+    for (const entry of RELEASE_QUALIFIERS) {
+      const filename = resolve(directory, entry.path);
+      mkdirSync(dirname(filename), { recursive: true });
+      writeFileSync(
+        filename,
+        `console.log(${JSON.stringify(
+          JSON.stringify(proof),
+        )}); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);\n`,
+      );
+    }
+    let actual;
+    const spawn = vi.fn((command, args, options) => {
+      expect(options.timeout).toBe(QUALIFIER_PROCESS_TIMEOUT_MS);
+      actual = spawnSync(command, args, { ...options, timeout: 250 });
+      return actual;
+    });
+    expect(() =>
+      runReleaseQualifiers(directory, candidate, {}, { spawn }),
+    ).toThrow("stale/incomplete evidence");
+    expect(actual.error.code).toBe("ETIMEDOUT");
+    expect(spawn).toHaveBeenCalledOnce();
+  });
+
   it("uses explicit account, remote D1 config, and confirmed exact-version rollback arguments", () => {
     const spawn = vi.fn(() => ({ status: 0 })),
       adapter = fixture({ spawn });

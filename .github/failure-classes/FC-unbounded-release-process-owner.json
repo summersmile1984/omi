@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "FC-unbounded-release-process-owner",
+  "violated_contract": "A release mutation or qualification process must have a finite execution deadline and retain ownership of launcher descendants until termination; a hung subprocess must become an unknown journal outcome rather than leave the transaction in flight forever.",
+  "canonical_prevention": "Give each process owner a fixed deadline, isolate its POSIX process group, terminate the group on completion or timeout, and preserve null-exit reconciliation without mutation retries. Exercise actual hanging parent/child processes and reject valid-looking evidence from a process that never exited successfully. The 2026-09-04 CF5 review found unbounded spawnSync owners in both Wrangler mutations and release qualifiers; the local Wrangler version-check connection also delayed completion beyond its printed dry-run result.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/scripts/release-wrangler.mjs",
+    "deploy/cloudflare/scripts/release-qualification.mjs",
+    "deploy/cloudflare/tests/release-adapter.test.mjs",
+    "deploy/cloudflare/tests/release-transaction.test.mjs"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/scripts/release-*.mjs",
+    "deploy/cloudflare/tests/release-*.test.mjs"
+  ],
+  "status": "open"
+}

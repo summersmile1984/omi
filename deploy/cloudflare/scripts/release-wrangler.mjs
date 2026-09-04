@@ -4,6 +4,34 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { assertInstalledRuntime } from "./python-worker.mjs";
 
+export const WRANGLER_PROCESS_TIMEOUT_MS = 15 * 60 * 1000;
+
+// POSIX process groups include Wrangler's Node launcher child and any runner
+// descendants. A timeout must end their ownership, not just the wrapper PID.
+export function runReleaseProcess(
+  command,
+  args,
+  options,
+  { spawn = spawnSync } = {},
+) {
+  if (process.platform === "win32")
+    throw new Error("release execution requires POSIX process-group ownership");
+  const result = spawn(command, args, {
+    ...options,
+    detached: true,
+    killSignal: "SIGKILL",
+  });
+  if (result.pid) {
+    try {
+      process.kill(-result.pid, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH")
+        return { ...result, status: null, signal: null, error };
+    }
+  }
+  return result;
+}
+
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 export function activeVersion(status) {
   if (
@@ -43,20 +71,26 @@ export class WranglerReleaseAdapter {
       throw new Error("invalid release account");
   }
   command(args, input) {
-    const result = this.spawn(process.execPath, [this.bin, ...args], {
-      cwd: this.directory,
-      encoding: "utf8",
-      input,
-      maxBuffer: 32 * 1024 * 1024,
-      env: {
-        ...this.env,
-        CLOUDFLARE_ACCOUNT_ID: this.account,
-        WRANGLER_SEND_METRICS: "false",
-        CI: "true",
-        NPM_CONFIG_OFFLINE: "true",
+    const result = runReleaseProcess(
+      process.execPath,
+      [this.bin, ...args],
+      {
+        timeout: WRANGLER_PROCESS_TIMEOUT_MS,
+        cwd: this.directory,
+        encoding: "utf8",
+        input,
+        maxBuffer: 32 * 1024 * 1024,
+        env: {
+          ...this.env,
+          CLOUDFLARE_ACCOUNT_ID: this.account,
+          WRANGLER_SEND_METRICS: "false",
+          CI: "true",
+          NPM_CONFIG_OFFLINE: "true",
+        },
+        stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       },
-      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    });
+      { spawn: this.spawn },
+    );
     // CLI output can contain vars, provider errors or credentials. It never
     // enters the release journal. A failed process has an unknown remote result.
     return { exit: result.status ?? null, signal: result.signal ?? null };

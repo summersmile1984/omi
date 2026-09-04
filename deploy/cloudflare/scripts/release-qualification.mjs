@@ -2,6 +2,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { digest } from "./resource-input.mjs";
+import { runReleaseProcess } from "./release-wrangler.mjs";
+
+export const QUALIFIER_PROCESS_TIMEOUT_MS = 15 * 60 * 1000;
 
 // Each future owner must implement its runner in the same candidate source.
 // There is intentionally no operator-supplied command or approval-file option.
@@ -29,13 +32,19 @@ export function runReleaseQualifiers(
     throw new Error(`release qualification pending: ${pending.join(", ")}`);
   const observationDigest = digest(observations);
   return RELEASE_QUALIFIERS.map((entry) => {
-    const result = spawn(process.execPath, [resolve(root, entry.path)], {
-      cwd: root,
-      encoding: "utf8",
-      maxBuffer: 16 * 1024 * 1024,
-      input: JSON.stringify({ candidate, observations }),
-      env: { ...process.env, CI: "true" },
-    });
+    const result = runReleaseProcess(
+      process.execPath,
+      [resolve(root, entry.path)],
+      {
+        timeout: QUALIFIER_PROCESS_TIMEOUT_MS,
+        cwd: root,
+        encoding: "utf8",
+        maxBuffer: 16 * 1024 * 1024,
+        input: JSON.stringify({ candidate, observations }),
+        env: { ...process.env, CI: "true" },
+      },
+      { spawn },
+    );
     let proof;
     try {
       proof = JSON.parse(result.stdout);

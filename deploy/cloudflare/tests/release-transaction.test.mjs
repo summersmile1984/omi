@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { runReleaseProcess } from "../scripts/release-wrangler.mjs";
 import { digest } from "../scripts/resource-input.mjs";
 import {
   applyRelease,
@@ -168,6 +169,28 @@ describe("Cloudflare release transaction ownership", () => {
       (await recoveryPlan(f.candidate, f.journal, f.adapter)).actions[0].action,
     ).toBe("restore_version");
     expect(f.adapter.deploy).toHaveBeenCalledTimes(1);
+  });
+  it("records a real process timeout as unknown and requires reconciliation without retry", async () => {
+    const f = fixture();
+    f.adapter.deploy = vi.fn(() => {
+      const result = runReleaseProcess(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1000)"],
+        {
+          timeout: 100,
+          encoding: "utf8",
+        },
+      );
+      return { exit: result.status, signal: result.signal };
+    });
+    await expect(applyRelease(f)).rejects.toThrow("reconciliation");
+    const event = f.journal.events.find((event) => event.id === "deploy:auth");
+    expect(event.state).toBe("unknown");
+    expect(event.process).toEqual({ exit: null, signal: "SIGKILL" });
+    expect(f.journal.state).toBe("reconciliation_required");
+    expect(f.adapter.deploy).toHaveBeenCalledOnce();
+    await expect(restoreRelease(f)).rejects.toThrow("unproven owners");
+    expect(f.adapter.rollback).not.toHaveBeenCalled();
   });
   it("never retries or rolls back an unknown mutation or a concurrent version", async () => {
     const f = fixture();
