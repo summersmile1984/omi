@@ -88,7 +88,7 @@ Server专属 runner PID7786 已正常 SIGTERM；项目 `memweft-contract-765ec7d
 全部容器清理，未触碰其他项目。所有 Electron 测试进程均由自己的 Playwright实例关闭。
 合成账户凭据只留私有临时文件，不进入源码、日志正文或前端配置。
 
-## 尚未验收
+## 尚未验收（首包时点，后续补证见下）
 
 Windows/Linux 原生 installer、OS安全存储/无keyring UI、macOS本机以外的实际UI；
 正式签名/更新feed、OAuth、推送、蓝牙/固件、全视觉品牌/AI人格/外链替换；
@@ -111,3 +111,38 @@ WS 当前证据为生产 handler 的受控 transport 行为回归，未把它写
 `cf-onboarding-tasks-final-http.log`；该工件同时带有后续图谱加载隔离修复，
 这里只认可请求头行为，不以之宣称全平台发行资格。原始日志仍在
 `/tmp/memweft-implementation/electron/`。
+
+## 图谱加载与真实 Tasks 页补证（2026-09-04 后续包）
+
+基线 `d0dcd36ae8`，工件 `onboarding-fixed-stage/desktop`。图谱字体 fetch 失败时，
+React 的新 Onboarding state 已推进，提交却被 Canvas 的 Suspense 挡住；用户仍停在
+语言页，持久化进度也停在1。`language-fiber-probe-run.log` 仅观察了这两个值；
+未调用组件私有 setter、改路由或种入 onboarding 完成标记。
+
+唯一变更是在 staging 的 Onboarding map import 接入 fork-owned `OnboardingGraph`，
+以局部 Suspense 隔离这一个异步视觉子树。加载未完成时显示真实 loading 文案，
+步骤正常提交；未伪造图谱就绪，也未修复外部字体下载本身。
+`staged/onboarding.test.tsx` 执行真实 Onboarding/Language/progress owner，受控 seam
+仅让 Graph 的字体 readiness 暂停：旧入口测试失败，新入口保存 step2 并继续，
+解除 readiness 后图谱恢复。新测试由既有 fork runner 的 staged glob 自动发现。
+
+实际 `onboarding-final-flow.log` exit0：新合成账户在真实界面注册，从姓名起走完
+14步；监听开关关闭，开发包登录启动显示不可用；屏幕、麦克风、Automation、
+快捷键/语音演示、外部 OAuth 和目标建议均走原 UI 的 Skip。Discovery 使用进程专属
+USERPROFILE/ProgramData/APPDATA 目录，真实扫描只有1个合成文本文件。
+
+随后点击首页 Tasks 卡片，在真实 Tasks 页面创建任务并完成，正常关闭应用后重启，
+页面仍显示 completed；再通过同一当前身份向受保护 API 读取，状态200且
+`completed:true`。最后 Settings → Account → Sign out，并等待 clearEpoch 增长。
+证据：`cf-onboarding-tasks-final-{background,discovery,task-created,task-completed,task-restored,signed-out}.png`
+以及 `{onboarded,restored,remote-persisted,finished}.json`。本轮没有启动 Server fixture，
+因此此处新增真实产品页面证据只覆盖 Cloudflare；Server 保留首包的身份/renderer API 证据。
+
+正式验证：`onboarding-upstream-suite.log` 为561文件/5558测试通过，6文件/33测试跳过；
+`onboarding-formal-fork.log` 为12 core +3 prepare +每 target7 staged tests及两份完整 build通过。
+`onboarding-before-test.log` 保留图谱回归的旧行为失败，`onboarding-after-test.log` 为新行为7测试通过。
+
+边界：仍有旧 Omi 文案/图标/帮助链接，图谱外部字体未证明成功；未配置 Calendar 返回503、
+实时模型返回409，不计入功能通过。macOS-host Electron 记录上游 Windows-only
+`setTitleBarOverlay` 不可用异常，但进程正常继续；本轮不宣称 macOS 产品支持或
+Windows/Linux 系统资格。完整录音/屏幕能力、外部模型、签名、安装、更新发行仍独立验收。
