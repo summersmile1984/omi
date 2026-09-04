@@ -25,10 +25,16 @@ import XCTest
     }
 
     private func clearAuthDefaults() {
-      UserDefaults.standard.removeObject(forKey: .authIdToken)
-      UserDefaults.standard.removeObject(forKey: .authRefreshToken)
-      UserDefaults.standard.removeObject(forKey: .authTokenExpiry)
-      UserDefaults.standard.removeObject(forKey: .authTokenUserId)
+      // `clearTokens()` deletes the real, unsandboxed macOS Keychain item AuthService
+      // uses for auth tokens (see DesktopKeychainStore) — not just UserDefaults. That
+      // item is process-wide, not instance-scoped, so any AuthService instance can
+      // remove what another instance wrote (testExternalTokenWinsOverStoredToken saves
+      // through one). Skipping this left a stale userId "u1" Keychain entry for
+      // testExternalTokenIgnoredWhenEnvEmpty to read when CI's isolation fallback
+      // reran this suite through the same worker runtime after a batch failure
+      // elsewhere — UserDefaults gets a fresh CFFIXED_USER_HOME per worker, but the
+      // Keychain does not.
+      AuthService().clearTokens()
       UserDefaults.standard.removeObject(forKey: .authUserId)
     }
 
@@ -77,6 +83,32 @@ import XCTest
 
       let token = try await auth.getIdToken()
       XCTAssertEqual(token, "injected-jwt-xyz")
+    }
+
+    /// Regression test for a stale Keychain token leaking across separate
+    /// `AuthService` instances (and, in CI, across separate SwiftPM test-process
+    /// invocations of this suite that share a worker runtime — see
+    /// `clearAuthDefaults()`). The Keychain item AuthService reads/writes is
+    /// process-wide, not instance-scoped, so a second instance must see a clean
+    /// signed-out state once the first instance's tokens are cleared.
+    func testStoredTokenDoesNotLeakAcrossAuthServiceInstances() async throws {
+      unsetenv("OMI_AUTH_API_TOKEN")
+
+      let first = makeAuth()
+      try first.saveTokens(
+        idToken: "leaked-token",
+        refreshToken: "refresh",
+        expiresIn: 3600,
+        userId: "u1")
+      first.clearTokens()
+
+      let second = makeAuth()
+      do {
+        _ = try await second.getIdToken()
+        XCTFail("expected notSignedIn: clearTokens() should have removed the Keychain-backed session")
+      } catch {
+        // expected: no session survives clearTokens()
+      }
     }
   }
 #endif

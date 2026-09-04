@@ -535,4 +535,40 @@ if [ "$solo_invocations" != "5" ]; then
   fail "solo scenario used $solo_invocations SwiftPM invocations, expected 1 batch + 1 solo + 3 sequential"
 fi
 
+# A suite that calls `AuthService.saveTokens` writes the real, unsandboxed macOS
+# Keychain item AuthService uses for auth tokens — CFFIXED_USER_HOME isolates
+# UserDefaults per worker/serial slot, but not the Keychain, so such a suite must
+# be derived into the same sequential cluster as an owner-authority fixture
+# adopter, not left to a maintained list a new adopter can miss the way
+# AuthExternalTokenInjectionTests did (see swift-test-suites.sh).
+mkdir -p "$TMPDIR/keychain-token-tests"
+cp "$TMPDIR"/green-tests/*.swift "$TMPDIR/keychain-token-tests/"
+cat >"$TMPDIR/keychain-token-tests/KeychainTokenAdopterTests.swift" <<'SWIFT'
+import XCTest
+final class KeychainTokenAdopterTests: XCTestCase {
+    func testOne() {
+        try? auth.saveTokens(idToken: "x", refreshToken: "y", expiresIn: 1, userId: "z")
+    }
+}
+SWIFT
+export OMI_SWIFT_TEST_DISCOVERY_ROOT="$TMPDIR/keychain-token-tests"
+export OMI_SWIFT_TEST_SUITE_WORKERS=2
+: >"$FAKE_XCRUN_SCRATCH_LOG"
+if ! "$RUNNER" >"$TMPDIR/keychain-token-runner.out" 2>"$TMPDIR/keychain-token-runner.err"; then
+  fail "keychain-token discovery set unexpectedly failed: $(cat "$TMPDIR/keychain-token-runner.err")"
+fi
+keychain_scratch="$(awk -F '\t' '$1 == "KeychainTokenAdopterTests" {print $2}' "$FAKE_XCRUN_SCRATCH_LOG")"
+if [ -z "$keychain_scratch" ]; then
+  fail "runner did not execute the saveTokens( adopter suite"
+fi
+case "$keychain_scratch" in
+  */serial-*.build) ;;
+  *) fail "runner did not derive sequential execution for a suite calling saveTokens(" ;;
+esac
+beta_scratch="$(awk -F '\t' '$1 == "BetaTests" {print $2}' "$FAKE_XCRUN_SCRATCH_LOG")"
+case "$beta_scratch" in
+  */serial-*.build) fail "runner over-derived: BetaTests never calls saveTokens( and should stay parallel" ;;
+  *) ;;
+esac
+
 echo "swift-test-suites tests passed"

@@ -420,6 +420,32 @@ if [ "${#fixture_files[@]}" -gt 0 ]; then
     | sort -u)
 fi
 
+# A suite that calls `AuthService.saveTokens` writes the real, unsandboxed macOS
+# Keychain item AuthService uses for auth tokens (see DesktopKeychainStore).
+# CFFIXED_USER_HOME below isolates UserDefaults per worker, but the Keychain is
+# not scoped by it, so that item is visible to every worker on the runner, and to
+# a failed batch's later isolated reruns (run_batch reruns each suite through the
+# same worker runtime_path, not a fresh one). A suite expecting a clean
+# signed-out precondition must not share a runner with one that leaves a token
+# behind. Derive membership the same way as the fixture cluster above so a new
+# adopter cannot silently rejoin the parallel pool — AuthExternalTokenInjectionTests
+# did exactly that and picked up a leaked "u1" token from its own
+# testExternalTokenWinsOverStoredToken when CI's isolation fallback reran it
+# (job "Desktop Swift Static & Test Contracts", 2 of 3 reruns).
+declare -a keychain_token_files=()
+while IFS= read -r keychain_token_file; do
+  keychain_token_files+=("$keychain_token_file")
+done < <(find "$TESTS_ROOT" -type f -name '*.swift' \
+  -exec grep -l '\.saveTokens(' {} +)
+
+if [ "${#keychain_token_files[@]}" -gt 0 ]; then
+  while IFS= read -r suite; do
+    derived_serial_suites+=("$suite")
+  done < <(grep -hE "$suite_class_pattern" "${keychain_token_files[@]}" \
+    | sed -E "$suite_class_name" \
+    | sort -u)
+fi
+
 # XCTest `measure` suites run their blocks ten times and legitimately take
 # minutes each. Discovery order is alphabetical, so naive chunking concentrated
 # the MemoryAtlas performance cluster into one batch that blew a 17-minute
