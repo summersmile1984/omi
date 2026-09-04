@@ -39,6 +39,12 @@ profile. The existing settings MCP expression is transformed in staging to call
   the adapter reports notifications unsupported and never creates Firebase
   tokens or registers its service worker. Browser push requires its own client
   contract before that capability can be enabled.
+- `WEB-1` also calls `applyRealtimeOverlay(stage)` from `realtime-overlay.ts`.
+  The transformed Home composer hides direct-model conversation controls when
+  `allow_direct_model_providers` is false, and the actual `useGeminiLive.start`
+  method refuses before token acquisition or connection. Microphone transcription
+  through `/v4/web/listen` remains available. The same transform runs in fork
+  Vitest against the production hook; source-owner drift fails the build.
 
 ## Verification
 
