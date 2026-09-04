@@ -60,6 +60,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_chat_assistant_message_projections", column: "uid" },
   { table: "cf_chat_shares", column: "sender_uid" },
   { table: "cf_conversations", column: "uid" },
+  { table: "cf_live_recording_sessions", column: "uid" },
   { table: "cf_conversation_finalization_jobs", column: "uid" },
   { table: "cf_conversation_merge_jobs", column: "uid" },
   { table: "cf_conversations_fts", column: "uid" },
