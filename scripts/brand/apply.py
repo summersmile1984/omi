@@ -5,15 +5,12 @@ Idempotent: running twice produces zero diff on the second run. `--only`
 restricts to one category (flutter, desktop, windows, backend, firmware,
 web, docs, ci); omit it to render everything a brand needs.
 
-B0 ships the registry and validation path with zero generators registered --
-every category in `--only`'s own choices exists as a name today, but none
-has a renderer yet (that's B1 through B7, one category each; see
-dev/unified-main/04-brand-layer.md §4). Until a generator is registered,
-`apply.py --brand <any>` is a manifest-validation dry run: it proves the
-manifest is well-formed and reachable, and touches no files -- which is also
-why `apply.py --brand omi-upstream` producing a zero diff is not yet a
-meaningful regression guarantee, only a vacuous one. It becomes real the
-first time a generator lands.
+B0 shipped the registry and validation path with zero generators registered;
+B1 through B7 each register one category's generator (one category each; see
+dev/unified-main/04-brand-layer.md §4). A category with no renderer yet is
+still a manifest-validation dry run for that slice -- `apply.py --brand <any>
+--check-clean` only becomes a meaningful regression guarantee for a category
+once that category's generator lands, not before.
 
 Usage:
     scripts/brand/apply.py --brand <id> [--only CATEGORY ...] [--check-clean]
@@ -30,6 +27,7 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from schema_validate import validate  # noqa: E402
 from yaml_lite import load_yaml  # noqa: E402
+from generators import mobile as _mobile  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "brand/_schema/manifest.schema.json"
@@ -49,7 +47,9 @@ CATEGORIES: tuple[str, ...] = (
     "ci",
 )
 
-GENERATORS: dict[str, Callable[[dict, Path], list[Path]]] = {}
+GENERATORS: dict[str, Callable[[dict, Path], list[Path]]] = {
+    "flutter": _mobile.render,
+}
 
 
 class ApplyError(RuntimeError):

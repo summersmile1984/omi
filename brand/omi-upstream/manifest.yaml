@@ -14,7 +14,7 @@
 schema_version: 1
 
 brand:
-  id: omi
+  id: omi-upstream
   display_name: "Omi"
   short_name: "Omi"                     # no distinct short-name field exists upstream; display_name is already short
   legal_entity: "Based Hardware INC"    # Apple Developer ID cert; desktop/macos/docs/local-code-signing.md, codemagic.yaml

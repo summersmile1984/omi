@@ -152,3 +152,15 @@ api: { key_prefix: "mw_", header_prefix: "X-Mw-" }   # header 属于两端契约
 3. 全新安装 E2E（iOS/Android/macOS/Windows/Web）流程中无上游品牌词；AI 自我介绍 eval 通过；BLE 广播名/DIS/NFC 为品牌值；OTA 新密钥通过。
 4. 开源许可页含 MIT 原文与 Based Hardware Contributors 版权行、Nordic 5-Clause、Opus BSD-3、Parakeet CC-BY-4.0、OFL 字体许可。
 5. 一次 `upstream/main` 合并后重跑 `apply.py` + `check.py` 仍为零（可持续性）。
+
+## 9. B2 第一片实测笔记（`flavors.dart`）
+
+B2 这一行（§4 表格）打包了七件事：`flavorizr.yaml` 生成+重跑、`flavors.dart`、3 处 pbxproj 逃逸、`BatteryWidget-Info.plist`、entitlements 模板化、`Info.plist` 权限描述、`environment_profile.dart` 校验表。这次只落地了其中最小、风险最低的一块：`flavors.dart`'s `F.title`（`MaterialApp(title: F.title)`，纯 Dart，不涉及构建工具）。其余六项都还没动，原因分别是：
+
+- **`flavorizr.yaml`**：这份文件被 `flutter_flavorizr` 工具直接消费、再生成 Xcode/Android 工程改动，YAML 本身没有"引用另一个文件"的机制（不像 `app-config.sh` 能 `source` 一个 fork 生成的文件）。要让它品牌可配置，得让 `flavorizr.yaml` 本身变成生成物（`apply.py` 从 manifest 渲染,omi-upstream 品牌渲染出的值等于今天手写的值)——这是比 B1 的 3 行预算大得多的结构性决定，需要先设计清楚再动手,不能顺手做。
+- **3 处 pbxproj 逃逸 + entitlements(App Group/associated domains)**：真实构建工具产物，写错有直接搞坏 iOS 构建的风险；associated domains 还需要真实域名托管 AASA 文件才能验证,不是纯代码改动能独立完成的。
+- **`environment_profile.dart` 的 `authCallbackScheme`**：这个值必须跟 iOS `Info.plist` 的 `CFBundleURLSchemes` / Android `AndroidManifest.xml` 的 intent-filter 逐字节一致,OAuth 回调才能工作。只改 Dart 这一侧、不同步改原生注册,等于交付一个看起来做了、实际登录会失败的半成品——两边必须作为同一个改动一起落地,这次没有一起做,所以两边都没动。
+
+`scripts/brand/generators/mobile.py` 目前只注册了 `flutter` 类别下这一个生成物；上面六项谁先接手，都是往同一个 `apply.py --only flutter` 的类别下继续加生成器，不需要新起类别。
+
+另外顺手发现并修了一个 B0 遗留的小 bug：`brand/omi-upstream/manifest.yaml` 的 `brand.id` 字段写的是 `omi`,但 schema 自己的描述说这个字段"是目录名"——目录其实是 `omi-upstream`。B0 从没有生成器真正读过这个字段,所以一直没暴露;`mobile.py` 是第一个把 `brand.id` 写进生成文件内容(生成文件里的溯源注释)的生成器,顺带把这处不一致修了。
