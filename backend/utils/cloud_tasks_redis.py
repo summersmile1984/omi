@@ -174,7 +174,16 @@ def _worker(queue_name: str) -> None:
                 timeout=30.0,
             )
             logger.info("task %s -> %s status=%s", item.get("task_id"), handler_url, resp.status_code)
-            retry = resp.status_code >= 500 or resp.status_code == 429
+            # Finalization 409 means a held lease or completion conflict. A
+            # 200 dropped/acked/dead_letter is the handler's terminal receipt.
+            # Other 4xx and redirects must retain the task, never discard it as
+            # a successful write (for example a mismatched worker credential).
+            retry = resp.status_code >= 500 or resp.status_code in (409, 429)
+            if not retry and not 200 <= resp.status_code < 300:
+                item['delivery_failure'] = f'http_{resp.status_code}'
+                r.rpush(queue_key + ':dead-letter', json.dumps(item))
+                logger.error('worker %s parked a rejected delivery status=%s', queue_name, resp.status_code)
+                continue
         except httpx.HTTPError:
             # Do not log response bodies, credentials or full request exceptions.
             logger.warning('worker %s delivery transport failed', queue_name)
