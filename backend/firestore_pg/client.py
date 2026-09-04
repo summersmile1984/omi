@@ -142,7 +142,10 @@ def _write_transform(data: Mapping[str, Any]) -> Tuple[Dict[str, Any], bool]:
     for key, value in list(payload.items()):
         value = _normalize_transform(value)
         payload[key] = value
-        if isinstance(value, (_FieldTransformBase := (Increment, ArrayUnion, ArrayRemove))):
+        if isinstance(value, Mapping):
+            payload[key], nested_transform = _write_transform(value)
+            has_transform = has_transform or nested_transform
+        elif isinstance(value, (_FieldTransformBase := (Increment, ArrayUnion, ArrayRemove))):
             has_transform = True
         elif value is SERVER_TIMESTAMP or isinstance(value, type(SERVER_TIMESTAMP)):
             payload[key] = datetime.now(timezone.utc)
@@ -154,6 +157,17 @@ def _write_transform(data: Mapping[str, Any]) -> Tuple[Dict[str, Any], bool]:
 def _strip_sentinels(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Remove DELETE_FIELD sentinels before dumping JSON (set/create paths)."""
     return {k: v for k, v in payload.items() if not (isinstance(v, type(DELETE_FIELD)) or _is_real_delete_field(v))}
+
+
+def _contains_delete(data: Mapping[str, Any]) -> bool:
+    return any(
+        (
+            _contains_delete(value)
+            if isinstance(value, Mapping)
+            else isinstance(value, type(DELETE_FIELD)) or _is_real_delete_field(value)
+        )
+        for value in data.values()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1408,7 +1422,11 @@ class DocumentReference:
 
     def set(self, document_data: Mapping[str, Any], merge: bool = False) -> "DocumentReference":
         payload, has_transform = _write_transform(document_data)
-        if merge and (has_transform or _has_dotted_key(payload)):
+        if not merge and _contains_delete(payload):
+            raise ValueError('DELETE_FIELD requires set(merge=True)')
+        if merge and (
+            has_transform or _has_dotted_key(payload) or any(isinstance(v, Mapping) for v in payload.values())
+        ):
             # merge=True with transforms (e.g. record_user_platform): merge the
             # plain fields, then apply transforms against the merged doc
             return self._merge_with_transforms(payload)
@@ -1428,6 +1446,8 @@ class DocumentReference:
 
     def update(self, field_updates: Mapping[str, Any], option: Any = None, **kwargs: Any) -> "DocumentReference":
         payload, has_transform = _write_transform(field_updates)
+        if any(isinstance(value, Mapping) and _contains_delete(value) for value in payload.values()):
+            raise ValueError('nested DELETE_FIELD requires an explicit update field path')
         if has_transform:
             # read-modify-write under the transaction's lock (or a short lock)
             return self._update_with_transforms(payload, option=option)
@@ -1449,36 +1469,46 @@ class DocumentReference:
         return self
 
     @staticmethod
-    def _apply_transforms(current: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    def _apply_transforms(
+        current: Dict[str, Any], payload: Dict[str, Any], *, merge: bool = False, literal_keys: bool = False
+    ) -> None:
         for key, value in payload.items():
-            dotted = "." in str(key)
-            if isinstance(value, Increment):
-                cur = _get_path(current, key) if dotted else current.get(key)
+            dotted = not literal_keys and "." in str(key)
+            cur = _get_path(current, key) if dotted else current.get(key)
+
+            def put(result):
+                if dotted:
+                    _set_path(current, key, result)
+                else:
+                    current[key] = result
+
+            if isinstance(value, Mapping):
+                # Merge walks leaf fields; an explicitly empty map replaces its
+                # prior value. Nested keys remain literal, including dots.
+                nested = dict(cur) if value and merge and isinstance(cur, dict) else {}
+                DocumentReference._apply_transforms(nested, value, merge=merge, literal_keys=True)
+                put(nested)
+            elif isinstance(value, Increment):
                 base = cur if isinstance(cur, (int, float)) and not isinstance(cur, bool) else 0
-                _set_path(current, key, base + value.value)
+                put(base + value.value)
             elif isinstance(value, ArrayUnion):
-                cur = _get_path(current, key) if dotted else current.get(key)
                 arr = list(cur or [])
                 for item in value.value:
                     if not any(_firestore_values_equal(item, existing) for existing in arr):
                         arr.append(item)
-                _set_path(current, key, arr)
+                put(arr)
             elif isinstance(value, ArrayRemove):
-                cur = _get_path(current, key) if dotted else current.get(key)
                 arr = list(cur or [])
-                _set_path(
-                    current,
-                    key,
-                    [
-                        item
-                        for item in arr
-                        if not any(_firestore_values_equal(item, removed) for removed in value.value)
-                    ],
+                put(
+                    [item for item in arr if not any(_firestore_values_equal(item, removed) for removed in value.value)]
                 )
             elif isinstance(value, type(DELETE_FIELD)) or _is_real_delete_field(value):
-                _del_path(current, key)
+                if dotted:
+                    _del_path(current, key)
+                else:
+                    current.pop(key, None)
             else:
-                _set_path(current, key, value)
+                put(value)
 
     def _read_row_for_update(self, conn: Any) -> Any:
         write_policy.policy.lock(conn, self._write_address)
@@ -1519,23 +1549,11 @@ class DocumentReference:
 
     def _merge_with_transforms(self, payload: Dict[str, Any]) -> "DocumentReference":
         """set(merge=True) with transform fields: plain keys merged, transforms applied."""
-        plain = {
-            k: v
-            for k, v in payload.items()
-            if not isinstance(v, (Increment, ArrayUnion, ArrayRemove))
-            and not isinstance(v, type(DELETE_FIELD))
-            and not _is_real_delete_field(v)
-        }
 
         def _do(conn: Any) -> None:
             row = self._read_row_for_update(conn)
             current = decode_stored_document(row[0] or {}) if row else {}
-            if _has_dotted_key(plain):
-                for k, v in plain.items():
-                    _set_path(current, k, v)
-            else:
-                current.update(plain)
-            self._apply_transforms(current, payload)
+            self._apply_transforms(current, payload, merge=True)
             if row is None:
                 write_policy.policy.admit(conn, self._write_address, current)
                 conn.execute(
@@ -1567,6 +1585,8 @@ class DocumentReference:
     def create(self, document_data: Mapping[str, Any]) -> "DocumentReference":
         """create() fails if the document exists (Firestore semantics)."""
         payload, _ = _write_transform(document_data)
+        if _contains_delete(payload):
+            raise ValueError('DELETE_FIELD is invalid in create()')
         materialized: Dict[str, Any] = {}
         self._apply_transforms(materialized, payload)
         payload = materialized

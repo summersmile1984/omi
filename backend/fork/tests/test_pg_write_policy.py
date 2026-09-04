@@ -58,7 +58,18 @@ def selected(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    'operation', ['set', 'merge', 'transform-merge', 'update', 'transform-update', 'create', 'tx', 'batch']
+    'operation',
+    [
+        'set',
+        'merge',
+        'transform-merge',
+        'nested-transform-merge',
+        'update',
+        'transform-update',
+        'create',
+        'tx',
+        'batch',
+    ],
 )
 def test_completed_owner_never_reaches_any_facade_mutation(selected, monkeypatch, operation):
     conn = Connection(None if operation in {'create', 'transform-merge'} else {'v': 1})
@@ -73,6 +84,8 @@ def test_completed_owner_never_reaches_any_facade_mutation(selected, monkeypatch
             ref.set({'v': 2}, merge=True)
         elif operation == 'transform-merge':
             ref.set({'v': client.Increment(1)}, merge=True)
+        elif operation == 'nested-transform-merge':
+            ref.set({'usage': {'v': client.Increment(1)}}, merge=True)
         elif operation == 'update':
             ref.update({'v': 2})
         elif operation == 'transform-update':

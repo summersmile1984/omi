@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "FC-nested-storage-mutations-not-materialized",
+  "violated_contract": "A storage adapter must apply nested field mutations with the source SDK's write semantics before serializing ordinary values. A nested increment must accumulate without replacing sibling fields, and forbidden delete placements must reject before SQL.",
+  "canonical_prevention": "Exercise the actual document set/create/update owner with real SDK and facade sentinels, preserve nested merge siblings and literal keys, and compare rejected delete placements with the installed SDK. Verify actual usage owners and existing mutation locks against disposable PostgreSQL.",
+  "canonical_prevention_artifact": [
+    "backend/fork/tests/test_pg_nested_transforms.py",
+    "backend/firestore_pg/tests/test_deletion_write_fence.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": ["backend/firestore_pg/**", "backend/fork/tests/test_pg_nested_transforms.py"],
+  "status": "open"
+}
