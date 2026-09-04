@@ -48,3 +48,12 @@ Run `python -m fork.migrate migrate` once before either serving process; use
 schema version, never edits to v1/v2's frozen collection sets. The image and
 startup runner are `deploy/self-host/Dockerfile` and `build-images.sh`; upstream
 `backend/Dockerfile` remains the dependency/source base. See `fork/README.md`.
+
+- Self-host auth consumers are patched before importing upstream routers. Preserve
+  the shim's authority-unavailable classification: HTTP dependencies return 503
+  with `auth_service_unavailable`/`retryable`, and WebSocket auth closes 1013.
+  Invalid credentials remain 401; expired JWTs request WebSocket refresh (4001).
+  First-message WebSocket auth uses the same outage classification. The self-host
+  app accepts then closes only a retryable 1013 handshake so real clients receive
+  the close code instead of Uvicorn HTTP 403. `fork/tests/test_auth_consumers.py`
+  exercises the real dependencies through ASGI.

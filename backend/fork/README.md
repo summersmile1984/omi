@@ -34,3 +34,13 @@ Run fork tests through `backend/test.sh` with an explicit file list; the fork
 manifest runs startup and source-closure contracts in both local and CI lanes.
 Run live PostgreSQL tests only against a disposable target and record their
 results separately from the hermetic lane.
+
+`patches/auth.py` preserves Better Auth's invalid versus unavailable outcomes
+through upstream HTTP dependencies and WebSocket close-code selection. It only
+activates for self_hosted; omi_cloud keeps the upstream Firebase/admin behavior.
+Self-host identity always comes from the validated shim, never ADMIN_KEY prefix
+impersonation. AUTH-1 owns cryptography and the session-revocation authority.
+
+`auth_transport.py` ensures self-host retryable WebSocket errors (1013) cross the
+actual upgrade boundary: accept then immediately close, with no application data.
+Other close classifications and the upstream mode retain their existing policy.
