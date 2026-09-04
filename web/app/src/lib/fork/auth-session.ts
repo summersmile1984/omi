@@ -230,6 +230,7 @@ export class AuthSession {
       throw new AuthRequestError(502, 'The access token response is incomplete.');
     // This is a cache lifetime check, not signature verification. The trusted
     // auth origin issues the token; each backend verifies its signature/session.
+    // Issued-at skew is bounded by contracts/auth/client-cache-admission.md.
     let claims: Record<string, unknown>;
     try {
       const encoded = body.token.split('.')[1];
@@ -245,8 +246,10 @@ export class AuthSession {
       !claims.sid ||
       !Number.isSafeInteger(claims.exp) ||
       !Number.isSafeInteger(claims.iat) ||
-      Number(claims.iat) > now ||
+      Number(claims.iat) < 0 ||
+      Number(claims.iat) > now + 60 ||
       Number(claims.exp) <= now ||
+      Number(claims.exp) <= Number(claims.iat) ||
       Number(claims.exp) - Number(claims.iat) > 3600
     ) {
       throw new AuthRequestError(
