@@ -7,6 +7,7 @@ class Capability(str, Enum):
     STT = 'stt'
     TTS = 'tts'
     PUSH = 'push'
+    LLM = 'llm'
 
 
 class CapabilityDisabled(RuntimeError):
@@ -20,7 +21,11 @@ class CapabilityDisabled(RuntimeError):
 
 def validate(row):
     caps = row.get('capabilities', {})
-    from .model_contract import validate_speech
+    from .model_contract import validate_speech, validate_llm
+
+    llm = validate_llm(row.get('llm'))
+    if caps.get('llm_provider', 'disabled') != (llm.provider if llm else 'disabled'):
+        raise ValueError('LLM capability must match the selected model')
 
     speech = validate_speech(row.get('speech'))
     if caps.get('push_provider') != 'disabled':

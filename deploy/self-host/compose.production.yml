@@ -180,6 +180,42 @@ services:
     mem_limit: 4g
     cpus: 4
 
+  llm-artifact-check:
+    platform: linux/amd64
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    restart: "no"
+    command: ["python", "-m", "fork.model_store", "/models", "--kind", "llm"]
+    environment:
+      - OMI_DEPLOYMENT_PROFILE=self_hosted.${SELF_HOST_STAGE:-production}
+    volumes:
+      - ${LLM_MODEL_STORE:?LLM_MODEL_STORE is required}:/models:ro
+
+  llm:
+    # Ollama 0.33.3 amd64, CPU runtime. The model itself is pinned by the profile.
+    platform: linux/amd64
+    image: ${LLM_IMAGE:?LLM_IMAGE is required}
+    build:
+      context: ../..
+      dockerfile: deploy/self-host/Dockerfile.llm
+      args:
+        BACKEND_IMAGE: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+        OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
+        OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
+    restart: unless-stopped
+    volumes:
+      - ${LLM_MODEL_STORE:?LLM_MODEL_STORE is required}:/models:ro
+    depends_on:
+      llm-artifact-check:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # No public port and no GPU devices: requests stay inside this Compose graph.
+    mem_limit: 4g
+    cpus: 4
+
   qdrant-migrate:
     platform: ${BACKEND_PLATFORM:?BACKEND_PLATFORM is required}
     build:
@@ -310,15 +346,7 @@ services:
       - DESKTOP_UPDATE_DOWNLOAD_URL=${DESKTOP_UPDATE_DOWNLOAD_URL-}
       - EMBEDDING_ENDPOINT=http://embedding:11434
       - SPEECH_MODEL_STORE=/models/speech
-      - OMI_LLM_DEFAULT_PROVIDER=generic
-      - OMI_LLM_DEFAULT_MODEL=${GENERIC_OPENAI_MODEL:?GENERIC_OPENAI_MODEL is required}
-      - OMI_LLM_DEFAULT_FALLBACKS=
-      - TRANSLATION_PROVIDER=generic
-      - TRANSLATION_MODEL=${GENERIC_OPENAI_MODEL:?GENERIC_OPENAI_MODEL is required}
-      - TRANSLATION_FALLBACKS=
-      - GENERIC_OPENAI_BASE_URL=${GENERIC_OPENAI_BASE_URL:?GENERIC_OPENAI_BASE_URL is required}
-      - GENERIC_OPENAI_API_KEY=${GENERIC_OPENAI_API_KEY:?GENERIC_OPENAI_API_KEY is required}
-      - GENERIC_OPENAI_MODEL=${GENERIC_OPENAI_MODEL:?GENERIC_OPENAI_MODEL is required}
+      - LLM_ENDPOINT=http://llm:11434
       - PROACTIVE_TOOL_TRANSPORT=completion
       - APP_ICON_GENERATION_TRANSPORT=${APP_ICON_GENERATION_TRANSPORT:?APP_ICON_GENERATION_TRANSPORT is required}
       - IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL=${IMAGE_GENERATION_OPENAI_COMPATIBLE_BASE_URL-}
@@ -373,6 +401,8 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       embedding:
+        condition: service_healthy
+      llm:
         condition: service_healthy
       firestore-pg-migrate:
         condition: service_completed_successfully

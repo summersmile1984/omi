@@ -5,6 +5,7 @@ from .capabilities import Capability, CapabilityDisabled
 
 # Actual upstream route owners are resolved at install; a rename is fatal.
 OWNERS = {
+    ('routers.chat', 'send_message'): Capability.LLM,
     ('routers.tts', 'tts_synthesize'): Capability.TTS,
     ('routers.desktop_tts_updates', 'tts_synthesize'): Capability.TTS,
     ('routers.transcribe', 'listen_handler'): Capability.STT,
@@ -42,6 +43,8 @@ def install(app, row=None):
     enabled = set()
     if row and row.get('speech'):
         enabled = {Capability.STT, Capability.TTS}
+    if row and row.get('llm'):
+        enabled.add(Capability.LLM)
     routes, found = {}, set()
     for route in app.routes:
         endpoint = getattr(route, 'endpoint', None)

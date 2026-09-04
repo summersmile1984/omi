@@ -120,6 +120,7 @@ class OllamaEmbeddings:
                     'model': self.contract.model,
                     'input': texts,
                     'truncate': False,
+                    'keep_alive': 0,
                     'options': {
                         'num_ctx': self.contract.context_length,
                         'num_thread': 4,

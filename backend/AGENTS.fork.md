@@ -65,10 +65,11 @@ Dynamic document paths must also be admitted: execute their business owners
 through `fork/tests/schema_firestore.py` in `test_pg_owner_inventory.py`, already
 registered in the startup local/CI lane. A literal collection scan alone misses
 the onboarding and legal-hold paths that caused the recorded local incidents.
-Both fork-owned Docker context filters exclude local `.openapi-venv` and
-`backend/_temp` state as well as `.venv`. The existing Fork Checks workflow runs
+The backend/profile Docker context filters exclude local `.openapi-venv` and
+`backend/_temp` state as well as `.venv`; the thin model filter admits only its
+entrypoint. The existing Fork Checks workflow runs
 `deploy/self-host/ci/build_context.py` locally and in CI using offline scratch
-Docker builds; keep real runtime sources in both contexts.
+Docker builds; keep the intended runtime sources in each context.
 
 - Self-host auth consumers are patched before importing upstream routers. Preserve
   the shim's authority-unavailable classification: HTTP dependencies return 503
@@ -154,3 +155,19 @@ Docker builds; keep real runtime sources in both contexts.
   business completions. The PG reconciler retains its independent recovery role.
   The startup lane executes the real finalizer route and all four authenticated
   queue consumers through controlled transport/storage seams.
+
+- Local text generation uses the profile's sole `llm` contract and
+  `fork/local_llm.py`; every upstream feature resolves through the patched
+  captured factories. Keep native context, serving window and output limit as
+  separate fields. `LLM_ENDPOINT` is an internal origin only. The runtime
+  refuses BYOK, vendor/model fallback, implicit truncation and context shifting.
+  Model HTTP responses and streams stay byte-bounded; synchronous socket
+  operations share one monotonic deadline, but standard-library DNS resolution
+  is not a cancellable absolute-deadline proof. Model usage is charged only from
+  a completed terminal envelope through the existing usage callback.
+
+  `fork/llm_runtime.py` derives the thin model image and API/worker budgets from
+  this same profile. Keep the original memory extraction schema in the selected
+  route-options factory and bind both canonical and captured consumers; never
+  loosen the parser to fit a model response. The startup lane covers that real
+  parser and finalization's terminal-status acceptance through controlled seams.

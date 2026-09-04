@@ -86,6 +86,16 @@ def bootstrap(role: Role = Role.API) -> Admission:
     _require('REDIS_DB_PASSWORD')
     _require_modules(('sqlalchemy', 'psycopg', 'redis', 'httpx'))
 
+    if row.get('llm'):
+        from .model_contract import validate_llm
+        from .llm_runtime import process_environment
+
+        llm = validate_llm(row['llm'])
+        # Cloud-provider 25/60-second defaults are not CPU-model budgets. Bind
+        # before imports so captured chat owners share the selected deadline.
+        for name, value in process_environment(llm).items():
+            _bind(name, value)
+
     if role == Role.API:
         from .capabilities import validate as validate_capabilities
 
@@ -94,6 +104,11 @@ def bootstrap(role: Role = Role.API) -> Admission:
             'SPEAKER_EMBEDDING_PROVIDER': 'disabled',
             'TTS_PROVIDER': 'kokoro' if row.get('speech') else 'disabled',
             'PUSH_PROVIDER': 'disabled',
+            'OMI_LLM_GATEWAY_FEATURE_MODE': 'off',
+            'OMI_LLM_CHAT_AGENT_ROUTE': 'direct',
+            'OMI_LLM_GATEWAY_DEV_SHADOW_ALL_ENABLED': '0',
+            'OMI_LLM_GATEWAY_CONVERSATION_STRUCTURE_SHADOW_ENABLED': '0',
+            'OMI_LLM_GATEWAY_CONVERSATION_ACTION_ITEMS_SHADOW_ENABLED': '0',
             'STT_SERVICE_MODELS': 'sensevoice' if row.get('speech') else 'disabled',
             'STT_PRERECORDED_MODEL': 'sensevoice' if row.get('speech') else 'disabled',
             'SENSEVOICE_SPEAKER_MODE': 'single_speaker',
@@ -114,6 +129,11 @@ def bootstrap(role: Role = Role.API) -> Admission:
                 'HOSTED_VAD_API_URL': '',
             }.items():
                 _bind(name, value)
+        if row.get('llm'):
+            from .local_llm import contract_for_profile
+
+            contract_for_profile()
+            _require('LLM_ENDPOINT')
         _require('ENCRYPTION_SECRET', 32)
         _require('AUTH_JWKS_URL')
         _bind('VECTOR_STORE_PROVIDER', 'qdrant')
@@ -125,6 +145,10 @@ def bootstrap(role: Role = Role.API) -> Admission:
         ObjectConfig.from_env()
         registry = build_registry(collect()).apply(row)
         applied = tuple(registry.applied)
+        if row.get('llm'):
+            from .local_llm import check as check_llm
+
+            check_llm()
         if row.get('speech'):
             from .speech import check as check_speech
 

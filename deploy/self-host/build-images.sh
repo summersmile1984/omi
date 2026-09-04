@@ -14,3 +14,6 @@ docker build --platform "$PLATFORM" --file "$ROOT/backend/Dockerfile" \
   --build-arg PYTHON_BASE_IMAGE=python:3.11.10-slim-bookworm@sha256:840e180ebcc6e5c8efab209c43f5e40fd2af98cb49db5c7103c90539c56bb30e \
   --tag "$BASE_IMAGE" "$ROOT"
 bash "$DIR/compose-clean-env.sh" "$ENV_FILE" "$DIR/compose.production.yml" build auth-server backend
+
+# The thin Ollama layer compiles runtime precision/context from that exact profile.
+bash "$DIR/compose-clean-env.sh" "$ENV_FILE" "$DIR/compose.production.yml" build llm

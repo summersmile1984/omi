@@ -36,6 +36,7 @@ def application():
         ('/v1/tts/synthesize', 'tts'),
         ('/v2/tts/synthesize', 'tts'),
         ('/v2/voice-messages', 'stt'),
+        ('/v2/messages', 'llm'),
         ('/v2/voice-message/transcribe', 'stt'),
         ('/v1/users/fcm-token', 'push'),
         ('/v1/notification', 'push'),

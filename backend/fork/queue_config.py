@@ -17,6 +17,17 @@ class Queue:
     path: str
     attempts_env: str = 'SYNC_TASKS_MAX_ATTEMPTS'
 
+    def request_timeout(self) -> float:
+        if self.name != 'finalization':
+            return 30.0
+        try:
+            value = float(os.environ.get('QUEUE_REDIS_FINALIZATION_REQUEST_TIMEOUT_SECONDS', '30'))
+        except ValueError as error:
+            raise ProfileError('invalid finalization request timeout') from error
+        if not 1 <= value <= 1200:
+            raise ProfileError('finalization request timeout must be within 1200 seconds')
+        return value
+
     def max_attempts(self) -> int:
         raw = os.environ.get(self.attempts_env, os.environ.get('SYNC_TASKS_MAX_ATTEMPTS', '5'))
         try:
@@ -29,6 +40,7 @@ class Queue:
 
     def validate(self) -> None:
         self.max_attempts()
+        self.request_timeout()
         try:
             parsed = urlsplit(os.environ.get(self.handler_env, ''))
             parsed.port

@@ -63,6 +63,7 @@ INTERNAL_SERVICE_HOSTS = frozenset(
         'auth-server',
         'backend',
         'embedding',
+        'llm',
         'firestore-pg-migrate',
         'host.docker.internal',
         'minio',

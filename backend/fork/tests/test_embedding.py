@@ -36,6 +36,7 @@ def provider(mutate=None):
         else:
             body = json.loads(request.content)
             assert body['truncate'] is False
+            assert body['keep_alive'] == 0
             assert 'dimensions' not in body
             data = {'model': 'test:fixed', 'embeddings': [[1, 0, 0] for _ in body['input']]}
         if mutate:

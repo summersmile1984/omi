@@ -15,7 +15,10 @@ CHECK = runpy.run_path(str(ROOT / 'deploy/self-host/check-config.py'))
 
 @pytest.fixture
 def source(tmp_path):
-    for name in (*CHECK['REQUIRED_SOURCE'], 'deploy/self-host/compose.production.yml', 'auth-server/Dockerfile'):
+    compose_path = 'deploy/self-host/compose.production.yml'
+    compose = yaml.safe_load((ROOT / compose_path).read_text())
+    build_sources = {service['build']['dockerfile'] for service in compose['services'].values() if service.get('build')}
+    for name in (*CHECK['REQUIRED_SOURCE'], compose_path, *sorted(build_sources)):
         destination = tmp_path / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / name, destination)
