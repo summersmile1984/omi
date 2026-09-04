@@ -1,8 +1,8 @@
 """Redis-backed task queue shim — Cloud Tasks replacement for local dev.
 
 Implements the same four enqueue entrypoints as utils/cloud_tasks.py but
-writes to Redis lists (one per queue) with an SADD name-set for the named-task
-dedup semantics Cloud Tasks provides:
+writes to Redis lists (one per queue). The first three use named-task dedup;
+finalization relies on its persisted PostgreSQL generation and lease:
 
   - enqueue_sync_job(payload)            queue: omi:queue:sync
   - enqueue_audio_merge_job(payload)     queue: omi:queue:audio-merge
@@ -137,6 +137,8 @@ def _worker(queue_name: str) -> None:
         logger.error("unknown queue %s (choices: %s)", queue_name, ", ".join(queue_names))
         return
     queue_key = queue_names[queue_name]
+    queue = next(queue for queue in QUEUES if queue.name == queue_name)
+    max_attempts = queue.max_attempts()
     handler_env = HANDLER_URL_ENV[queue_name]
     handler_url = os.getenv(handler_env, "")
     worker_secret = os.getenv("QUEUE_REDIS_WORKER_SECRET", "")
@@ -151,20 +153,40 @@ def _worker(queue_name: str) -> None:
             continue
         try:
             item = json.loads(raw[1])
+            retry_count = item.get('retry_count', 0)
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get('payload'), dict)
+                or not isinstance(item.get('task_id'), str)
+                or type(retry_count) is not int
+                or not 0 <= retry_count < max_attempts
+            ):
+                raise ValueError('invalid delivery envelope')
+        except (ValueError, TypeError, AttributeError):
+            r.rpush(queue_key + ':dead-letter', raw[1])
+            logger.error('worker %s parked an invalid delivery envelope', queue_name)
+            continue
+        try:
             resp = httpx.post(
                 handler_url,
                 json=item["payload"],
-                headers={"X-Omi-Queue-Secret": worker_secret},
+                headers={"X-Omi-Queue-Secret": worker_secret, 'X-Omi-Queue-Retry-Count': str(retry_count)},
                 timeout=30.0,
             )
             logger.info("task %s -> %s status=%s", item.get("task_id"), handler_url, resp.status_code)
-            if resp.status_code >= 500:
-                # requeue for retry (bounded by caller retry logic)
-                r.rpush(queue_key, raw[1])
-                time.sleep(1)
-        except Exception as exc:  # pragma: no cover - worker resilience
-            logger.error("worker %s task failed: %s", queue_name, exc)
-            r.rpush(queue_key, raw[1])
+            retry = resp.status_code >= 500 or resp.status_code == 429
+        except httpx.HTTPError:
+            # Do not log response bodies, credentials or full request exceptions.
+            logger.warning('worker %s delivery transport failed', queue_name)
+            retry = True
+        if retry:
+            item['retry_count'] = retry_count + 1
+            exhausted = item['retry_count'] >= max_attempts
+            destination = queue_key + ':dead-letter' if exhausted else queue_key
+            r.rpush(destination, json.dumps(item))
+            if exhausted:
+                logger.error('worker %s exhausted its delivery budget; envelope retained in dead-letter', queue_name)
+                continue
             time.sleep(1)
 
 

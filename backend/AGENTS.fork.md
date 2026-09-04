@@ -144,3 +144,13 @@ Docker builds; keep real runtime sources in both contexts.
   generation own duplicate handling. Never add a permanent Redis name set that
   can swallow a later replay. The startup lane covers old jobs, duplicate/new
   generations and rejected publication retaining a durable queued intent.
+
+- Redis deliveries carry an authenticated, route-scoped `X-Omi-Queue-Retry-Count`.
+  Missing counts on existing envelopes mean the first attempt. Worker and handler
+  share `Queue.max_attempts()` and the existing task-attempt environment keys
+  (1–100); finalizers reach the existing final-attempt/dead-letter policy.
+  Exhausted transport failures and malformed envelopes remain in the same Redis
+  queue's `:dead-letter` list for operator inspection; they are not successful
+  business completions. The PG reconciler retains its independent recovery role.
+  The startup lane executes the real finalizer route and all four authenticated
+  queue consumers through controlled transport/storage seams.

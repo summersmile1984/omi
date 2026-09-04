@@ -15,8 +15,20 @@ class Queue:
     handler_env: str
     secret_env: str
     path: str
+    attempts_env: str = 'SYNC_TASKS_MAX_ATTEMPTS'
+
+    def max_attempts(self) -> int:
+        raw = os.environ.get(self.attempts_env, os.environ.get('SYNC_TASKS_MAX_ATTEMPTS', '5'))
+        try:
+            value = int(raw)
+        except ValueError as error:
+            raise ProfileError(f'{self.attempts_env} requires an integer') from error
+        if not 1 <= value <= 100:
+            raise ProfileError(f'{self.attempts_env} must be between 1 and 100')
+        return value
 
     def validate(self) -> None:
+        self.max_attempts()
         try:
             parsed = urlsplit(os.environ.get(self.handler_env, ''))
             parsed.port
@@ -40,11 +52,13 @@ QUEUES = (
         'ACCOUNT_DELETION_HANDLER_URL',
         'QUEUE_REDIS_ACCOUNT_DELETION_WORKER_SECRET',
         '/v1/users/account-deletion-wipes/run',
+        'ACCOUNT_DELETION_TASKS_MAX_ATTEMPTS',
     ),
     Queue(
         'finalization',
         'LISTEN_FINALIZATION_TASKS_HANDLER_URL',
         'QUEUE_REDIS_FINALIZATION_WORKER_SECRET',
         '/v1/conversation-finalization-jobs/run',
+        'LISTEN_FINALIZATION_TASKS_MAX_ATTEMPTS',
     ),
 )
