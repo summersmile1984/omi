@@ -65,3 +65,16 @@
 - 本次 fixture 复用合成PG/Redis/Auth与Qdrant服务器，新服务名/new prefix与SH2隔离。它不是全新完整生产Compose栈启动。真实工件/代码摘要记录与正式提交范围检查另列；不声称外部部署、release provenance、性能SLO或全账户删除验收。
 
 Failure-Class: FC-split-mutation-authority。PR #7及当前main审计曾显示Compose 1536、profile3072与硬编码OpenAI模型并存；本次由同一typed model/migration owner收束状态。新行为测试属于现有startup/profile lanes的生产契约，未新增独立脚本gate或编造registry已合并证据。
+
+## 独立复核补丁：BYOK 直接推送旁路
+
+主包 `84421de244` 后的独立 review 发现，`utils.llm.byok_errors` 的错误通知直接调用 FCM `send_each`，不经过中央通知 count owner。真实 `handle_llm_error` 根据请求中已验证的 BYOK key/UID 判断来源，不读取 profile 的 `allow_byok`；因此不能仅靠前端禁用开关声称后端不可达。
+
+本补丁只在 fork capability patch registry 将该通知 owner 接到同一 disabled 策略，保留 void 返回。同步和异步生产错误入口均不能获取/清理 token、获取/释放冷却锁或调用 FCM，不记录已发送。共享 fallback 的 component 改为现有注册项 `pusher`，避免此前被归入 `other`。没有修改上游 BYOK 模块或引入第二套推送实现。
+
+- 正式 `BACKEND_UNIT_TEST_FILE_LIST=/tmp/memweft-implementation/server/sh3-byok-files.txt bash backend/test.sh`：25 tests通过（13 disabled、4真实seams、8原上游BYOK通知行为）。回归先执行未patch的真实handler，证明已有principal可达，再安装生产patch并对FCM/token/cooldown设置调用陷阱；同步/异步均为0，void不被当投递成功。
+- 标准 upstream Dockerfile→fork Dockerfile 新建 **amd64** 工件 `sha256:5131d4b9b5da9bd25c9f2ec66eb6031b44b7c5c8cd4774263dc21c4ac6e42ddb`。12个本包生产Python文件与工件内逐个SHA-256一致；这是本地工件内容证明，不是release provenance。
+- `docker compose -f /tmp/memweft-implementation/server/sh3-compose.json exec -T -e PYTHONPATH=/app sh3-api python /tmp/sh3-byok-live.py`：exit0。实际 built bootstrap 完成真实模型readiness后，生产同步/异步错误入口在已有合成BYOK上下文中执行，FCM、token lookup/prune、cooldown acquire/release均0；共享日志为 `component=pusher to=disabled`。没有向外部LLM发送请求或使用客户数据。
+- 日志：`/tmp/memweft-implementation/server/sh3-byok-tests.log`、`sh3-byok-live.log`、`sh3-byok-image-source-proof.json`及同前缀标准镜像构建日志。正式提交范围gate结果记在本独立提交消息中。
+
+该补丁封闭本次review发现的BYOK错误通知旁路，不改变上文STT/TTS启用、完整cutover及生产部署尚未完成的限制。

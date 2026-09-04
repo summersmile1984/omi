@@ -1,6 +1,12 @@
 """Block provider selectors and the shared push send boundary before routers serve."""
 
-from ..capabilities import Capability, push_not_delivered, push_not_delivered_async, reject
+from ..capabilities import (
+    Capability,
+    push_not_delivered,
+    push_not_delivered_async,
+    push_notification_not_delivered,
+    reject,
+)
 from ..registry import Patch
 
 
@@ -19,6 +25,11 @@ def patches():
         ('routers.chat', 'get_stt_service_for_language', stt),
         ('routers.listen.runtime', 'get_stt_service_for_language', stt),
         ('routers.listen.receiver', 'get_stt_service_for_language', stt),
+        (
+            'utils.llm.byok_errors',
+            '_send_byok_llm_error_notification',
+            lambda original: push_notification_not_delivered,
+        ),
         ('utils.notifications', '_send_to_user', lambda original: push_not_delivered),
         ('utils.notifications', '_send_to_user_async', lambda original: push_not_delivered_async),
         ('utils.notifications', '_send_messages', lambda original: lambda *args, **kwargs: reject(Capability.PUSH)),

@@ -115,3 +115,10 @@ background transcription. Public push/token routes reject; internal reminder
 counts return zero with shared telemetry so a committed Task with `due_at`
 remains successful. These are disabled capabilities, not completed speech/push
 providers. See `deploy/self-host/model-runtime.md` for the current deploy path.
+
+The BYOK error handler also dispatches through the disabled notification owner,
+including requests with an existing enrolled key. `allow_byok: false` is not
+proof that this context is unreachable. Disabled errors neither look up/prune
+FCM tokens nor acquire a cooldown, and retain the upstream void return without
+logging a successful delivery. Shared telemetry uses its registered `pusher`
+component. The real sync/async error handlers are covered by the startup suite.
