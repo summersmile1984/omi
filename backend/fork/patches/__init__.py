@@ -10,11 +10,12 @@ from __future__ import annotations
 from typing import List
 
 from ..registry import Patch
+from . import auth as _auth
 from . import queue as _queue
 from . import speaker_embedding as _speaker_embedding
 from . import storage as _storage
 
-ALL = (_storage, _queue, _speaker_embedding)
+ALL = (_auth, _storage, _queue, _speaker_embedding)
 
 
 def collect() -> List[Patch]:

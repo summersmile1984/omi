@@ -2,6 +2,11 @@
 
 from .bootstrap import Role, bootstrap
 
-bootstrap(Role.API)
+admission = bootstrap(Role.API)
 
 from main import app  # noqa: E402,F401
+
+if admission.target == 'self_hosted':
+    from .auth_transport import install
+
+    install(app)
