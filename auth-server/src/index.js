@@ -22,11 +22,23 @@ import {
   INTERNAL_ADMIN_SECRET,
   pool,
   PORT,
+  accessPolicy,
 } from "./auth.js";
 import { betterAuthBridge } from "./http.js";
+import { accessHandler } from "./access.js";
+import { sessionPayload } from "../../auth/shared/jwt-policy.mjs";
 
 const app = express();
 app.use(express.json());
+app.post(
+  "/internal/verify",
+  accessHandler({
+    auth,
+    pool,
+    policy: accessPolicy,
+    secret: INTERNAL_ADMIN_SECRET,
+  })
+);
 
 function internalAuthorized(req) {
   if (!INTERNAL_ADMIN_SECRET) return false;
@@ -48,7 +60,7 @@ async function identityResiduals(uid) {
        (SELECT count(*)::int FROM "user" WHERE id = $1) AS users,
        (SELECT count(*)::int FROM "session" WHERE "userId" = $1) AS sessions,
        (SELECT count(*)::int FROM "account" WHERE "userId" = $1) AS accounts`,
-    [uid],
+    [uid]
   );
   return result.rows[0];
 }
@@ -121,13 +133,23 @@ if (DEV_ISSUER_SECRET) {
     if (typeof uid !== "string" || !uid.trim())
       return res.status(400).json({ error: "uid required" });
     try {
+      const { internalAdapter } = await auth.$context;
+      const user = await internalAdapter.findUserById(uid);
+      if (!user) return res.status(404).json({ error: "user_not_found" });
+      const session = await internalAdapter.createSession(uid);
       const result = await auth.api.signJWT({
-        body: { payload: { uid, sub: uid } },
+        body: {
+          payload: {
+            ...sessionPayload({ user, session }),
+            sub: uid,
+            iat: Math.floor(Date.now() / 1000),
+          },
+        },
         headers: { "content-type": "application/json" },
       });
       res.json({ ...result, uid });
     } catch (err) {
-      res.status(500).json({ error: String(err?.message || err) });
+      res.status(503).json({ error: "issuer_unavailable" });
     }
   });
 }
@@ -145,6 +167,6 @@ app.get("/ready", async (_req, res) => {
 
 app.listen(PORT, () => {
   console.log(
-    `omi-auth-server listening on :${PORT} (JWKS at ${BASE_URL}/api/auth/jwks)`,
+    `omi-auth-server listening on :${PORT} (JWKS at ${BASE_URL}/api/auth/jwks)`
   );
 });

@@ -28,7 +28,7 @@ try {
     `INSERT INTO "jwks"
        (id, "publicKey", "privateKey", "createdAt", "expiresAt", alg, crv)
      VALUES ($1, $2, $3, now(), NULL, NULL, NULL)`,
-    [id, JSON.stringify(publicJwk), JSON.stringify(encryptedPrivateKey)],
+    [id, JSON.stringify(publicJwk), JSON.stringify(encryptedPrivateKey)]
   );
 
   let rejected = false;
@@ -41,12 +41,20 @@ try {
     rejected = /JWK|key|decrypt|alg/i.test(String(error?.message || error));
   }
   if (!rejected)
-    throw new Error("legacy JWKS fixture did not reproduce incompatible signing");
+    throw new Error(
+      "legacy JWKS fixture did not reproduce incompatible signing"
+    );
 
   const issuer = process.env.AUTH_JWT_ISSUER;
   const audience = process.env.AUTH_JWT_AUDIENCE;
   const now = Math.floor(Date.now() / 1000);
-  const token = await new SignJWT({ uid: "legacy-jwks-user" })
+  await pool.query(`INSERT INTO "user" (id,name,email,"emailVerified","createdAt","updatedAt")
+    VALUES ('legacy-jwks-user','Legacy fixture','legacy-jwks-user@example.invalid',false,NOW(),NOW())
+    ON CONFLICT (id) DO NOTHING`);
+  const session = await context.internalAdapter.createSession(
+    "legacy-jwks-user"
+  );
+  const token = await new SignJWT({ uid: "legacy-jwks-user", sid: session.id })
     .setProtectedHeader({ alg: "EdDSA", kid: id })
     .setSubject("legacy-jwks-user")
     .setIssuer(issuer)
@@ -57,7 +65,7 @@ try {
   fs.writeFileSync(
     process.argv[outputIndex + 1],
     `${JSON.stringify({ id, token })}\n`,
-    { mode: 0o600 },
+    { mode: 0o600 }
   );
   console.log("Legacy EdDSA JWKS regression fixture inserted and reproduced");
 } finally {

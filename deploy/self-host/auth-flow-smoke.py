@@ -116,7 +116,10 @@ def main() -> int:
     os.environ['AUTH_JWKS_URL'] = f'{args.base_url.rstrip("/")}/api/auth/jwks'
     os.environ['AUTH_JWT_ISSUER'] = args.issuer
     os.environ['AUTH_JWT_AUDIENCE'] = args.audience
-    from utils.auth_shim import verify_id_token
+    os.environ['AUTH_SERVER_INTERNAL_URL'] = args.base_url.rstrip('/')
+    os.environ['AUTH_INTERNAL_ALLOW_HTTP'] = 'true' if args.base_url.startswith('http://') else 'false'
+    os.environ['AUTH_INTERNAL_ADMIN_SECRET'] = args.admin_secret
+    from utils.auth_shim import InvalidIdTokenError, verify_id_token
 
     claims = verify_id_token(token)
     if claims.get('uid') != user_id or claims.get('sub') != user_id:
@@ -127,6 +130,29 @@ def main() -> int:
         legacy_claims = verify_id_token(str(legacy.get('token') or ''))
         if legacy_claims.get('uid') != 'legacy-jwks-user':
             raise RuntimeError('migrated legacy JWKS token did not verify through the backend')
+
+    refreshed, _ = request_json(args.base_url, '/api/auth/token', bearer=session_token, origin=args.origin)
+    verify_id_token(refreshed['token'])
+    request_json(args.base_url, '/api/auth/sign-out', method='POST', body={}, bearer=session_token, origin=args.origin)
+    for old_token in (token, refreshed['token']):
+        try:
+            verify_id_token(old_token)
+        except InvalidIdTokenError:
+            pass
+        else:
+            raise RuntimeError('signed JWT remained usable after logout')
+    signin, signin_headers = request_json(
+        args.base_url,
+        '/api/auth/sign-in/email',
+        method='POST',
+        body={'email': email, 'password': password},
+        origin=args.origin,
+        client_ip='192.0.2.1',
+    )
+    _, session_token = require_session(signin, signin_headers, expected_user=user_id)
+    renewed, _ = request_json(args.base_url, '/api/auth/token', bearer=session_token, origin=args.origin)
+    token = renewed['token']
+    verify_id_token(token)
 
     encoded_user_id = quote(user_id, safe='')
     request_json(
@@ -143,9 +169,16 @@ def main() -> int:
     if residuals != {'users': 0, 'sessions': 0, 'accounts': 0}:
         raise RuntimeError(f'Better Auth account deletion left residual rows: {residuals}')
 
+    try:
+        verify_id_token(token)
+    except InvalidIdTokenError:
+        pass
+    else:
+        raise RuntimeError('signed JWT remained usable after account deletion')
+
     print(
         'Better Auth flow OK: sign-up, sign-in, set-auth-token, JWT exchange, JWKS, '
-        'backend verification, account/session deletion reconciliation'
+        'backend verification, refresh, logout revocation, account/session deletion reconciliation'
     )
     return 0
 

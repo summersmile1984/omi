@@ -1,4 +1,5 @@
 import json
+import time
 
 import jwt
 import pytest
@@ -16,14 +17,32 @@ def _es256_credential(claims):
     return token, public_jwk
 
 
+@pytest.fixture(autouse=True)
+def issuer(monkeypatch):
+    monkeypatch.setenv("AUTH_JWT_ISSUER", "https://auth.fixture.invalid")
+    monkeypatch.setenv("AUTH_JWT_AUDIENCE", "https://api.fixture.invalid")
+
+
 def test_verify_id_token_accepts_es256_and_preserves_uid(monkeypatch):
-    token, public_jwk = _es256_credential({"uid": "user-123", "sub": "subject-123"})
+    now = int(time.time())
+    token, public_jwk = _es256_credential(
+        {
+            "uid": "user-123",
+            "sub": "user-123",
+            "sid": "session-123",
+            "iss": "https://auth.fixture.invalid",
+            "aud": "https://api.fixture.invalid",
+            "iat": now,
+            "exp": now + 3600,
+        }
+    )
+    monkeypatch.setattr(auth_shim, "_verify_active_session", lambda *args: None)
     monkeypatch.setattr(auth_shim, "_fetch_jwks", lambda: {"keys": [public_jwk]})
 
     claims = auth_shim.verify_id_token(token)
 
     assert claims["uid"] == "user-123"
-    assert claims["sub"] == "subject-123"
+    assert claims["sub"] == "user-123"
 
 
 def test_verify_id_token_rejects_algorithm_key_mismatch(monkeypatch):
@@ -39,7 +58,7 @@ def test_verify_id_token_rejects_missing_identity(monkeypatch):
     token, public_jwk = _es256_credential({"scope": "read"})
     monkeypatch.setattr(auth_shim, "_fetch_jwks", lambda: {"keys": [public_jwk]})
 
-    with pytest.raises(auth_shim.InvalidIdTokenError, match="missing uid/sub"):
+    with pytest.raises(auth_shim.InvalidIdTokenError, match='missing the'):
         auth_shim.verify_id_token(token)
 
 
