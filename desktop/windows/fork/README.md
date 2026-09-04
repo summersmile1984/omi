@@ -50,8 +50,19 @@ endpoint 既写入显式 `.env` 又作为 Vite 编译定义固定，宿主环境
 `build-manifest.json` 保留 source commit、profile、owner hashes 与
 `release_qualified: false`。生成物不提交到仓库。
 
-此 stage 不是完整视觉白牌包：旧图标、帮助链接、剩余产品文案、AI/provider UI 仍需
-后续品牌/能力包逐项生成和验收；此处不会把上游品牌自检当成无泄漏验收。
+WL-5 的 `brand-text.json` 是审阅过的完整 AST 文案目录；`brand-stage.mjs` 在同一
+staging 入口渲染产品名/AI 人格名、引导、Home shell、General/Privacy 与托盘文案。
+覆盖源中新出现的 Omi 文案未分类会失败；协议/storage 字符串保持且在
+`fork/brand-coverage.json` 单列。该静态闭包检查与实际组件行为测试分开计算。
+`prepare.py` 从唯一 brand manifest 投影 persona、support/legal 与链接；web app 使用
+已选 target/stage 的 resolved web origin。About 的帮助/文档/条款/隐私等链接及
+Home 的 feedback/community 使用这些字段，空 community 隐藏；未提供 referral
+合同，不继承上游 affiliate。About/托盘不提供 disabled updater 的 beta/feed/install
+入口。Name/Ask/goal 等 AI 表述使用 persona，产品/窗口/系统菜单使用 display name。
+
+此 stage 仍不是完整视觉白牌包：旧图标、其他页面/连接器的剩余文案、系统提示词、
+AI/provider UI 仍需后续品牌/能力包逐项生成和验收；扫描构建 UTF-8 与实际 UI 导出时
+须单列二进制、图标、字体的未扫描范围，不能把上游品牌自检当成无泄漏验收。
 
 ## 命令与正式检查
 

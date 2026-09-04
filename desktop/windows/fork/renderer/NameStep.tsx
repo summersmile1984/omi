@@ -35,7 +35,7 @@ export function NameStep({
       stepIndex={stepIndex}
       totalSteps={totalSteps}
       eyebrow="NAME"
-      title={`What should ${profile.displayName} call you?`}
+      title={`What should ${profile.personaName} call you?`}
       continueDisabled={busy || !name.trim()}
       onContinue={() => void submit()}
       onBack={onBack}
