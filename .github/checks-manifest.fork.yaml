@@ -23,7 +23,7 @@ checks:
 
   - id: fork-profile-tables
     command: ["python3", "scripts/profiles/check_tables.py"]
-    triggers: ["deploy/profiles/**", "scripts/profiles/**", "app/lib/env/environment_profile.dart", "app/lib/env/fork/**", "desktop/macos/Desktop/Sources/Generated/**", "desktop/windows/src/shared/fork/**", "web/app/src/lib/fork/**", "backend/fork/deployment_profiles.generated.json"]
+    triggers: ["deploy/profiles/**", "scripts/profiles/**", "brand/**", "scripts/brand/**", "app/lib/env/environment_profile.dart", "app/lib/env/fork/**", "desktop/macos/Desktop/Sources/Generated/**", "desktop/windows/src/shared/fork/**", "web/app/src/lib/fork/**", "backend/fork/deployment_profiles.generated.json"]
     lanes: ["local", "ci"]
     reason: "one profile source drives four platforms; omi_cloud must still reproduce upstream's environment_profile.dart literals, so upstream retuning them fails here on the next sync instead of drifting silently"
 
@@ -44,3 +44,9 @@ checks:
     triggers: ["brand/**", "scripts/brand/**"]
     lanes: ["local", "ci"]
     reason: "apply.py --brand omi-upstream must stay a zero-diff no-op as generators land in B1-B7 -- this is the regression guarantee the design doc's B0 acceptance criteria names"
+
+  - id: fork-profile-boundary-tests
+    command: ["python3", "scripts/profiles/test_profiles.py"]
+    triggers: ["deploy/profiles/**", "scripts/profiles/**", "brand/**", "scripts/brand/**"]
+    lanes: ["local", "ci"]
+    reason: "2026-09-04 main audit E2 reproduced a schema-valid brand generating blank objects URLs and implicit auth routing; both target fixtures must exercise the same production renderer and all five output checks"

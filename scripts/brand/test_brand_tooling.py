@@ -130,17 +130,17 @@ class MobileGeneratorTests(unittest.TestCase):
     def test_render_writes_the_brand_display_name_as_a_dart_const(self):
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme"}}
-        written = mobile.render(manifest, root)
-        self.assertEqual(written, [root / "app/lib/flavors.brand.dart"])
-        content = (root / "app/lib/flavors.brand.dart").read_text()
+        written = mobile.render(manifest)
+        self.assertEqual(list(written), ["app/lib/flavors.brand.dart"])
+        content = written["app/lib/flavors.brand.dart"]
+        self.assertEqual(list(root.iterdir()), [])
         self.assertIn("const String kBrandDisplayName = 'Acme';", content)
         self.assertIn("brand/acme/manifest.yaml", content)
 
     def test_render_escapes_an_apostrophe_in_the_display_name(self):
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme's App"}}
-        mobile.render(manifest, root)
-        content = (root / "app/lib/flavors.brand.dart").read_text()
+        content = mobile.render(manifest)["app/lib/flavors.brand.dart"]
         self.assertIn("const String kBrandDisplayName = 'Acme\\'s App';", content)
 
     def test_render_escapes_a_dollar_sign_so_dart_does_not_interpolate_it(self):
@@ -148,8 +148,7 @@ class MobileGeneratorTests(unittest.TestCase):
         # compile with "Undefined name 'me'." rather than producing a leak.
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Ac$me"}}
-        mobile.render(manifest, root)
-        content = (root / "app/lib/flavors.brand.dart").read_text()
+        content = mobile.render(manifest)["app/lib/flavors.brand.dart"]
         self.assertIn("const String kBrandDisplayName = 'Ac\\$me';", content)
 
     def test_render_escapes_an_embedded_newline(self):
@@ -157,17 +156,14 @@ class MobileGeneratorTests(unittest.TestCase):
         # string entirely ("String starting with ' must end with '.").
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme\nCorp"}}
-        mobile.render(manifest, root)
-        content = (root / "app/lib/flavors.brand.dart").read_text()
+        content = mobile.render(manifest)["app/lib/flavors.brand.dart"]
         self.assertIn("const String kBrandDisplayName = 'Acme\\nCorp';", content)
 
     def test_render_is_idempotent(self):
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme"}}
-        mobile.render(manifest, root)
-        first = (root / "app/lib/flavors.brand.dart").read_text()
-        mobile.render(manifest, root)
-        second = (root / "app/lib/flavors.brand.dart").read_text()
+        first = mobile.render(manifest)
+        second = mobile.render(manifest)
         self.assertEqual(first, second)
 
 
@@ -195,8 +191,12 @@ class RepoFixture:
 
         manifest_src = (BRAND_SCRIPTS.parent.parent / "brand/omi-upstream/manifest.yaml").read_text()
         (root / "brand/omi-upstream/manifest.yaml").write_text(manifest_src)
+        fork_manifest = load_yaml(root / "brand/omi-upstream/manifest.yaml")
+        fork_manifest["brand"].update(id="a-real-fork-brand", display_name="Acme")
+        (root / "brand/a-real-fork-brand").mkdir()
+        (root / "brand/a-real-fork-brand/manifest.yaml").write_text(json.dumps(fork_manifest))
 
-        for name in ("apply.py", "check.py", "schema_validate.py", "yaml_lite.py", "lexicon.yaml"):
+        for name in ("apply.py", "check.py", "manifest.py", "schema_validate.py", "yaml_lite.py", "lexicon.yaml"):
             (root / "scripts/brand" / name).write_text((BRAND_SCRIPTS / name).read_text())
         shutil.copytree(BRAND_SCRIPTS / "generators", root / "scripts/brand/generators")
 
@@ -260,6 +260,7 @@ class BrandToolingTests(unittest.TestCase):
 
     def test_check_finds_the_leak_and_respects_the_exemption(self):
         fx = self.fixture()
+        self.assertEqual(fx.run_apply("a-real-fork-brand").returncode, 0)
         proc = fx.run_check("a-real-fork-brand")
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
@@ -269,6 +270,7 @@ class BrandToolingTests(unittest.TestCase):
 
     def test_check_on_omi_upstream_reports_a_self_check_count_not_a_failure(self):
         fx = self.fixture()
+        self.assertEqual(fx.run_apply("omi-upstream").returncode, 0)
         proc = fx.run_check("omi-upstream")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
@@ -280,6 +282,7 @@ class BrandToolingTests(unittest.TestCase):
         # it and the same fixture must report one more leak.
         fx = self.fixture()
         (fx.root / "brand/_allow.yaml").write_text("schema_version: 1\nexemptions:\n")
+        self.assertEqual(fx.run_apply("a-real-fork-brand").returncode, 0)
         proc = fx.run_check("a-real-fork-brand")
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["lexicon_matches"], 3)
@@ -287,6 +290,7 @@ class BrandToolingTests(unittest.TestCase):
     def test_baseline_ratchet_rejects_an_increase(self):
         fx = self.fixture()
         baseline = fx.root / "baseline.txt"
+        self.assertEqual(fx.run_apply("a-real-fork-brand").returncode, 0)
         first = fx.run_check("a-real-fork-brand", "--baseline", str(baseline))
         self.assertEqual(first.returncode, 0)
         self.assertEqual(baseline.read_text().strip(), "2")
@@ -301,4 +305,5 @@ class BrandToolingTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    suite = unittest.defaultTestLoader.discover(str(BRAND_SCRIPTS), pattern="test_*.py")
+    sys.exit(0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1)
