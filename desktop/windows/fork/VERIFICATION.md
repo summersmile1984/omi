@@ -146,3 +146,69 @@ USERPROFILE/ProgramData/APPDATA 目录，真实扫描只有1个合成文本文�
 实时模型返回409，不计入功能通过。macOS-host Electron 记录上游 Windows-only
 `setTitleBarOverlay` 不可用异常，但进程正常继续；本轮不宣称 macOS 产品支持或
 Windows/Linux 系统资格。完整录音/屏幕能力、外部模型、签名、安装、更新发行仍独立验收。
+
+## WL-5：Electron 可见品牌投影（2026-09-04）
+
+基线 `c465df4e02`，证据目录 `/tmp/memweft-implementation/electron/wl5/`。
+真实旧工件 `onboarding-fixed-stage/desktop/out` 的 UTF-8 扫描有785个原始词典命中；
+6页既有 runtime 导出中有6处 Omi（2文件）。这不是785处已确认的品牌泄漏：
+代码中 `window.omi`、IPC、数据库键必须保持，图片/bytecode等不属于文本扫描。
+
+同一 `prepare.py` 现在从 brand/profile 单源投影 displayName/personaName、supportEmail、
+legalEntity 和公开链接。webApp 使用 resolved target/stage web origin。静态 AST 目录
+在19个 reviewed source owner 中渲染48条/51处，5条/6处协议/storage输入保持并单列；
+Home feedback/community、About映射与托盘 disabled updater 入口另外在 staging owner
+执行。`brand-coverage.json` 描述该范围，不能替代执行后的行为验证。新增同类文案
+即使有人更新 source hash，未登记仍会失败；新测试执行生产 stage renderer 证明此点。
+独立review补齐TemplateHead/Middle/Tail后，动态品牌片段也明确拒绝等待分类；现有
+`--omi-mica=`动态CLI前缀单列保持。`dynamic-before.log`复现旧分类缺口，
+`dynamic-text-guard-final.log`覆盖JSX text和三类动态片段。
+
+行为回归执行实际生成后的组件：onboarding/name/consent、Hub ask/menu、托盘菜单与
+About；产品名和persona不同，复杂名称 `Field <Guide> & "Co"` / `Robin & "R"` 正常渲染，
+community空时隐藏，反馈调用既有 main openExternal owner，隐私/条款/文档等href
+来自manifest，版本IPC失败显示 unavailable，disabled updater没有beta/install/check
+控件。托盘 Open/Quit 与监听 toggle 仍调用原来的 action owner。原 graph suspension
+回归仅改用manifest期望产品名，其实际进度/恢复断言保持。
+
+实际工件 `harbor-stage/desktop` 用合成 `Harbor Desktop` / `Harbor Guide`，身份为
+`invalid.example.harbor.forktest.cloudflare`。`harbor-full-ui-run.log` exit0：真实CF
+Auth33058/Edge33062注册→14步引导→Home菜单→About/General/Privacy→完整退出。
+引导中的监听关闭、屏幕/麦克风/自动化/语音/OAuth继续原Skip，Discovery仅扫描1个
+专属合成文本。`harbor-full-ui-*.png/.txt` 和 `*-about-links.json` 保留可见证据；
+实际support链接只核对href，未声称这些example.invalid站点已经部署。
+
+先前 `harbor-ui-run.log` 在14步后因为测试脚本没有trim标题中的空白而停止；
+`harbor-ui-final-run.log` 通过已有真实会话恢复并补Settings/退出；最终独立新账户的
+`harbor-full-ui-run.log` 从首登开始完整通过。该脚本未写onboarding完成位或私有React状态。
+
+执行后的 `build-after.json`：28个UTF-8文件、714个原始词典命中（10文件），40个
+二进制/图片/字体文件未扫描。`runtime-after.json`：23个真实UI文本导出，只有1个
+`Friend` 命中，来源是“How did you hear”里的普通朋友渠道；这些导出没有Omi命中。
+未改品牌词典或添加宽泛豁免去消除数字。建前/建后范围不同，不能将这些数算为
+全产品泄漏清零率；main bytecode、图标、Canvas图像和其他页面没有这项证明。
+
+执行命令：Node22.23.2、pnpm10.27.0，依赖复用同一 frozen pnpm-lock 的安装目录；
+Python使用本树 `backend/.venv/bin`（make setup安装）。
+
+- `make setup`：`setup.log` exit0。
+- `pnpm test`（原 desktop/windows）：`upstream-suite.log`，561文件/5558测试通过，
+  6文件/33测试跳过；上游源码、测试、依赖和lock均未修改。
+- `python3 fork/ci_build.py`：`matrix-second.log`，两target各10个staged tests及完整
+  TypeScript/bytecode/renderer build通过；最初fixture缺身份mock的测试导入失败保留在
+  `formal-first.log`，不是实际Auth回归。
+- Harbor真实candidate另跑10个staged tests和 `pnpm build`，`harbor-build.log` exit0，
+  包含最终NameStep persona消费。最后exact scoped fork门禁覆盖12core+4prepare+双target
+  各10staged与完整build，由既有 `fork-electron-native-identity` local/ci条目发现。
+- `pending-upstream-final.log` / `pending-fork-final.log` 使用已stage文件清单选择，
+  分别12项、2项通过；上游历史failure-class ratchet因shallow clone明确SKIP，
+  不称已验证90日历史。最终提交后以真实base/head重复exact范围，见
+  `committed-upstream.log` / `committed-fork.log`。没有更改fork workflow或扩大Swift gate。
+- guard最后补动态片段分类后，新fresh staging的834个实际产品TS/TSX/HTML文件与
+  Harbor实测工件的source逐字相同（`harbor-final-source-equivalence.json`）。该对比
+  排除tests/build tools/metadata，不冒称bytecode可重现或最终安装包一致。
+
+仍待后续独立工程包：所有旧logo/icon/动画资产、其他页面和连接器可见文案与域名、
+模型system prompt人格和provider能力策略。Windows/Linux真机/安装/安全存储、macOS
+产品兼容、iOS、发行签名、更新、推送、硬件BLE/OTA密钥资格均未由本机Electron证明。
+图谱字体仍可能进入真实loading fallback；本包不宣称它已恢复。

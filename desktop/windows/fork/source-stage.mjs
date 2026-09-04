@@ -1,6 +1,7 @@
 import ts from 'typescript'
 import { readFileSync, writeFileSync, readdirSync, existsSync, rmSync } from 'node:fs'
 import { resolve, relative, dirname, join } from 'node:path'
+import { applyBrandPresentation } from './brand-stage.mjs'
 
 const root = resolve(process.argv[2])
 const profile = JSON.parse(readFileSync(join(root, 'fork/profile.json'), 'utf8'))
@@ -103,6 +104,8 @@ function removeFunction(path, name) {
   if (!node) throw new Error(`Missing function ${path}:${name}`)
   edit(path, [{ start: node.getStart(source), end: node.end, value: '' }])
 }
+applyBrandPresentation(root, profile, { read, edit, write, replaceOnce })
+
 const retiredBridge = [
   'authStore',
   'signInWithProvider',
@@ -226,6 +229,7 @@ removeCalls('src/renderer/src/lib/appLifetimeJobs.ts', ['maybeStartInsightEngine
 const retired = [
   'src/renderer/src/components/onboarding/NameStep.tsx',
   'src/renderer/src/components/settings/tabs/AccountTab.tsx',
+  'src/renderer/src/components/settings/tabs/AboutTab.tsx',
   'src/renderer/src/lib/insightEngine.ts',
   'src/renderer/src/lib/aiProfileHost.ts',
   'src/renderer/src/lib/rewindEmbedHost.ts',
@@ -266,7 +270,8 @@ const mapping = new Map([
   ['src/renderer/src/hooks/useAuth', 'fork/renderer/useAuth'],
   ['src/renderer/src/pages/Login', 'fork/renderer/Login'],
   ['src/renderer/src/components/onboarding/NameStep', 'fork/renderer/NameStep'],
-  ['src/renderer/src/components/settings/tabs/AccountTab', 'fork/renderer/AccountTab']
+  ['src/renderer/src/components/settings/tabs/AccountTab', 'fork/renderer/AccountTab'],
+  ['src/renderer/src/components/settings/tabs/AboutTab', 'fork/renderer/AboutTab']
 ])
 function files(directory) {
   return readdirSync(join(root, directory), { withFileTypes: true }).flatMap((entry) =>

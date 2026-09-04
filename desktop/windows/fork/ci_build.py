@@ -12,7 +12,15 @@ from prepare import ROOT, COMPONENT, load_module, prepare
 def synthetic_manifest():
     render = load_module('electron_ci_profiles', ROOT / 'scripts/profiles/render.py')
     value = copy.deepcopy(render.load_manifest('omi-upstream', ROOT))
-    value['brand'].update(id='synthetic-electron-ci', display_name='Synthetic Desktop CI')
+    value['brand'].update(
+        id='synthetic-electron-ci',
+        display_name='Synthetic Desktop CI',
+        ai_persona_name='Synthetic Guide',
+        legal_entity='Synthetic Test Entity',
+        support_email='support@desktop.example.invalid',
+    )
+    for key in ('docs', 'help', 'feedback', 'privacy', 'terms', 'status', 'community'):
+        value['domains'][key] = f'https://desktop.example.invalid/{key}'
     value['identifiers']['windows_app_id'] = 'test.synthetic.desktop'
     value['deployments'] = {
         target: {
@@ -33,8 +41,12 @@ def check_matrix():
     with tempfile.TemporaryDirectory(prefix='fork-electron-ci-') as temp:
         root = Path(temp)
         manifest = root / 'brand.json'
-        manifest.write_text(json.dumps(synthetic_manifest()))
         for target in ('self_hosted', 'cloudflare'):
+            value = synthetic_manifest()
+            if target == 'cloudflare':
+                value['brand'].update(display_name='Field <Guide> & "Co"', ai_persona_name='Robin & "R"')
+                value['domains']['community'] = ''
+            manifest.write_text(json.dumps(value))
             stage = prepare(manifest, target, root / target)
             (stage / 'node_modules').symlink_to(dependencies.resolve(), target_is_directory=True)
             for command in [

@@ -47,6 +47,16 @@ def prepare(manifest, target, output):
     profile = {
         'applicationId': identity,
         'displayName': brand['brand']['display_name'],
+        'personaName': brand['brand']['ai_persona_name'],
+        'supportEmail': brand['brand']['support_email'],
+        'legalEntity': brand['brand']['legal_entity'],
+        'links': {
+            **{
+                key: brand['domains'][key]
+                for key in ('docs', 'help', 'feedback', 'privacy', 'terms', 'status', 'community')
+            },
+            'webApp': row['web_base_url'],
+        },
         'target': target,
         'stage': 'local',
         'authBase': row['auth_base_url'],

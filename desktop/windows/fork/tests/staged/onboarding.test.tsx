@@ -58,6 +58,7 @@ vi.mock('../../../src/renderer/src/lib/analytics', () => ({ trackHowDidYouHear: 
 vi.mock('../../../src/renderer/src/lib/toast', () => ({ toast: () => {} }))
 import { Onboarding } from '../../../src/renderer/src/pages/Onboarding'
 import { getPreferences, setPreferences } from '../../../src/renderer/src/lib/preferences'
+import { profile } from '../../native/profile.generated'
 afterEach(cleanup)
 it('commits language progress while graph fonts suspend, and renders the real graph after readiness', async () => {
   graph.suspended = false
@@ -77,7 +78,9 @@ it('commits language progress while graph fonts suspend, and renders the real gr
   await screen.findByText('Graph ready')
   fireEvent.click(screen.getByRole('button', { name: 'English', exact: true }))
   await waitFor(() =>
-    expect(screen.getByRole('heading', { name: 'How did you hear about Omi?' })).toBeTruthy()
+    expect(
+      screen.getByRole('heading', { name: `How did you hear about ${profile.displayName}?` })
+    ).toBeTruthy()
   )
   expect(getPreferences().onboardingStep).toBe(2)
   expect(screen.getByRole('status').textContent).toContain('You can continue setup')

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -29,6 +30,10 @@ class SourceStageContract(unittest.TestCase):
                 identities.append(profile['applicationId'])
                 self.assertEqual(profile['target'], target)
                 self.assertEqual(profile['updates'], 'disabled')
+                self.assertEqual(profile['personaName'], 'Synthetic Guide')
+                coverage = json.loads((stage / 'fork/brand-coverage.json').read_text())
+                self.assertGreater(len(coverage['rendered']), 40)
+                self.assertTrue(any('omi-capture:cmd' == row['source'] for row in coverage['preserved']))
                 self.assertEqual((stage / 'pnpm-lock.yaml').read_bytes(), (COMPONENT / 'pnpm-lock.yaml').read_bytes())
                 self.assertFalse((stage / 'src/renderer/src/lib/firebase.ts').exists())
                 package = json.loads((stage / 'package.json').read_text())
@@ -48,6 +53,25 @@ class SourceStageContract(unittest.TestCase):
                 )
             self.assertEqual(len(set(identities)), 2)
             self.assertEqual((COMPONENT / 'src/main/index.ts').read_bytes(), original)
+
+    def test_new_presentation_text_cannot_silently_escape_the_catalogue(self):
+        # Execute the production stage renderer with a new upstream string in a
+        # covered owner. Hash drift is separately covered above; this catches a
+        # hash refresh which forgot to classify the new presentation itself.
+        script = '''
+import { applyBrandPresentation } from './fork/brand-stage.mjs';
+const read = path => path.endsWith('.json') ? JSON.stringify({'owner.tsx': []}) : process.argv[1];
+try { applyBrandPresentation('.', {links: {}}, {read}); process.exit(2) }
+catch (error) { if (!error.message.includes('Unclassified brand text')) throw error }
+'''
+        for source in (
+            '<p>Welcome to Omi</p>',
+            '<p title={`Ask Omi ${name}`} />',
+            '<p title={`${name} asks Omi ${other}`} />',
+            '<p title={`${name} asks Omi`} />',
+        ):
+            with self.subTest(source=source):
+                subprocess.run(['node', '--input-type=module', '-e', script, source], cwd=COMPONENT, check=True)
 
     def test_source_owner_drift_and_unsafe_output_fail_closed(self):
         with tempfile.TemporaryDirectory(prefix='electron-owner-test-') as temporary:
