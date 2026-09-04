@@ -94,6 +94,15 @@ for staging. It is not dual-written to the legacy Redis set; a production
 cutover must explicitly import the existing set before routing these mutations
 to Workers.
 
+Task request model validation returns HTTP 422 with FastAPI's `detail` field-error
+array, including the `body` location and no Pydantic documentation URL. The same
+response owner serves task creation, updates, shares and sync/batch model errors.
+Non-model domain rejections retain their route-specific statuses. The regression
+suite runs the real ASGI route beside current upstream `ActionItemCreateRequest`
+and `ActionItemUpdateRequest`; this validates typed rejection parity, not the
+entire task schema or all query/batch semantics.
+
+
 ## Local setup
 
 ```bash

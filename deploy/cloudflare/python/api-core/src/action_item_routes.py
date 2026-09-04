@@ -16,8 +16,9 @@ from enum import Enum
 from typing import Any
 
 from fastapi import APIRouter, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from conversation_routes import _first_conversation
 from internal_auth import decode_context
@@ -191,6 +192,13 @@ async def _bounded_json(request: Request) -> object:
     if len(json.dumps(body, ensure_ascii=False).encode("utf-8")) > MAX_REQUEST_BYTES:
         raise ValueError("request body exceeds size limit")
     return body
+
+
+def _validation_response(error: ValidationError, location: tuple[object, ...] = ("body",)) -> JSONResponse:
+    # Match FastAPI's request-validation wire contract. Do not flatten the
+    # typed field errors into a generic 400 or include Pydantic documentation URLs.
+    detail = [{**item, "loc": [*location, *item["loc"]]} for item in error.errors(include_url=False)]
+    return JSONResponse({"detail": jsonable_encoder(detail)}, status_code=422)
 
 
 def _epoch(value: datetime | None) -> int | None:
@@ -495,7 +503,9 @@ async def create_action_item(request: Request):
     try:
         item = ActionItemCreate.model_validate(await _bounded_json(request))
         row = await _insert_item(request.scope["env"], str(context["uid"]), item)
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item"}, status_code=400)
     except Exception:
         return JSONResponse({"error": "action item unavailable"}, status_code=503)
@@ -668,7 +678,9 @@ async def share_action_items(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         payload = ShareTasksRequest.model_validate(await _bounded_json(request))
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid share request"}, status_code=400)
     if len(set(payload.task_ids)) != len(payload.task_ids) or any(
         not item_id or len(item_id) > MAX_ID_LENGTH for item_id in payload.task_ids
@@ -743,7 +755,9 @@ async def accept_shared_action_items(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         payload = AcceptSharedTasksRequest.model_validate(await _bounded_json(request))
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid share token"}, status_code=400)
 
     env = request.scope["env"]
@@ -1056,7 +1070,9 @@ async def update_action_item(request: Request, action_item_id: str):
     try:
         update = ActionItemUpdate.model_validate(await _bounded_json(request))
         row = await _apply_update(request.scope["env"], str(context["uid"]), action_item_id, update)
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item update"}, status_code=400)
     except Exception:
         return JSONResponse({"error": "action item unavailable"}, status_code=503)
@@ -1074,7 +1090,9 @@ async def toggle_action_item_completion(request: Request, action_item_id: str):
     try:
         update = ActionItemUpdate.model_validate({"completed": value})
         row = await _apply_update(request.scope["env"], str(context["uid"]), action_item_id, update)
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid completion value"}, status_code=400)
     return _response(row) if row else JSONResponse({"error": "action item not found"}, status_code=404)
 
@@ -1120,7 +1138,9 @@ async def batch_update_action_items(request: Request):
             "missing_ids": missing_ids,
             "noop_ids": [],
         }
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item batch"}, status_code=400)
 
 
@@ -1134,7 +1154,9 @@ async def sync_batch_update(request: Request):
     try:
         body = await _bounded_json(request)
         payload = SyncBatchRequest.model_validate(body)
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item sync batch"}, status_code=400)
     uid = str(context["uid"])
     env = request.scope["env"]
@@ -1167,7 +1189,9 @@ async def sync_batch_update(request: Request):
                 ).bind(int(time.time()), uid, item.id).run()
                 row = await _first_item(env, uid, item.id)
             updated_ids.append(item.id)
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item sync batch"}, status_code=400)
     except Exception:
         return JSONResponse({"error": "action items unavailable"}, status_code=503)
@@ -1190,8 +1214,10 @@ async def batch_create_action_items(request: Request):
         body = await _bounded_json(request)
         if not isinstance(body, list) or len(body) > 50:
             raise ValueError("invalid batch")
-        items = [ActionItemCreate.model_validate(raw) for raw in body]
-    except (ValidationError, ValueError, TypeError):
+        items = TypeAdapter(list[ActionItemCreate]).validate_python(body)
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item batch"}, status_code=400)
     try:
         rows = [await _insert_item(request.scope["env"], str(context["uid"]), item) for item in items]
