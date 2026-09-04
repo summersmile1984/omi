@@ -13,7 +13,7 @@ export function applyBrandPresentation(root, profile, { read, edit, write, repla
     rendered: [],
     preserved: [],
     scope:
-      'Electron shell/onboarding/General/Privacy/About/tray text; assets and other pages excluded'
+      'Electron shell/onboarding/General/Privacy/About/tray and legacy Home text; assets and other pages excluded'
   }
   for (const [path, entries] of Object.entries(catalogue)) {
     const source = ts.createSourceFile(
@@ -75,6 +75,11 @@ export function applyBrandPresentation(root, profile, { read, edit, write, repla
     }
     edit(path, patches)
   }
+  replaceOnce(
+    'src/renderer/src/components/layout/Sidebar.tsx',
+    'shrink-0 select-none overflow-hidden text-[15px] font-semibold lowercase tracking-tight',
+    'min-w-0 select-none truncate text-[15px] font-semibold tracking-tight'
+  )
   const hub = 'src/renderer/src/components/home/hub/HubHeader.tsx'
   replaceOnce(
     hub,

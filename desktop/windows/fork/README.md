@@ -51,7 +51,10 @@ endpoint 既写入显式 `.env` 又作为 Vite 编译定义固定，宿主环境
 `release_qualified: false`。生成物不提交到仓库。
 
 WL-5 的 `brand-text.json` 是审阅过的完整 AST 文案目录；`brand-stage.mjs` 在同一
-staging 入口渲染产品名/AI 人格名、引导、Home shell、General/Privacy 与托盘文案。
+staging 入口渲染产品名/AI 人格名、引导、Home shell、旧Home侧栏/Ask/语音/回复状态、
+General/Privacy 与托盘文案。旧Home侧栏保留已有折叠偏好键，产品名保持manifest大小写
+且长名称可截断。两条旧头像输入仅在文案pass保留以供随后资产pass严格退休，
+不作为最终产物的品牌豁免。
 覆盖源中新出现的 Omi 文案未分类会失败；协议/storage 字符串保持且在
 `fork/brand-coverage.json` 单列。该静态闭包检查与实际组件行为测试分开计算。
 `prepare.py` 从唯一 brand manifest 投影 persona、support/legal 与链接；web app 使用
