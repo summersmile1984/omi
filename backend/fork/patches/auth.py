@@ -76,7 +76,7 @@ def _first_message_consumer(original: Callable) -> Callable:
 
 
 def patches() -> list[Patch]:
-    from ..auth_identity import delete_account
+    from ..auth_identity import delete_account, get_user
 
     return [
         Patch(
@@ -94,5 +94,14 @@ def patches() -> list[Patch]:
             ('_get_ws_auth_close', _ws_failure),
             ('get_current_user_uid_from_ws_message', _first_message_consumer),
             ('delete_account', lambda original: delete_account),
+        )
+    ] + [
+        Patch(
+            name='auth.profile',
+            module='database.auth',
+            attribute='_firebase_get_user',
+            build=lambda original: get_user,
+            applies_to=_self_hosted,
+            reason='captured profile consumers resolve their SDK leaf through the selected identity authority',
         )
     ]

@@ -36,6 +36,11 @@ session verification. A missing user is accepted only after exact zero counts
 for users, sessions and accounts; final receipt publication checks again.
 Unknown responses and outages retain retryable deletion state. See
 `fork/tests/test_auth_identity.py` and the shared AUTH local/CI lane.
+The same adapter binds `database.auth._firebase_get_user` for profile reads,
+including functions captured by model and conversation consumers before startup.
+Only an authoritative missing-user response returns absence; malformed/outage
+results emit sanitized shared fallback telemetry before the existing optional
+profile/default-name path. Upstream mode retains its original SDK owner.
 
 ## Fork discipline
 

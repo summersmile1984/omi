@@ -1,6 +1,7 @@
 """Identity deletion and final completion use the actual internal HTTP contract."""
 
 from contextlib import nullcontext
+import importlib
 import types
 from unittest import mock
 
@@ -32,6 +33,112 @@ def authority(monkeypatch):
 
     monkeypatch.setattr(auth_identity.httpx, 'request', request)
     return calls, replies
+
+
+@pytest.fixture
+def profile_consumer():
+    client = types.ModuleType('database._client')
+    client.db = mock.MagicMock()
+    client.db.collection.return_value.document.return_value.get.return_value.exists = False
+    redis = types.ModuleType('database.redis_db')
+    redis.cache_user_name = mock.Mock()
+    with stub_modules({'database._client': client, 'database.redis_db': redis, 'database.auth': None}):
+        consumer = importlib.import_module('database.auth')
+        # Capture the same public functions imported by conversation/model code
+        # before applying the production registry at its SDK leaf.
+        lookup, name = consumer.get_user_from_uid, consumer.get_user_name
+        with mock.patch.object(
+            consumer.auth, 'get_user', side_effect=AssertionError('Firebase profile was called')
+        ) as sdk:
+            registry = build_registry(patch for patch in patches() if patch.module == 'database.auth')
+            yield registry, lookup, name, sdk, redis.cache_user_name
+
+
+def profile(**updates):
+    return {
+        'id': 'existing-user',
+        'email': 'synthetic@example.invalid',
+        'emailVerified': True,
+        'name': 'Synthetic Person',
+        'image': None,
+        **updates,
+    }
+
+
+def test_captured_profile_consumers_use_selected_identity_before_model_work(authority, profile_consumer):
+    calls, replies = authority
+    registry, lookup, name, sdk, cache = profile_consumer
+    registry.apply({'target': 'self_hosted'})
+    replies.extend([(200, {'user': profile()}), (200, {'user': profile()})])
+    assert lookup('existing-user') == {
+        'uid': 'existing-user',
+        'email': 'synthetic@example.invalid',
+        'email_verified': True,
+        'phone_number': None,
+        'display_name': 'Synthetic Person',
+        'photo_url': None,
+        'disabled': False,
+    }
+    assert name('existing-user') == 'Synthetic'
+    cache.assert_called_once_with('existing-user', 'Synthetic', ttl=3600)
+    sdk.assert_not_called()
+    assert calls == [('GET', 'http://identity.invalid/internal/users/existing-user')] * 2
+
+
+def test_absent_optional_profile_keeps_default_without_switching_authority(authority, profile_consumer):
+    _, replies = authority
+    registry, lookup, name, sdk, cache = profile_consumer
+    registry.apply({'target': 'self_hosted'})
+    replies.extend([(404, {'error': 'user_not_found'})] * 3)
+    assert lookup('existing-user') is None
+    assert name('existing-user') == 'The User'
+    assert name('existing-user', use_default=False) is None
+    sdk.assert_not_called()
+    cache.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'reply',
+    [
+        (200, {'user': profile(id='another-user')}),
+        (200, {'user': profile(emailVerified=1)}),
+        (200, {'user': profile(name=['private response'])}),
+        (200, {'user': profile(banned='private response')}),
+        (200, {'user': profile(phoneNumber=123)}),
+        (404, {'error': 'private wrong-route response'}),
+        (401, {'error': 'private response'}),
+        (503, {'error': 'private response'}),
+        httpx.ReadTimeout('private transport diagnostic'),
+    ],
+)
+def test_profile_failure_is_sanitized_and_observable_without_firebase(authority, profile_consumer, caplog, reply):
+    _, replies = authority
+    registry, lookup, _, sdk, _ = profile_consumer
+    registry.apply({'target': 'self_hosted'})
+    replies.append(reply)
+    assert lookup('existing-user') is None
+    sdk.assert_not_called()
+    assert 'omi_fallback_event' in caplog.text
+    assert 'private' not in caplog.text
+
+
+def test_upstream_profile_keeps_original_sdk_owner(authority, profile_consumer):
+    calls, _ = authority
+    registry, lookup, _, sdk, _ = profile_consumer
+    sdk.side_effect = None
+    sdk.return_value = types.SimpleNamespace(
+        uid='legacy',
+        email=None,
+        email_verified=False,
+        phone_number=None,
+        display_name=None,
+        photo_url=None,
+        disabled=False,
+    )
+    registry.apply({'target': 'omi_cloud'})
+    assert lookup('legacy')['uid'] == 'legacy'
+    sdk.assert_called_once_with('legacy')
+    assert calls == []
 
 
 @pytest.mark.parametrize('status,body', [(200, {'success': True}), (404, {'error': 'user_not_found'})])
