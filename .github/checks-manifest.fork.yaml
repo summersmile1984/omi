@@ -15,6 +15,12 @@ checks:
     lanes: ["local", "ci"]
     reason: "Shared production claims/session contract catches wrong issuer/audience acceptance shipped in self-host PR #7 and prevents divergent Workers/PG JWT revocation behavior."
 
+  - id: fork-web-build-contracts
+    command: ["bash", "deploy/web/ci.sh"]
+    triggers: ["deploy/web/**", "web/app/fork/**", "web/app/src/lib/fork/**", "web/app/src/components/fork/**", "web/app/scripts/copy-moonshine-assets.ts", "web/app/moonshine.config.ts", "scripts/profiles/**", "brand/_schema/**"]
+    lanes: ["local", "ci"]
+    reason: "the merged deployment scripts still requested removed Next/vinext outputs after upstream switched to Moonshine; a shared source-stage and profile boundary prevents fallback origins and duplicate runtime owners"
+
   - id: fork-cloudflare-routes
     command: ["bash", "deploy/cloudflare/ci/routes.sh"]
     triggers: ["deploy/cloudflare/**", "backend/main.py", "backend/routers/**", "backend/scripts/export_openapi.py", "backend/scripts/openapi_runner.sh", "backend/openapi-requirements.txt"]

@@ -79,6 +79,14 @@ jobs:
           npm ci --prefix auth-server --ignore-scripts --no-audit --no-fund
           npm ci --prefix deploy/cloudflare --ignore-scripts --no-audit --no-fund
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Provision Web contract dependencies
+        working-directory: web/app
+        run: bun install --frozen-lockfile
+
       - name: Fork manifest (ci lane)
         run: |
           python3 .github/scripts/run_checks.py \

@@ -1,0 +1,10 @@
+{
+  "extends": "../../web/app/tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "types": ["bun"],
+    "typeRoots": ["../../web/app/node_modules/@types"]
+  },
+  "include": ["*.ts"],
+  "exclude": []
+}
