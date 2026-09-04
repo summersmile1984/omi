@@ -26,7 +26,7 @@ git push origin --tags
 git worktree add ../wt-sync -b sync/upstream-2026-09-02 main && cd ../wt-sync
 git merge-tree --write-tree main upstream/main | grep -c '^CONFLICT'     # 预期 13
 git merge --no-ff upstream/main
-# 13 个冲突按 06-upstream-sync.md §1 的"永久处置"解决（这次顺手把冲突源消掉）：
+# 13 个冲突按 09-upstream-diverged-files.md 的处置方案解决（这次顺手把冲突源消掉）：
 #   web/admin ×6 → 取上游（回退 fork 的格式化提交）；guardrail-pulse-history.jsonl → 取上游；
 #   .gitignore → 取上游 + 本地条目移到 .git/info/exclude；backend/AGENTS.md → 取上游 + 一行指针；
 #   stt_provider_policy.py / stt/streaming.py / cloud_tasks.py → 取上游（这些注入点在 S5 迁入 backend/fork/ 后不再冲突）；
