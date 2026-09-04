@@ -1,3 +1,4 @@
+import { runPythonWorker } from "./python-worker.mjs";
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -86,9 +87,7 @@ function qualifyRelease() {
     run("uvx", ["uv==0.12.3", "run", "pytest", "-q"], {
       cwd: resolve(root, directory),
     });
-    run("uvx", ["uv==0.12.3", "run", "pywrangler", "deploy", "--dry-run"], {
-      cwd: resolve(root, directory),
-    });
+    runPythonWorker(directory.split("/").at(-1), ["deploy", "--dry-run"]);
   }
   runPreservingGeneratedFile(resolve(webRoot, "next-env.d.ts"), () =>
     run("npx", ["next", "typegen"], { cwd: webRoot }),
@@ -461,19 +460,9 @@ function dryRunProductionConfigs(options) {
   for (const deployment of PRODUCTION_DEPLOYMENTS) {
     withProductionConfig(deployment.target, options, (configPath) => {
       if (deployment.runtime === "python") {
-        run(
-          "uvx",
-          [
-            "uv==0.12.3",
-            "run",
-            "pywrangler",
-            "deploy",
-            "--dry-run",
-            "--config",
-            configPath,
-          ],
-          { cwd: dirname(resolve(root, deployment.target)) },
-        );
+        runPythonWorker(deployment.target.split("/")[1], [
+          "deploy", "--dry-run", "--config", configPath,
+        ]);
       } else {
         run("npx", ["wrangler", "deploy", "--dry-run", "--config", configPath]);
       }
@@ -489,18 +478,9 @@ function deployServices(options, statuses, secretStore, deployedWorkers) {
         const initialSecrets =
           statuses[deployment.workerName] === null && secretPath;
         if (deployment.runtime === "python") {
-          const args = [
-            "uv==0.12.3",
-            "run",
-            "pywrangler",
-            "deploy",
-            "--config",
-            configPath,
-          ];
+          const args = ["deploy", "--config", configPath];
           if (initialSecrets) args.push("--secrets-file", secretPath);
-          run("uvx", args, {
-            cwd: dirname(resolve(root, deployment.target)),
-          });
+          runPythonWorker(deployment.target.split("/")[1], args);
         } else {
           const args = ["wrangler", "deploy", "--config", configPath];
           if (initialSecrets) args.push("--secrets-file", secretPath);

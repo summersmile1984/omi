@@ -131,13 +131,55 @@ to Workers.
 
 ```bash
 npm ci
-uvx uv==0.12.3 run pywrangler init
+npm run python -- api-core sync
+npm run python -- api-ai sync
+npm run python -- api-core dev --port 8787 --inspector-port 9236
 ```
 
-The Python projects have their own `pyproject.toml`; run `uvx uv==0.12.3 run pywrangler dev`
-from the project directory after installing the Python Worker dependencies. The
-deploy script uses the pinned launcher because older globally installed uv
-versions are rejected by `pywrangler`.
+`scripts/python-worker.mjs` is the shared Python entry for local development,
+dry runs, and both existing release scripts. It runs an isolated
+`workers-py==1.16.7` tool with `uv==0.12.3`, verifies the installed Wrangler and
+workerd against the unchanged npm lock, and consumes each project's committed
+`pylock.toml`. Dependency preparation and the unchanged-lock check finish before
+the deploy command. Do not run the floating project `uv run pywrangler`: as of
+2026-09-04 it resolves workers-py 1.17.1, whose minimum Wrangler 4.127.1 is newer
+than this repository's locked 4.127.0. The pinned tool's own version guard stays
+active. First installation needs access to the Python package registry.
+
+For an already-installed offline tool, set
+`CLOUDFLARE_PYWRANGLER_EXECUTABLE=/absolute/path/to/pywrangler`; the entry verifies
+that it really is version 1.16.7 and still supplies pinned uv. A different tool
+version fails closed. No project virtual environment or lock is upgraded by this
+selection. This override is useful when a registry cache cannot resolve a fresh
+tool environment; it does not establish that a clean online installation passed.
+
+Local development on Linux/macOS uses the locked workerd through its official
+Pyodide bundle/package cache flags. The default cache is `.wrangler/pyodide`;
+`CLOUDFLARE_PYODIDE_CACHE_DIR` can select another directory. workerd validates a
+cached bundle against its compiled integrity digest. The first download still
+needs trusted TLS access to Cloudflare's Pyodide distribution. This does not
+disable certificate checks or replace the runtime. See Cloudflare's
+[Python runtime](https://developers.cloudflare.com/workers/languages/python/how-python-workers-work/)
+and the pinned workerd's
+[cache/integrity implementation](https://github.com/cloudflare/workerd/blob/v1.20260826.1/src/workerd/server/pyodide.c++).
+
+Pass `--config` relative to `python/api-core` or `python/api-ai`, and keep
+`python_modules` beside that config as required by Wrangler. Use a separate
+inspector port for each concurrently running Worker. Secrets belong in local
+`.dev.vars`; do not commit local configs, credentials or persistent D1 fixtures.
+An individual Core health response does not qualify bindings to Auth, Edge, AI,
+Jobs, queues, R2 or Vectorize. The real local HTTP/WS scope and residual gaps are
+recorded in [`12-cf-runtime-evidence.md`](../../dev/unified-main/12-cf-runtime-evidence.md).
+
+```bash
+npm run python -- api-core deploy --dry-run
+npm run python -- api-ai deploy --dry-run
+```
+
+These commands do not create or deploy remote resources. The historical complete
+release commands above still contain the retired Next/vinext Web publisher;
+CF-5 must connect the current shared Moonshine builder before they qualify the
+unified main for a new release.
 
 ## Staging resources
 
