@@ -66,6 +66,10 @@ pages use the same upstream route/renderer code on both targets.
   run separately, since they assert the original identity implementation. `.env*`
   files and source symlinks are not copied. The MCP rewrite uses the TypeScript
   AST to replace exactly the known initializer and preserve `use client`.
+- The same stage applies CLIENT-1 realtime capability transforms to HomePage and
+  useGeminiLive before production typechecking. Disabled direct model providers
+  hide live conversation and prevent token/client/socket creation while preserving
+  microphone transcription. The applied transform is recorded in the artifact manifest.
 - The original Moonshine compiler/assets scripts still own routes, layout
   discovery and generated application logic. Better Auth/webhook targets skip
   Firebase service-worker generation and omit its generated/template files.

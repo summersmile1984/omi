@@ -5,6 +5,7 @@ import { parseArgs } from 'node:util';
 import { compileWorker, refreshBundleIntegrity } from './compile-worker';
 import { injectPublicEnvironment, publicEnvironment } from './public-environment';
 import { applyMcpOverlay, emptyOutput, stageSources } from './source-stage';
+import { applyRealtimeOverlay } from '../../web/app/fork/realtime-overlay';
 
 const root = resolve(import.meta.dir, '../..');
 const webRoot = resolve(root, 'web/app');
@@ -66,6 +67,7 @@ export async function buildWeb(options: {
   const source = resolve(output, 'source');
   const applied = await stageSources(webRoot, source, overlays);
   await applyMcpOverlay(source, webRoot);
+  await applyRealtimeOverlay(source);
   // Upstream tests remain on the untouched upstream lane. This check compiles
   // every production source file after overlaying the alternate identity owner.
   const stagedTypes = resolve(source, 'tsconfig.fork.json');
@@ -156,6 +158,7 @@ export async function buildWeb(options: {
     overlays: applied,
     transforms: [
       'SettingsPage.mcpServerUrl -> profile MCP origin',
+      'HomePage/useGeminiLive -> direct-model capability',
       'allowlisted public environment',
     ],
     routes: manifest.routes.map((route: { path: string }) => route.path),
