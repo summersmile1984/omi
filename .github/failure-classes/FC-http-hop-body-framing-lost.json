@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "id": "FC-http-hop-body-framing-lost",
+  "violated_contract": "An HTTP forwarding hop must decode the admitted incoming body framing and describe the same bytes with a single unambiguous outbound framing. A valid chunked JSON body must not become an empty request.",
+  "canonical_prevention": "Exercise the actual forwarding handler with fixed-length and chunked UTF-8 requests, and prove conflicting framing is rejected before the upstream handler runs.",
+  "canonical_prevention_artifact": ["deploy/self-host/ci/test_product.py"],
+  "evidence_prs": [],
+  "scope_hints": ["deploy/self-host/ci/**"],
+  "status": "open"
+}

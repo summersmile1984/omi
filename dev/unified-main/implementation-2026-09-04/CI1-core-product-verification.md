@@ -65,3 +65,29 @@ existing owners rather than introducing another authorization or state policy.
 The real onboarding admission failure and Server422/CF400 divergence are the
 instances this shared guard would have caught. No remote Actions execution,
 push, merge, signing or deployment is claimed.
+
+## Native client framing regression
+
+The real Electron signup exposed a fixture ingress defect: native Node
+`request.write(body); request.end()` uses chunked transfer framing, but the
+loopback proxy read only Content-Length and forwarded an empty JSON body.
+Direct Express/Better Auth 1.6.26 signup using the same native transport
+returned 200; no Auth implementation or browser CSRF policy needed changing.
+
+The proxy now decodes bounded chunks, preserves the exact UTF-8 bytes, removes
+incoming hop framing and emits one canonical Content-Length. Duplicate framing,
+conflicting Content-Length/Transfer-Encoding, invalid chunks and bodies over
+1 MiB are rejected. Its socket timeout remains a per-read timeout; the owning
+product runner supplies the overall execution deadline. This disposable fixed
+loopback ingress is not a production reverse-proxy qualification.
+
+`ci/loopback-framing-before-valid.log` records the actual two failures: valid
+chunked JSON became 400, and conflicting framing reached the upstream handler.
+`ci/loopback-framing-after.log` records four passing fixture tests, including
+the original three process/output-ownership cases. The HTTP case uses real
+local sockets, divides a UTF-8 character across chunks, and checks that a
+lowercase input length produces exactly one output length. Independent agent
+review also ran this test successfully (`electron/review-loopback.log`). This
+extends the existing product runner's discovered test rather than adding a
+second forwarding or authorization primitive. Failure class:
+`FC-http-hop-body-framing-lost`.
