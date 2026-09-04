@@ -1,0 +1,148 @@
+# Cloudflare route migration ledger
+
+Base: `b9776fac12f6098ae5eed0474e42843ff507a693` (main source `d238a85af9`). This fork-owned ledger tracks CF-4 work discovered by CF-1. It is not a list of permanently unsupported product features. All entries below remain required work for the unified target objective.
+
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. There are 612 unique method/path/protocol slots: 577 have existing/new Worker owners, 35 are blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+
+`GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
+
+`migration_state=blocked` with `target_runtime=blocked` is required until the named owner passes behavioral coverage; `migration_note` and `follow_up` make each debt explicit. This status is not a deployment profile capability and must not be used to claim the full CF target is ready. CF-4 must wire declared capabilities and client behavior before release. Do not route a D1-owned family to PostgreSQL just because `ORIGIN_BACKEND_URL` exists: choose and prove one state owner for the whole family.
+
+## Completion gate
+
+For every family, port the production success and main failure path, preserve the upstream wire/security contract, prove storage/queue/privacy ownership through a controllable runtime seam, add runtime migration/rollback evidence where needed, and only then change its inventory classification and route manifest together. Run `npm run validate:backend-routes`, `npm run validate:manifest`, TypeScript/Python tests and the two-target contract suite. AUTH-1, CLIENT-1 and the privacy/lineage owner must review their respective boundaries.
+
+<a id="cf4-capture-privacy"></a>
+## CF-4: capture-privacy
+
+Owner: `api-core`. Upstream authority: `backend/routers/screen_frames.py`.
+
+Opt-in adjudication, immutable screenshot receipts, per-conversation sharing and owner/delete policy must move together.
+
+| Method | Path |
+|---|---|
+| DELETE | `/v1/conversations/{conversation_id}/screenshots` |
+| DELETE | `/v1/conversations/{conversation_id}/screenshots/{frame_id}` |
+| GET | `/v1/conversations/{conversation_id}/screenshots` |
+| GET | `/v1/conversations/{conversation_id}/shared/screenshots` |
+| GET | `/v1/screen-frame-egress/settings` |
+| PATCH | `/v1/conversations/{conversation_id}/screenshot-sharing` |
+| PATCH | `/v1/screen-frame-egress/settings` |
+| POST | `/v1/screen-frame-egress/adjudications` |
+
+<a id="cf4-frame-requests"></a>
+## CF-4: frame-requests
+
+Owner: `api-core`. Upstream authority: `backend/routers/frame_requests.py`.
+
+Temporary frame request lifecycle, consent/promotion, R2 image bytes and retention cleanup require one authority.
+
+| Method | Path |
+|---|---|
+| GET | `/v1/conversations/{conversation_id}/photos/{photo_id}/image` |
+| GET | `/v1/frame-requests/pending` |
+| GET | `/v1/frame-requests/status/{request_id}` |
+| GET | `/v1/frame-requests/temporary/{request_id}/image` |
+| POST | `/v1/frame-requests` |
+| POST | `/v1/frame-requests/{request_id}/promote` |
+| POST | `/v1/frame-requests/{request_id}/state` |
+| POST | `/v1/frame-requests/{request_id}/upload` |
+
+<a id="cf4-share-email"></a>
+## CF-4: share-email
+
+Owner: `jobs`. Upstream authority: `backend/routers/conversations.py`.
+
+Recipient claims, quota, share publication and ambiguous-delivery idempotency are not in the CF conversation projection.
+
+| Method | Path |
+|---|---|
+| GET | `/v1/conversations/{conversation_id}/share-recipients` |
+| POST | `/v1/conversations/{conversation_id}/share-email` |
+
+<a id="cf4-email-preferences"></a>
+## CF-4: email-preferences
+
+Owner: `jobs`. Upstream authority: `backend/routers/email_preferences.py`.
+
+Lifecycle email signature verification, scanner-safe GET and idempotent POST opt-out need the same Jobs mail authority.
+
+| Method | Path |
+|---|---|
+| GET | `/email/unsubscribe` |
+| POST | `/email/unsubscribe` |
+
+<a id="cf4-referrals"></a>
+## CF-4: referrals
+
+Owner: `api-core`. Upstream authority: `backend/routers/referrals.py`.
+
+Referral cookie/codes, account-age admission and exactly-once trial entitlement need shared Auth and billing state.
+
+| Method | Path |
+|---|---|
+| GET | `/r/{code}` |
+| GET | `/v1/users/me/referral` |
+| POST | `/v1/users/me/referral/claim` |
+
+<a id="cf4-calendar-capture-gaps"></a>
+## CF-4: calendar-capture-gaps
+
+Owner: `jobs`. Upstream authority: `backend/routers/google_calendar.py`.
+
+Join accepted Calendar event windows with eligible D1 conversation intervals through the existing Google Calendar connector.
+
+| Method | Path |
+|---|---|
+| GET | `/v1/calendar/capture-gaps` |
+
+<a id="cf4-csat"></a>
+## CF-4: csat
+
+Owner: `api-core`. Upstream authority: `backend/routers/csat.py`.
+
+Product config normalization and one create-only rating per user/platform require a D1 authority and deletion fence.
+
+| Method | Path |
+|---|---|
+| GET | `/v1/csat/config` |
+| POST | `/v1/csat/ratings` |
+
+<a id="cf4-jit"></a>
+## CF-4: jit
+
+Owner: `api-core`. Upstream authority: `backend/routers/jit_rollout.py; backend/routers/jit_ledger_snapshot.py`.
+
+Rollout/trigger and ledger snapshots, feedback receipts and atomic proactivity reservations have no equivalent CF state.
+
+| Method | Path |
+|---|---|
+| GET | `/v1/jit/knowledge-ledger/mirror-snapshot` |
+| GET | `/v1/jit/knowledge-ledger/prompt-snapshot` |
+| GET | `/v1/jit/rollout-decision` |
+| GET | `/v1/jit/trigger-snapshot` |
+| POST | `/v1/jit/proactivity/reservations` |
+| POST | `/v1/jit/trigger-feedback` |
+
+<a id="cf4-memory-ledger"></a>
+## CF-4: memory-ledger
+
+Owner: `api-core`. Upstream authority: `backend/routers/memories.py`.
+
+Ledger history/revert require canonical memory lineage, revision/privacy authority and outbox; flat D1 projection is insufficient.
+
+| Method | Path |
+|---|---|
+| GET | `/v3/memories/ledger-history` |
+| POST | `/v3/memories/{memory_id}/revert` |
+
+<a id="cf4-developer-ask"></a>
+## CF-4: developer-ask
+
+Owner: `api-core`. Upstream authority: `backend/routers/developer.py`.
+
+Developer scope/rate admission plus conversation/transcript retrieval, authoritative lock recheck and cited Workers AI answer must be combined.
+
+| Method | Path |
+|---|---|
+| POST | `/v1/dev/user/ask` |

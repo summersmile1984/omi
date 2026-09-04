@@ -319,3 +319,10 @@ identity context. API Core uses that immutable projection for the optional
 three-day desktop trial in quota, paywall, and trial reads; it never receives
 direct access to Auth D1. Missing timestamps and entitlement lookup failures
 preserve the legacy fail-open behavior.
+
+`desktop_prompt_routes.py` owns the authenticated `/v2/desktop/prompts` read.
+Operator-authored global `cf_desktop_prompts` documents retain upstream channel,
+minimum-build, deterministic per-user rollout, defaults, and response bounds.
+Missing configuration preserves the legacy empty response; unavailable D1 or
+malformed documents fail with 503. The table stores no account data and has no
+public write surface. Edge supplies the request-bound internal principal.

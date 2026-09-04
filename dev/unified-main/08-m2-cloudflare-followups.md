@@ -40,13 +40,24 @@ CF 给 `/v4/web/listen` 发明了一条三跳链路，取代上游单跳的 `{"t
 
 **为什么没做**：B0（品牌 manifest + `apply.py` 骨架）本身还没有一行代码，M2 不该抢跑发明一套只服务 CF 目标、将来要被 B0 推翻重做的品牌注入机制。B-series 表（`07-pr-plan.md` §2）目前没有覆盖 Cloudflare 资源命名的行——建议 B0 落地后新增一条 `B9 | cloudflare: apply.py 扩展 --only cloudflare + omi-cf-* 前缀模板化 + workers.dev 子域名模板化 | B0, M2`。
 
-## 5. `deploy/cloudflare/ci/contract.sh` 不存在，三个已能跑的 npm 脚本没有接进 CI（C4 自己的范围，未提前做）
+## 5. CF-1 已接真实路由漂移与单元测试 lane；CI-1 运行时联合契约仍待实现
 
-`deploy/cloudflare/ci/` 目录不存在，仓库里没有任何 `contract.sh`；也没有任何地方真正调用 `wrangler dev`/Miniflare（`vitest.config.ts:12-15` 把 `cloudflare:workers` 别名到一个 9 行的手写 stub，测试是纯 Node 环境下的 hermetic 单测，不是接真实 Workers 运行时/D1 迁移的集成测试）。
+2026-09-04 的 CF-1 修正了旧记录：当前上游 exporter 已不支持
+`--surface cloudflare-route-inventory`，原 npm 命令会失败。fork-owned
+`deploy/cloudflare/scripts/route_inventory.py` 复用上游 hermetic bootstrap，
+枚举真实 FastAPI HTTP/WebSocket 注册（包括隐藏 HTTP 路由），核对当前 612 个
+路由身份，并保留逐项 owner。577 个有 staging owner，35 个缺失业务契约记录于
+[CF-4 迁移账本](09-cloudflare-route-migrations.md)。清单通过不等于产品完成。
 
-`validate:manifest`、`verify:migrations`、`validate:backend-routes` 三个 npm 脚本本身**已经能跑**（`package.json` 里就是这次 M2 用来验证改动的那几条命令），只是没有被任何 CI 工作流调用——`.github/checks-manifest.fork.yaml` 现在只有 4 条与 CF 无关的条目，`.github/workflows/fork-checks.yml` 不碰 `deploy/cloudflare`。
+`deploy/cloudflare/ci/routes.sh` 已在 fork manifest 的 local、ci 两 lane 注册，
+运行路由漂移正反例、真实注册核对、manifest、TypeScript 与 API Core Python
+测试；fork workflow 配 Node 22，并使用已有 backend setup 的锁定解释器。
+`verify:migrations` 是远端 D1 只读命令，不能当作 hermetic CI 检查接入。
 
-**为什么没做**：`07-pr-plan.md` 表里 C4 本来就排在 M2 之后、依赖 M2，这次刻意没有抢跑——把三个已验证脚本接进 `checks-manifest.fork.yaml` 是机械活，但"从零搭一个真正跑 `wrangler dev` + 本地 D1 迁移的契约套件"是新基建，两者最好在 C4 自己的 PR 里一起做、一起给证据（`fork-contract-cloudflare.yml` 绿）。
+**仍缺的契约**：当前 Vitest 的 `cloudflare:workers` 是 Node stub；真实
+workerd、本地 D1 迁移、双 target 的 AUTH-1/CLIENT-1/WEB-1 联合产品流程由
+CI-1 接入相应 runtime runner。新增 route lane 不替代这些门禁，也未新增独立
+长期分支或宣布可部署。
 
 ## 6. 顺带发现：`deploy/cloudflare/` 没有 Node 版本钉死
 

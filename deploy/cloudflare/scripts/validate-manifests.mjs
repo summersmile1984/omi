@@ -225,7 +225,7 @@ export function validateBackendRouteInventory(inventory, routeManifest) {
         .sort((left, right) => right.prefix.length - left.prefix.length)[0]
         ?.route;
     if (route.migration_state === "staging-owned") {
-      if (!owner || owner.target_runtime === "legacy") {
+      if (!owner || ["legacy", "blocked"].includes(owner.target_runtime)) {
         throw new Error(
           `staging-owned backend route is absent from routes.yaml: ${route.method} ${route.path}`,
         );
@@ -256,6 +256,19 @@ export function validateBackendRouteInventory(inventory, routeManifest) {
       if (route.target_runtime !== "blocked") {
         throw new Error(
           `blocked backend route must use blocked target_runtime: ${route.method} ${route.path}`,
+        );
+      }
+      requiredString(
+        route.migration_note,
+        `blocked backend route requires its missing contract: ${route.method} ${route.path}`,
+      );
+      requiredString(
+        route.follow_up,
+        `blocked backend route requires a tracked migration: ${route.method} ${route.path}`,
+      );
+      if (owner && owner.target_runtime !== "blocked") {
+        throw new Error(
+          `blocked backend route is claimed by an active owner in routes.yaml: ${route.method} ${route.path}`,
         );
       }
       counts.blocked += 1;
@@ -908,6 +921,7 @@ export async function validateManifests() {
     routes: validateRouteManifest(routeManifest, edgeSource),
     backendRoutes: backendRoutes.total,
     legacyBackendRoutes: backendRoutes.legacyOwned,
+    blockedBackendRoutes: backendRoutes.blocked,
     resources: validateResourceManifest(resourceManifest),
     redisFamilies: validateRedisPrimitiveManifest(redisManifest, {
       redisSource,
@@ -927,7 +941,7 @@ export async function validateManifests() {
   };
   console.log(
     `Manifest validation passed: ${counts.routes} Cloudflare routes, ${counts.backendRoutes} backend routes ` +
-      `(${counts.legacyBackendRoutes} legacy-owned), ${counts.resources} staging resources, ` +
+      `(${counts.legacyBackendRoutes} legacy-owned, ${counts.blockedBackendRoutes} blocked with tracked migrations), ${counts.resources} staging resources, ` +
       `${counts.redisFamilies} Redis families, ${counts.vectorNamespaces} vector namespaces, ` +
       `${counts.r2Namespaces} R2 namespaces.`,
   );
