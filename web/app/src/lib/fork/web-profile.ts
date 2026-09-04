@@ -25,7 +25,8 @@ export function parseWebProfile(serialized: string | undefined): WebProfile {
     value.identity_provider !== 'better_auth' ||
     !value.auth_callback_scheme ||
     !value.capabilities ||
-    value.capabilities.push_provider !== 'webhook'
+    value.capabilities.push_provider !==
+      (value.target === 'self_hosted' ? 'disabled' : 'webhook')
   )
     throw new Error('The Web deployment profile is invalid.');
   for (const key of [

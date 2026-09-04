@@ -8,10 +8,23 @@ import pytest
 
 from fork.vector_qdrant import Config, NAMESPACES, QdrantIndex, VectorStoreUnavailable
 from fork.vector_filter import translate
+from fork.model_contract import validate
+
+MODEL = {
+    'provider': 'ollama',
+    'model': 'synthetic:fixed',
+    'dimension': 3,
+    'context_length': 8,
+    'manifest_digest': 'sha256:' + 'a' * 64,
+    'artifact_digest': 'sha256:' + 'b' * 64,
+}
 
 
 def index(handler):
-    return QdrantIndex(Config('http://qdrant', 'synthetic-key', 'test', 3), transport=httpx.MockTransport(handler))
+    return QdrantIndex(
+        Config('http://qdrant', 'synthetic-key', 'test', validate(MODEL)),
+        transport=httpx.MockTransport(handler),
+    )
 
 
 def test_batch_identity_filter_update_and_pagination():
@@ -74,7 +87,16 @@ def test_schema_migration_never_silently_changes_existing_dimensions():
     def handler(request):
         calls.append(request.method)
         return httpx.Response(
-            200, json={'status': 'ok', 'result': {'config': {'params': {'vectors': {'size': 4, 'distance': 'Cosine'}}}}}
+            200,
+            json={
+                'status': 'ok',
+                'result': {
+                    'config': {
+                        'metadata': {'embedding_contract': MODEL},
+                        'params': {'vectors': {'size': 4, 'distance': 'Cosine'}},
+                    }
+                },
+            },
         )
 
     q = index(handler)
@@ -109,3 +131,45 @@ def test_successful_delete_response_with_residual_count_cannot_complete():
         with pytest.raises(VectorStoreUnavailable, match='residual'):
             q.purge_owner('owner')
     q.close()
+
+
+@pytest.mark.parametrize('metadata', [None, {}, {'embedding_contract': {'model': 'other', 'dimension': 3}}])
+def test_same_dimensions_without_exact_model_binding_never_migrate_in_place(metadata):
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        return httpx.Response(
+            200,
+            json={
+                'status': 'ok',
+                'result': {'config': {'metadata': metadata, 'params': {'vectors': {'size': 3, 'distance': 'Cosine'}}}},
+            },
+        )
+
+    with pytest.raises(VectorStoreUnavailable, match='model identity'):
+        index(handler).check(create=True)
+    assert calls == ['GET']
+
+
+def test_fresh_collection_identity_is_atomic_and_read_back():
+    created = {}
+
+    def handler(request):
+        if request.method == 'PUT':
+            created[request.url.path] = json.loads(request.content)
+            return httpx.Response(200, json={'status': 'ok', 'result': True})
+        if request.url.path not in created:
+            return httpx.Response(404)
+        data = created[request.url.path]
+        return httpx.Response(
+            200,
+            json={
+                'status': 'ok',
+                'result': {'config': {'metadata': data['metadata'], 'params': {'vectors': data['vectors']}}},
+            },
+        )
+
+    index(handler).check(create=True)
+    assert len(created) == len(NAMESPACES)
+    assert all(data['metadata']['embedding_contract']['model'] == 'synthetic:fixed' for data in created.values())

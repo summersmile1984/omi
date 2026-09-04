@@ -1,5 +1,12 @@
 # Self-host production profile
 
+Current implementation: [local model/runtime boundaries](model-runtime.md).
+The sections below originated before the upstream runtime changed. Their
+SenseVoice/MOSS, generic embedding, webhook/TTS and full-cutover descriptions
+are historical acceptance plans until the corresponding SH3/SH4 packages are
+verified; they do not enable those providers in the current Compose profile.
+
+
 ## Current main startup boundary (SH-1)
 
 Use `operations.sh self-check` for startup source closure and `operations.sh start`

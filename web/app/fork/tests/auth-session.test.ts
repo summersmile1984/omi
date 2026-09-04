@@ -20,7 +20,7 @@ function profile(target = 'self_hosted', authOrigin = 'https://auth.fixture.inva
       share_base_url: 'https://share.fixture.invalid',
       objects_base_url: 'https://objects.fixture.invalid',
       auth_callback_scheme: 'fixture',
-      capabilities: { push_provider: 'webhook' },
+      capabilities: { push_provider: target === 'self_hosted' ? 'disabled' : 'webhook' },
     }),
   );
 }

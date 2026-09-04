@@ -15,6 +15,7 @@ import uuid
 import httpx
 
 from .vector_filter import translate
+from .model_contract import EmbeddingContract
 
 NAMESPACES = ('ns1', 'ns2', 'ns3', 'ns4', 'ns_tchunks', 'ns_x', 'workstream-association-v1')
 _POINT_NAMESPACE = uuid.UUID('b35f5a23-436a-4504-8eb6-274e1f22d3e0')
@@ -29,7 +30,11 @@ class Config:
     url: str
     api_key: str = field(repr=False)
     prefix: str
-    dimension: int
+    embedding_contract: EmbeddingContract
+
+    @property
+    def dimension(self):
+        return self.embedding_contract.dimension
 
     @classmethod
     def from_env(cls):
@@ -50,13 +55,10 @@ class Config:
         key = os.environ.get('QDRANT_API_KEY', '')
         if not key:
             raise ValueError('QDRANT_API_KEY is required')
-        try:
-            dimension = int(os.environ['EMBEDDING_DIMENSION'])
-        except (KeyError, ValueError) as error:
-            raise ValueError('EMBEDDING_DIMENSION must be an explicit integer') from error
-        if not 1 <= dimension <= 65536:
-            raise ValueError('EMBEDDING_DIMENSION is out of range')
-        return cls(url, key, prefix, dimension)
+        from .embedding import selected_contract
+
+        model = selected_contract()
+        return cls(url, key, prefix, model)
 
 
 class QdrantIndex:
@@ -101,11 +103,23 @@ class QdrantIndex:
             path = '/collections/' + self._collection(namespace)
             result = self._request('GET', path, allow_missing=True)
             if result is None and create:
-                self._request('PUT', path, {'vectors': {'size': self.config.dimension, 'distance': 'Cosine'}})
+                self._request(
+                    'PUT',
+                    path,
+                    {
+                        'vectors': {'size': self.config.dimension, 'distance': 'Cosine'},
+                        'metadata': {'embedding_contract': self.config.embedding_contract.as_dict()},
+                    },
+                )
                 result = self._request('GET', path)
             if result is None:
                 raise VectorStoreUnavailable(
                     'Qdrant collections are not migrated; run python -m fork.vector_qdrant migrate'
+                )
+            contract = (result.get('config', {}).get('metadata') or {}).get('embedding_contract')
+            if contract != self.config.embedding_contract.as_dict():
+                raise VectorStoreUnavailable(
+                    'Qdrant model identity differs or is unbound; use a reviewed new prefix/backfill'
                 )
             vectors = result.get('config', {}).get('params', {}).get('vectors', {})
             if vectors.get('size') != self.config.dimension or vectors.get('distance') != 'Cosine':

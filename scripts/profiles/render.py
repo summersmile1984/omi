@@ -40,6 +40,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "brand"))
 from manifest import ManifestError, load_manifest  # noqa: E402
 from yaml_lite import YamlError, load_yaml  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
+from fork.model_contract import validate as validate_embedding_contract  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_DIR = REPO_ROOT / "deploy/profiles"
 BRAND_DIR = REPO_ROOT / "brand"
@@ -147,6 +150,15 @@ def resolve(
         raise ProfileError(f"{target}.yaml declares target '{target_doc.get('target')}'")
 
     caps = target_doc.get("capabilities", {}) or {}
+    embedding = None
+    if target == "self_hosted":
+        try:
+            embedding = validate_embedding_contract(target_doc.get("embedding")).as_dict()
+        except ValueError as error:
+            raise ProfileError(str(error)) from error
+        if "embedding_dims" in caps:
+            raise ProfileError("self_hosted embedding_dims must derive from the model contract")
+        caps = {**caps, "embedding_dims": embedding["dimension"]}
     missing = [k for k in REQUIRED_CAPABILITIES if k not in caps]
     if missing:
         raise ProfileError(f"{target}.yaml is missing capabilities: {', '.join(missing)}")
@@ -196,6 +208,8 @@ def resolve(
             )
         row["capabilities"] = {k: substitute(caps[k], brand, target, stage) for k in REQUIRED_CAPABILITIES}
         row["data_plane"] = {k: plane[k] for k in REQUIRED_DATA_PLANE}
+        if embedding is not None:
+            row["embedding"] = dict(embedding)
         for key, value in row.items():
             if key.endswith("_base_url") and (target != "omi_cloud" or value):
                 validate_endpoint(value, key, target, stage, row["requires_https"])
