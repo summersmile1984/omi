@@ -117,6 +117,17 @@ export function validateBrandRuntime(value, brandId) {
     throw new Error("brand runtime must match the rendered brand identity");
   return value;
 }
+export function validateSupportEmail(value) {
+  if (
+    typeof value !== "string" ||
+    !/^[^\s@<>(),:;[\]\\"]+@[^\s@<>(),:;[\]\\"]+$/u.test(value) ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  )
+    throw new Error(
+      "brand support contact must be an explicit plain email address",
+    );
+  return value;
+}
 export function validateResourceInput(input, projected) {
   exactKeys(
     input,
@@ -137,6 +148,7 @@ export function validateResourceInput(input, projected) {
   );
   const { brand_id: brand, profile } = projected;
   validateBrandRuntime(projected.brand_runtime, brand);
+  validateSupportEmail(projected.support_email);
   if (projected.product_name !== projected.brand_runtime.display_name)
     throw new Error("brand runtime and Web product identity differ");
   if (

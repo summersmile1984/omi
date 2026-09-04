@@ -34,6 +34,7 @@ const inputs = {
     display_name: "Atlas",
     ai_persona_name: "Mira",
   },
+  supportEmail: "support@atlas.example.invalid",
   namespace: "local-fixture-123",
   port: 34000,
   asrPort: 34001,
@@ -64,6 +65,12 @@ describe("disposable actual Cloudflare target", () => {
   });
   it("projects all seven production owners and isolates every storage and queue binding", () => {
     const { configs, origin } = localConfigs(inputs);
+    expect(configs["api-core"].vars.BRAND_SUPPORT_EMAIL).toBe(
+      inputs.supportEmail,
+    );
+    expect(() => localConfigs({ ...inputs, supportEmail: undefined })).toThrow(
+      /support contact/,
+    );
     for (const role of ["api-core", "api-ai"])
       expect(JSON.parse(configs[role].vars.BRAND_RUNTIME_JSON)).toEqual(
         inputs.brandRuntime,

@@ -18,7 +18,8 @@ locked Wrangler/workerd, then executes:
 - `chat.mjs`, the current upstream Web `api.ts` get/send/clear functions against
   actual HTTP/SSE, Python model RPC and D1: configured brand greeting/default
   system prompt (via an inference-only echo), app-generator platform identity,
-  goal-advice assistant labels with cross-user denial, preservation of user text,
+  goal-advice assistant labels with cross-user denial, usage/support presentation,
+  task share/acceptance sender identity, preservation of user text,
   UTF-8/newline decoding, selected
   session/app history, cross-user 404, provider failure without partial history,
   explicit clear retaining the session, and terminal deletion. A controlled
@@ -61,11 +62,16 @@ queues and service bindings are local and uniquely named. It clears remote
 credentials from child environments and replaces deployment origins/secrets with
 loopback/per-run values. It never consumes a release inventory or approval.
 The local fixture explicitly supplies synthetic public brand metadata
-(`Local Atlas` / persona `Mira`) bound to its selected brand ID. It cannot inherit
-the upstream brand from Worker templates, and the projection rejects missing or
+(`Local Atlas` / persona `Mira`) bound to its selected brand ID and its explicit
+`support@atlas.example.invalid` public contact. It cannot inherit
+the upstream brand/contact from Worker templates, and the projection rejects missing or
 cross-brand input. This synthetic fixture is not a production brand manifest;
 resource-plan tests separately execute the real manifest/profile renderer.
-`fixture.json` records that public brand metadata, source revision/status,
+The presentation case temporarily sets warning/restrict through the actual local
+fair-use admin endpoint using this fixture's private generated key, reads the
+public user status, then resets in `finally`. Traces contain route/status only;
+no admin credential leaves the loopback target or appears in the report.
+`fixture.json` records that public brand/contact metadata, source revision/status,
 npm/Python locks, tool versions,
 normal migration files, exact frozen module hashes and configuration hashes.
 `cache-owner.json` is written before startup, including on a failed run. By

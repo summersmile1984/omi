@@ -69,6 +69,10 @@ class FakeStatement:
 
 class FakeRequest:
     def __init__(self, env, headers=None, body=None):
+        if not hasattr(env, "BRAND_RUNTIME_JSON"):
+            env.BRAND_RUNTIME_JSON = json.dumps(
+                {"brand_id": "omi-upstream", "display_name": "Omi", "ai_persona_name": "Omi"}
+            )
         self.scope = {"env": env}
         self.headers = headers or {}
         self.body = body
@@ -188,3 +192,40 @@ def test_task_share_rejects_locked_missing_self_and_expired_paths():
     db.connection.commit()
     expired = asyncio.run(get_shared_action_items(FakeRequest(env), shared["token"]))
     assert expired.status_code == 404
+
+
+def test_brand_default_sender_survives_preview_and_acceptance_without_rewriting_task_text():
+    db = FakeDb()
+    env = type(
+        "Env",
+        (),
+        {
+            "APP_DB": db,
+            "INTERNAL_ASSERTION_SECRET": "secret",
+            "BRAND_RUNTIME_JSON": json.dumps({"brand_id": "atlas", "display_name": "Atlas", "ai_persona_name": "Mira"}),
+        },
+    )()
+    insert_item(db, "sender", "task-brand", "Review Omi unchanged")
+    share = asyncio.run(
+        share_action_items(FakeRequest(env, signed_headers("secret", "sender"), {"task_ids": ["task-brand"]}))
+    )
+    preview = asyncio.run(get_shared_action_items(FakeRequest(env), share["token"]))
+    assert preview["sender_name"] == "Atlas user"
+    accepted = asyncio.run(
+        accept_shared_action_items(FakeRequest(env, signed_headers("secret", "recipient"), {"token": share["token"]}))
+    )
+    item = asyncio.run(get_action_item(FakeRequest(env, signed_headers("secret", "recipient")), accepted["created"][0]))
+    assert item["description"] == "Review Omi unchanged"
+    assert item["shared_from"]["sender_name"] == "Atlas user"
+    env.BRAND_RUNTIME_JSON = None
+    for operation in [
+        lambda: share_action_items(FakeRequest(env, signed_headers("secret", "sender"), {"task_ids": ["task-brand"]})),
+        lambda: get_shared_action_items(FakeRequest(env), share["token"]),
+        lambda: accept_shared_action_items(
+            FakeRequest(env, signed_headers("secret", "another"), {"token": share["token"]})
+        ),
+    ]:
+        response = asyncio.run(operation())
+        assert response.status_code == 503
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_task_shares").fetchone()[0] == 1
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_action_items WHERE uid = 'another'").fetchone()[0] == 0

@@ -87,7 +87,15 @@ def make_env(secret: str, admin_key: str | None = None):
     return type(
         "Env",
         (),
-        {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret, "FAIR_USE_ADMIN_KEY": admin_key},
+        {
+            "APP_DB": FakeDb(),
+            "INTERNAL_ASSERTION_SECRET": secret,
+            "FAIR_USE_ADMIN_KEY": admin_key,
+            "BRAND_RUNTIME_JSON": json.dumps(
+                {"brand_id": "omi-upstream", "display_name": "Omi", "ai_persona_name": "Omi"}
+            ),
+            "BRAND_SUPPORT_EMAIL": "team@basedhardware.com",
+        },
     )()
 
 
@@ -317,3 +325,47 @@ def test_admin_routes_manage_d1_state_events_and_usage():
     assert invalid_stage.status_code == 400
     missing_event = asyncio.run(resolve_fair_use_event("managed-user", "missing", FakeRequest(env, headers)))
     assert missing_event.status_code == 404
+
+
+def test_fair_use_uses_configured_product_and_contact_and_rejects_unconfigured_legacy_deployment():
+    env = make_env("secret", "admin")
+    env.BRAND_RUNTIME_JSON = json.dumps({"brand_id": "atlas", "display_name": "Atlas", "ai_persona_name": "Mira"})
+    env.BRAND_SUPPORT_EMAIL = "support@atlas.example.invalid"
+    request = FakeRequest(env, signed_headers("secret"))
+    admin = FakeRequest(env, {"x-admin-key": "admin"})
+    for stage, expected in [
+        ("warning", "Atlas is designed"),
+        ("throttle", env.BRAND_SUPPORT_EMAIL),
+        ("restrict", env.BRAND_SUPPORT_EMAIL),
+    ]:
+        assert asyncio.run(set_user_fair_use_stage("fair-use-user", admin, stage))["stage"] == stage
+        status = asyncio.run(get_fair_use_status(request))
+        assert expected in status["message"]
+        assert "team@basedhardware.com" not in status["message"]
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_fair_use_events "
+        "(event_id, uid, case_ref, created_at, trigger, daily_speech_ms, three_day_speech_ms, "
+        "weekly_speech_ms, daily_threshold_ms, three_day_threshold_ms, weekly_threshold_ms, "
+        "enforcement_action, previous_stage, new_stage) "
+        "VALUES ('brand-event', 'fair-use-user', 'FU-ABCDEF123456', 1, 'daily', 0, 0, 0, 1, 1, 1, 'restrict', 'throttle', 'restrict')"
+    )
+    env.APP_DB.connection.commit()
+    public = asyncio.run(get_public_case_status("FU-ABCDEF123456", FakeRequest(env)))
+    assert public["support_email"] == env.BRAND_SUPPORT_EMAIL
+    assert env.BRAND_SUPPORT_EMAIL in public["message"]
+    for value in [
+        None,
+        True,
+        "",
+        "no-address",
+        "a@example.invalid\nHeader",
+        "Name <a@example.invalid>",
+        "a@[127.0.0.1]",
+        "a,b@example.invalid",
+    ]:
+        env.BRAND_SUPPORT_EMAIL = value
+        response = asyncio.run(get_fair_use_status(request))
+        assert response.status_code == 503
+        assert json.loads(response.body) == {"error": "brand identity or support contact is not configured"}
+        public = asyncio.run(get_public_case_status("FU-ABCDEF123456", request))
+        assert public.status_code == 503

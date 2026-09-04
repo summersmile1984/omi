@@ -30,3 +30,15 @@ def load_brand_runtime(env: object) -> BrandRuntime:
     ):
         raise ValueError('brand runtime is not configured')
     return BrandRuntime(**value)
+
+
+def load_support_email(env: object) -> str:
+    """Read the plain public contact projected from the same brand manifest."""
+    value = getattr(env, 'BRAND_SUPPORT_EMAIL', None)
+    if (
+        not isinstance(value, str)
+        or not re.fullmatch(r'[^\s@<>(),:;\[\]\\"]+@[^\s@<>(),:;\[\]\\"]+', value)
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError('brand support contact is not configured')
+    return value

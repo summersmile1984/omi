@@ -112,6 +112,7 @@ function resourceFixture(brand = "alpha", stage = "beta", index = 1) {
     projected: {
       brand_id: brand,
       product_name: `${brand} fixture`,
+      support_email: `support@${brand}.example.invalid`,
       brand_runtime: {
         brand_id: brand,
         display_name: `${brand} fixture`,
@@ -166,6 +167,7 @@ describe("one brand/stage Cloudflare resource authority", () => {
     manifest.brand.id = "cf-alpha";
     manifest.brand.display_name = "Atlas 中文";
     manifest.brand.ai_persona_name = "Mira";
+    manifest.brand.support_email = "help@atlas.example.invalid";
     manifest.identifiers.url_scheme = "cf-alpha";
     manifest.deployments = { cloudflare: {} };
     for (const stage of ["local", "beta", "production"]) {
@@ -210,6 +212,9 @@ describe("one brand/stage Cloudflare resource authority", () => {
           ),
         );
       const plan = render(fixture);
+      expect(plan.configs["api-core"].config.vars.BRAND_SUPPORT_EMAIL).toBe(
+        manifest.brand.support_email,
+      );
       for (const role of ["api-core", "api-ai"])
         expect(
           JSON.parse(plan.configs[role].config.vars.BRAND_RUNTIME_JSON),
@@ -257,6 +262,24 @@ describe("one brand/stage Cloudflare resource authority", () => {
     expect(() => render(fixture)).toThrow("Web product identity differ");
   });
 
+  it("requires a plain support address in the same manifest projection", () => {
+    for (const value of [
+      undefined,
+      null,
+      true,
+      "",
+      "no-address",
+      "help@example.invalid\nInjected",
+      "Two People <a@example.invalid>",
+      "a@[127.0.0.1]",
+      "a,b@example.invalid",
+    ]) {
+      const fixture = resourceFixture();
+      fixture.projected.support_email = value;
+      expect(() => render(fixture)).toThrow(/support contact/);
+    }
+  });
+
   it("keeps direct Wrangler development identity aligned with its actual manifest", () => {
     const manifest = YAML.parse(
       readFileSync(
@@ -266,6 +289,9 @@ describe("one brand/stage Cloudflare resource authority", () => {
     );
     const { id, display_name, ai_persona_name } = manifest.brand;
     const templates = readWorkerTemplates(root);
+    expect(templates["api-core"].config.vars.BRAND_SUPPORT_EMAIL).toBe(
+      manifest.brand.support_email,
+    );
     for (const role of ["api-core", "api-ai"])
       expect(
         JSON.parse(templates[role].config.vars.BRAND_RUNTIME_JSON),

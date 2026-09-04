@@ -31,6 +31,7 @@ def main() -> int:
             {
                 'brand_id': manifest['brand']['id'],
                 'product_name': manifest['brand']['display_name'],
+                'support_email': manifest['brand']['support_email'],
                 'brand_runtime': {
                     'brand_id': manifest['brand']['id'],
                     'display_name': manifest['brand']['display_name'],

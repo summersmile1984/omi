@@ -189,6 +189,17 @@ brand fallback for an unconfigured Cloudflare deployment: regenerate the resourc
 plan/rebuild the Worker before use. An otherwise valid configuration retains the
 existing provider and storage error classification.
 
+`BRAND_SUPPORT_EMAIL` is a separate public scalar projected only from the same
+manifest's existing `brand.support_email`; it does not extend the three-field
+identity JSON or introduce an operator naming input. CF3 requires a plain email
+address, writes it only to Core, and hashes it with the generated configuration.
+The direct template uses `omi-upstream`'s declared `help@omi.me`; the local runner
+records its explicit synthetic contact. Missing/invalid contact makes both
+fair-use status and public case presentation return503. Fair-use warning/support
+text, the public case contact field, overage product names and unnamed task-share
+sender/provenance use the brand projection. Existing fee calculations, thresholds,
+user names and task descriptions are preserved; this change sends no email.
+
 This covers default text chat identity, not every white-label product surface.
 Share URL routing, OAuth/email templates
 and the remaining CF4 route capabilities require their own owner verification.

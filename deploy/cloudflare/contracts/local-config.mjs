@@ -4,6 +4,7 @@ import { readWorkerTemplates } from "../scripts/resource-configs.mjs";
 import {
   STORAGE_BINDINGS,
   validateBrandRuntime,
+  validateSupportEmail,
 } from "../scripts/resource-input.mjs";
 
 // This projection is exclusively a disposable loopback test target. It consumes
@@ -13,6 +14,7 @@ export function localConfigs({
   root,
   brandId,
   brandRuntime,
+  supportEmail,
   namespace,
   port,
   asrPort,
@@ -26,6 +28,7 @@ export function localConfigs({
   )
     throw new Error("invalid local brand or namespace");
   validateBrandRuntime(brandRuntime, brandId);
+  validateSupportEmail(supportEmail);
   for (const value of [port, asrPort])
     if (!Number.isInteger(value) || value < 1024 || value > 65535)
       throw new Error("invalid loopback port");
@@ -105,6 +108,7 @@ export function localConfigs({
     };
     if (["api-core", "api-ai"].includes(role))
       config.vars.BRAND_RUNTIME_JSON = JSON.stringify(brandRuntime);
+    if (role === "api-core") config.vars.BRAND_SUPPORT_EMAIL = supportEmail;
     delete config.vars.ORIGIN_BACKEND_URL;
     for (const key of Object.keys(config.vars))
       if (key.endsWith("_STAGING_ENABLED")) config.vars[key] = "false";

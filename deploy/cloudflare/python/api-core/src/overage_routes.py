@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 
+from brand_runtime import load_brand_runtime
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
@@ -27,7 +29,7 @@ PROVIDER_REFERENCE_RATES = {
 OVERAGE_EXPLAINER_TITLE = "What happens past your monthly limit?"
 
 OVERAGE_EXPLAINER_BODY = (
-    "Your paid plan includes a monthly AI-usage allowance. If you go over, Omi "
+    "Your paid plan includes a monthly AI-usage allowance. If you go over, {display_name} "
     "doesn't cut you off — you stay fully functional and we charge only for "
     "the extra usage, billed to the card on file at the end of your cycle.\n\n"
     "How the charge is computed:\n"
@@ -38,7 +40,7 @@ OVERAGE_EXPLAINER_BODY = (
     "A typical chat question costs roughly $0.01–$0.05 of real compute. Heavy "
     "RAG or agentic questions cost a bit more.\n\n"
     "Prefer predictable billing? Bring your own API keys in Settings → Developer "
-    "API Keys and pay providers directly — Omi is free when BYOK is active."
+    "API Keys and pay providers directly — {display_name} is free when BYOK is active."
 )
 
 
@@ -73,6 +75,10 @@ async def get_overage_info(request: Request):
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     env = request.scope["env"]
+    try:
+        brand = load_brand_runtime(env)
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
     try:
         plan = await subscription_plan(env, str(context["uid"]))
         usage = await monthly_chat_usage(env, str(context["uid"]))
@@ -111,7 +117,7 @@ async def get_overage_info(request: Request):
         "markup_percent": markup_percent,
         "reset_at": usage["reset_at"],
         "explainer_title": OVERAGE_EXPLAINER_TITLE,
-        "explainer_body": OVERAGE_EXPLAINER_BODY.format(markup_pct=markup_percent),
+        "explainer_body": OVERAGE_EXPLAINER_BODY.format(markup_pct=markup_percent, display_name=brand.display_name),
         "provider_reference_rates": PROVIDER_REFERENCE_RATES,
         "byok_available": True,
     }

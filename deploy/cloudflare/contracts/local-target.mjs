@@ -165,10 +165,12 @@ export async function startLocalTarget({
       display_name: "Local Atlas",
       ai_persona_name: "Mira",
     };
+    const supportEmail = "support@atlas.example.invalid";
     const { origin, configs } = localConfigs({
       root,
       brandId,
       brandRuntime,
+      supportEmail,
       namespace,
       port,
       asrPort: asr.address().port,
@@ -321,6 +323,7 @@ export async function startLocalTarget({
     privateJson(resolve(output, "metadata.json"), metadata);
     privateJson(resolve(output, "fixture.json"), {
       brand_runtime: brandRuntime,
+      support_email: supportEmail,
       schema_version: 1,
       source_commit: git(resolve(root, "../.."), ["rev-parse", "HEAD"]),
       source_status: git(resolve(root, "../.."), ["status", "--porcelain"]),

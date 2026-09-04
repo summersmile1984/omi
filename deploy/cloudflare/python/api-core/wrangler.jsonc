@@ -62,6 +62,7 @@
     },
   ],
   "vars": {
+    "BRAND_SUPPORT_EMAIL": "help@omi.me",
     "BRAND_RUNTIME_JSON": "{\"brand_id\":\"omi-upstream\",\"display_name\":\"Omi\",\"ai_persona_name\":\"Omi\"}",
     // Secrets provisioned with `wrangler secret put`: ADMIN_KEY,
     // DESKTOP_PREVIEW_PUBLISH_KEY, RELEASE_SECRET, BETA_PROMOTION_TOKEN,

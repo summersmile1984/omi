@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from conversation_routes import _first_conversation
+from brand_runtime import load_brand_runtime
 from internal_auth import decode_context
 from vector_search import (
     embed_query,
@@ -689,6 +690,10 @@ async def share_action_items(request: Request):
 
     uid = str(context["uid"])
     env = request.scope["env"]
+    try:
+        brand = load_brand_runtime(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
     placeholders = ", ".join("?" for _ in payload.task_ids)
     try:
         result = (
@@ -708,7 +713,10 @@ async def share_action_items(request: Request):
 
         now = int(time.time())
         token = uuid.uuid4().hex
-        sender_name = str(context.get("displayName") or "Omi user").strip()[:120] or "Omi user"
+        sender_name = (
+            str(context.get("displayName") or f"{brand.display_name} user").strip()[:120]
+            or f"{brand.display_name} user"
+        )
         statements = [
             env.APP_DB.prepare(
                 "INSERT INTO cf_task_shares (token, sender_uid, sender_name, expires_at, created_at) "
@@ -732,6 +740,10 @@ async def get_shared_action_items(request: Request, token: str):
     if not token or len(token) > MAX_SHARE_TOKEN_LENGTH:
         return JSONResponse({"error": "share link expired or not found"}, status_code=404)
     try:
+        brand = load_brand_runtime(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
+    try:
         now = int(time.time())
         share = await _task_share(request.scope["env"], token, now)
         if share is None:
@@ -740,7 +752,7 @@ async def get_shared_action_items(request: Request, token: str):
     except Exception:
         return JSONResponse({"error": "task sharing unavailable"}, status_code=503)
     return {
-        "sender_name": str(share.get("sender_name") or "Omi user"),
+        "sender_name": str(share.get("sender_name") or f"{brand.display_name} user"),
         "tasks": [
             {"description": str(row.get("description") or ""), "due_at": _iso(row.get("due_at"))} for row in rows
         ],
@@ -761,6 +773,10 @@ async def accept_shared_action_items(request: Request):
         return JSONResponse({"error": "invalid share token"}, status_code=400)
 
     env = request.scope["env"]
+    try:
+        brand = load_brand_runtime(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
     uid = str(context["uid"])
     now = int(time.time())
     try:
@@ -794,7 +810,7 @@ async def accept_shared_action_items(request: Request):
                         "kind": "shared",
                         "token": payload.token,
                         "sender_uid": sender_uid,
-                        "sender_name": str(share.get("sender_name") or "Omi user"),
+                        "sender_name": str(share.get("sender_name") or f"{brand.display_name} user"),
                         "original_task_id": original_id,
                     }
                 ],
