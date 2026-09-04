@@ -1,7 +1,7 @@
 import 'package:flutter/services.dart';
 
+import 'package:omi/flavors.brand.dart';
 import 'package:omi/utils/logger.dart';
-import 'flavors.brand.dart';
 
 enum Environment {
   prod,

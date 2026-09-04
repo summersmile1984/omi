@@ -33,7 +33,13 @@ FLAVORS_BRAND_PATH = "app/lib/flavors.brand.dart"
 
 
 def _dart_string_literal(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace("$", "\\$")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
     return f"'{escaped}'"
 
 

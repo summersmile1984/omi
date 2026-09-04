@@ -143,6 +143,24 @@ class MobileGeneratorTests(unittest.TestCase):
         content = (root / "app/lib/flavors.brand.dart").read_text()
         self.assertIn("const String kBrandDisplayName = 'Acme\\'s App';", content)
 
+    def test_render_escapes_a_dollar_sign_so_dart_does_not_interpolate_it(self):
+        # Unescaped, $ starts Dart string interpolation -- 'Ac$me' fails to
+        # compile with "Undefined name 'me'." rather than producing a leak.
+        root = self.tmp_repo_root()
+        manifest = {"brand": {"id": "acme", "display_name": "Ac$me"}}
+        mobile.render(manifest, root)
+        content = (root / "app/lib/flavors.brand.dart").read_text()
+        self.assertIn("const String kBrandDisplayName = 'Ac\\$me';", content)
+
+    def test_render_escapes_an_embedded_newline(self):
+        # An unescaped literal newline breaks out of the single-quoted Dart
+        # string entirely ("String starting with ' must end with '.").
+        root = self.tmp_repo_root()
+        manifest = {"brand": {"id": "acme", "display_name": "Acme\nCorp"}}
+        mobile.render(manifest, root)
+        content = (root / "app/lib/flavors.brand.dart").read_text()
+        self.assertIn("const String kBrandDisplayName = 'Acme\\nCorp';", content)
+
     def test_render_is_idempotent(self):
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme"}}
