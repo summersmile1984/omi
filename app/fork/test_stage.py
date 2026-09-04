@@ -1,0 +1,74 @@
+import json
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from fixture import fixture
+from prepare import ROOT, stage
+
+
+class StageTests(unittest.TestCase):
+    def test_target_native_identity_and_real_consumers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            manifest = directory / "private.json"
+            manifest.write_text(json.dumps(fixture()))
+            packages = set()
+            for target in ["self_hosted", "cloudflare"]:
+                output = directory / target
+                result = stage(manifest, target, output, Path(os.environ["DART"]))
+                self.assertFalse(result["release_qualified"])
+                packages.add(result["package_id"])
+                defines = json.loads((output / "defines.json").read_text())
+                self.assertEqual(set(defines), {"OMI_FORK_DEPLOYMENT_JSON"})
+                profile = json.loads(defines["OMI_FORK_DEPLOYMENT_JSON"])["profile"]
+                self.assertEqual(profile["name"], target + ".local")
+                # Static wiring/identity assertions, not behavior-test claims.
+                main = (output / "app/lib/main.dart").read_text()
+                self.assertIn("NativeIdentity.initialize()", main)
+                self.assertNotIn("FirebaseAuth", main)
+                self.assertNotIn("FirebaseCrashlytics", main)
+                auth = (output / "app/lib/services/auth_service.dart").read_text()
+                self.assertIn("_tokenGateway = NativeIdentity.owner", auth)
+                self.assertIn("_invalidateSession = NativeIdentity.owner.invalidate", auth)
+                self.assertNotIn("FirebaseAuth", auth)
+                self.assertNotIn("/auth-issue", (output / "app/lib/providers/auth_provider.dart").read_text())
+                gradle = (output / "app/android/app/build.gradle").read_text()
+                self.assertNotIn('applicationId "com.friend', gradle)
+                self.assertIn(result["package_id"], gradle)
+                self.assertFalse((output / "app/android/key.properties").exists())
+            self.assertEqual(len(packages), 2)
+
+    def test_existing_output_upstream_brand_and_invalid_target_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            manifest = directory / "private.json"
+            manifest.write_text(json.dumps(fixture()))
+            for target, output, brand in [
+                ("self_hosted", directory, manifest),
+                ("omi_cloud", directory / "bad", manifest),
+                ("self_hosted", directory / "upstream", ROOT / "brand/omi-upstream/manifest.yaml"),
+            ]:
+                with self.assertRaises(ValueError):
+                    stage(brand, target, output, Path(os.environ["DART"]))
+
+    def test_changed_source_owner_is_rejected_before_copy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            manifest = directory / "private.json"
+            manifest.write_text(json.dumps(fixture()))
+            actual = Path.read_bytes
+
+            def changed(path):
+                data = actual(path)
+                return data + b"\n// changed owner\n" if path == ROOT / "app/lib/main.dart" else data
+
+            with patch.object(Path, "read_bytes", changed), self.assertRaisesRegex(ValueError, "source owner changed"):
+                stage(manifest, "self_hosted", directory / "stage", Path(os.environ["DART"]))
+            self.assertFalse((directory / "stage").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

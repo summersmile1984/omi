@@ -116,6 +116,32 @@ jobs:
         working-directory: web/app
         run: bun install --frozen-lockfile
 
+      - name: Select Flutter native contract dependencies
+        id: flutter
+        run: |
+          python3 .github/scripts/run_checks.py --manifest .github/checks-manifest.fork.yaml \
+            --lane ci --base "${{ steps.base.outputs.ref }}" --output json > /tmp/fork-check-selection.json
+          python3 - <<'PY'
+          import json, os
+          selected = json.load(open('/tmp/fork-check-selection.json'))['checks']
+          enabled = any(check['id'] == 'fork-flutter-native-identity' for check in selected)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'enabled={str(enabled).lower()}\n')
+          PY
+
+      - name: Provision pinned Flutter
+        if: steps.flutter.outputs.enabled == 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.5"
+          channel: stable
+          cache: true
+
+      - name: Provision frozen Flutter dependencies
+        if: steps.flutter.outputs.enabled == 'true'
+        working-directory: app
+        run: flutter pub get --enforce-lockfile
+
       - name: Fork manifest (ci lane)
         run: |
           python3 .github/scripts/run_checks.py \

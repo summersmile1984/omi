@@ -1,0 +1,21 @@
+import 'package:flutter/material.dart';
+
+/// The local artifact has no configured remote crash destination. Callers keep
+/// their existing platform-manager boundary; credentials/PII leave no SDK sink.
+class CrashlyticsManager {
+  static final instance = CrashlyticsManager._();
+  CrashlyticsManager._();
+  factory CrashlyticsManager() => instance;
+  static Future<void> init() async {}
+  void identifyUser(String email, String name, String userId) {}
+  void logInfo(String message) {}
+  void logError(String message) {}
+  void logWarn(String message) {}
+  void logDebug(String message) {}
+  void logVerbose(String message) {}
+  void setUserAttribute(String key, String value) {}
+  void setEnabled(bool isEnabled) {}
+  Future<void> reportCrash(Object exception, StackTrace stackTrace, {Map<String, String>? userAttributes}) async {}
+  NavigatorObserver? getNavigatorObserver() => null;
+  bool get isSupported => false;
+}

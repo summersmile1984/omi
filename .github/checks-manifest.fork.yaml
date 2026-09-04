@@ -15,6 +15,12 @@ checks:
     lanes: ["local", "ci"]
     reason: "Actual 2026-09-04 self-host images copied the 581MB local OpenAPI venv and 110MB test scratch directory; an offline scratch Docker build exercises both real context filters and preserves runtime sources. This uses the builder's matcher instead of another ignore parser."
 
+  - id: fork-flutter-native-identity
+    command: ["bash", "app/fork/test.sh"]
+    triggers: ["app/fork/**", "app/lib/**", "app/test/fork/**", "app/android/**", "app/pubspec.yaml", "app/pubspec.lock", "scripts/profiles/**", "deploy/profiles/**", "brand/_schema/**", ".github/workflows/fork-checks.yml"]
+    lanes: ["local", "ci"]
+    reason: "The audited main stored a dev-issued JWT as a 24-hour mobile login and the generated fork profiles had no startup consumer. Execute the real opaque session owner, staged AuthService/401 behavior and both compiled Dart entrypoints; separately prove native APK/UI locally."
+
   - id: fork-macos-native-identity
     command: ["bash", "desktop/macos/fork/test.sh"]
     triggers: ["backend/fork/model_contract.py", "desktop/macos/fork/**", "desktop/macos/Desktop/**", "deploy/profiles/**", "scripts/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
