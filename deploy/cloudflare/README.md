@@ -985,7 +985,9 @@ GET  /v1/announcements/general
                               Edge → Python API Core → D1 announcement projection
 GET  /v1/announcements/pending
 POST /v1/announcements/{announcementId}/dismiss
-                              Edge → Python API Core → D1 + per-user dismissal
+                              Edge → Python API Core → D1 + per-user dismissal; Better Auth
+                              identity is required before dispatch. Register /pending before the
+                              public /:announcementId matcher so the signed Core context survives.
 GET  /v1/announcements/all
 GET  /v1/announcements/{announcementId}
 POST /v1/announcements

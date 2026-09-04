@@ -906,15 +906,7 @@ app.post("/v2/desktop/channels/promote", proxyPublicCore);
 app.post("/v2/desktop/clear-cache", proxyPublicCore);
 app.get("/v2/desktop/update-policy", proxyPublicCore);
 app.get("/metrics", proxyMetricsCore);
-app.get("/v1/announcements/changelogs", proxyPublicCore);
-app.get("/v1/announcements/features", proxyPublicCore);
-app.get("/v1/announcements/general", proxyPublicCore);
-app.get("/v1/announcements/all", proxyPublicCore);
-app.get("/v1/announcements/:announcementId", proxyPublicCore);
 app.get("/v1/trends", proxyPublicCore);
-app.post("/v1/announcements", proxyPublicCore);
-app.put("/v1/announcements/:announcementId", proxyPublicCore);
-app.delete("/v1/announcements/:announcementId", proxyPublicCore);
 app.get("/v1/app-categories", proxyPublicCore);
 app.get("/v1/app/proactive-notification-scopes", proxyPublicCore);
 app.get("/v1/app-capabilities", proxyPublicCore);
@@ -1476,6 +1468,19 @@ const proxyAuthenticatedCore = async (
   );
   return withRequestId(response, id);
 };
+
+// Register the authenticated static owner before the public detail parameter.
+// Hono dispatches the first matching handler, including /pending as an ID.
+app.get("/v1/announcements/pending", proxyAuthenticatedCore);
+app.get("/v1/announcements/changelogs", proxyPublicCore);
+app.get("/v1/announcements/features", proxyPublicCore);
+app.get("/v1/announcements/general", proxyPublicCore);
+app.get("/v1/announcements/all", proxyPublicCore);
+app.get("/v1/announcements/:announcementId", proxyPublicCore);
+app.post("/v1/announcements", proxyPublicCore);
+app.put("/v1/announcements/:announcementId", proxyPublicCore);
+app.delete("/v1/announcements/:announcementId", proxyPublicCore);
+app.post("/v1/announcements/:announcementId/dismiss", proxyAuthenticatedCore);
 
 app.get("/v1/personas", proxyAuthenticatedCore);
 app.get("/v2/cf/apps/mcp/tools", proxyAuthenticatedCore);
@@ -2164,8 +2169,6 @@ app.post("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
 app.post("/v1/users/fcm-token", proxyAuthenticatedCore);
 app.delete("/v1/users/fcm-token", proxyAuthenticatedCore);
 app.patch("/v1/users/geolocation", proxyAuthenticatedCore);
-app.get("/v1/announcements/pending", proxyAuthenticatedCore);
-app.post("/v1/announcements/:announcementId/dismiss", proxyAuthenticatedCore);
 app.get("/v1/action-items", proxyAuthenticatedCore);
 app.post("/v1/action-items", proxyAuthenticatedCore);
 app.get("/v1/action-items/ids", proxyAuthenticatedCore);
