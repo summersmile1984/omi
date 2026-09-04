@@ -16,7 +16,7 @@ class SourceStageContract(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='electron-stage-test-') as temporary:
             root = Path(temporary)
             manifest = root / 'brand.json'
-            manifest.write_text(json.dumps(synthetic_manifest()))
+            manifest.write_text(json.dumps(synthetic_manifest(root)))
             original = (COMPONENT / 'src/main/index.ts').read_bytes()
             identities = []
             for target in ('self_hosted', 'cloudflare'):
@@ -31,6 +31,12 @@ class SourceStageContract(unittest.TestCase):
                 self.assertEqual(profile['target'], target)
                 self.assertEqual(profile['updates'], 'disabled')
                 self.assertEqual(profile['personaName'], 'Synthetic Guide')
+                self.assertEqual(set(record['assets']['inputs']), {'icon_master', 'logo_light', 'logo_dark'})
+                for path, value in record['assets']['outputs'].items():
+                    self.assertEqual(hashlib.sha256((stage / path).read_bytes()).hexdigest(), value['sha256'])
+                self.assertIn('splash', record['assets']['unconsumed'])
+                self.assertFalse((stage / 'resources/icon.png').exists())
+                self.assertFalse((stage / 'src/renderer/src/assets/omi-logo.png').exists())
                 coverage = json.loads((stage / 'fork/brand-coverage.json').read_text())
                 self.assertGreater(len(coverage['rendered']), 40)
                 self.assertTrue(any('omi-capture:cmd' == row['source'] for row in coverage['preserved']))

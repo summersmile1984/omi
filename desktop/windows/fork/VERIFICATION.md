@@ -212,3 +212,69 @@ Python使用本树 `backend/.venv/bin`（make setup安装）。
 模型system prompt人格和provider能力策略。Windows/Linux真机/安装/安全存储、macOS
 产品兼容、iOS、发行签名、更新、推送、硬件BLE/OTA密钥资格均未由本机Electron证明。
 图谱字体仍可能进入真实loading fallback；本包不宣称它已恢复。
+
+## WL-5：Electron 品牌资产（2026-09-04）
+
+基线 `551a9e1dc3d23f084e9b3d35e46ebe5fde3db854`，证据目录
+`/tmp/memweft-implementation/electron/assets/`。这是前一文本包明确保留的真实缺口：
+manifest换名后原窗口/托盘PNG/ICO、Orb八点shader、LegacyHome头像及内联标记仍使用
+上游素材。本包以 `assets.mjs` 作为已有prepare入口的唯一资产生成owner，不新增品牌
+来源、上游修改或依赖/lock变化；所有fixture都在临时目录，正式品牌仍待真实输入。
+
+覆盖：主窗口/capture/bar/toast图标与三平台builder配置；三个托盘状态；Login/About、
+ConnectorBrandMark自己的omi项（其他第三方vendor保持）、思考指示器、LegacyHome
+白底回复头像；Orb静态fallback与真实WebGL纹理。全部3个消费输入先通过路径、字节、
+PNG格式/CRC/尺寸/alpha校验，再生成PNG/七帧ICO/64×64纹理。build manifest及独立
+asset coverage带输入/输出hash；splash明确unconsumed。没有静默旧图标fallback。
+
+实际验收与静态闭包分开：
+
+- `bash desktop/windows/fork/test.sh`：`formal-final.log` exit0，14 core（含2个资产
+  行为测试的多种输入）、4 prepare、两target各14 staged tests和完整build通过。
+  两个target分别使用H/N不同素材，第二品牌保留复杂文字输入。PNG/ICO是真实编码/
+  解码后像素断言；GL mock执行生产OrbRenderer构造/render/dispose，验证premultiplied
+  字节、初始正向、原frame波形投影及上传失败释放资源。
+- staged `legacy-assets.test.tsx` 执行实际LegacyHome，带合成assistant回复，证明白色
+  既有裁切底消费dark logo；`assets.test.tsx`执行实际Connector/思考状态和BrandImage
+  的一次重试/原中性fallback。合成回复只是组件测试，不伪装真实模型对话。
+- 最初完整build在遗漏captureWindow等3个主进程图标消费者处失败，
+  `formal-first.log`保留；已把所有同路径imports纳入原AST迁移，并为新增owners固定
+  源hash。随后 `formal-second.log`两target完整通过。
+- `harbor-ui-run-final.log` exit0：真实CF Auth33058/Edge33062、已有合成账户由登录
+  UI进入Home/About/General，真实切换旧版Home并Back导航，恢复新Home后完整退出。
+  `harbor-ui-{login,about,legacy-home,signed-out}.png` 已人工看图。旧Home实际Sidebar
+  的WebGL标记已换为H；旧文案 `omi` / `Ask Omi…` 仍可见，另开后续文本提交，
+  不把当前资产包声明为无泄漏。未写onboarding完成位/身份token或私有React状态。
+- `webgl-proof.cjs` 导入实际staged OrbRenderer/computeOrbFrame，真实Electron39.8.10
+  WebGL2画出6帧。`webgl-run-final.log` exit0，`webgl-proof.json`有每帧输入、原
+  barMix/barCount、GL error=0、像素hash/alpha数量；5种不同rasters（idle与静默
+  listening按合同相同），高音量历史占用更多像素。`webgl-six-states.png`显示H、
+  thinking旋转、logo→wave转换和高低波形。初次看图发现90度初始偏转，修正角基准并
+  增加生产renderer初始正向断言；不是仅替换WebGL失败时的fallback图片。
+- 这些GL帧用受控时间/音量历史输入；不是麦克风/TTS或外部模型的语义验收。
+  原OrbAnimator/可见性/采样/门控/context recovery不修改，纹理随原renderer资源生命周期。
+  品牌图替代八点外形，原圆盘/八点变形效果不再承诺；没有复制第二个动画状态owner。
+
+正式gate继续沿已有 `fork-electron-native-identity` 的local/ci选择执行；新增行为
+测试由现有runner自动发现，不加一条游离的扫描脚本或workflow。`pr-preflight --suggest`
+在未提交时显示0文件，单列为metadata建议；pending gate使用已stage文件列表，提交后
+再用真实base/head。日志见 `pending-{upstream,fork}.log`、`committed-{upstream,fork}.log`。
+Failure-Class为none：现有registry没有品牌资产输入/消费所有权类，本包行为guard直接
+针对基线551a的真实遗漏；不拿不相关的更新feed类别作装饰。
+
+限制：Windows/Linux真实系统图标/托盘/安装包、安全存储、macOS产品/Dock、签名/更新
+分发、iOS/Flutter/固件素材均未由本机Electron证明。原Windows-only titlebar/audio
+helper在macOS-host的已知错误仍见main log，进程继续并完成上述UI路径；不算资格。
+旧文本、系统prompt、其他页面/vendor资产与字体不属于这次已知素材hash/组件覆盖；
+未做全包每个二进制的视觉OCR，也未消除所有Omi协议/storage名字。
+
+资产最终冻结工件为 `assets/accepted/desktop`，重新prepare和完整build后再次运行
+`accepted-ui.log` / `accepted-webgl.log` 均exit0。实际Electron nativeImage成功解码
+256/1024窗口PNG及3个32px托盘PNG（`harbor-ui-native-png-decode.json`）；这是本机
+PNG消费证据，不冒充WindowsICO/托盘系统资格。`accepted-assets-scan.json` 在out与
+resources共74个文件中，对9个已知退休上游栅格素材做精确SHA256比对，0个命中；
+范围只是已知素材身份检查，不能当全包视觉扫描。原目录 `pnpm test` exit0：
+`upstream-suite.log` 为561文件/5558测试通过、6文件/33测试跳过。
+
+本包pending上游12项通过，其中90日历史failure-class ratchet因shallow明确SKIP，
+不称历史审计通过；fork检查2项覆盖零upstream touch与完整Electron测试/构建矩阵。

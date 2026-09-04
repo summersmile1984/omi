@@ -14,4 +14,8 @@ macOS 上启动 Electron 不能证明 Windows DPAPI、Linux libsecret/kwallet �
 WL-5 文案入口是 `fork/brand-text.json` + `brand-stage.mjs`，由原 `prepare.py`
 调用。只登记确认过的可见完整 AST 文案，区分 product/persona；新增或变动的同类
 文案必须通过现有 stage tests 暴露，不能全局替换 `omi` 或改协议/storage key。
-覆盖范围与未扫描的资产见生成 `fork/brand-coverage.json`；它不是全产品无泄漏证明。
+文案覆盖范围见生成 `fork/brand-coverage.json`；它不是全产品无泄漏证明。
+资产入口为 `fork/assets.mjs`，严格静态PNG输入/尺寸/alpha/路径合同见fork README。
+生成图标、托盘、明暗logo与Orb纹理共享单一manifest owner；不要在消费点重画上游
+标记或退回旧资产。`asset-coverage.json`单列生成hash和未消费splash；实际GL/UI与
+hermetic tests分开记录，不以本机Electron代替Windows/Linux系统图标/安装验收。

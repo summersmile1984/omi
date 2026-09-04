@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { authenticate, identityProblem } from './identity'
 import { profile } from '../native/profile.generated'
+import { BrandMark } from './BrandMark'
 
 export function Login(): React.JSX.Element {
   const [register, setRegister] = useState(false)
@@ -28,6 +29,7 @@ export function Login(): React.JSX.Element {
           }
         }}
       >
+        <BrandMark className="h-16 w-16 self-center object-contain" />
         <h1 className="text-2xl font-semibold">{profile.displayName}</h1>
         <p>{register ? 'Create an account' : 'Sign in to continue'}</p>
         {register && (

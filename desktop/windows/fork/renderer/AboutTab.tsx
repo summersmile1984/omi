@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Globe, Info, RefreshCw } from 'lucide-react'
 import { SettingRow } from '../../src/renderer/src/components/settings/SettingRow'
 import { profile } from '../native/profile.generated'
+import { BrandMark } from './BrandMark'
 
 export function AboutTab(): React.JSX.Element {
   const [version, setVersion] = useState<string | null>(null)
@@ -33,6 +34,7 @@ export function AboutTab(): React.JSX.Element {
   ].filter(([, url]) => !!url)
   return (
     <>
+      <BrandMark className="h-16 w-16 object-contain" />
       <SettingRow
         icon={Info}
         title={profile.displayName}

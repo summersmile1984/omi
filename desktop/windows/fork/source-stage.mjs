@@ -2,6 +2,7 @@ import ts from 'typescript'
 import { readFileSync, writeFileSync, readdirSync, existsSync, rmSync } from 'node:fs'
 import { resolve, relative, dirname, join } from 'node:path'
 import { applyBrandPresentation } from './brand-stage.mjs'
+import { applyAssetConsumers } from './assets-stage.mjs'
 
 const root = resolve(process.argv[2])
 const profile = JSON.parse(readFileSync(join(root, 'fork/profile.json'), 'utf8'))
@@ -105,6 +106,7 @@ function removeFunction(path, name) {
   edit(path, [{ start: node.getStart(source), end: node.end, value: '' }])
 }
 applyBrandPresentation(root, profile, { read, edit, write, replaceOnce })
+applyAssetConsumers({ read, write, replaceOnce, removeFunction })
 
 const retiredBridge = [
   'authStore',
@@ -227,6 +229,17 @@ replaceOnce(
 
 removeCalls('src/renderer/src/lib/appLifetimeJobs.ts', ['maybeStartInsightEngine'])
 const retired = [
+  'src/renderer/src/components/chat/OmiThinkingSpinner.tsx',
+  'src/renderer/src/orb/shader.ts',
+  'resources/icon-source.png',
+  'resources/icon.png',
+  'resources/icon.ico',
+  'resources/tray/idle.ico',
+  'resources/tray/listening.ico',
+  'resources/tray/paused.ico',
+  'src/renderer/src/assets/omi-logo.png',
+  'src/renderer/src/assets/omi-mark.png',
+  'src/renderer/src/assets/omilogo.png',
   'src/renderer/src/components/onboarding/NameStep.tsx',
   'src/renderer/src/components/settings/tabs/AccountTab.tsx',
   'src/renderer/src/components/settings/tabs/AboutTab.tsx',
@@ -265,6 +278,8 @@ replaceOnce(
 )
 
 const mapping = new Map([
+  ['resources/icon.png?asset', 'resources/fork/icon.png?asset'],
+  ['src/renderer/src/components/chat/OmiThinkingSpinner', 'fork/renderer/BrandThinkingSpinner'],
   ['src/renderer/src/lib/firebase', 'fork/renderer/identity'],
   ['src/renderer/src/lib/authSession', 'fork/renderer/authSession'],
   ['src/renderer/src/hooks/useAuth', 'fork/renderer/useAuth'],
@@ -387,10 +402,13 @@ for (const [name, script] of Object.entries(pkg.scripts)) {
       ) + (script.includes('--publish never') ? '' : ' --publish never')
 }
 pkg.scripts['seed:auth'] = 'node -e "throw new Error(\'Session seeding is not supported\')"'
+for (const name of ['gen:tray-icons', 'gen:app-icon'])
+  pkg.scripts[name] =
+    'node -e "throw new Error(\'Regenerate selected brand assets with fork/prepare.py into a fresh stage\')"'
 write('package.json', JSON.stringify(pkg, null, 2) + '\n')
 write(
   'electron-builder.fork.config.mjs',
-  `import base from './electron-builder.config.mjs'\nexport default { ...base, appId: ${JSON.stringify(profile.applicationId)}, productName: ${JSON.stringify(profile.displayName)}, publish: null, win: { ...base.win, executableName: ${JSON.stringify(pkg.name)} }, nsis: { ...base.nsis, artifactName: '${pkg.name}-setup-\${version}.\${ext}' }, linux: { ...base.linux, executableName: ${JSON.stringify(pkg.name)}, maintainer: 'Local identity fixture' }, mac: { ...base.mac, identity: null } }\n`
+  `import base from './electron-builder.config.mjs'\nexport default { ...base, appId: ${JSON.stringify(profile.applicationId)}, productName: ${JSON.stringify(profile.displayName)}, publish: null, win: { ...base.win, icon: 'resources/fork/icon.ico', executableName: ${JSON.stringify(pkg.name)} }, nsis: { ...base.nsis, artifactName: '${pkg.name}-setup-\${version}.\${ext}' }, linux: { ...base.linux, icon: 'resources/fork/icon.png', executableName: ${JSON.stringify(pkg.name)}, maintainer: 'Local identity fixture' }, mac: { ...base.mac, icon: 'resources/fork/icon-master.png', identity: null } }\n`
 )
 
 // Stage tests have a dedicated fork runner. Upstream tests remain verbatim and
