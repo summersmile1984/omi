@@ -162,7 +162,26 @@ async def ptt(
         await websocket.close(1013, 'speech_provider_unavailable')
         return
     received = 0
-    finalized = False
+    send_failed = False
+    settlement = None
+
+    async def drain_and_record():
+        # Accepted audio belongs to the provider even after the client leaves.
+        # A failed drain or rejected provider send never becomes billable usage.
+        await socket.drain_and_close()
+        if received > 0 and not send_failed:
+            await run_blocking(
+                critical_executor,
+                chat.record_actual_duration,
+                uid,
+                chat.compute_pcm_duration_ms(received, sample_rate, channels),
+            )
+
+    def settle_once():
+        nonlocal settlement
+        if settlement is None:
+            settlement = asyncio.create_task(drain_and_record())
+        return settlement
 
     async def send_segments():
         while True:
@@ -179,17 +198,10 @@ async def ptt(
             if message['type'] == 'websocket.disconnect':
                 return
             if message.get('text') == 'finalize':
-                await socket.drain_and_close()
+                await asyncio.shield(settle_once())
                 await asyncio.wait_for(segments.join(), timeout=5)
                 if sender.done():
                     sender.result()
-                await run_blocking(
-                    critical_executor,
-                    chat.record_actual_duration,
-                    uid,
-                    chat.compute_pcm_duration_ms(received, sample_rate, channels),
-                )
-                finalized = True
                 await websocket.close(1000, 'speech_finalized')
                 return
             data = message.get('bytes')
@@ -202,7 +214,13 @@ async def ptt(
                 return
             if sender.done():
                 sender.result()
-            if not socket.send(data):
+            try:
+                accepted = socket.send(data)
+            except Exception:
+                send_failed = True
+                raise
+            if not accepted:
+                send_failed = True
                 raise SpeechError('speech_provider_rejected_audio', retryable=True)
             received = prospective
     except asyncio.TimeoutError:
@@ -216,14 +234,25 @@ async def ptt(
             )
             await websocket.close(1011, 'speech_inference_failed')
     finally:
-        if not finalized:
-            # A cancelled/failed session cannot keep accepting inference work.
-            socket.finish()
-            with contextlib.suppress(Exception):
-                await socket.drain_and_close()
+        # One task owns terminal drain and usage for every exit, including
+        # cancellation. Shield it until complete before tearing down its sender.
+        task = settle_once()
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancelled = True
+            except Exception:
+                break
         sender.cancel()
         with contextlib.suppress(asyncio.CancelledError, RuntimeError, WebSocketDisconnect):
             await sender
+        if cancelled:
+            raise asyncio.CancelledError
 
 
 def install(app):

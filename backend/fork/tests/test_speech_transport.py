@@ -1,5 +1,6 @@
 """Actual registered HTTP/WS consumers with controlled local inference seams."""
 
+import asyncio
 import importlib
 from types import SimpleNamespace
 from unittest import mock
@@ -128,3 +129,174 @@ def test_actual_ptt_wire_finalizes_real_socket_or_closes_failed(application, mon
             ws.receive_text()
         assert error.value.code == (1011 if failure else 1000)
     assert recorded.call_count == (0 if failure else 1)
+    if not failure:
+        recorded.assert_called_once_with('existing-principal', 100)
+
+
+@pytest.fixture
+def ptt_runtime(monkeypatch):
+    from routers import chat
+
+    monkeypatch.setattr(chat, 'is_trial_paywalled', lambda *args: False)
+    monkeypatch.setattr(chat, 'get_effective_limit', lambda *args: (10, 60))
+    monkeypatch.setattr(chat, 'check_rate_limit', lambda *args: (True, 9, 0))
+    monkeypatch.setattr(chat, 'check_budget', lambda *args: (True, 0, 1000))
+    recorded = mock.Mock(return_value=True)
+    monkeypatch.setattr(chat, 'record_actual_duration', recorded)
+    decoded = mock.Mock(return_value='controlled transcription')
+    monkeypatch.setattr(local_socket, 'decode_pcm', decoded)
+    sockets = []
+    accepted = asyncio.Event()
+    original_socket = local_socket.SenseVoiceSocket
+
+    class TrackedSocket(original_socket):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs, recognizer=object(), poll_seconds=0.001)
+            sockets.append(self)
+
+        def send(self, data):
+            result = super().send(data)
+            if result:
+                accepted.set()
+            return result
+
+    monkeypatch.setattr(local_socket, 'SenseVoiceSocket', TrackedSocket)
+    return SimpleNamespace(recorded=recorded, decoded=decoded, sockets=sockets, accepted=accepted)
+
+
+class Session:
+    def __init__(self, messages):
+        self.messages = iter(messages)
+        self.closed = []
+        self.sent = []
+
+    async def accept(self):
+        pass
+
+    async def receive(self):
+        message = next(self.messages)
+        if isinstance(message, Exception):
+            raise message
+        return message
+
+    async def close(self, code, reason):
+        self.closed.append((code, reason))
+
+    async def send_json(self, value):
+        self.sent.append(value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('exit_path', ['disconnect', 'disconnect_error', 'idle', 'limit', 'malformed', 'finalize'])
+async def test_ptt_every_terminal_path_drains_and_charges_only_accepted_audio_once(ptt_runtime, exit_path):
+    pcm = b'\x00\x01' * 1600
+    terminal = {
+        'disconnect': {'type': 'websocket.disconnect'},
+        'disconnect_error': WebSocketDisconnect(1001),
+        'idle': asyncio.TimeoutError(),
+        'limit': {'type': 'websocket.receive', 'bytes': pcm * 11},
+        'malformed': {'type': 'websocket.receive', 'bytes': b'odd'},
+        'finalize': {'type': 'websocket.receive', 'text': 'finalize'},
+    }[exit_path]
+    ws = Session([{'type': 'websocket.receive', 'bytes': pcm}, terminal])
+    await speech_transport.ptt(ws, 'existing-principal')
+    ptt_runtime.recorded.assert_called_once_with('existing-principal', 100)
+    assert ptt_runtime.decoded.call_count == 1
+    assert ptt_runtime.decoded.call_args.args[2] == pcm
+    assert ptt_runtime.sockets[0]._pump_task.done()
+    assert not ptt_runtime.sockets[0]._pcm
+    if exit_path == 'finalize':
+        assert ws.closed == [(1000, 'speech_finalized')]
+    elif exit_path in ('idle', 'limit', 'malformed'):
+        assert ws.closed[0][0] == 1008
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['decode', 'cancelled_pump', 'rejected', 'unaccepted'])
+async def test_ptt_failed_or_unaccepted_audio_never_charges_on_disconnect(ptt_runtime, monkeypatch, failure):
+    pcm = b'\x00\x01' * 1600
+    frames = [{'type': 'websocket.receive', 'bytes': pcm}, {'type': 'websocket.disconnect'}]
+    if failure == 'decode':
+        ptt_runtime.decoded.side_effect = RuntimeError('controlled native fault')
+    elif failure == 'cancelled_pump':
+
+        async def cancelled_pump(self):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(local_socket.SenseVoiceSocket, '_pump', cancelled_pump)
+    elif failure == 'rejected':
+        original_send = local_socket.SenseVoiceSocket.send
+        sends = 0
+
+        def reject_second(self, data):
+            nonlocal sends
+            sends += 1
+            return False if sends == 2 else original_send(self, data)
+
+        monkeypatch.setattr(local_socket.SenseVoiceSocket, 'send', reject_second)
+        frames.insert(1, {'type': 'websocket.receive', 'bytes': pcm})
+    else:
+        frames[0]['bytes'] = b'odd'
+    await speech_transport.ptt(Session(frames), 'existing-principal')
+    ptt_runtime.recorded.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_ptt_retains_healthy_tail_and_single_usage_owner(ptt_runtime, monkeypatch):
+    waiting = asyncio.Event()
+    decoding = asyncio.Event()
+    release = asyncio.Event()
+    original_run = local_socket.run_blocking
+
+    async def held_decode(*args, **kwargs):
+        decoding.set()
+        await release.wait()
+        return await original_run(*args, **kwargs)
+
+    monkeypatch.setattr(local_socket, 'run_blocking', held_decode)
+
+    class CancelledSession(Session):
+        async def receive(self):
+            if not waiting.is_set():
+                waiting.set()
+                return {'type': 'websocket.receive', 'bytes': b'\x00\x01' * 1600}
+            await asyncio.Future()
+
+    task = asyncio.create_task(speech_transport.ptt(CancelledSession([]), 'existing-principal'))
+    await ptt_runtime.accepted.wait()
+    task.cancel()
+    await decoding.wait()
+    task.cancel()  # Cancellation during cleanup must not cancel the native tail.
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    ptt_runtime.recorded.assert_called_once_with('existing-principal', 100)
+    assert ptt_runtime.decoded.call_count == 1
+    assert ptt_runtime.sockets[0]._pump_task.done()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_drain_waiter_cannot_drop_or_replay_socket_tail(ptt_runtime, monkeypatch):
+    decoding = asyncio.Event()
+    release = asyncio.Event()
+    original_run = local_socket.run_blocking
+
+    async def held_decode(*args, **kwargs):
+        decoding.set()
+        await release.wait()
+        return await original_run(*args, **kwargs)
+
+    monkeypatch.setattr(local_socket, 'run_blocking', held_decode)
+    socket = local_socket.SenseVoiceSocket()
+    socket.start()
+    assert socket.send(b'\x00\x01' * 1600)
+    waiter = asyncio.create_task(socket.drain_and_close())
+    await decoding.wait()
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert not socket._pump_task.done()
+    release.set()
+    await socket.drain_and_close()
+    await socket.drain_and_close()
+    assert ptt_runtime.decoded.call_count == 1
