@@ -1,10 +1,11 @@
-"""Delete and prove absence through the configured Better Auth authority.
+"""Read profiles, delete and prove absence through the selected identity authority.
 
 The existing deletion worker retains its lifecycle. This adapter replaces only
 its Firebase identity call, and completion rechecks all authoritative residuals.
 An unavailable service or an unknown deletion outcome remains retryable.
 """
 
+from dataclasses import dataclass
 from urllib.parse import quote
 
 import httpx
@@ -14,7 +15,69 @@ from utils import auth_shim
 
 
 class IdentityAuthorityUnavailable(RuntimeError):
-    """The identity authority could not prove the required deletion result."""
+    """The identity authority could not prove the required result."""
+
+
+@dataclass(frozen=True)
+class IdentityUser:
+    """Validated fields consumed by the existing database.auth profile owner."""
+
+    uid: str
+    email: str
+    email_verified: bool
+    phone_number: str | None
+    display_name: str
+    photo_url: str | None
+    disabled: bool
+
+
+def get_user(uid):
+    """Resolve the optional profile without invoking another identity provider.
+
+    The upstream consumer retains its profile/default-name fallback. Failures
+    reaching that path are observable and contain no authority response or PII.
+    """
+    reason = 'authorization_unavailable'
+    try:
+        status, data = _request('GET', uid, _authority())
+        if status == 404 and data == {'error': 'user_not_found'}:
+            return None
+        if status != 200:
+            raise IdentityAuthorityUnavailable('Identity profile authority is unavailable')
+        reason = 'malformed_doc'
+        user = data.get('user') if isinstance(data, dict) else None
+        if (
+            not isinstance(user, dict)
+            or user.get('id') != uid
+            or not isinstance(user.get('email'), str)
+            or not isinstance(user.get('name'), str)
+            or type(user.get('emailVerified')) is not bool
+            or type(user.get('banned', False)) is not bool
+            or any(
+                user.get(field) is not None and not isinstance(user[field], str) for field in ('image', 'phoneNumber')
+            )
+        ):
+            raise IdentityAuthorityUnavailable('Identity profile result could not be verified')
+        return IdentityUser(
+            uid=uid,
+            email=user['email'],
+            email_verified=user['emailVerified'],
+            phone_number=user.get('phoneNumber'),
+            display_name=user['name'],
+            photo_url=user.get('image'),
+            disabled=user.get('banned', False),
+        )
+    except IdentityAuthorityUnavailable:
+        from utils.observability.fallback import record_fallback
+
+        record_fallback(
+            component='other',
+            from_mode='better_auth_profile',
+            to_mode='optional_profile_unavailable',
+            reason=reason,
+            outcome='degraded',
+        )
+        raise
 
 
 def _authority():

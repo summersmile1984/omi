@@ -32,6 +32,7 @@ def runtime(request):
     database_client.db = mock.MagicMock()
     database_client.document_id_from_seed = mock.Mock(return_value='synthetic')
     redis = types.ModuleType('database.redis_db')
+    redis.cache_user_name = mock.Mock()
     redis.check_rate_limit = mock.Mock(return_value=True)
     redis.try_acquire_listen_lock = mock.Mock(return_value=True)
     redis.try_acquire_user_platform_write_lock = mock.Mock(return_value=True)
@@ -40,6 +41,7 @@ def runtime(request):
             'database._client': database_client,
             'database.redis_db': redis,
             'database.users': users,
+            'database.auth': None,
             'utils.other.endpoints': None,
         }
     ), mock.patch.dict('os.environ', {'AUTH_PROVIDER': 'better_auth', 'ADMIN_KEY_AUTH_ENABLED': 'false'}):
