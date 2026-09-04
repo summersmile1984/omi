@@ -51,7 +51,20 @@ typealias JITDetailPresenter =
 
 @MainActor
 class NotificationService: NSObject, UNUserNotificationCenterDelegate {
-  static let shared = NotificationService(registerWithSystemNotificationCenter: true)
+  /// True inside XCTest's command-line test host, where the process has no real app
+  /// bundle identity. Mirrors `OmiUISound.isRunningUnderXCTest` — same detection, a
+  /// different system framework (`UNUserNotificationCenter` here) that crashes the
+  /// whole xctest process rather than just misbehaving when constructed there.
+  private static let isRunningUnderXCTest: Bool =
+    ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    || NSClassFromString("XCTestCase") != nil
+
+  /// `registerWithSystemNotificationCenter: false` under XCTest for the same reason
+  /// owner-bound policy tests already inject `false` explicitly (see the initializer
+  /// below): any test that reaches `.shared` — directly or, as with a proactive
+  /// `AppState.handleListenEvent`, indirectly — must not crash the process the first
+  /// time the singleton is constructed.
+  static let shared = NotificationService(registerWithSystemNotificationCenter: !isRunningUnderXCTest)
 
   /// Category ID for notifications that track dismissal
   private static let trackableCategoryId = "omi.trackable"
