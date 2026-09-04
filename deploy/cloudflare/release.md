@@ -132,6 +132,13 @@ directory fsync. Durable `in_flight` intent precedes every remote mutation.
 The process lock prevents two commands from sharing a journal. A crash leaves
 the lock for operator inspection; no command silently clears a stale lock.
 
+Remote Wrangler commands and each qualification runner have a fixed 15-minute
+process deadline. Execution requires a POSIX host (macOS/Linux): the launcher
+and descendants own one process group, which is terminated on completion or
+timeout. Timeout is a null exit/unknown result, never a success or permission to
+retry a mutation; subsequent remote observations retain the same reconciliation
+rules. Even valid-looking runner output is rejected unless its process exits 0.
+
 A lost migration response is resolved only by the actual D1 ledger. Exact
 transaction version annotations can prove ownership of a Worker even after a
 failed publish process, but that state still requires recovery: Wrangler may
