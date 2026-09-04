@@ -306,7 +306,7 @@ export async function startLocalTarget({
       artifacts,
       command: [process.execPath, ...args],
       provider_boundary:
-        "synthetic ASR and structured inference; actual application Workers, D1, R2, DO, Queue",
+        "synthetic ASR and structured/text inference; actual application Workers, D1, R2, DO, Queue",
       unproved: [
         "hosted-model quality",
         "remote Vectorize/Images",
@@ -339,6 +339,7 @@ if (
         port: { type: "string" },
         "run-core": { type: "boolean", default: false },
         "run-recording": { type: "boolean", default: false },
+        "run-chat": { type: "boolean", default: false },
       },
     });
     if (!values.output) throw new Error("--output is required");
@@ -363,9 +364,17 @@ if (
         resolve(values.output, "metadata.json"),
       ]);
     }
+    if (values["run-chat"]) {
+      await target.command("chat", process.execPath, [
+        resolve(componentRoot, "contracts/chat.mjs"),
+        "--metadata",
+        resolve(values.output, "metadata.json"),
+      ]);
+    }
     if (
       !values["run-core"] &&
       !values["run-recording"] &&
+      !values["run-chat"] &&
       !controller.signal.aborted
     ) {
       await Promise.race([

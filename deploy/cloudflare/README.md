@@ -129,6 +129,17 @@ version fails closed. No project virtual environment or lock is upgraded by this
 selection. This override is useful when a registry cache cannot resolve a fresh
 tool environment; it does not establish that a clean online installation passed.
 
+Every non-sync Python invocation projects the project's ordinary `src` files
+and canonical `python/shared/*.py` modules into a private temporary stage via
+`scripts/python-source.mjs`. Duplicate module owners, source links and alternate
+build roots fail closed. The original working directory and locked dependencies
+remain authoritative; generated configuration and local secrets are private,
+relative migration paths retain their original owner, and cleanup runs after the
+command. Neither the source tree nor CF5's regular-source-only rule is changed.
+Dev runs use that source snapshot; restart the command after editing source.
+CPython tests load the same canonical shared directory through their conftest.
+
+
 Local development on Linux/macOS resolves the native executable from the locked
 `workerd` package export, then uses its official Pyodide bundle/package cache
 flags. The shell wrapper executes that binary directly, preserving Miniflare's
@@ -1467,7 +1478,13 @@ conversation authority moves in production.
 
 The chat history and desktop persistence routes use explicit uid/app/session-
 scoped D1 projections. Empty history returns a deterministic Worker-owned
-greeting. Main chat clear removes only the current session and its messages;
+greeting. `/v2/messages` GET/POST/DELETE share the canonical D1 target resolver:
+explicit `chat_session_id` requires caller ownership (missing/foreign is 404)
+and the selected session determines its app, even when a conflicting `app_id`
+is supplied. Omitted IDs select the latest app-scoped session; an unmigrated
+principal with no session keeps its legacy app-scoped history. Offset pages past
+empty history return `[]`. Explicit clear keeps the selected session and resets
+count/preview; default clear removes only the selected session and its messages;
 desktop scoped deletes update retained session counts in the same D1 batch.
 Session create/list/read/update/delete, starred filtering,
 reported-message hiding, idempotent `client_message_id` retries, and monotonic
@@ -1481,7 +1498,15 @@ Chat generation remains API-AI-owned. Default text chat now acquires a D1 chat
 session, reads its bounded unreported history, calls the configured Workers AI
 chat model, commits the human/AI exchange plus session count/preview in one D1
 batch, and emits the legacy `data:` plus base64 `done:` SSE contract used by
-Web/mobile clients.
+Web/mobile clients. The ordinary source `python/shared/chat_target.py` owns
+selection and transactional provider-result commits for text chat, initial
+messages and the existing narrow completion contract. Migration
+`0155_chat_clear_epoch.sql` adds an empty default epoch to existing sessions;
+explicit clear rotates it. The target captured before model IO includes uid,
+session, app and epoch. Conditional D1 inserts reject a late result after clear
+or deletion without recreating its session; paid model work remains accounted.
+This forward migration has only local qualification here; previous-release and
+remote rollout/rollback eligibility remain pending.
 Before provider work, API AI atomically reserves one D1 quota event. The
 conditional insert is the Free-plan hard-cap boundary, so concurrent requests
 cannot both consume the final monthly slot; paying plans retain the legacy

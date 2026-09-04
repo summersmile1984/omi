@@ -1,9 +1,21 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 // Controlled inference only: no application, identity, queue or storage binding.
-// Real Core owns validation, grounding, finalization and all derived D1 writes.
+// Real Python Workers own validation, accounting and every persisted result.
 export class Provider extends WorkerEntrypoint {
-  async run() {
+  async run(_model: string, input: Record<string, unknown>) {
+    if (!input.response_format) {
+      const messages = input.messages as { role: string; content: string }[];
+      const reference = messages
+        .filter((message) => message.role === "user")
+        .map((message) => message.content);
+      if (reference.at(-1) === "[fixture:provider-error]")
+        throw new Error("controlled inference failure");
+      return {
+        response: "Synthetic chat 回答\n" + reference.join("\n"),
+        usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+      };
+    }
     return {
       response: JSON.stringify({
         title: "Synthetic recording",
