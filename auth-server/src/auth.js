@@ -19,7 +19,7 @@ export const BASE_URL =
 export const DEV_ISSUER_SECRET = process.env.AUTH_DEV_ISSUER_SECRET || "";
 export const INTERNAL_ADMIN_SECRET =
   process.env.AUTH_INTERNAL_ADMIN_SECRET || "";
-const TRUSTED_ORIGINS = (process.env.BETTER_AUTH_TRUSTED_ORIGINS || "")
+export const TRUSTED_ORIGINS = (process.env.BETTER_AUTH_TRUSTED_ORIGINS || "")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
