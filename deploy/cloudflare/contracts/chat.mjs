@@ -10,8 +10,15 @@ import { build } from "esbuild";
 // Seams only provide a real public-auth JWT and the Web proxy's base mapping.
 const { values } = parseArgs({ options: { metadata: { type: "string" } } });
 const metadata = JSON.parse(readFileSync(values.metadata));
-for (const key of ["api_origin", "auth_origin"]) {
-  const url = new URL(metadata[key]);
+const controlOrigin = JSON.parse(
+  readFileSync(resolve(dirname(values.metadata), "fixture.json")),
+).inference_control_origin;
+for (const origin of [
+  metadata.api_origin,
+  metadata.auth_origin,
+  controlOrigin,
+]) {
+  const url = new URL(origin);
   assert(
     url.protocol === "http:" &&
       ["127.0.0.1", "localhost"].includes(url.hostname) &&
@@ -289,6 +296,80 @@ try {
     body: { text: "deleted" },
   });
   pass("explicit-clear-preserves-session-delete-stays-terminal");
+  await request("api", `/v2/chat-sessions/${B}`, 200, {
+    bearer: owner,
+    method: "DELETE",
+  });
+  const defaultSessions = async () =>
+    (await request("api", "/v2/chat-sessions", 200, { bearer: owner })).data;
+  async function control(path, method = "GET") {
+    const response = await originalFetch(controlOrigin + path, {
+      method,
+      signal: AbortSignal.timeout(20000),
+      redirect: "error",
+    });
+    assert.equal(response.status, 200, `inference control ${path}`);
+    return response;
+  }
+  for (const mutation of [
+    "default-clear",
+    "session-delete",
+    "explicit-clear",
+  ]) {
+    assert.equal((await defaultSessions()).length, 0);
+    const { id } = await (await control("/gates", "POST")).json();
+    // Attach both handlers immediately; the model can finish only after release.
+    const pending = send(`[fixture:wait:${id}]`).then(
+      () => null,
+      (error) => error,
+    );
+    let selectedId,
+      started = false;
+    try {
+      await control(`/started/${id}`);
+      started = true;
+      const visible = await defaultSessions();
+      assert.equal(
+        visible.length,
+        1,
+        "first model IO must own a visible session",
+      );
+      selectedId = visible[0].id;
+      assert.equal(visible[0].message_count, 0);
+      if (mutation === "session-delete")
+        await request("api", `/v2/chat-sessions/${selectedId}`, 200, {
+          bearer: owner,
+          method: "DELETE",
+        });
+      else
+        await client.clearMessages(
+          undefined,
+          mutation === "explicit-clear" ? selectedId : undefined,
+        );
+    } finally {
+      if (started) await control(`/release/${id}`, "POST");
+    }
+    assert.match((await pending)?.message ?? "unexpected success", /503/);
+    if (mutation === "explicit-clear") {
+      const retained = await defaultSessions();
+      assert.equal(retained.length, 1);
+      assert.equal(retained[0].id, selectedId);
+      assert.equal(retained[0].message_count, 0);
+      await client.clearMessages();
+    }
+    assert.equal((await defaultSessions()).length, 0);
+    await request("api", `/v2/messages?chat_session_id=${selectedId}`, 404, {
+      bearer: owner,
+    });
+  }
+  pass("first-model-io-visible-owner-clear-delete-reject-late-result");
+  await assert.rejects(() => send("[fixture:provider-error]"), /502/);
+  const failed = await defaultSessions();
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].message_count, 0);
+  await client.clearMessages();
+  assert.equal((await defaultSessions()).length, 0);
+  pass("failed-first-model-leaves-an-empty-publicly-clearable-session");
   report.passed = true;
 } catch (error) {
   report.passed = false;

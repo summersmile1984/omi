@@ -25,7 +25,7 @@ remote migration、Worker deploy 或发布批准。`release_qualified=false`。
 - `0155_chat_clear_epoch.sql`：普通 forward migration；旧会话 epoch 默认为空，
   显式 clear 轮换。模型等待前捕获目标，提交整个回复时在 D1 batch 内条件写入；
   clear/delete 后晚到结果没有消息写入，也不重新创建旧 session。模型成本仍按
-  已发生工作结算。真正新会话可在其首次成功提交时创建。
+  已发生工作结算。后续首次 admission 修复见下文：新会话在模型调用前可见。
 - Core 的显式 clear 保留会话、重置 count/preview，GET 限定同一 UID/app/session，
   空 offset 页返回空列表。没有会话的旧主体仍可读/清空原 app-scoped 历史。
 - 固定 Python 入口把唯一普通 shared 源复制到两个私有隔离 source stage，
@@ -71,8 +71,49 @@ CLOUDFLARE_PYODIDE_CACHE_DIR=/tmp/memweft-implementation/cloudflare/runtime-cach
 无应用存储权限的 provider fixture 控制；D1、Auth/JWT、路由、SSE、模型 RPC、
 DO、Queue/Jobs/Core 都是真实本地组件。没有证明托管模型质量、token-by-token
 延迟、工具/MCP 执行、附件/图片、所有 BYOK 行为、36 个 blocked route、所有
-原生平台或完整 Server/CF wire parity。默认首次请求还未建立可见会话前的
-并发 clear 不是本包已证明的显式会话生命周期；显式 A 的 clear/delete 有
-直接生产回归。历史/远端 schema 发布与回滚资格仍 pending，需要实际证据和
+原生平台或完整 Server/CF wire parity。会话 admission 是首次请求的线性化点：
+先于它完成的 clear 不取消后续 admission；它之后的 clear/delete 则封住该目标
+的模型结果。历史/远端 schema 发布与回滚资格仍 pending，需要实际证据和
 用户显式发布授权，不能手写 approved=true。服务端默认问候/系统提示仍有
 上游品牌文字；这里不把文本链路通过冒充白牌产品文案已完成。
+
+## 首次模型调用的会话 admission（独立后续提交）
+
+基线 `f490ad0a70e108bc5fe7cb5c5e25ec86c6673421`。旧实现只在模型成功返回时建
+session，首次模型等待期间 Core 看不到可清空的 owner；该请求随后可重新写出
+已被用户清空的内容。新增生产回归的旧结果为两项失败，见
+`/tmp/memweft-implementation/cloudflare/chat-admission/before.log`。
+
+`admit_chat_target` 复用同一个不可变 ChatTarget/epoch 和已有 D1 表。app 资格和
+quota 拒绝发生在建会话之前；单个 D1 batch 条件创建/选择唯一可见默认会话，
+将本请求仍未结算的 quota 行重绑到实际选中 ID。两个并发首次查找收敛到同一
+session；不存在、已结算、不同 UID 或不同临时目标的 quota 不能授权 admission。
+模型与提交全程持有该目标，`persist_chat_messages` 不再具有创建会话的分支。
+普通聊天、namespaced completion 和 initial-message 三个消费者均迁入。
+
+模型错误可以留下一个零消息会话；它在调用前即已被公开列表确认，可用现有
+clear 删除。首次 quota 拒绝不创建 session/消息，SSE 的 session 字段为空；已有
+会话的 quota 提示仍按原行为保存。初始消息的旧测试预期随此合同变化：模型
+失败不再要求“无会话”，而要求零消息、可公开清除；D1 admission 失败则不调用
+模型，已有旧会话仍覆盖模型后提交失败。这些预期来自实际清空/模型交错复现，
+不是为了接受任意错误码而放宽测试。
+
+- AI 全套 128 passed；共享 SQL 真执行 SQLite，包含三个消费者各自的模型
+  IO seam 内 Core explicit clear/default delete、并发初次 admission、quota
+  身份拒绝以及 unavailable app 零副作用。`ai-full.log`。
+- 控制器 11 项 Node22 tests（其中新 IO barrier 2 项）通过；模型等待点仅在
+  fixture provider 中，固定 loopback、最多八个 gate、30 秒期限，取消会关闭
+  真 HTTP 请求和 listener，不持有应用/身份/存储权限。`control-tests.log`。
+- `target/` 是真实 Auth/Edge/Core/AI/D1/DO/Queue 的本地目标；Core8、录音 6、
+  聊天 8 全过。新聊天 case 通过原上游 Web API consumer 发出首次 SSE 请求，
+  等实际 Python→ 模型 RPC 进入可控等待，再通过公开 HTTP 分别默认 clear、
+  session DELETE、explicit clear，放行模型后确认 503、零消息/无复活。还验证
+  502 后的零消息会话可公开 clear。`target.log`、`target/trace/chat-results.json`
+  与 `chat-http.jsonl` 保留请求状态，不含凭据。
+- 复现命令：`node deploy/cloudflare/contracts/local-target.mjs --output <新目录>
+--brand-id chat-admission --run-core --run-recording --run-chat`。命令、完整最终
+  candidate/tree 和精确 upstream/fork gate 结果在提交消息与同目录 `commands.md`。
+
+没有新 migration、scope 状态表或远端操作；原 0155 旧 schema/远端资格仍未获
+批准。本机一次 AI suite 命令漏了 tests 路径而从仓库根收集，109 项收集错误记录
+在 `ai-wrong-cwd.log`，不计作组件结果；改用明确路径后上述完整 128 项通过。

@@ -22,7 +22,7 @@ except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodid
         raise
     worker_fetch = None  # type: ignore[assignment]
 
-from chat_target import APP_SCOPE, ChatTarget, resolve_chat_target, persist_chat_messages
+from chat_target import APP_SCOPE, ChatTarget, resolve_chat_target, admit_chat_target, persist_chat_messages
 from chat_quota import (
     free_quota_detail,
     provider_cost_usd,
@@ -775,12 +775,19 @@ async def _generate_initial_message(
         target = await resolve_chat_target(env, uid, app_id, requested_session_id, create=True)
         session_id, app_id = target.session_id, target.app_id
         app = await _available_app(env, uid, app_id)
+        if app_id is not None and app is None:
+            return JSONResponse({"error": "app is unavailable", "reason": "app_not_found"}, status_code=404)
         profile, memories = await _initial_memory_context(env, uid)
-        history = await _recent_initial_history(env, uid, session_id)
     except LookupError:
         return JSONResponse({"detail": "Chat session not found"}, status_code=404)
     except Exception:
         return JSONResponse({"error": "chat context unavailable"}, status_code=503)
+    try:
+        target = await admit_chat_target(env, target)
+        session_id = target.session_id
+        history = await _recent_initial_history(env, uid, session_id)
+    except Exception:
+        return JSONResponse({"error": "chat history unavailable"}, status_code=503)
     try:
         text = await _workers_ai_text(
             env,
@@ -1296,25 +1303,6 @@ async def cloudflare_chat_completions(request: Request):
             )
         return JSONResponse(existing, headers={"cache-control": "no-store", "x-omi-chat-contract": "cf-v1"})
 
-    try:
-        prompt_messages = list(payload.messages)
-        if payload.session_id is not None and len(prompt_messages) == 1:
-            prompt_messages = [
-                CompatChatMessage(role="system", content=SYSTEM_PROMPT),
-                *[
-                    CompatChatMessage(role=item["role"], content=item["content"])
-                    for item in await _scoped_history(env, uid, session_id, target.app_id)
-                ],
-                *prompt_messages,
-            ]
-        elif not prompt_messages or prompt_messages[0].role != "system":
-            prompt_messages.insert(0, CompatChatMessage(role="system", content=SYSTEM_PROMPT))
-        prompt = _compat_prompt(prompt_messages)
-    except LookupError:
-        return JSONResponse({"detail": "Chat session not found"}, status_code=404)
-    except Exception:
-        return JSONResponse({"error": "chat context unavailable"}, status_code=503)
-
     platform = request.headers.get("x-app-platform")
     account_created_at = _account_created_at(context)
     has_byok_keys = byok_openai_key is not None
@@ -1350,6 +1338,27 @@ async def cloudflare_chat_completions(request: Request):
         except Exception:
             return JSONResponse({"error": "chat quota unavailable"}, status_code=503)
         return JSONResponse({"detail": detail}, status_code=402, headers={"cache-control": "no-store"})
+
+    try:
+        target = await admit_chat_target(env, target, None if has_byok_keys else quota_key)
+        session_id = target.session_id
+        prompt_messages = list(payload.messages)
+        if payload.session_id is not None and len(prompt_messages) == 1:
+            prompt_messages = [
+                CompatChatMessage(role="system", content=SYSTEM_PROMPT),
+                *[
+                    CompatChatMessage(role=item["role"], content=item["content"])
+                    for item in await _scoped_history(env, uid, session_id, target.app_id)
+                ],
+                *prompt_messages,
+            ]
+        elif not prompt_messages or prompt_messages[0].role != "system":
+            prompt_messages.insert(0, CompatChatMessage(role="system", content=SYSTEM_PROMPT))
+        prompt = _compat_prompt(prompt_messages)
+    except Exception:
+        if not has_byok_keys:
+            await _settle_stateless_failure(env, uid, quota_key, configured_model)
+        return JSONResponse({"error": "chat context unavailable"}, status_code=503)
 
     public_model = requested_model
     provider_model = configured_model
@@ -1483,7 +1492,6 @@ async def chat_messages(request: Request):
         app = await _available_app(env, uid, app_id)
         if app_id is not None and app is None:
             return JSONResponse({"error": "app is unavailable", "reason": "app_not_found"}, status_code=404)
-        history = await _scoped_history(env, uid, session_id, app_id)
     except LookupError:
         return JSONResponse({"detail": "Chat session not found"}, status_code=404)
     except Exception:
@@ -1512,7 +1520,7 @@ async def chat_messages(request: Request):
                 text="Usage accounting is temporarily unavailable. Please retry in a moment — your message was not saved.",
                 sender="ai",
                 created_at=datetime.now(timezone.utc),
-                session_id=session_id,
+                session_id=None if target.new else session_id,
             )
             return StreamingResponse(
                 _done_stream(unavailable),
@@ -1532,12 +1540,13 @@ async def chat_messages(request: Request):
                 ),
             )
             now = datetime.now(timezone.utc)
+            response_session_id = None if target.new else session_id
             human_message = _message(
                 message_id=human_message_id,
                 text=payload.text.strip(),
                 sender="human",
                 created_at=now,
-                session_id=session_id,
+                session_id=response_session_id,
                 app_id=app_id,
             )
             quota_message = _message(
@@ -1545,10 +1554,11 @@ async def chat_messages(request: Request):
                 text=_quota_exceeded_text(detail),
                 sender="ai",
                 created_at=now + timedelta(microseconds=1),
-                session_id=session_id,
+                session_id=response_session_id,
                 app_id=app_id,
             )
-            await persist_chat_messages(env, target, [human_message, quota_message], _exchange_order_key())
+            if not target.new:
+                await persist_chat_messages(env, target, [human_message, quota_message], _exchange_order_key())
         except Exception:
             return JSONResponse({"error": "chat quota unavailable"}, status_code=503)
         return StreamingResponse(
@@ -1556,13 +1566,21 @@ async def chat_messages(request: Request):
             media_type="text/event-stream",
             headers={"cache-control": "no-store", "x-accel-buffering": "no"},
         )
+    model = str(getattr(env, "WORKERS_AI_CHAT_MODEL", DEFAULT_WORKERS_AI_CHAT_MODEL))
+    try:
+        target = await admit_chat_target(env, target, None if has_byok_keys else quota_key)
+        session_id = target.session_id
+        history = await _scoped_history(env, uid, session_id, app_id)
+    except Exception:
+        if not has_byok_keys:
+            await _settle_stateless_failure(env, uid, quota_key, model)
+        return JSONResponse({"error": "chat history unavailable"}, status_code=503)
     prompt = [{"role": "system", "content": _chat_system_prompt(app)}]
     context_reference = _context_reference(payload.context)
     if context_reference:
         prompt.append({"role": "user", "content": context_reference})
     prompt.extend(history)
     prompt.append({"role": "user", "content": payload.text.strip()})
-    model = str(getattr(env, "WORKERS_AI_CHAT_MODEL", DEFAULT_WORKERS_AI_CHAT_MODEL))
     mapped_result = None
     try:
         if byok_openai_key is not None:
