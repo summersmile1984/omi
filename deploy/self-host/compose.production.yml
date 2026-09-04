@@ -145,6 +145,29 @@ services:
       postgres:
         condition: service_healthy
 
+  qdrant-migrate:
+    platform: ${BACKEND_PLATFORM:?BACKEND_PLATFORM is required}
+    build:
+      context: ../..
+      dockerfile: deploy/self-host/Dockerfile
+      args:
+        UPSTREAM_BACKEND_IMAGE: ${BACKEND_RUNTIME_IMAGE:?BACKEND_RUNTIME_IMAGE is required}
+        BRAND_MANIFEST: ${SELF_HOST_BRAND_MANIFEST:?SELF_HOST_BRAND_MANIFEST is required}
+        DEPLOYMENT_STAGE: ${SELF_HOST_STAGE:-production}
+        OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
+        OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    restart: "no"
+    command: ["python", "-m", "fork.vector_qdrant", "migrate"]
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
+      - QDRANT_COLLECTION_PREFIX=${QDRANT_COLLECTION_PREFIX:?QDRANT_COLLECTION_PREFIX is required}
+      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION:?EMBEDDING_DIMENSION is required}
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
   auth-server:
     command: ["node", "self-host-runtime.mjs", "serve"]
     build:
@@ -239,7 +262,6 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
       - MINIO_REGION=${MINIO_REGION:?MINIO_REGION is required}
-      - MINIO_SECURE=0
       - BUCKET_SPEECH_PROFILES=omi-speech-profiles
       - BUCKET_POSTPROCESSING=omi-postprocessing
       - BUCKET_MEMORIES_RECORDINGS=omi-memory-recordings
@@ -352,8 +374,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      qdrant:
-        condition: service_healthy
+      qdrant-migrate:
+        condition: service_completed_successfully
       typesense:
         condition: service_healthy
       searxng:

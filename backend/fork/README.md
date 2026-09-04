@@ -1,6 +1,6 @@
 # Fork runtime ownership
 
-`python -m fork.migrate migrate` is the only schema-changing startup process.
+`python -m fork.migrate migrate` owns PostgreSQL schema changes.
 It requires an explicit `FIRESTORE_PG_DSN`; `check` performs read-only admission.
 Schema v4 adds legal-hold/deletion-gate authorities; v3 registers frame requests/keyframe jobs and chat-first dead letters;
 v1/v2 physical table mappings remain immutable.
@@ -28,7 +28,7 @@ bad profile/dependency/patch cases; do not substitute source-order assertions.
 and authentication patches live in `patches/queue.py`; a worker receives only its
 queue's selected credential through the internal adapter setting. This package
 also owns MinIO/storage and speaker provider patches. It does not claim the
-remaining model, push or vector adapters are complete; refer to the dated audit.
+remaining model or push adapters are complete; refer to the dated audit.
 
 Run fork tests through `backend/test.sh` with an explicit file list; the fork
 manifest runs startup and source-closure contracts in both local and CI lanes.
@@ -52,3 +52,32 @@ upstream routers/services import. The marker-to-receipt transaction, receipt-awa
 status and retries must evolve together; do not add missing historical aliases
 to upstream modules. See `../firestore_pg/README.md` for ownership, key retention,
 control-state exclusions and live-versus-hermetic verification boundaries.
+
+
+`vector_qdrant.py` implements the existing `database.vector_db.index` boundary.
+Compose runs its `migrate` CLI before serving; `check` and API admission require
+all seven collections to have the selected dimension and Cosine distance. A
+changed dimension requires a reviewed new prefix and backfill, never destructive
+in-place recreation. No Pinecone fallback is allowed. `vector_filter.py` maps
+only the filter operators used by this upstream revision and rejects unknown
+syntax. UUID points retain their upstream string IDs as payloads.
+
+`storage_minio.py` / `storage_minio_blob.py` implement the actual audio/cache
+surface. `MINIO_ENDPOINT` is the internal origin; `MINIO_PUBLIC_ENDPOINT` is the
+public S3 origin used when signing (scheme controls TLS). Credentials are required.
+Only authoritative 404 means missing; access/transport failures propagate. Private
+links use path-style SigV4 GET and a bucket/origin/path/duration-scoped Redis key.
+Unsigned `public_url` is for operator-provisioned public assets, not a permission
+grant; the adapter never makes private buckets public.
+
+`provider_guard.py` patches the canonical external-write fence and all five
+captured imports, plus the real MinIO write gate even in local stage. They consult
+the same completion receipt owner as HTTP. Shared PostgreSQL advisory transaction
+locks cover admitted writes; the full wipe and its final provider proof take an
+exclusive lock. Contention fails for queue retry. The same-thread nested wipe /
+completion path reuses that ownership. `provider_objects.py` owns the declared
+UID-prefix inventory for purge and verification; Qdrant sweeps all namespaces by
+metadata.uid, including records absent from PG inventories. A failed proof retains
+the recoverable marker. This is not a distributed transaction after a lost PG
+connection or unknown remote write outcome. Direct PG writers and unowned/global
+object paths remain separately tracked; see the dated SH2 provider evidence.

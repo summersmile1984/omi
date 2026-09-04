@@ -63,7 +63,13 @@ def bootstrap(role: Role = Role.API) -> Admission:
     if row['target'] != 'self_hosted':
         raise profile.ProfileError('this Python runtime supports self_hosted; cloudflare runs Workers')
 
-    expected = {'store': 'firestore_pg', 'object_store': 'minio', 'queue': 'redis', 'cache': 'redis'}
+    expected = {
+        'store': 'firestore_pg',
+        'object_store': 'minio',
+        'queue': 'redis',
+        'cache': 'redis',
+        'vector': 'qdrant',
+    }
     for name, value in expected.items():
         if row.get('data_plane', {}).get(name) != value:
             raise profile.ProfileError(f'self_hosted data_plane.{name} must be {value}')
@@ -83,7 +89,13 @@ def bootstrap(role: Role = Role.API) -> Admission:
     if role == Role.API:
         _require('ENCRYPTION_SECRET', 32)
         _require('AUTH_JWKS_URL')
+        _bind('VECTOR_STORE_PROVIDER', 'qdrant')
+        if os.environ.get('PINECONE_API_KEY') or os.environ.get('PINECONE_INDEX_NAME'):
+            raise profile.ProfileError('Pinecone configuration conflicts with the self-host Qdrant authority')
         _require_modules(('jwt', 'boto3'))
+        from .storage_minio import Config as ObjectConfig
+
+        ObjectConfig.from_env()
         registry = build_registry(collect()).apply(row)
         applied = tuple(registry.applied)
         from .queue_config import QUEUES

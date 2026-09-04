@@ -1,0 +1,27 @@
+---
+title: "Self-host provider runtime"
+description: "Fork-owned PostgreSQL, Qdrant and MinIO runtime boundaries"
+---
+
+The self-host profile runs the upstream Python application through `fork.main`.
+Before serving, Compose runs PostgreSQL and Qdrant migration processes. Qdrant
+collections use the explicit `QDRANT_COLLECTION_PREFIX` and
+`EMBEDDING_DIMENSION`; an incompatible existing collection fails admission.
+Model changes require a reviewed backfill and new collection prefix.
+
+MinIO transfers use `MINIO_ENDPOINT`; private download signatures use the public
+`MINIO_PUBLIC_ENDPOINT`. Preserve the signed host and path in the reverse proxy.
+The adapter supports audio streaming uploads, metadata, object sizes and SigV4
+GET links. It does not automatically grant public access to catalogue buckets.
+
+Account provider writes consult the same deletion receipt as API access. Shared
+PostgreSQL locks coordinate admitted writes with the exclusive account wipe.
+The wipe checks configured owned object prefixes and all vector namespaces
+before publishing its minimal completion receipt. A provider error retains
+recoverable state. This does not provide a distributed transaction when a
+provider outcome or database connection is lost.
+
+See `backend/fork/README.md` for source ownership and
+`dev/unified-main/implementation-2026-09-04/SH2-providers-verification.md` for actual
+service evidence and the remaining embedding, identity and background-writer
+boundaries. Local service probes are separate from hermetic CI contracts.

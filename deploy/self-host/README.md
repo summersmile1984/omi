@@ -1296,3 +1296,27 @@ command output, and the pre-cutover `operations.sh backup` ID in the change
 record. The importer never deletes source objects or changes traffic. Rollback
 uses the retained GCS route plus the pre-cutover MinIO backup; do not delete the
 source buckets until the rollback window and restore drill are complete.
+
+
+### Runtime provider admission (SH2)
+
+The backend depends on the `qdrant-migrate` one-shot service. It runs
+`python -m fork.vector_qdrant migrate` with the same QDRANT_URL/API_KEY,
+QDRANT_COLLECTION_PREFIX and EMBEDDING_DIMENSION as the API. Repeat safely;
+`check` never creates collections. An existing collection with a different size
+or distance fails rather than recreating data. Changing embedding models needs
+an explicit new collection prefix, backfill and cutover; setting the generic
+EMBEDDING_PROVIDER alone does not configure upstream's embedding client.
+
+MinIO signs private downloads against PUBLIC_OBJECTS_URL while backend uploads
+use `http://minio:9000`. The reverse proxy must preserve the signed host/path;
+URLs are path-style SigV4 GET. Only 404 is absence; access/transport failures
+block deletion completion. Public logos/catalogue policy remains an explicit
+operator task; no bucket is made public by the runtime adapter.
+
+The account wipe now verifies all seven Qdrant namespaces plus configured UID
+object prefixes before publishing a minimal receipt. The provider write fence
+reads that receipt even in local stage. This does not attest to all unowned
+transient objects, every independent PG writer, external identity removal or
+unknown in-flight provider outcomes; see
+`dev/unified-main/implementation-2026-09-04/SH2-providers-verification.md`.

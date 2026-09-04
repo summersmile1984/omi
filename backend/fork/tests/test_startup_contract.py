@@ -24,7 +24,13 @@ SELF_HOST = {
     'target': 'self_hosted',
     'stage': 'local',
     'identity_provider': 'better_auth',
-    'data_plane': {'store': 'firestore_pg', 'object_store': 'minio', 'queue': 'redis', 'cache': 'redis'},
+    'data_plane': {
+        'store': 'firestore_pg',
+        'object_store': 'minio',
+        'queue': 'redis',
+        'cache': 'redis',
+        'vector': 'qdrant',
+    },
 }
 
 
@@ -93,6 +99,10 @@ print('WORKLOAD_RAN')
         REDIS_DB_PASSWORD='test-only',
         ENCRYPTION_SECRET='x' * 32,
         AUTH_JWKS_URL='http://localhost/jwks',
+        MINIO_ENDPOINT='http://localhost:9000',
+        MINIO_PUBLIC_ENDPOINT='http://localhost:9000',
+        MINIO_ACCESS_KEY='synthetic',
+        MINIO_SECRET_KEY='synthetic',
     )
     assert result.returncode != 0
     assert 'PatchError' in result.stderr
