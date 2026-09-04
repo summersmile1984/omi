@@ -164,3 +164,15 @@ B2 这一行（§4 表格）打包了七件事：`flavorizr.yaml` 生成+重跑�
 `scripts/brand/generators/mobile.py` 目前只注册了 `flutter` 类别下这一个生成物；上面六项谁先接手，都是往同一个 `apply.py --only flutter` 的类别下继续加生成器，不需要新起类别。
 
 另外顺手发现并修了一个 B0 遗留的小 bug：`brand/omi-upstream/manifest.yaml` 的 `brand.id` 字段写的是 `omi`,但 schema 自己的描述说这个字段"是目录名"——目录其实是 `omi-upstream`。B0 从没有生成器真正读过这个字段,所以一直没暴露;`mobile.py` 是第一个把 `brand.id` 写进生成文件内容(生成文件里的溯源注释)的生成器,顺带把这处不一致修了。
+
+## 10. `create-omi-beta-variant.sh` 不是一个能顺手做的 B1 独立子项
+
+早先的规划笔记把 `desktop/macos/scripts/create-omi-beta-variant.sh` 的参数化列为 B1 剩下几项里"独立、低风险"的一个——这个判断实测是错的,记录下来避免下一个人重新踩一遍。
+
+脚本里三处硬编码的品牌相关值：
+
+- `BETA_APP_NAME`/`BETA_BUNDLE_ID`——已经是 `--beta-app-name`/`--beta-bundle-id` 两个 CLI flag 的默认值,不是硬写死,本来就是可传参的,不需要额外工作。
+- `BETA_PYTHON_API_URL="https://api.omiapi.com/"`、`BETA_DESKTOP_API_URL="https://desktop-backend-dt5lrfkkoa-uc.a.run.app/"`——查证后发现这两个值分别跟 `desktop/macos/Desktop/Sources/DesktopBackendEnvironment.swift` 里的 `developmentPythonAPIURL`、`developmentRustBackendURL` **完全相同**：beta 渠道打的是 dev/staging 后端,不是生产。这两个常量已经在 `upstream-touch-allowlist.yaml` 里作为 S3 的范围登记过("四个后端 URL 常量改读 Sources/Generated 的 profile 表")——即将来源应该是**部署 profile**,不是品牌 manifest。在这里单独改一遍,会跟 S3 将来的做法产生两套不一致的实现,不是"顺手做完",是抢了 S3 的活、还做成了不一样的形状。
+- `SUFeedURL https://api.omi.me/v2/desktop/appcast.xml?identity=beta`——这个是真正的品牌字段,schema 里已经有对应的 `distribution.sparkle_feed_url`。但改这里之前要注意 `desktop/macos/scripts/smoke-signed-desktop-artifact.sh` 有一个 `--expected-feed-url` 契约测试断言这个值,参数化时默认值必须跟 omi-upstream 品牌渲染出来的值保持字节一致,否则会静默破坏这个冒烟测试的契约。
+
+结论：这个文件**不是**一个孤立的品牌注入点，它跟 S3(部署 profile)和一个既有冒烟测试契约都有交叉。真要做，应该等 S3 把 `DesktopBackendEnvironment.swift` 的 profile 化落地后，再把这个脚本接到同一套 profile 读取逻辑上，而不是单独给它加一套品牌参数。SUFeedURL 那一项可以独立于 S3 先做，但必须先跑一遍 `smoke-signed-desktop-artifact.sh` 确认默认值不变。
