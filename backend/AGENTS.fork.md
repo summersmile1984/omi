@@ -56,6 +56,10 @@ Run `python -m fork.migrate migrate` once before either serving process; use
 schema version, never edits to prior frozen collection sets. The image and
 startup runner are `deploy/self-host/Dockerfile` and `build-images.sh`; upstream
 `backend/Dockerfile` remains the dependency/source base. See `fork/README.md`.
+Dynamic document paths must also be admitted: execute their business owners
+through `fork/tests/schema_firestore.py` in `test_pg_owner_inventory.py`, already
+registered in the startup local/CI lane. A literal collection scan alone misses
+the onboarding and legal-hold paths that caused the recorded local incidents.
 
 - Self-host auth consumers are patched before importing upstream routers. Preserve
   the shim's authority-unavailable classification: HTTP dependencies return 503

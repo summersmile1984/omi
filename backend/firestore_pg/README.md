@@ -1,5 +1,5 @@
 > Current startup CLI: `python -m fork.migrate migrate|check` from `backend/`.
-> Schema v4 additionally registers legal-hold and deletion-gate authorities; v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
+> Schema v5 registers backend onboarding admission; v4 registers legal-hold and deletion-gate authorities; v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
 > and `frame_requests` without changing v1/v2 mappings. The historical source
 > import/cutover CLI below is not yet shipped on unified main; do not execute its
 > example until the source-freeze/authority tooling is restored and verified.
@@ -269,6 +269,15 @@ Schema v4 provisions the legal-hold collections used by upstream dynamic paths,
 without changing any v1–v3 mapping. The upstream worker finishes its legal-hold
 lease after receipt publication; these control records have a separate
 retention policy and are not a claim that every UID has disappeared from PG.
+
+Schema v5 additionally registers the authenticated backend's dynamic
+`users/<uid>/onboarding_admission/current` path. Run the migration before serving
+the new runtime; v1–v4 ledger records and physical mappings stay unchanged.
+This supports the existing server-issued onboarding admission and does not
+weaken its completion, expiry or caller-identity checks. The shared strict
+schema fixture in `fork/tests/schema_firestore.py` exercises the real onboarding
+and legal-hold owners against the admitted inventory in the startup CI lane.
+It catches required dynamic paths that a literal `.collection()` scan misses.
 
 Completion requires no residual owned rows and no outstanding late VM cleanup.
 One serializable transaction replaces the private UID-keyed active marker with

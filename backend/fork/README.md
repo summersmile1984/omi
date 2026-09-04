@@ -2,8 +2,11 @@
 
 `python -m fork.migrate migrate` owns PostgreSQL schema changes.
 It requires an explicit `FIRESTORE_PG_DSN`; `check` performs read-only admission.
-Schema v4 adds legal-hold/deletion-gate authorities; v3 registers frame requests/keyframe jobs and chat-first dead letters;
-v1/v2 physical table mappings remain immutable.
+Schema v5 adds backend onboarding admission; v4 adds legal-hold/deletion-gate
+authorities; v3 registers frame requests/keyframe jobs and chat-first dead letters.
+Earlier schema ledgers and physical table mappings remain immutable. Dynamic
+onboarding and legal-hold owners run against the shared strict admitted-schema
+fixture in `tests/test_pg_owner_inventory.py`, included in the startup lane.
 
 `uvicorn fork.main:app` calls `bootstrap(Role.API)` before importing upstream's
 `main.app`. `python -m fork.worker` calls `bootstrap(Role.WORKER)` without loading

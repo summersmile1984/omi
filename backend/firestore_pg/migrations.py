@@ -24,7 +24,7 @@ from database.firestore_index_registry import INDEX_REQUIREMENTS
 from .engine import KNOWN_COLLECTIONS, create_composite_indexes, get_engine
 from .sql import build_ddl, resolve_collection
 
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 MIGRATION_LOCK_ID = 7_362_737_641_104_927_311
 MIGRATION_TABLE = 'firestore_pg_schema_migrations'
 COLLECTION_TABLE = 'firestore_pg_collections'
@@ -194,6 +194,9 @@ STATIC_HASHED_COLLECTION_IDS_V3 = frozenset({'chat_first_dead_letters', 'convers
 # The upstream legal-hold owner uses dynamic document paths, invisible to literal collection scans.
 STATIC_HASHED_COLLECTION_IDS_V4 = frozenset({'legal_holds', 'legal_hold_deletion_gates'})
 
+# The authenticated onboarding owner also resolves a dynamic document path.
+STATIC_HASHED_COLLECTION_IDS_V5 = frozenset({'onboarding_admission'})
+
 
 class SchemaNotCurrent(RuntimeError):
     """The database has not been admitted by the explicit migration owner."""
@@ -222,6 +225,7 @@ def _assert_known_inventory_versioned() -> None:
         | STATIC_HASHED_COLLECTION_IDS_V2
         | STATIC_HASHED_COLLECTION_IDS_V3
         | STATIC_HASHED_COLLECTION_IDS_V4
+        | STATIC_HASHED_COLLECTION_IDS_V5
     )
     declared = _declared_known_collections()
     added = declared - versioned
@@ -246,6 +250,7 @@ def known_collections() -> tuple[str, ...]:
             | STATIC_HASHED_COLLECTION_IDS_V2
             | STATIC_HASHED_COLLECTION_IDS_V3
             | STATIC_HASHED_COLLECTION_IDS_V4
+            | STATIC_HASHED_COLLECTION_IDS_V5
         )
     )
 
@@ -398,6 +403,13 @@ def migrate(engine: Optional[Engine] = None) -> SchemaStatus:
             conn.execute(
                 text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (4, :name)'),
                 {'name': 'account_deletion_legal_hold_authorities'},
+            )
+        if 5 not in applied:
+            for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V5):
+                _register_collection(conn, collection_id)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (5, :name)'),
+                {'name': 'backend_onboarding_admission_authority'},
             )
     return check_schema(engine)
 

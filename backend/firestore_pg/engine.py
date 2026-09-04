@@ -159,6 +159,7 @@ KNOWN_COLLECTIONS = frozenset(
         'messages',
         'non_active_memory_routes',
         'notifications',
+        'onboarding_admission',
         'pending_verifications',
         'people',
         'phone_call_config',

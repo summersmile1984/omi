@@ -239,6 +239,27 @@ def test_account_deletion_reconciles_user_tree_and_top_level_owned_rows(db):
     assert db.collection('account_deletions').document(uid).get().exists
 
 
+def test_existing_user_onboarding_admission_persists_and_stops_after_completion(db):
+    from database import users
+
+    uid = 'pg-onboarding-owner'
+    root = db.collection('users').document(uid)
+    admission = db.document(f'users/{uid}/{users.ONBOARDING_ADMISSION_PATH}')
+    admission.delete()
+    root.set({'onboarding': {}, 'preserved': 'legacy-principal'})
+    assert users.ensure_backend_onboarding_admission(uid, firestore_client=db)
+    token = users.get_backend_onboarding_admission(uid, firestore_client=db)
+    assert isinstance(token, str) and len(token) >= 16
+    assert users.ensure_backend_onboarding_admission(uid, firestore_client=db)
+    assert users.get_backend_onboarding_admission(uid, firestore_client=db) == token
+    root.set({'onboarding': {'completed': True}}, merge=True)
+    assert users.ensure_backend_onboarding_admission(uid, firestore_client=db) is False
+    assert users.get_backend_onboarding_admission(uid, firestore_client=db) is None
+    assert root.get().to_dict()['preserved'] == 'legacy-principal'
+    admission.delete()
+    root.delete()
+
+
 def test_account_deletion_completion_replaces_private_marker_atomically(db, monkeypatch):
     from google.cloud import firestore
 
