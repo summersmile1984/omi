@@ -13,6 +13,7 @@ from ..registry import Patch
 from . import account_deletion as _account_deletion
 from . import auth as _auth
 from . import embedding as _embedding
+from . import llm as _llm
 from . import capabilities as _capabilities
 from . import speech as _speech
 from . import provider_guard as _provider_guard
@@ -24,6 +25,7 @@ from . import storage as _storage
 ALL = (
     _auth,
     _embedding,
+    _llm,
     _capabilities,
     _speech,
     _account_deletion,

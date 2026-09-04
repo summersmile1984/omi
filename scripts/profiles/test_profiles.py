@@ -89,6 +89,14 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(row["capabilities"]["tts_provider"], "kokoro")
         self.assertTrue(row["speech"]["bundle_digest"].startswith("sha256:"))
         self.assertEqual(row["capabilities"]["push_provider"], "disabled")
+        self.assertEqual(row["capabilities"]["llm_provider"], row["llm"]["provider"])
+        self.assertEqual(row["llm"]["context_length"], 40960)
+        self.assertEqual(row["llm"]["context_window"], 8192)
+        self.assertEqual(row["llm"]["max_output_tokens"], 2048)
+        self.assertEqual(row["llm"]["kv_cache_type"], "q8_0")
+        self.assertEqual(row["llm"]["cpu_threads"], 4)
+        self.assertEqual(row["llm"]["parallel_requests"], 1)
+        self.assertEqual(row["llm"]["request_timeout_seconds"], 300)
 
     def test_all_five_generated_outputs_are_checked_and_missing_is_failure(self):
         self.configure()

@@ -138,3 +138,13 @@ Docker builds; keep real runtime sources in both contexts.
   generation own duplicate handling. Never add a permanent Redis name set that
   can swallow a later replay. The startup lane covers old jobs, duplicate/new
   generations and rejected publication retaining a durable queued intent.
+
+- Local text generation uses the profile's sole `llm` contract and
+  `fork/local_llm.py`; every upstream feature resolves through the patched
+  captured factories. Keep native context, serving window and output limit as
+  separate fields. `LLM_ENDPOINT` is an internal origin only. The runtime
+  refuses BYOK, vendor/model fallback, implicit truncation and context shifting.
+  Model HTTP responses and streams stay byte-bounded; synchronous socket
+  operations share one monotonic deadline, but standard-library DNS resolution
+  is not a cancellable absolute-deadline proof. Model usage is charged only from
+  a completed terminal envelope through the existing usage callback.

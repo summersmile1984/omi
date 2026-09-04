@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .model_contract import validate
+from .model_contract import validate, validate_digest, validate_llm
 from .profile import current
 
 
@@ -26,21 +26,21 @@ def check(root, contract):
         parts.insert(0, 'registry.ollama.ai')
     manifest = root.joinpath('manifests', *parts, tag)
     if _digest(manifest) != contract.manifest_digest:
-        raise ValueError('embedding manifest checksum differs')
+        raise ValueError('model manifest checksum differs')
     document = json.loads(manifest.read_text())
     layers = [document['config'], *document['layers']]
     models = [
         layer['digest'] for layer in document['layers'] if layer['mediaType'] == 'application/vnd.ollama.image.model'
     ]
     if models != [contract.artifact_digest]:
-        raise ValueError('embedding model artifact differs from manifest')
+        raise ValueError('model artifact differs from manifest')
     for layer in layers:
         digest = layer['digest']
         # Reuse the digest validator, including path traversal rejection.
-        validate({**contract.as_dict(), 'artifact_digest': digest})
+        validate_digest(digest)
         blob = root / 'blobs' / digest.replace(':', '-')
         if blob.stat().st_size != layer['size'] or _digest(blob) != digest:
-            raise ValueError('embedding blob size or checksum differs')
+            raise ValueError('model blob size or checksum differs')
     return {
         'model': contract.model,
         'manifest_digest': contract.manifest_digest,
@@ -52,8 +52,12 @@ def check(root, contract):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('root', type=Path)
+    parser.add_argument('--kind', choices=('embedding', 'llm'), default='embedding')
     args = parser.parse_args()
-    print(json.dumps(check(args.root, validate(current().get('embedding')))))
+    contract = (validate if args.kind == 'embedding' else validate_llm)(current().get(args.kind))
+    if contract is None:
+        parser.error('selected model capability is disabled')
+    print(json.dumps(check(args.root, contract)))
 
 
 if __name__ == '__main__':

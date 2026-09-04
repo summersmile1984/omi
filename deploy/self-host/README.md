@@ -67,12 +67,13 @@ authority in neutral/self-hosted direct launches, rather than inheriting the
 managed Pinecone default; an explicit Qdrant binding is still required for
 normal self-host operation.
 
-The profile deliberately does not ship a default inference vendor. Set
-`GENERIC_OPENAI_BASE_URL` to an operator-selected OpenAI-compatible endpoint and
-set its explicit model/key. Embeddings use that same generic provider boundary.
-Neutral route resolution accepts only this operator-owned `generic` provider for
-chat primaries and fallbacks; explicit OpenAI, Gemini, DeepSeek, OpenRouter, or
-other vendor route ids fail before a direct client is constructed.
+The profile selects pinned Qwen3 1.7B through a private Ollama service and a
+separate pinned BGE-M3 service. Provision both model stores with
+`prepare-model.py`, mount them read-only, and set their explicit store paths.
+All text features share the selected native chat/schema/tool adapter. It refuses
+BYOK, vendor/model fallback, implicit truncation and context shifting; exact
+artifact and runtime identity are checked before inference. See
+[model-runtime.md](model-runtime.md) for resource limits and acceptance boundaries.
 Incremental live STT is pinned to the mounted SenseVoice model. Its adapter
 decodes bounded five-second PCM windows (and VAD utterance boundaries) in the
 sync executor, so it emits before a recording ends without blocking the
