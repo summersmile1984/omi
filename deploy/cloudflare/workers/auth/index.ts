@@ -8,6 +8,7 @@ import { bearer } from "better-auth/plugins/bearer";
 import { jwt } from "better-auth/plugins/jwt";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { authCorsOptions } from "../../../../auth/shared/cors-policy.mjs";
 import {
   verifyRequestAuthContext,
   type AuthContext,
@@ -563,11 +564,7 @@ function identityResidualEmpty(residual: AuthIdentityResidual): boolean {
 }
 
 app.use(`${AUTH_BASE_PATH}/*`, async (c, next) => {
-  const allowed = origins(c.env);
-  return cors({
-    origin: (origin) => (allowed.includes(origin) ? origin : allowed[0] || ""),
-    credentials: true,
-  })(c, next);
+  return cors(authCorsOptions(origins(c.env)))(c, next);
 });
 
 app.get("/health", (c) =>

@@ -52,6 +52,56 @@ const env = (issuerSecret?: string) => ({
   AUTH_DEV_ISSUER_SECRET: issuerSecret,
 });
 
+describe("browser credential CORS", () => {
+  const origin = "https://web.fixture.invalid";
+  const environment = { ...env(), ALLOWED_ORIGINS: origin };
+  it("preflights bearer requests and exposes the session header", async () => {
+    const preflight = await auth.request(
+      "https://auth.test/api/auth/get-session",
+      {
+        method: "OPTIONS",
+        headers: {
+          origin,
+          "access-control-request-method": "GET",
+          "access-control-request-headers": "authorization",
+        },
+      },
+      environment,
+    );
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe(origin);
+    expect(preflight.headers.get("access-control-allow-headers")).toContain(
+      "authorization",
+    );
+    const response = await auth.request(
+      "https://auth.test/api/auth/get-session",
+      {
+        headers: { origin },
+      },
+      environment,
+    );
+    expect(response.headers.get("access-control-expose-headers")).toContain(
+      "set-auth-token",
+    );
+    expect(response.headers.get("access-control-expose-headers")).toContain(
+      "set-auth-jwt",
+    );
+    expect(response.headers.get("access-control-allow-credentials")).toBe(
+      "true",
+    );
+  });
+  it("does not substitute a trusted origin for an unknown origin", async () => {
+    const response = await auth.request(
+      "https://auth.test/api/auth/get-session",
+      {
+        headers: { origin: `${origin}.attacker.invalid` },
+      },
+      environment,
+    );
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+});
+
 function profileEnv(row: Record<string, unknown> | null) {
   const first = vi.fn(async () => row);
   const bind = vi.fn(() => ({ first }));

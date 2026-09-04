@@ -23,6 +23,7 @@ import {
   pool,
   PORT,
   accessPolicy,
+  TRUSTED_ORIGINS,
 } from "./auth.js";
 import { betterAuthBridge } from "./http.js";
 import { accessHandler } from "./access.js";
@@ -111,7 +112,7 @@ app.get("/internal/users/:uid/residuals", async (req, res) => {
 // Express 4 does not automatically translate a rejected async handler into an
 // HTTP response.  Keep the identity boundary fail-closed and explicitly
 // retryable when Better Auth or PostgreSQL is unavailable.
-app.all("/api/auth/*", betterAuthBridge(auth.handler, BASE_URL));
+app.all("/api/auth/*", betterAuthBridge(auth.handler, BASE_URL, TRUSTED_ORIGINS));
 
 // Local development bridge for clients that cannot complete an OAuth flow.
 // It is absent unless explicitly enabled and requires a separate bearer secret;

@@ -33,6 +33,11 @@ audience accepted by the Server verifier shipped in
 - The session credential and product JWT are different credentials. Clients
   retain the session credential for refresh/logout and use JWTs for product API
   and realtime authentication. They read `exp`, not an assumed client lifetime.
+- Both HTTP adapters use `auth/shared/cors-policy.mjs` to expose `set-auth-token`
+  and `set-auth-jwt` only to configured Web origins. Browser requests can use an
+  explicit bearer session without third-party cookies. Preflights permit the
+  Authorization and Content-Type headers; unknown origins receive no allow-origin
+  header. Server uses `BETTER_AUTH_TRUSTED_ORIGINS`, Workers `ALLOWED_ORIGINS`.
 - MCP OAuth keeps its existing `/api/auth` issuer, consent and scoped grant
   validation. The Workers adapter preserves OAuth plugin metadata while product
   token payloads set their explicit shared issuer/audience. An MCP token cannot
