@@ -94,3 +94,20 @@ Windows/Linux 原生 installer、OS安全存储/无keyring UI、macOS本机以�
 正式签名/更新feed、OAuth、推送、蓝牙/固件、全视觉品牌/AI人格/外链替换；
 完整 onboarding、真实音频硬件与付费模型、Tasks产品页面。
 WS 当前证据为生产 handler 的受控 transport 行为回归，未把它写成此包真实音频E2E。
+
+## 实际请求头回归（2026-09-04 后续包）
+
+基线 `d0dcd36ae8`。初次真实引导的生产 Axios 请求被 native CORS owner 拒绝：
+`cf-onboarding-tasks-renderer.log` 记录 `X-App-Platform` 不在 Allow-Headers。
+原身份包的简化 fetch probe 没有携带平台/版本/设备请求头，不能覆盖该调用者。
+
+修复沿用唯一 `native/apiAccess.ts`，加入生产 Axios 的三个身份请求头，并从共享
+`BYOK_HEADER_NAMES` 派生已有 BYOK 名称。未知 preflight header 不获得 native grant；
+精确 renderer/API origin 与 Auth 路径排除保持。`staged/apiAccess.test.ts` 实际执行
+生产 Axios interceptor，从结果构造 preflight 并交给真实 native adapter；不是手抄
+请求头断言。既有 native 错源、换窗口和 Auth 路径反例继续执行。
+
+实际 `onboarding-fixed-stage` 的 `/v1/users/language` 返回200，见
+`cf-onboarding-tasks-final-http.log`；该工件同时带有后续图谱加载隔离修复，
+这里只认可请求头行为，不以之宣称全平台发行资格。原始日志仍在
+`/tmp/memweft-implementation/electron/`。

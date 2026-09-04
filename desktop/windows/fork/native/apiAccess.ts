@@ -1,4 +1,16 @@
 import type { WebRequest } from 'electron'
+import { BYOK_HEADER_NAMES } from '../../src/shared/byok'
+
+// The production axios owner adds platform/version/device identity to every
+// request. BYOK names come from the same shared contract as that owner.
+const allowedHeaders = [
+  'authorization',
+  'content-type',
+  'x-app-platform',
+  'x-app-version',
+  'x-device-id-hash',
+  ...Object.values(BYOK_HEADER_NAMES).map((name) => name.toLowerCase())
+]
 
 type RequestContext = { id: number; url: string; webContentsId?: number }
 type ContentsOrigin = (id: number) => string | null
@@ -33,7 +45,14 @@ export function installNativeApiAccess(
     const origin = originFor(details)
     const headers = { ...details.requestHeaders }
     const key = Object.keys(headers).find((key) => key.toLowerCase() === 'origin')
-    if (origin && key && headers[key] === origin) {
+    const preflightKey = Object.keys(headers).find(
+      (key) => key.toLowerCase() === 'access-control-request-headers'
+    )
+    const requested = preflightKey ? String(headers[preflightKey]).split(',') : []
+    const knownHeaders = requested.every((name) =>
+      allowedHeaders.includes(name.trim().toLowerCase())
+    )
+    if (origin && key && headers[key] === origin && knownHeaders) {
       delete headers[key]
       admitted.set(details.id, origin)
     }
@@ -51,7 +70,7 @@ export function installNativeApiAccess(
     }
     Object.assign(responseHeaders, {
       'access-control-allow-origin': [origin],
-      'access-control-allow-headers': ['authorization, content-type'],
+      'access-control-allow-headers': [allowedHeaders.join(', ')],
       'access-control-allow-methods': ['GET, POST, PUT, PATCH, DELETE, OPTIONS']
     })
     callback({
