@@ -242,6 +242,93 @@ test('different authorities and targets never share a stored credential key', ()
   ).toBe(3);
 });
 
+describe('latest authentication intent owns identity publication', () => {
+  function controlled(delayLogout = false) {
+    const f = fixture();
+    const pending: Array<(response: Response) => void> = [];
+    const entered = new Map<number, () => void>();
+    const client = new AuthSession(f.config, {
+      storage: f.storage,
+      now: f.clock,
+      fetch: async (input) => {
+        if (String(input).endsWith('/sign-out') && !delayLogout)
+          return Response.json({ success: true });
+        return new Promise<Response>((resolve) => {
+          const index = pending.push(resolve) - 1;
+          entered.get(index)?.();
+        });
+      },
+    });
+    const answer = (index: number, id: string) =>
+      pending[index](
+        Response.json(
+          { user: { id } },
+          { headers: { 'set-auth-token': `opaque-${id}` } },
+        ),
+      );
+    const waitForRequest = (index: number) =>
+      pending[index]
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => entered.set(index, resolve));
+    return { ...f, client, answer, waitForRequest };
+  }
+
+  test('a delayed sign-in cannot overwrite a newer successful sign-in', async () => {
+    const f = controlled();
+    const older = f.client.signIn('older@fixture.invalid', 'synthetic');
+    const newer = f.client.signIn('newer@fixture.invalid', 'synthetic');
+    f.answer(1, 'newer');
+    await newer;
+    f.answer(0, 'older');
+    await expect(older).rejects.toMatchObject({ status: 409 });
+    expect(f.client.currentUser?.uid).toBe('newer');
+    expect([...f.stored.values()]).toEqual(['opaque-newer']);
+  });
+
+  test('sign-out cancels a pending sign-in and prevents identity resurrection', async () => {
+    const f = controlled();
+    const original = f.client.signIn('original@fixture.invalid', 'synthetic');
+    f.answer(0, 'original');
+    await original;
+    const pending = f.client.signIn('pending@fixture.invalid', 'synthetic');
+    await f.client.signOut();
+    f.answer(1, 'pending');
+    await expect(pending).rejects.toMatchObject({ status: 409 });
+    expect(f.client.currentUser).toBeNull();
+    expect(f.stored.size).toBe(0);
+  });
+
+  test('a delayed sign-out cannot clear a newer successful sign-in', async () => {
+    const f = controlled(true);
+    const original = f.client.signIn('original@fixture.invalid', 'synthetic');
+    f.answer(0, 'original');
+    await original;
+    const logout = f.client.signOut();
+    await f.waitForRequest(1);
+    const newer = f.client.signIn('newer@fixture.invalid', 'synthetic');
+    f.answer(2, 'newer');
+    await newer;
+    f.answer(1, 'original');
+    await expect(logout).rejects.toMatchObject({ status: 409 });
+    expect(f.client.currentUser?.uid).toBe('newer');
+    expect([...f.stored.values()]).toEqual(['opaque-newer']);
+  });
+
+  test('stored-session restoration cannot publish after a new authentication intent', async () => {
+    const f = controlled();
+    f.stored.set(f.client.storageKey, 'opaque-original');
+    const restoring = f.client.restore();
+    const newer = f.client.signUp('New User', 'newer@fixture.invalid', 'synthetic');
+    f.answer(0, 'original');
+    await restoring;
+    expect(f.client.currentUser).toBeNull();
+    f.answer(1, 'newer');
+    await newer;
+    expect(f.client.currentUser?.uid).toBe('newer');
+    expect([...f.stored.values()]).toEqual(['opaque-newer']);
+  });
+});
+
 test('profile selection rejects missing targets, implicit auth origins and nonlocal HTTP', () => {
   expect(() => parseWebProfile(undefined)).toThrow();
   for (const patch of [
