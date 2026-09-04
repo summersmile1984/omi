@@ -154,3 +154,26 @@ def test_invalid_envelope_is_retained_without_dispatch_or_retry_loop(monkeypatch
     with pytest.raises(KeyboardInterrupt):
         worker._worker(queue.name)
     assert redis.parked == items
+
+
+@pytest.mark.parametrize('status', [301, 400, 401, 403])
+def test_rejected_delivery_is_parked_and_lease_conflict_retries_with_existing_count(monkeypatch, status):
+    from utils import cloud_tasks_redis as worker
+
+    queue = QUEUES[-1]
+    configure(monkeypatch, queue)
+    redis = Redis([json.dumps({'task_id': 'existing', 'payload': {'job_id': 'job'}, 'retry_count': 1})])
+    seen = []
+
+    def post(url, **kwargs):
+        seen.append(kwargs['headers']['X-Omi-Queue-Retry-Count'])
+        return httpx.Response(409 if len(seen) == 1 else status)
+
+    monkeypatch.setattr(worker, '_r', lambda: redis)
+    monkeypatch.setattr(worker.httpx, 'post', post)
+    monkeypatch.setattr(worker.time, 'sleep', lambda _: None)
+    with pytest.raises(KeyboardInterrupt):
+        worker._worker(queue.name)
+    assert seen == ['1', '2']
+    assert len(redis.parked) == 1
+    assert json.loads(redis.parked[0])['delivery_failure'] == f'http_{status}'
