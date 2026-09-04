@@ -1,3 +1,4 @@
+import { runPythonWorker } from "./python-worker.mjs";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -71,9 +72,7 @@ function qualifyRelease() {
     run("uvx", ["uv==0.12.3", "run", "pytest", "-q"], {
       cwd: resolve(root, directory),
     });
-    run("uvx", ["uv==0.12.3", "run", "pywrangler", "deploy", "--dry-run"], {
-      cwd: resolve(root, directory),
-    });
+    runPythonWorker(directory.split("/").at(-1), ["deploy", "--dry-run"]);
   }
   runPreservingGeneratedFile(resolve(webRoot, "next-env.d.ts"), () =>
     run("npx", ["next", "typegen"], { cwd: webRoot }),
@@ -399,11 +398,7 @@ function deployTypeScript(config) {
 }
 
 function deployPython(directory) {
-  // Python Workers currently require uv >= 0.12.3; keep the deploy path
-  // reproducible even when the developer's globally installed uv is older.
-  run("uvx", ["uv==0.12.3", "run", "pywrangler", "deploy"], {
-    cwd: resolve(root, directory),
-  });
+  runPythonWorker(directory.split("/").at(-1), ["deploy"]);
 }
 
 function deployWeb() {
