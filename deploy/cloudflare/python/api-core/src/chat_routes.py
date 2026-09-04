@@ -11,6 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from chat_target import APP_SCOPE, resolve_chat_target
 from feedback_routes import chat_feedback_statements
 from internal_auth import decode_context
 
@@ -54,7 +55,7 @@ def _app_id(request: Request) -> str | None:
     return value[:MAX_ID_LENGTH] if len(value) <= MAX_ID_LENGTH else None
 
 
-def _initial_message(app_id: str | None) -> dict[str, object]:
+def _initial_message(app_id: str | None, session_id: str | None = None) -> dict[str, object]:
     return {
         "id": "cf-initial-chat" + (f"-{app_id}" if app_id else ""),
         "text": "Hi! I'm Omi. How can I help?",
@@ -63,6 +64,8 @@ def _initial_message(app_id: str | None) -> dict[str, object]:
         "type": "text",
         "app_id": app_id,
         "plugin_id": app_id,
+        "chat_session_id": session_id,
+        "session_id": session_id,
         "from_external_integration": False,
         "memories_id": [],
         "memories": [],
@@ -121,26 +124,38 @@ async def get_messages(request: Request):
         return pagination
     limit, offset = pagination
     uid = str(context["uid"])
-    app_clause = "app_id IS NULL" if app_id is None else "app_id = ?"
-    args: tuple[object, ...] = (uid,) if app_id is None else (uid, app_id)
     try:
+        target = await resolve_chat_target(
+            request.scope["env"], uid, app_id, request.query_params.get("chat_session_id")
+        )
+        app_id = target.app_id
+        clause = f"uid = ? AND {APP_SCOPE} IS ?"
+        args: tuple[object, ...] = (uid, app_id)
+        if target.session_id is not None:
+            clause += (
+                " AND COALESCE(NULLIF(json_extract(message_json, '$.chat_session_id'), ''), "
+                "NULLIF(json_extract(message_json, '$.session_id'), '')) = ?"
+            )
+            args += (target.session_id,)
         result = (
             await request.scope["env"]
             .APP_DB.prepare(
-                "SELECT message_json FROM cf_chat_messages WHERE uid = ? AND "
-                + app_clause
+                "SELECT message_json FROM cf_chat_messages WHERE "
+                + clause
                 + " AND COALESCE(json_extract(message_json, '$.reported'), 0) != 1"
                 + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
             )
             .bind(*args, limit, offset)
             .all()
         )
+    except LookupError:
+        return JSONResponse({"detail": "Chat session not found"}, status_code=404)
     except Exception:
         return JSONResponse({"error": "messages unavailable"}, status_code=503)
     rows = result.get("results", []) if isinstance(result, dict) else []
     messages = [_stored_message(row) for row in rows if isinstance(row, dict)]
     messages = [message for message in messages if message is not None]
-    return messages or [_initial_message(app_id)]
+    return messages or ([] if offset else [_initial_message(app_id, target.session_id)])
 
 
 @router.delete("/v1/messages")
@@ -155,36 +170,40 @@ async def clear_messages(request: Request):
         return JSONResponse({"error": "invalid app id"}, status_code=400)
     uid = str(context["uid"])
     env = request.scope["env"]
-    app_clause = "app_id IS NULL" if app_id is None else "app_id = ?"
-    app_args: tuple[object, ...] = () if app_id is None else (app_id,)
     try:
-        session = (
-            await env.APP_DB.prepare(
-                "SELECT id FROM cf_chat_sessions WHERE uid = ? AND "
-                + app_clause
-                + " ORDER BY updated_at DESC, id DESC LIMIT 1"
-            )
-            .bind(uid, *app_args)
-            .first()
-        )
-        if isinstance(session, dict) and isinstance(session.get("id"), str):
-            session_id = str(session["id"])
+        target = await resolve_chat_target(env, uid, app_id, request.query_params.get("chat_session_id"))
+        app_id = target.app_id
+        if target.session_id is not None:
             statements = [
                 env.APP_DB.prepare(
                     "DELETE FROM cf_chat_messages WHERE uid = ? AND "
                     "COALESCE(NULLIF(json_extract(message_json, '$.chat_session_id'), ''), "
                     "NULLIF(json_extract(message_json, '$.session_id'), '')) = ?"
-                ).bind(uid, session_id),
-                env.APP_DB.prepare("DELETE FROM cf_chat_sessions WHERE uid = ? AND id = ?").bind(uid, session_id),
+                ).bind(uid, target.session_id)
             ]
+            if target.explicit:
+                statements.append(
+                    env.APP_DB.prepare(
+                        "UPDATE cf_chat_sessions SET clear_epoch = ?, message_count = 0, preview = NULL, updated_at = ? "
+                        "WHERE uid = ? AND id = ?"
+                    ).bind(str(uuid.uuid4()), int(time.time()), uid, target.session_id)
+                )
+            else:
+                statements.append(
+                    env.APP_DB.prepare("DELETE FROM cf_chat_sessions WHERE uid = ? AND id = ?").bind(
+                        uid, target.session_id
+                    )
+                )
         else:
             statements = [
-                env.APP_DB.prepare("DELETE FROM cf_chat_messages WHERE uid = ? AND " + app_clause).bind(uid, *app_args)
+                env.APP_DB.prepare(f"DELETE FROM cf_chat_messages WHERE uid = ? AND {APP_SCOPE} IS ?").bind(uid, app_id)
             ]
         await env.APP_DB.batch(statements)
+    except LookupError:
+        return JSONResponse({"detail": "Chat session not found"}, status_code=404)
     except Exception:
         return JSONResponse({"error": "messages unavailable"}, status_code=503)
-    return _initial_message(app_id)
+    return _initial_message(app_id, target.session_id if target.explicit else None)
 
 
 async def _message_row(env: object, uid: str, message_id: str) -> dict[str, object] | None:

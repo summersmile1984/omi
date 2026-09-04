@@ -15,6 +15,13 @@ locked Wrangler/workerd, then executes:
   capture, committed transcript reads, reconnect ownership, cross-user denial,
   explicit finalization through actual Queue/Jobs/Core, derived memories/tasks,
   and denial after logout. This is not the full dual-target recording matrix.
+- `chat.mjs`, the current upstream Web `api.ts` get/send/clear functions against
+  actual HTTP/SSE, Python model RPC and D1: UTF-8/newline decoding, selected
+  session/app history, cross-user 404, provider failure without partial history,
+  explicit clear retaining the session, and terminal deletion. Only the actual
+  signup-issued token and `/api/proxy` base mapping are injected into the client;
+  its requests, responses and SSE parser are unchanged. This is a text-chat
+  contract, not a browser UI, tools/attachments or full chat qualification.
 
 For an interactive isolated fixture:
 
@@ -25,7 +32,7 @@ node deploy/cloudflare/contracts/local-target.mjs \
 
 The parent output directory must exist; the final directory must be new, including
 no broken symlink. `metadata.json` contains `api_origin`, `auth_origin`, `target`,
-`brand_id`, and `trace_dir`. `--run-core` and `--run-recording` select the executable
+`brand_id`, and `trace_dir`. `--run-core`, `--run-recording` and `--run-chat` select the executable
 suites and stop the target afterward. Otherwise SIGINT/SIGTERM stops it. Startup,
 commands and teardown share one process-group owner: cancellation prevents later
 stages, kills descendants, and never adopts an already-running endpoint. The recording signup driver honors one server-provided, bounded
@@ -44,7 +51,7 @@ loopback/per-run values. It never consumes a release inventory or approval.
 `fixture.json` records source revision/status, npm/Python locks, tool versions,
 normal migration files, exact frozen module hashes and configuration hashes.
 
-The ASR WebSocket and structured inference provider are controlled; application
+The ASR WebSocket and structured/text inference provider are controlled; application
 routes, Auth sessions/JWT, data ownership, D1 storage and Queue delivery are real.
 Wrangler's Node test harness cannot transport an outbound WebSocket upgrade, so
 the runner uses its actual CLI with the fixed native-workerd launcher. Transcript

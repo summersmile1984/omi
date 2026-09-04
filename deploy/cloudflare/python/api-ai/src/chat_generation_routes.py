@@ -22,6 +22,7 @@ except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodid
         raise
     worker_fetch = None  # type: ignore[assignment]
 
+from chat_target import APP_SCOPE, resolve_chat_target, persist_chat_messages
 from chat_quota import (
     free_quota_detail,
     provider_cost_usd,
@@ -135,25 +136,6 @@ def _compat_request_id(request: Request, context: dict[str, object]) -> str:
     return str(uuid.uuid4())
 
 
-async def _compat_session(
-    env: object,
-    uid: str,
-    requested_session_id: str | None,
-) -> tuple[str, object | None]:
-    """Resolve a caller-owned D1 session and return a transactional insert."""
-
-    if requested_session_id is not None:
-        row = (
-            await env.APP_DB.prepare("SELECT id FROM cf_chat_sessions WHERE uid = ? AND id = ? LIMIT 1")
-            .bind(uid, requested_session_id)
-            .first()
-        )
-        if not isinstance(row, dict):
-            raise LookupError("chat session not found")
-        return requested_session_id, None
-    return await _initial_session(env, uid, None, None)
-
-
 def _compat_prompt(messages: list[CompatChatMessage]) -> list[dict[str, str]]:
     """Convert validated text-only messages to the Workers AI request shape."""
 
@@ -170,16 +152,20 @@ async def _compat_mcp_tool_names(env: object, uid: str, app_id: str) -> list[str
     app has a valid D1 projection before returning the execution boundary.
     """
 
-    row = await env.APP_DB.prepare(
-        "SELECT d.tools_json "
-        "FROM cf_user_enabled_apps u "
-        "JOIN cf_app_catalog a ON a.id = u.app_id "
-        "JOIN cf_mcp_app_connections c ON c.app_id = u.app_id "
-        "JOIN cf_mcp_app_discoveries d ON d.app_id = u.app_id "
-        "WHERE u.uid = ? AND u.app_id = ? AND c.owner_uid = ? AND d.owner_uid = ? "
-        "AND c.status = 'authorized' AND d.status = 'ready' AND a.disabled = 0 "
-        "LIMIT 1"
-    ).bind(uid, app_id, uid, uid).first()
+    row = (
+        await env.APP_DB.prepare(
+            "SELECT d.tools_json "
+            "FROM cf_user_enabled_apps u "
+            "JOIN cf_app_catalog a ON a.id = u.app_id "
+            "JOIN cf_mcp_app_connections c ON c.app_id = u.app_id "
+            "JOIN cf_mcp_app_discoveries d ON d.app_id = u.app_id "
+            "WHERE u.uid = ? AND u.app_id = ? AND c.owner_uid = ? AND d.owner_uid = ? "
+            "AND c.status = 'authorized' AND d.status = 'ready' AND a.disabled = 0 "
+            "LIMIT 1"
+        )
+        .bind(uid, app_id, uid, uid)
+        .first()
+    )
     if not isinstance(row, dict):
         return None
     raw_tools = row.get("tools_json")
@@ -605,44 +591,6 @@ async def _recent_initial_history(env: object, uid: str, session_id: str) -> lis
     return selected
 
 
-async def _initial_session(
-    env: object,
-    uid: str,
-    app_id: str | None,
-    requested_session_id: str | None,
-) -> tuple[str, object | None]:
-    if requested_session_id is not None:
-        row = (
-            await env.APP_DB.prepare("SELECT id FROM cf_chat_sessions WHERE uid = ? AND id = ? LIMIT 1")
-            .bind(uid, requested_session_id)
-            .first()
-        )
-        if not isinstance(row, dict):
-            raise LookupError("chat session not found")
-        return requested_session_id, None
-    clause = "app_id IS NULL" if app_id is None else "app_id = ?"
-    args: tuple[object, ...] = () if app_id is None else (app_id,)
-    row = (
-        await env.APP_DB.prepare(
-            "SELECT id FROM cf_chat_sessions WHERE uid = ? AND " + clause + " ORDER BY updated_at DESC, id DESC LIMIT 1"
-        )
-        .bind(uid, *args)
-        .first()
-    )
-    if isinstance(row, dict) and isinstance(row.get("id"), str):
-        return str(row["id"]), None
-    now = int(time.time())
-    session_id = str(uuid.uuid4())
-    return (
-        session_id,
-        env.APP_DB.prepare(
-            "INSERT INTO cf_chat_sessions "
-            "(uid, id, title, preview, created_at, updated_at, app_id, message_count, starred) "
-            "VALUES (?, ?, 'New Chat', NULL, ?, ?, ?, 0, 0)"
-        ).bind(uid, session_id, now, now, app_id),
-    )
-
-
 def _initial_system_prompt(app: dict[str, object] | None) -> tuple[str, bool]:
     if app is None:
         return (
@@ -715,16 +663,12 @@ async def _history(env: object, uid: str, session_id: str) -> list[dict[str, str
     return await _scoped_history(env, uid, session_id, None)
 
 
-async def _scoped_history(
-    env: object, uid: str, session_id: str, app_id: str | None
-) -> list[dict[str, str]]:
-    app_clause = "app_id IS NULL" if app_id is None else "app_id = ?"
+async def _scoped_history(env: object, uid: str, session_id: str, app_id: str | None) -> list[dict[str, str]]:
+    app_clause = f"{APP_SCOPE} IS NULL" if app_id is None else f"{APP_SCOPE} = ?"
     app_args: tuple[object, ...] = () if app_id is None else (app_id,)
     result = (
         await env.APP_DB.prepare(
-            "SELECT message_json FROM cf_chat_messages WHERE uid = ? AND "
-            + app_clause
-            + " AND "
+            "SELECT message_json FROM cf_chat_messages WHERE uid = ? AND " + app_clause + " AND "
             "COALESCE(NULLIF(json_extract(message_json, '$.chat_session_id'), ''), "
             "NULLIF(json_extract(message_json, '$.session_id'), '')) = ? "
             "AND COALESCE(json_extract(message_json, '$.reported'), 0) != 1 "
@@ -818,38 +762,6 @@ def _message(
     }
 
 
-async def _persist_initial_message(
-    env: object,
-    uid: str,
-    message: dict[str, object],
-    app_id: str | None,
-    session_id: str,
-    session_insert: object | None,
-) -> None:
-    now = int(time.time())
-    statements: list[object] = []
-    if session_insert is not None:
-        statements.append(session_insert)
-    statements.extend(
-        [
-            env.APP_DB.prepare(
-                "INSERT INTO cf_chat_messages (uid, id, app_id, created_at, message_json) VALUES (?, ?, ?, ?, ?)"
-            ).bind(
-                uid,
-                str(message["id"]),
-                app_id,
-                _exchange_order_key(),
-                json.dumps(message, separators=(",", ":"), ensure_ascii=False),
-            ),
-            env.APP_DB.prepare(
-                "UPDATE cf_chat_sessions SET updated_at = ?, message_count = message_count + 1, preview = ? "
-                "WHERE uid = ? AND id = ?"
-            ).bind(now, str(message["text"])[:100], uid, session_id),
-        ]
-    )
-    await env.APP_DB.batch(statements)
-
-
 async def _generate_initial_message(
     request: Request,
     context: dict[str, object],
@@ -864,7 +776,8 @@ async def _generate_initial_message(
         return JSONResponse({"error": "workers ai is not configured"}, status_code=503)
     uid = str(context["uid"])
     try:
-        session_id, session_insert = await _initial_session(env, uid, app_id, requested_session_id)
+        target = await resolve_chat_target(env, uid, app_id, requested_session_id, create=True)
+        session_id, app_id = target.session_id, target.app_id
         app = await _available_app(env, uid, app_id)
         profile, memories = await _initial_memory_context(env, uid)
         history = await _recent_initial_history(env, uid, session_id)
@@ -893,7 +806,7 @@ async def _generate_initial_message(
         app_id=app_id,
     )
     try:
-        await _persist_initial_message(env, uid, message, app_id, session_id, session_insert)
+        await persist_chat_messages(env, target, [message], _exchange_order_key())
     except Exception:
         return JSONResponse({"error": "chat history unavailable"}, status_code=503)
     return message
@@ -995,64 +908,6 @@ async def generate_session_title(request: Request):
     except Exception:
         return JSONResponse({"error": "chat history unavailable"}, status_code=503)
     return {"title": title}
-
-
-async def _persist_exchange(
-    env: object,
-    uid: str,
-    human_message: dict[str, object],
-    ai_message: dict[str, object],
-    created_at: int,
-    session_id: str,
-    settlement: object | None = None,
-    app_id: str | None = None,
-) -> None:
-    session_now = int(time.time())
-    statements = [
-        env.APP_DB.prepare(
-            "INSERT OR IGNORE INTO cf_chat_sessions "
-            "(uid, id, title, preview, created_at, updated_at, app_id, message_count, starred) "
-            "VALUES (?, ?, 'New Chat', NULL, ?, ?, ?, 0, 0)"
-        ).bind(uid, session_id, session_now, session_now, app_id)
-    ]
-    for ordinal, message in enumerate((human_message, ai_message)):
-        statements.append(
-            env.APP_DB.prepare(
-                "INSERT INTO cf_chat_messages (uid, id, app_id, created_at, message_json) " "VALUES (?, ?, ?, ?, ?)"
-            ).bind(
-                uid,
-                str(message["id"]),
-                app_id,
-                created_at + ordinal,
-                json.dumps(message, separators=(",", ":"), ensure_ascii=False),
-            )
-        )
-    statements.append(
-        env.APP_DB.prepare(
-            "UPDATE cf_chat_sessions SET updated_at = ?, message_count = message_count + 2, preview = ? "
-            "WHERE uid = ? AND id = ?"
-        ).bind(int(time.time()), str(ai_message["text"])[:100], uid, session_id)
-    )
-    if settlement is not None:
-        statements.append(settlement)
-    await env.APP_DB.batch(statements)
-
-
-async def _default_session_id(env: object, uid: str, app_id: str | None = None) -> str:
-    app_clause = "app_id IS NULL" if app_id is None else "app_id = ?"
-    app_args: tuple[object, ...] = () if app_id is None else (app_id,)
-    row = (
-        await env.APP_DB.prepare(
-            "SELECT id FROM cf_chat_sessions WHERE uid = ? AND "
-            + app_clause
-            + " ORDER BY updated_at DESC, id DESC LIMIT 1"
-        )
-        .bind(uid, *app_args)
-        .first()
-    )
-    if isinstance(row, dict) and isinstance(row.get("id"), str):
-        return str(row["id"])
-    return str(uuid.uuid4())
 
 
 def _exchange_order_key() -> int:
@@ -1275,9 +1130,11 @@ def _compat_stable_message_id(uid: str, idempotency_key: str, suffix: str) -> st
 async def _compat_existing_response(env: object, uid: str, message_id: str, model: str) -> dict[str, object] | None:
     """Return a previously persisted response for a retried idempotency key."""
 
-    row = await env.APP_DB.prepare("SELECT message_json FROM cf_chat_messages WHERE uid = ? AND id = ? LIMIT 1").bind(
-        uid, message_id
-    ).first()
+    row = (
+        await env.APP_DB.prepare("SELECT message_json FROM cf_chat_messages WHERE uid = ? AND id = ? LIMIT 1")
+        .bind(uid, message_id)
+        .first()
+    )
     raw = row.get("message_json") if isinstance(row, dict) else None
     if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_STORED_MESSAGE_BYTES:
         message = None
@@ -1424,7 +1281,8 @@ async def cloudflare_chat_completions(request: Request):
         return JSONResponse(existing, headers={"cache-control": "no-store", "x-omi-chat-contract": "cf-v1"})
 
     try:
-        session_id, session_insert = await _compat_session(env, uid, payload.session_id)
+        target = await resolve_chat_target(env, uid, None, payload.session_id, create=True)
+        session_id = target.session_id
         prompt_messages = list(payload.messages)
         if payload.session_id is not None and len(prompt_messages) == 1:
             prompt_messages = [
@@ -1519,6 +1377,7 @@ async def cloudflare_chat_completions(request: Request):
         sender="human",
         created_at=now,
         session_id=session_id,
+        app_id=target.app_id,
     )
     ai_message = _message(
         message_id=ai_message_id,
@@ -1526,6 +1385,7 @@ async def cloudflare_chat_completions(request: Request):
         sender="ai",
         created_at=now + timedelta(microseconds=1),
         session_id=session_id,
+        app_id=target.app_id,
     )
     if usage is not None:
         ai_message["compat_usage"] = {
@@ -1545,15 +1405,7 @@ async def cloudflare_chat_completions(request: Request):
             cost_usd=provider_cost_usd(env, prompt_tokens, completion_tokens),
         )
     try:
-        await _persist_exchange(
-            env,
-            uid,
-            human_message,
-            ai_message,
-            _exchange_order_key(),
-            session_id,
-            settlement,
-        )
+        await persist_chat_messages(env, target, [human_message, ai_message], _exchange_order_key(), settlement)
     except Exception:
         if settlement is not None:
             try:
@@ -1588,9 +1440,7 @@ async def chat_messages(request: Request):
         return JSONResponse({"error": "invalid chat request"}, status_code=400)
 
     app_id = _requested_app_id(request)
-    if app_id is not None and (
-        len(app_id) > MAX_CHAT_HELPER_APP_ID_CHARS or any(ord(char) < 0x20 for char in app_id)
-    ):
+    if app_id is not None and (len(app_id) > MAX_CHAT_HELPER_APP_ID_CHARS or any(ord(char) < 0x20 for char in app_id)):
         return JSONResponse({"error": "invalid app id", "reason": "invalid_app_id"}, status_code=400)
     if payload.file_ids:
         return JSONResponse(
@@ -1614,11 +1464,14 @@ async def chat_messages(request: Request):
 
     uid = str(context["uid"])
     try:
+        target = await resolve_chat_target(env, uid, app_id, request.query_params.get("chat_session_id"), create=True)
+        session_id, app_id = target.session_id, target.app_id
         app = await _available_app(env, uid, app_id)
         if app_id is not None and app is None:
             return JSONResponse({"error": "app is unavailable", "reason": "app_not_found"}, status_code=404)
-        session_id = await _default_session_id(env, uid, app_id)
         history = await _scoped_history(env, uid, session_id, app_id)
+    except LookupError:
+        return JSONResponse({"detail": "Chat session not found"}, status_code=404)
     except Exception:
         return JSONResponse({"error": "chat history unavailable"}, status_code=503)
     human_message_id = str(uuid.uuid4())
@@ -1681,15 +1534,7 @@ async def chat_messages(request: Request):
                 session_id=session_id,
                 app_id=app_id,
             )
-            await _persist_exchange(
-                env,
-                uid,
-                human_message,
-                quota_message,
-                _exchange_order_key(),
-                session_id,
-                app_id=app_id,
-            )
+            await persist_chat_messages(env, target, [human_message, quota_message], _exchange_order_key())
         except Exception:
             return JSONResponse({"error": "chat quota unavailable"}, status_code=503)
         return StreamingResponse(
@@ -1776,16 +1621,7 @@ async def chat_messages(request: Request):
             cost_usd=cost_usd,
         )
     try:
-        await _persist_exchange(
-            env,
-            uid,
-            human_message,
-            ai_message,
-            _exchange_order_key(),
-            session_id,
-            settlement,
-            app_id=app_id,
-        )
+        await persist_chat_messages(env, target, [human_message, ai_message], _exchange_order_key(), settlement)
     except Exception:
         # The provider has already completed. Preserve its cost even if message
         # persistence is temporarily unavailable; an Architect projection stays

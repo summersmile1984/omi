@@ -11,9 +11,9 @@
 checks:
   - id: fork-cloudflare-product-core
     command: ["bash", "deploy/cloudflare/ci/product.sh"]
-    triggers: ["contracts/deployment/**", "deploy/cloudflare/**", "auth/shared/**", "runtime/shared/**", "backend/models/action_item.py", "backend/models/task_intelligence.py"]
+    triggers: ["contracts/deployment/**", "deploy/cloudflare/**", "auth/shared/**", "runtime/shared/**", "backend/models/action_item.py", "backend/models/task_intelligence.py", "web/app/src/lib/**", "web/app/src/types/**"]
     lanes: ["local", "ci"]
-    reason: "Actual 2026-09-04 public Tasks input returned CF400 versus Server422, and recording was broadcast without a D1 conversation owner. Execute the common HTTP cases and separate recording/Queue cases through fresh locked workerd, application Workers and normal D1 migrations; the controlled provider supplies inference only, never product state or approval."
+    reason: "Actual 2026-09-04 public Tasks input returned CF400 versus Server422, recording was broadcast without a D1 conversation owner, and explicit chat_session_id was ignored by read/write/clear. Execute the common HTTP cases, separate recording/Queue cases and the current Web text-chat consumer through fresh locked workerd, application Workers and normal D1 migrations; the controlled provider supplies inference only, never product state or approval."
 
   - id: fork-selfhost-product-core
     command: ["bash", "deploy/self-host/ci/product.sh"]

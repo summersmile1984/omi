@@ -20,3 +20,6 @@ npm run typecheck
 npm test
 cd python/api-core
 uvx uv==0.12.3 run pytest -q
+
+cd ../api-ai
+uvx uv==0.12.3 run pytest -q

@@ -2,6 +2,8 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  existsSync,
+  symlinkSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -18,6 +20,8 @@ import {
   pythonWorkerInvocation,
   runPythonWorker,
 } from "../scripts/python-worker.mjs";
+
+import { preparePythonSource } from "../scripts/python-source.mjs";
 
 const temporary = [];
 const componentRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -161,24 +165,99 @@ describe("Python Worker tool and runtime boundary", () => {
     mkdirSync(resolve(root, "python/api-core"), { recursive: true });
     const lock = resolve(root, "python/api-core/pylock.toml");
     writeFileSync(lock, 'lock-version = "1.0"\n');
+    mkdirSync(resolve(root, "python/api-core/src"), { recursive: true });
+    mkdirSync(resolve(root, "python/shared"));
+    mkdirSync(resolve(root, "python/api-core/python_modules"));
+    writeFileSync(
+      resolve(root, "python/api-core/src/entry.py"),
+      "import chat_target\n",
+    );
+    writeFileSync(resolve(root, "python/shared/chat_target.py"), "value=1\n");
+    writeFileSync(
+      resolve(root, "python/api-core/wrangler.jsonc"),
+      '{"main":"src/entry.py"}',
+    );
     const calls = [];
-    let mutate = false;
+    let mutate = false,
+      failDeploy = false,
+      stagedDirectory;
     const spawn = (_command, args) => {
-      const action = args.at(-1);
+      const action = args.includes("deploy") ? "deploy" : args.at(-1);
       calls.push(action);
       if (action === "--version")
         return { status: 0, stdout: "pywrangler, version 1.16.7\n" };
       if (action === "sync" && mutate) writeFileSync(lock, "changed");
-      return { status: 0 };
+      if (action === "deploy") {
+        stagedDirectory = dirname(args.at(-1));
+        const config = JSON.parse(readFileSync(args.at(-1), "utf8"));
+        expect(
+          readFileSync(resolve(dirname(config.main), "chat_target.py"), "utf8"),
+        ).toBe("value=1\n");
+      }
+      return { status: action === "deploy" && failDeploy ? 1 : 0 };
     };
     runPythonWorker("api-core", ["deploy"], { root, env: {}, spawn });
     expect(calls).toEqual(["--version", "sync", "deploy"]);
+    expect(existsSync(stagedDirectory)).toBe(false);
+    failDeploy = true;
+    expect(() =>
+      runPythonWorker("api-core", ["deploy"], { root, env: {}, spawn }),
+    ).toThrow("command failed");
+    expect(existsSync(stagedDirectory)).toBe(false);
+    failDeploy = false;
     calls.length = 0;
     mutate = true;
     expect(() =>
       runPythonWorker("api-core", ["deploy"], { root, env: {}, spawn }),
     ).toThrow("pylock.toml changed");
     expect(calls).toEqual(["--version", "sync"]);
+  });
+  it("projects shared ordinary modules without source writes and removes the owned stage", () => {
+    const root = fixture(),
+      project = resolve(root, "python/api-ai");
+    mkdirSync(resolve(project, "src"), { recursive: true });
+    mkdirSync(resolve(root, "python/shared"));
+    mkdirSync(resolve(project, "python_modules"));
+    writeFileSync(resolve(project, "src/entry.py"), "import chat_target\n");
+    writeFileSync(resolve(root, "python/shared/chat_target.py"), "value=1\n");
+    writeFileSync(
+      resolve(project, "wrangler.jsonc"),
+      '{"main":"src/entry.py","d1_databases":[{"migrations_dir":"../../migrations/app"}]}',
+    );
+    const prepared = preparePythonSource(project, ["deploy", "--dry-run"]);
+    expect(
+      readFileSync(resolve(prepared.directory, "src/chat_target.py"), "utf8"),
+    ).toBe("value=1\n");
+    expect(existsSync(resolve(project, "src/chat_target.py"))).toBe(false);
+    writeFileSync(resolve(root, "python/shared/chat_target.py"), "value=2\n");
+    expect(
+      readFileSync(resolve(prepared.directory, "src/chat_target.py"), "utf8"),
+    ).toBe("value=1\n");
+    const config = JSON.parse(readFileSync(prepared.args.at(-1), "utf8"));
+    expect(config.d1_databases[0].migrations_dir).toBe(
+      resolve(root, "migrations/app"),
+    );
+    prepared.close();
+    expect(existsSync(prepared.directory)).toBe(false);
+    writeFileSync(resolve(project, "src/chat_target.py"), "duplicate owner");
+    expect(() => preparePythonSource(project, ["deploy"])).toThrow("collides");
+    rmSync(resolve(project, "src/chat_target.py"));
+    symlinkSync(
+      resolve(root, "python/shared/chat_target.py"),
+      resolve(project, "src/linked.py"),
+    );
+    expect(() => preparePythonSource(project, ["deploy"])).toThrow(
+      "ordinary owned files",
+    );
+    rmSync(resolve(project, "src/linked.py"));
+    rmSync(resolve(root, "python/shared"), { recursive: true });
+    const outside = resolve(root, "outside");
+    mkdirSync(outside);
+    writeFileSync(resolve(outside, "chat_target.py"), "wrong owner");
+    symlinkSync(outside, resolve(root, "python/shared"));
+    expect(() => preparePythonSource(project, ["deploy"])).toThrow(
+      "ordinary owned directory",
+    );
   });
   it("preserves the control descriptor until an actual local workerd is ready and answers HTTP", () => {
     const cache = mkdtempSync(resolve(tmpdir(), "workerd-control-contract-"));

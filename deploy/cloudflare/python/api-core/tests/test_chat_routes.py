@@ -57,6 +57,7 @@ class FakeDb:
         self.connection.executescript((migration_dir / "0044_chat_shares.sql").read_text())
         self.connection.executescript((migration_dir / "0053_user_feedback.sql").read_text())
         self.connection.executescript((migration_dir / "0054_chat_sessions.sql").read_text())
+        self.connection.executescript((migration_dir / "0155_chat_clear_epoch.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -185,7 +186,8 @@ def test_chat_history_is_scoped_by_uid_and_app_and_clear_returns_initial_message
     env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
 
     scoped = asyncio.run(get_messages(FakeRequest(env, signed_headers(secret), {"app_id": "assistant"})))
-    assert [message["id"] for message in scoped] == ["m1", "m0"]
+    # Default selects the latest session (backend/utils/chat_session_target.py), not all app threads.
+    assert [message["id"] for message in scoped] == ["m1"]
     cleared = asyncio.run(clear_messages(FakeRequest(env, signed_headers(secret), {"app_id": "assistant"})))
     assert cleared["app_id"] == "assistant"
     assert (
@@ -373,3 +375,65 @@ def test_chat_share_rejects_missing_duplicate_unauthorized_and_expired_paths():
         ).fetchone()[0]
         == 0
     )
+
+
+def test_explicit_target_owns_read_and_clear_even_when_query_app_disagrees():
+    # Canonical wire: backend/utils/chat_session_target.py and routers/chat.py.
+    db = FakeDb()
+    for uid, session, app in [('chat-user', 'A', 'owned-app'), ('chat-user', 'B', None), ('other', 'C', None)]:
+        db.connection.execute(
+            'INSERT INTO cf_chat_sessions(uid,id,title,created_at,updated_at,app_id,message_count) VALUES(?,?,?,1,1,?,1)',
+            (uid, session, session, app),
+        )
+        db.connection.execute(
+            'INSERT INTO cf_chat_messages(uid,id,app_id,created_at,message_json) VALUES(?,?,?,1,?)',
+            (uid, 'message-' + session, app, json.dumps({'id': session, 'text': session, 'chat_session_id': session})),
+        )
+    db.connection.commit()
+    env = type('Env', (), {'APP_DB': db, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+    request = FakeRequest(env, signed_headers('secret'), {'chat_session_id': 'A', 'app_id': 'wrong-app'})
+    assert [row['id'] for row in asyncio.run(get_messages(request))] == ['A']
+    greeting = asyncio.run(clear_messages(request))
+    assert greeting['app_id'] == 'owned-app' and greeting['chat_session_id'] == 'A'
+    row = db.connection.execute(
+        "SELECT message_count, preview, clear_epoch FROM cf_chat_sessions WHERE id='A'"
+    ).fetchone()
+    assert row['message_count'] == 0 and row['preview'] is None and row['clear_epoch'] != ''
+    assert db.connection.execute('SELECT id FROM cf_chat_messages ORDER BY id').fetchall() == [
+        db.connection.execute("SELECT id FROM cf_chat_messages WHERE id='message-B'").fetchone(),
+        db.connection.execute("SELECT id FROM cf_chat_messages WHERE id='message-C'").fetchone(),
+    ]
+    assert (
+        asyncio.run(get_messages(FakeRequest(env, signed_headers('secret'), {'chat_session_id': 'A', 'offset': '1'})))
+        == []
+    )
+
+
+def test_missing_or_foreign_explicit_target_never_selects_or_clears_default():
+    db = FakeDb()
+    db.connection.execute(
+        "INSERT INTO cf_chat_sessions(uid,id,title,created_at,updated_at) VALUES('other','C','C',1,1)"
+    )
+    db.connection.commit()
+    env = type('Env', (), {'APP_DB': db, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+    for session in ['missing', 'C']:
+        request = FakeRequest(env, signed_headers('secret'), {'chat_session_id': session})
+        for handler in [get_messages, clear_messages]:
+            response = asyncio.run(handler(request))
+            assert response.status_code == 404
+            assert json.loads(response.body) == {'detail': 'Chat session not found'}
+    assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_sessions').fetchone()[0] == 1
+
+
+def test_unmigrated_principal_without_session_keeps_app_scoped_history_and_clear():
+    db = FakeDb()
+    db.connection.execute(
+        "INSERT INTO cf_chat_messages(uid,id,created_at,message_json) VALUES('chat-user','legacy',1,?)",
+        (json.dumps({'id': 'legacy', 'text': 'old history'}),),
+    )
+    db.connection.commit()
+    env = type('Env', (), {'APP_DB': db, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+    request = FakeRequest(env, signed_headers('secret'))
+    assert [row['id'] for row in asyncio.run(get_messages(request))] == ['legacy']
+    assert asyncio.run(clear_messages(request))['chat_session_id'] is None
+    assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_messages').fetchone()[0] == 0

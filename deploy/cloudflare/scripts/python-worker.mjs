@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { preparePythonSource } from "./python-source.mjs";
+
 // workers-py 1.17.1 requires Wrangler >=4.127.1, above the existing npm lock.
 // 1.16.7 retains its native Wrangler >=4.109.0 check and consumes our pylock.
 export const PYTHON_TOOLS = Object.freeze({
@@ -164,16 +166,31 @@ export function runPythonWorker(project, args, options = {}) {
         "Python dependency preparation failed before runtime/deploy",
       );
   }
-  const result = execute(invocation.command, invocation.args, {
-    cwd: invocation.cwd,
-    env: invocation.env,
-    stdio: "inherit",
-  });
-  assertLockUnchanged(lockPath, original);
-  if (result.status !== 0)
-    throw new Error(
-      `Python Worker command failed (${result.status ?? result.signal})`,
+  const source =
+    args[0] === "sync"
+      ? null
+      : preparePythonSource(
+          invocation.cwd,
+          invocation.args.slice(invocation.prefix.length),
+        );
+  try {
+    const result = execute(
+      invocation.command,
+      source ? [...invocation.prefix, ...source.args] : invocation.args,
+      {
+        cwd: invocation.cwd,
+        env: invocation.env,
+        stdio: "inherit",
+      },
     );
+    assertLockUnchanged(lockPath, original);
+    if (result.status !== 0)
+      throw new Error(
+        `Python Worker command failed (${result.status ?? result.signal})`,
+      );
+  } finally {
+    source?.close();
+  }
 }
 
 if (
