@@ -2,6 +2,14 @@
 
 Base: `b9776fac12f6098ae5eed0474e42843ff507a693` (main source `d238a85af9`). This fork-owned ledger tracks CF-4 work discovered by CF-1. It is not a list of permanently unsupported product features. All entries below remain required work for the unified target objective.
 
+CF3 additionally identifies the deployment-prefix contract as CF-4 work: API,
+MCP, share and object bases with mount paths are rejected by resource qualification
+until Edge has one proven prefix-routing contract. Owner: CF adapter, coordinated
+with CLIENT-1 URL consumers and AUTH-1 MCP OAuth issuer/redirect handling. Required
+acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
+redirects and share/object URLs. This is independent of the route-count ledger;
+it does not retire routes or reduce the dual-target objective.
+
 CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. There are 612 unique method/path/protocol slots: 577 have existing/new Worker owners, 35 are blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
