@@ -30,6 +30,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: deploy/cloudflare/package-lock.json
+
       # The guard classifies a file as "upstream" by its presence in
       # upstream/main, so without this ref it can only skip. Fetch it explicitly
       # rather than letting the check pass on an empty definition.

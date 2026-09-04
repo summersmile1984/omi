@@ -2249,6 +2249,7 @@ app.get("/v1/focus-stats", proxyAuthenticatedCore);
 app.post("/v1/screen-activity/sync", proxyAuthenticatedCore);
 app.get("/v1/screen-activity", proxyAuthenticatedCore);
 app.get("/v1/screen-activity/summary", proxyAuthenticatedCore);
+app.get("/v2/desktop/prompts", proxyAuthenticatedCore);
 app.get("/v1/crisp/unread", proxyAuthenticatedCore);
 app.get("/v1/integrations/:app_key", proxyAuthenticatedCore);
 app.get("/v1/calendar/onboarding/status", proxyAuthenticatedCore);

@@ -181,9 +181,12 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
 - `manifests/backend-routes.json` is generated from the hermetically imported
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
-  after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes, all matching
-  Cloudflare staging owners (0 remain `legacy-owned`). Edge directly serves
+  after a new backend route leaves it `unclassified` and fails the fork route
+  gate. The current inventory contains 612 backend route identities: 577 have
+  Cloudflare staging owners, 35 are blocked with planned owners and missing
+  contracts in [the CF-4 ledger](../../dev/unified-main/09-cloudflare-route-migrations.md),
+  and 0 remain `legacy-owned`. This is a coverage classification, not a
+  complete Cloudflare product qualification. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -209,14 +212,32 @@ Worker-side Redis dependency therefore fails before release. Refresh a
 deliberately changed route surface with:
 
 ```bash
-backend/scripts/openapi_runner.sh scripts/export_openapi.py \
-  --surface cloudflare-route-inventory \
-  --write ../deploy/cloudflare/manifests/backend-routes.json
+backend/scripts/openapi_runner.sh ../deploy/cloudflare/scripts/route_inventory.py --write
 ```
 
 Then assign the new entries an explicit owner/runtime; the generated
 `unclassified` state cannot pass the check. Inventory-only targets are not
 provisioned resources and do not imply a production cutover.
+
+`bash deploy/cloudflare/ci/routes.sh` (from the repository root, after
+`make setup-backend`) runs the same local/CI route lane: hermetic backend
+registration and drift negatives, inventory/manifest validation, TypeScript
+checks/tests, and API Core Python tests. CI provisions Node 22 and the pinned
+backend interpreter. Unit tests use the documented Workers stubs; this lane
+does not claim workerd, browser, authentication integration, or production
+qualification. `verify:migrations` reads remote D1 and is intentionally outside
+this credential-free lane. Runtime contracts remain part of CI-1.
+
+API Core now serves `GET /v2/desktop/prompts` through authenticated Edge
+routing. Migration `0153_desktop_prompts.sql` stores operator-authored global
+prompt documents in `cf_desktop_prompts`; `active=1` rows retain upstream
+channel/build targeting, stable per-user rollout, defaults, and bounded
+options. Missing configuration returns an empty list; missing D1 or malformed
+configuration returns 503. Seed this table through reviewed operator migrations
+or the existing D1 administration workflow; this route creates no admin write
+API and never returns targeting metadata. No account data is stored in this
+global configuration table.
+
 
 The authenticated App Generator routes (`GET /v1/app/generate-prompts`,
 `POST /v1/app/generate`,

@@ -91,6 +91,7 @@ from candidate_control_routes import router as candidate_control_router
 from candidate_compat_routes import router as candidate_compat_router
 from task_intelligence_routes import router as task_intelligence_router
 from desktop_release_routes import router as desktop_release_router
+from desktop_prompt_routes import router as desktop_prompt_router
 from desktop_beta_routes import router as desktop_beta_router
 from followup_routes import router as followup_router
 from persona_routes import router as persona_router
@@ -99,6 +100,7 @@ from conversation_test_prompt_routes import router as conversation_test_prompt_r
 from metrics_routes import router as metrics_router
 
 app = FastAPI(title="Omi Cloudflare API Core", version="0.1.0")
+app.include_router(desktop_prompt_router)
 app.include_router(score_router)
 app.include_router(focus_router)
 app.include_router(advice_router)
