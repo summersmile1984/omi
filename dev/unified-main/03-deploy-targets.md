@@ -30,7 +30,7 @@
 
 ## 3. `deploy/cloudflare/` 契约
 
-**现状（CF 分支，616 文件）**：TS Workers `edge`（639 条 Hono 字面路由）、`auth`、`jobs`、`rate-limit`（DO）、`realtime`（DO）；Python Workers `api-core`（434 路由，80 模块）、`api-ai`（30 路由）；`migrations/{auth(10),app(155)}`；`manifests/`（`routes.yaml` 628 条含 owner/target_runtime/auth_authority/rollback、`backend-routes.json` 577 条含 `migration_state`、`redis-primitives.yaml` 每个 Redis 键族→D1/KV/DO/Queue/Workflow/R2 映射、`resources.yaml`、`r2-namespaces.yaml`、`vector-namespaces.yaml`）；`scripts/deploy.mjs` 完整资格流程；104 个 TS 测试 + 70 个 Python 测试；独立生产已上线（workers.dev 域）。
+**现状（CF 分支，616 文件）**：TS Workers `edge`（639 条 Hono 字面路由）、`auth`、`jobs`、`rate-limit`（DO）、`realtime`（DO）；Python Workers `api-core`（434 路由，80 模块）、`api-ai`（30 路由）；`migrations/{auth(10),app(155)}`；`manifests/`（`routes.yaml` 628 条含 owner/target_runtime/auth_authority/rollback、`backend-routes.json` 577 条含 `migration_state`、`redis-primitives.yaml` 每个 Redis 键族→D1/KV/DO/Queue/Workflow/R2 映射、`resources.yaml`、`r2-namespaces.yaml`、`vector-namespaces.yaml`）；历史发布脚本（当前入口已迁为 `deploy/cloudflare/scripts/release.mjs`）；104 个 TS 测试 + 70 个 Python 测试；独立生产已上线（workers.dev 域）。
 
 **合入 main 时的调整**：
 
@@ -44,7 +44,7 @@
 | 请求限制 | `sync_upload_batch_limit=2`、`max_request_bytes=100MB` 进 profile（客户端读表） |
 | Web | `deploy/web/build.ts --target cloudflare` 从同一源码/profile 输出 Workers fetch + Assets；不依赖外置 Bun 服务。CLIENT-1 的完整身份与CF-2实时闭环必须在联合候选树验收，构建本身不是闭环证据。|
 | CI | `ci/contract.sh`：`wrangler dev`（miniflare + 本地 D1 迁移）起 auth/rate-limit/api-core/api-ai/edge → 同一 `contracts/` 套件；`npm run validate:manifest`、`verify:migrations`、`validate:backend-routes` 进 `checks-manifest.fork.yaml`（现有 `pretest` 保持） |
-| 发布 | 标签 `<brand>/cloudflare/v*` → `fork-deploy-cloudflare.yml` 调 `scripts/deploy.mjs`（顺序 rate-limit → auth → jobs → realtime → api-* → edge → web；D1 迁移 apply + `verify:migrations`；`smoke:production`）；`CLOUDFLARE_PRODUCTION_CONFIRM` 短语由工作流 `environment` 审批门代替 |
+| 发布 | `deploy/cloudflare/scripts/release.mjs prepare/check/dry-run` 冻结同 stage 双 Web、8 Worker、CF3资源与SQL；`apply` 使用固定 Wrangler、实际版本观测与事务 journal；CF4/CI1/旧Worker对新schema资格和明确授权缺失时 fail-closed。标签工作流仍待交付；当前可执行契约见 `deploy/cloudflare/release.md`。 |
 | 工具链钉死 | wrangler `4.127.0`、`uvx uv==0.12.3 run pywrangler`、Python ≥3.13、Node 22 —— 写进 `deploy/cloudflare/.tool-versions` 与工作流 |
 
 ## 4. 混合部署（可选，但只有单仓库才可能）

@@ -8,61 +8,28 @@ Post-deploy acceptance, test identities, evidence capture, observation windows,
 known product gaps, and rollback criteria are defined in
 [`dev/cloudflare-staging-validation-plan.md`](../../dev/cloudflare-staging-validation-plan.md).
 
-## Independent Cloudflare production release
+## Current main release workflow
 
-This branch also owns a production release that is isolated from both staging
-and the legacy Google serving plane. It creates `omi-cf-*-production` D1, R2,
-Queue, Vectorize, Worker, and Web resources and publishes these public origins:
+`deploy:staging` (profile stage `beta`) and `deploy:production` now prepare local,
+immutable candidates from the current Moonshine/Bun source. Both Server OS and
+Cloudflare Web artifacts, all eight Worker bundles, CF3 resource configurations,
+SQL authorities and dependency locks are qualified before any remote mutation.
+These commands do not deploy. See [the release workflow](release.md) for exact
+inputs, qualification, remote apply, version ownership and recovery commands.
 
-- `https://omi-cf-edge-production.summersmile1984.workers.dev`
-- `https://omi-web-app-production.summersmile1984.workers.dev`
+A local candidate always has `release_ready=false`. CF-4 product coverage, CI-1
+cross-target contracts, prior Worker/new-schema compatibility and actual remote
+resource/domain/version observations remain required. The current source does
+not implement those three release qualification runners, so remote `apply` and
+`restore` reject before contacting Cloudflare. Operator-written approval JSON
+cannot bypass their absence.
 
-The release does not merge another adaptation branch, reuse any staging
-resource or secret, or change `api.omi.me` / `app.omi.me` DNS. It starts with an
-empty Better Auth/D1 data plane for new Cloudflare-native accounts. Existing
-Firebase identities and Firestore/GCS history are not silently copied or
-reclassified; routing an existing production-family client remains a separate
-`INV-DATA-1` + `INV-CUTOVER-1` migration ceremony.
+Credentials come from the existing CF3 secret-name map. The publisher never
+generates new application credentials or infers a resource owner from an error.
+Unknown remote results require journal reconciliation; data resources and
+first-release Workers are retained until cleanup ownership is separately proven.
 
-The command requires an exact operator confirmation, runs the full Cloudflare,
-Python Worker, and Web qualification suites, creates only missing production
-resources, applies and verifies both production D1 migration authorities,
-dry-runs every rendered production config, deploys dependencies before Edge,
-then deploys Web and verifies both readiness endpoints:
-
-```bash
-CLOUDFLARE_PRODUCTION_CONFIRM=deploy-independent-cloudflare-production \
-  npm run deploy:production
-```
-
-The first release generates new per-boundary secrets plus one shared internal
-assertion secret. The non-committed operator copy is written to
-`.wrangler/production-operator-secrets.json` with mode `0600`; it is never
-printed and must be retained for disaster recovery. Existing production
-Workers fail closed if that local store is unexpectedly missing. Optional
-Google Calendar, Stripe, Twilio, and social OAuth provider credentials remain
-unset until their own provider qualification is complete.
-
-Every release records a mode-`0600`
-`.wrangler/releases/production-before-*.json` snapshot. A failed first release
-removes only Workers created by that attempt; a failed update restores the
-previous active versions. Manual rollback uses the same exact confirmation:
-
-```bash
-CLOUDFLARE_PRODUCTION_CONFIRM=deploy-independent-cloudflare-production \
-  npm run rollback:production -- \
-  .wrangler/releases/production-before-<timestamp>.json
-```
-
-Authenticated acceptance uses a dedicated empty Better Auth account and the
-production URLs. Never reuse an operator or customer token:
-
-```bash
-CLOUDFLARE_SMOKE_TOKEN_FILE=/secure/production-smoke-token.json \
-  npm run smoke:production
-```
-
-### Independent production evidence (2026-09-01)
+### Historical production evidence (2026-09-01; not current main qualification)
 
 The first independent release is live without changing `api.omi.me` or
 `app.omi.me`. Auth D1 has 10 applied migrations and App D1 has 150, with no
@@ -137,7 +104,7 @@ npm run python -- api-core dev --port 8787 --inspector-port 9236
 ```
 
 `scripts/python-worker.mjs` is the shared Python entry for local development,
-dry runs, and both existing release scripts. It runs an isolated
+dry runs, and the current release candidate builder. It runs an isolated
 `workers-py==1.16.7` tool with `uv==0.12.3`, verifies the installed Wrangler and
 workerd against the unchanged npm lock, and consumes each project's committed
 `pylock.toml`. Dependency preparation and the unchanged-lock check finish before
@@ -176,10 +143,9 @@ npm run python -- api-core deploy --dry-run
 npm run python -- api-ai deploy --dry-run
 ```
 
-These commands do not create or deploy remote resources. The historical complete
-release commands above still contain the retired Next/vinext Web publisher;
-CF-5 must connect the current shared Moonshine builder before they qualify the
-unified main for a new release.
+These commands do not create or deploy remote resources. The shared release
+builder uses this fixed Python entry to prepare dependencies and compile both
+Python Workers, then verifies the frozen modules with locked Wrangler.
 
 ## Brand and stage resource plans
 
@@ -189,7 +155,7 @@ secret **name** mappings, and a plan-bound rollback contract. It consumes the sa
 rendered profile as the Moonshine builder. See [resource plan input and validation](resources.md)
 for the complete local workflow, existing-resource ownership, and qualification limits.
 Rendering performs no Cloudflare API call and never creates, renames, or deletes resources.
-Historical publishers below do not yet consume this plan; that integration remains CF-5.
+The current release builder consumes this exact plan and freezes its eight configurations.
 
 ## Staging resources
 
@@ -305,43 +271,28 @@ usage in D1, and each route has a 30-per-hour Edge Durable Object rate limit.
 ```bash
 npm test
 npm run typecheck
-npm run verify:migrations
-npm run deploy:staging
+npm run verify:migrations -- --candidate /path/to/candidate
+npm run deploy:staging -- --manifest /path/to/brand.json --inventory /path/to/resources.json --output /path/to/new-candidate
 npm run smoke:staging
 ```
 
-### Web Worker staging
+### Web Worker and Server OS from one source
 
-The Next.js 16 app has a separate Cloudflare Worker build through vinext. It
-uses service bindings for both authenticated API traffic (`EDGE`) and Better
-Auth (`AUTH`), so server-side routes never make public Worker-to-Worker
-`workers.dev` fetches. Browser WebSockets connect to the public Edge Worker
-directly. Staging is compiled in Better Auth mode; the existing Firebase client
-path remains the default for non-staging builds.
+The current upstream Web app is Moonshine/Bun. The fork-owned
+[`deploy/web/build.ts`](../web/build.ts) stages that source with the profile/auth
+and capability overlays, typechecks production sources, and builds either a
+portable Bun artifact or a Worker with static assets. The release builder builds
+both targets for the same brand and stage. Browser JWT/session and API/WS URLs
+come from that same rendered profile; optional OAuth and direct provider flows
+remain gated by their actual capability contract.
 
 ```bash
-cd web/app
-npm ci
-npx vinext check                 # 97% compatible; image optimization is the only partial feature
-npx tsc --noEmit
-npm test
-npm run build:vinext:staging
-npm run deploy:vinext:staging
+bun deploy/web/build.ts --target cloudflare --stage beta --manifest /path/to/brand.json --output /path/to/new-web-build
 ```
 
-The Vinext build sets `VINEXT_BUILD=1` so the Cloudflare bundle keeps the real
-`cloudflare:workers` module. The ordinary `npm run build` path aliases that
-module to a Node-only stub and remains available for the existing Next.js
-workflow.
-
-The staging deployment is `omi-web-app-staging` at
-`https://omi-web-app-staging.summersmile1984.workers.dev`. The staging build
-script pins `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_WS_BASE_URL`,
-`NEXT_PUBLIC_AUTH_MODE=better-auth`, and the Auth Worker URL; production DNS and
-production identity are not changed by this command. The `/login` page always
-exposes email/password sign-up and sign-in. Google/Apple buttons are driven by
-the Auth Worker's capability response and remain hidden unless the matching
-staging OAuth client ID and secret are both configured.
+Run this command from the repository root. Publication uses the generated frozen
+artifact through the common [release workflow](release.md); retired framework
+commands and publisher compatibility aliases have been removed.
 
 The integrations page opens the provider window synchronously before fetching
 the OAuth URL, then navigates that window after the request completes. This is
@@ -398,27 +349,13 @@ fenced. Missing rows outside the exact
 `ACCOUNT_CUTOVER_PROFILE=isolated-staging` configuration still project as
 `legacy`; no existing-account migration or production cutover is inferred.
 
-`deploy:staging` first runs the TypeScript/Python/Web tests and dry-run builds,
-then records the active version of all six backend Workers and the Web Worker.
-It applies the isolated migrations, publishes backend Workers in dependency
-order, verifies Edge `/ready`, deploys the already-qualified Web bundle, checks
-Web `/api/worker-ready`, and runs the staging smoke. Edge readiness calls Auth,
-Core, AI, Realtime, and Jobs only through Service Bindings. Core, AI, Realtime,
-and Jobs have no public `workers.dev` or preview URL; only Edge, Web, and the
-staging Auth compatibility surface remain public.
-
-If any post-deploy check fails, the command restores every Worker version from
-the pre-release snapshot and checks the restored Edge `/ready` and Web
-`/api/worker-ready` readiness envelopes. A `200` with HTML or a body whose
-`status` is not `ready` is rejected. Snapshots are owner-only files under
-`deploy/cloudflare/.wrangler/releases/`. Automatic rollback messages use only
-the bounded snapshot filename; including the full worktree path can exceed
-Wrangler's 120-character message limit and reopen an interactive prompt instead
-of completing recovery. A prior snapshot can also be restored explicitly:
-
-```bash
-npm run rollback:staging -- .wrangler/releases/staging-before-<timestamp>.json
-```
+The current release workflow records exact prior versions for all eight Workers,
+then verifies SQL history, applies additive migrations, deploys dependencies in
+the CF3-derived order, and verifies both public readiness envelopes plus the
+active version annotations. A failed or lost process response is reconciled with
+actual version/ledger observations. Recovery requires a separate explicit command
+and a fresh prior-version/new-schema proof. It never interprets an unknown
+version as a first release or deletes a Worker based on a missing snapshot.
 
 D1 migrations and R2/Queue resources are not versioned by Workers rollback;
 staging migrations must therefore remain backward-compatible with the captured
@@ -475,12 +412,11 @@ electron-updater resolves installers relative to the feed directory, so a
 mirrored `latest.yml` also routes the sibling `.exe`/`.blockmap` downloads
 through R2.
 
-Before applying D1 migrations, the release resolves each exact staging
-database name through `wrangler d1 list --json` and writes a mode-`0600`
-temporary config containing its UUID. This avoids Wrangler 4.127 treating a
-`database_name` as the remote API identifier when a migration is actually
-pending, while keeping account-specific UUIDs out of the repository. The
-temporary config is removed after each migration command.
+Before applying D1 migrations, the release observes each exact database name and
+UUID from its candidate inventory, validates the remote migration-name ledger as
+an exact prefix, and uses the frozen authority configuration and SQL directory.
+Ledger observations do not prove historical SQL hashes or old Worker compatibility;
+the prior-schema qualification runner owns that additional evidence.
 
 `smoke:staging` checks Edge health by default. To enable the authenticated
 checks, provide a staging Better Auth token through an environment variable or
@@ -518,9 +454,9 @@ empty chat history, so cleanup cannot erase an operator's existing chat. This
 chat check invokes one billable model inference per authenticated smoke. The
 raw-audio Workers AI boundary still uses an empty body and does not invoke ASR
 inference; use a separate explicit audio request for ASR quality or latency
-qualification. `deploy:staging` requires one of the two token inputs above and
-refuses to begin qualification when neither is configured; standalone
-`smoke:staging` may still run its public-only checks.
+qualification. This historical standalone smoke does not grant current-main
+release eligibility; the fixed CF-4 and CI-1 runners must supply the complete
+product acceptance contract. Standalone `smoke:staging` may run public-only checks.
 
 The staging deployment script requires an already authenticated Wrangler session or a
 scoped `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; it never prints
