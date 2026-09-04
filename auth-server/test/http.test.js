@@ -31,6 +31,27 @@ function responseCapture() {
   };
 }
 
+test("independent cookies remain separate through the HTTP bridge", async () => {
+  // Set-Cookie is not a comma-separated header; Expires itself contains a comma.
+  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie
+  const cookies = [
+    "session=synthetic; Path=/; HttpOnly",
+    "state=synthetic; Path=/; Expires=Wed, 09 Jun 2027 10:18:14 GMT; HttpOnly",
+  ];
+  const headers = new Headers();
+  for (const cookie of cookies) headers.append("set-cookie", cookie);
+  const handler = betterAuthBridge(
+    async () => new Response("{}", { headers }),
+    "https://auth.fixture.invalid",
+  );
+  const response = responseCapture();
+  await handler(
+    { method: "GET", originalUrl: "/api/auth/get-session", headers: {} },
+    response,
+  );
+  assert.deepEqual(response.headers["set-cookie"], cookies);
+});
+
 test("a trusted Web origin can preflight and read the bearer session header", async () => {
   let calls = 0;
   const handler = betterAuthBridge(

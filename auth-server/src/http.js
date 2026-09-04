@@ -50,7 +50,11 @@ export function betterAuthBridge(authHandler, baseUrl, trustedOrigins = []) {
       const request = new Request(url, { method: req.method, headers, body });
       const response = await authHandler(request);
       res.status(response.status);
-      response.headers.forEach((value, key) => res.setHeader(key, value));
+      response.headers.forEach((value, key) => {
+        if (key !== "set-cookie") res.setHeader(key, value);
+      });
+      const cookies = response.headers.getSetCookie();
+      if (cookies.length) res.setHeader("set-cookie", cookies);
       applyCors();
       return res.send(await response.text());
     } catch (_error) {
