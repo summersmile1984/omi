@@ -109,6 +109,15 @@ def _route_worker_auth(original: Callable[..., Any]) -> Callable[..., Any]:
         presented = request.headers.get('x-omi-queue-secret', '')
         if len(expected) < 32 or not secrets.compare_digest(expected.encode(), presented.encode()):
             raise HTTPException(status_code=403, detail='Invalid Redis worker secret')
-        return 0
+        # Only the authenticated, route-scoped worker may supply delivery state.
+        # Existing queued envelopes/worker requests without a count start at zero.
+        values = request.headers.getlist('x-omi-queue-retry-count')
+        raw = values[0] if values else '0'
+        if len(values) > 1 or not raw.isascii() or not raw.isdecimal() or len(raw) > 3:
+            raise HTTPException(status_code=400, detail='Invalid Redis delivery attempt')
+        retry_count = int(raw)
+        if retry_count >= queue.max_attempts():
+            raise HTTPException(status_code=400, detail='Redis delivery attempt exceeds its queue budget')
+        return retry_count
 
     return verify
