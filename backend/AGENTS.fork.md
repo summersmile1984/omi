@@ -106,3 +106,9 @@ the onboarding and legal-hold paths that caused the recorded local incidents.
   PostgreSQL locks/snapshots require `firestore_pg/tests/test_deletion_write_fence.py`
   against a disposable database. Do not weaken control-collection identity or
   release writer locks before SQL commit.
+
+- `deploy/self-host/ci/product.sh` runs shared HTTP identity/onboarding/task
+  cases through a fresh real Compose target in the existing fork local/CI lane.
+  Its explicit speech-disabled profile and controlled embedding HTTP fixture
+  qualify product state only; they do not qualify model inference, recording,
+  supported client platforms or release. Read `contracts/deployment/README.md`.
