@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -73,10 +74,15 @@ export function pythonWorkerInvocation(project, args, options = {}) {
       );
     }
     if (!args.includes("--local")) commandArgs.push("--local");
-    env.CLOUDFLARE_WORKERD_BINARY = resolve(
-      directory,
-      "node_modules/.bin/workerd",
-    );
+    // workerd's npm executable is a Node shim with stdio: "inherit", which
+    // drops Miniflare's extra --control-fd=3 pipe. Use the locked package's
+    // native-path export so the shell exec preserves the runtime ready channel.
+    const nativeBinary = createRequire(resolve(directory, "package.json"))(
+      "workerd",
+    ).default;
+    if (typeof nativeBinary !== "string" || !existsSync(nativeBinary))
+      throw new Error("The locked workerd package has no native binary");
+    env.CLOUDFLARE_WORKERD_BINARY = nativeBinary;
     env.CLOUDFLARE_PYODIDE_CACHE_DIR = resolve(
       inherited.CLOUDFLARE_PYODIDE_CACHE_DIR ??
         resolve(directory, ".wrangler/pyodide"),

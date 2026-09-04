@@ -6,7 +6,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
+import { runReleaseProcess } from "../scripts/release-wrangler.mjs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertInstalledRuntime,
@@ -17,6 +20,7 @@ import {
 } from "../scripts/python-worker.mjs";
 
 const temporary = [];
+const componentRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 function fixture() {
   const root = mkdtempSync(resolve(tmpdir(), "python-tool-contract-"));
   temporary.push(root);
@@ -81,13 +85,13 @@ describe("Python Worker tool and runtime boundary", () => {
       "api-core",
       ["dev", "--port", "9123"],
       {
-        root: "/fixture",
+        root: componentRoot,
         env: { CLOUDFLARE_PYODIDE_CACHE_DIR: "/cache with spaces" },
       },
     );
     expect(command.args.at(-1)).toBe("--local");
     expect(command.env.CLOUDFLARE_WORKERD_BINARY).toBe(
-      "/fixture/node_modules/.bin/workerd",
+      createRequire(resolve(componentRoot, "package.json"))("workerd").default,
     );
     expect(command.env.CLOUDFLARE_PYODIDE_CACHE_DIR).toBe("/cache with spaces");
     expect(() =>
@@ -176,4 +180,32 @@ describe("Python Worker tool and runtime boundary", () => {
     ).toThrow("pylock.toml changed");
     expect(calls).toEqual(["--version", "sync"]);
   });
+  it("preserves the control descriptor until an actual local workerd is ready and answers HTTP", () => {
+    const cache = mkdtempSync(resolve(tmpdir(), "workerd-control-contract-"));
+    temporary.push(cache);
+    const invocation = pythonWorkerInvocation("api-core", ["dev"], {
+      root: componentRoot,
+      env: { ...process.env, CLOUDFLARE_PYODIDE_CACHE_DIR: cache },
+    });
+    const source = `
+      const { Miniflare, convertV4MiniflareOptions } = await import(${JSON.stringify(
+        pathToFileURL(
+          resolve(componentRoot, "node_modules/miniflare/dist/src/index.js"),
+        ).href,
+      )});
+      const runtime = new Miniflare(convertV4MiniflareOptions({modules:true, script:"export default {fetch(){return new Response('runtime-ready')}}", compatibilityDate:"2026-08-27"}));
+      try { const url=await runtime.ready; const response=await fetch(url); console.log(JSON.stringify({status:response.status,body:await response.text()})); }
+      finally {await runtime.dispose();}
+    `;
+    const result = runReleaseProcess(
+      process.execPath,
+      ["--input-type=module", "-e", source],
+      { env: invocation.env, encoding: "utf8", timeout: 10000 },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      status: 200,
+      body: "runtime-ready",
+    });
+  }, 15000);
 });

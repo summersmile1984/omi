@@ -129,8 +129,11 @@ version fails closed. No project virtual environment or lock is upgraded by this
 selection. This override is useful when a registry cache cannot resolve a fresh
 tool environment; it does not establish that a clean online installation passed.
 
-Local development on Linux/macOS uses the locked workerd through its official
-Pyodide bundle/package cache flags. The default cache is `.wrangler/pyodide`;
+Local development on Linux/macOS resolves the native executable from the locked
+`workerd` package export, then uses its official Pyodide bundle/package cache
+flags. The shell wrapper executes that binary directly, preserving Miniflare's
+control file descriptor; the npm Node shim forwards only standard input/output
+and would leave Wrangler waiting for readiness while its worker already runs. The default cache is `.wrangler/pyodide`;
 `CLOUDFLARE_PYODIDE_CACHE_DIR` can select another directory. workerd validates a
 cached bundle against its compiled integrity digest. The first download still
 needs trusted TLS access to Cloudflare's Pyodide distribution. This does not
