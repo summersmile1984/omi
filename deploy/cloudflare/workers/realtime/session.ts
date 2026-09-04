@@ -156,10 +156,10 @@ function providerSegments(data: unknown): MeterSegment[] {
       typeof segment.text === "string"
         ? segment.text
         : typeof segment.punctuated_word === "string"
-          ? segment.punctuated_word
-          : typeof segment.word === "string"
-            ? segment.word
-            : "";
+        ? segment.punctuated_word
+        : typeof segment.word === "string"
+        ? segment.word
+        : "";
     return typeof segment.start === "number" &&
       typeof segment.end === "number" &&
       Number.isFinite(segment.start) &&
@@ -325,8 +325,8 @@ function nativeClientMessage(data: unknown): string | null {
       typeof word.punctuated_word === "string"
         ? word.punctuated_word
         : typeof word.word === "string"
-          ? word.word
-          : "";
+        ? word.word
+        : "";
     if (!text.trim()) continue;
     const speaker =
       typeof word.speaker === "number" && Number.isInteger(word.speaker)
@@ -551,12 +551,14 @@ export class RealtimeSession {
       }
     }
     if (!(await this.enforceFairUse(socket, false))) return;
+    if (this.client !== socket || socket.readyState !== WebSocket.OPEN) return;
     const size = messageBytes(data);
     if (size > MAX_PENDING_AUDIO_BYTES) {
       socket.close(1009, "message too large");
       return;
     }
     const normalized = await normalizeClientMessage(data);
+    if (this.client !== socket || socket.readyState !== WebSocket.OPEN) return;
     if (normalized === null) {
       socket.close(1003, "unsupported message data");
       return;
@@ -573,6 +575,7 @@ export class RealtimeSession {
     sendAuthResponse: boolean,
   ): Promise<void> {
     if (!(await this.enforceFairUse(socket, sendAuthResponse))) return;
+    if (this.client !== socket || socket.readyState !== WebSocket.OPEN) return;
     const provider = await this.connectUpstream();
     if (this.client !== socket) return;
     if (!provider) {

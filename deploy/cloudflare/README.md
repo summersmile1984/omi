@@ -2556,3 +2556,10 @@ discarded. Transcription audio is removed after completion or terminal failure;
 R2 lifecycle rules expire any `cf-transcriptions/` or `cf-sync/` cleanup orphan
 after one day. `GET /v1/cf/jobs/{jobId}` exposes the state machine without returning
 payload data, and requires the same authenticated uid that created the job.
+
+Realtime callbacks retain their admitting socket across every asynchronous quota
+or binary-decoding boundary. After either wait, a superseded/closed socket must
+not enqueue or forward audio to the replacement provider. The same check precedes
+provider startup after fair-use admission. The production-session regressions in
+`tests/realtime.test.ts` suspend both quota and Blob reads, replace the connection,
+and verify that only the current connection's audio reaches its provider.
