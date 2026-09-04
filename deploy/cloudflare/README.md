@@ -2563,3 +2563,22 @@ not enqueue or forward audio to the replacement provider. The same check precede
 provider startup after fair-use admission. The production-session regressions in
 `tests/realtime.test.ts` suspend both quota and Blob reads, replace the connection,
 and verify that only the current connection's audio reaches its provider.
+
+The recording stream now opens its UID-scoped conversation in D1 before reporting
+`ready` / `conversation_session`. Transcript segments commit before broadcast;
+reconnect advances a connection token and resumes persisted timestamps. The old
+connection cannot write through that token, and completed/deleted generations
+are never reopened. Within a native Durable Object, pending D1 opens serialize
+across socket replacement so an old response cannot acquire ownership last.
+Migration `0154_live_recording_sessions.sql` adds this identity owner and the same
+account-deletion fences; Jobs includes it in purge/residual checks. Explicit
+`POST /v1/conversations/:id/finalize` retains the existing Queue/Jobs/Core owner.
+Silence/disconnect auto-finalization, continuous-capture rotation, every missing
+route and remote provider qualification remain separate unfinished CF-4 work.
+
+`bash deploy/cloudflare/ci/product.sh` builds an isolated actual seven-Worker target,
+applies all normal migrations, runs the shared identity/onboarding/Tasks suite and
+a separate recording/Queue contract, then stops its process tree. Both fork
+manifest lanes execute this same command. Read `contracts/README.md` for tools,
+metadata, synthetic inference boundaries and retained evidence. A local green
+report never sets release qualification or authorizes remote deployment.

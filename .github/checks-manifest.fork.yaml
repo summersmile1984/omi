@@ -9,6 +9,12 @@
 # which `scripts/fork/preflight` and `.github/workflows/fork-checks.yml` both do.
 # Every entry declares both lanes, as the upstream runner's validator requires.
 checks:
+  - id: fork-cloudflare-product-core
+    command: ["bash", "deploy/cloudflare/ci/product.sh"]
+    triggers: ["contracts/deployment/**", "deploy/cloudflare/**", "auth/shared/**", "runtime/shared/**", "backend/models/action_item.py", "backend/models/task_intelligence.py"]
+    lanes: ["local", "ci"]
+    reason: "Actual 2026-09-04 public Tasks input returned CF400 versus Server422, and recording was broadcast without a D1 conversation owner. Execute the common HTTP cases and separate recording/Queue cases through fresh locked workerd, application Workers and normal D1 migrations; the controlled provider supplies inference only, never product state or approval."
+
   - id: fork-selfhost-product-core
     command: ["bash", "deploy/self-host/ci/product.sh"]
     triggers: ["contracts/deployment/**", "deploy/self-host/**", "backend/fork/**", "backend/firestore_pg/**", "auth-server/**", "auth/shared/**", "runtime/shared/**", "backend/routers/action_items.py", "backend/routers/users.py", "backend/models/action_item.py"]

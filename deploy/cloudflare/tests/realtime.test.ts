@@ -1,7 +1,36 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSignedAuthContext } from "../workers/shared/auth-context";
 import { createRealtimeBootstrap } from "../workers/shared/realtime-bootstrap";
-import realtime, { RealtimeSession } from "../workers/realtime/index";
+import realtime, {
+  RealtimeSession as ProductionRealtimeSession,
+} from "../workers/realtime/index";
+
+// These transport/provider tests inject only the D1 recording owner. Its SQL
+// behavior is exercised in recording-store.test.ts and the target runtime suite.
+const recordingEvent = {
+  type: "conversation_session",
+  status: "in_progress",
+  lifecycle_version: 1,
+  recording_session_id: "fixture-session",
+  conversation_id: "fixture-conversation",
+  lifecycle_phase: "in_progress",
+  lifecycle_sequence: 1,
+};
+class RealtimeSession extends ProductionRealtimeSession {
+  constructor(state: DurableObjectState, env: any) {
+    super(state, env, {
+      open: async (_database, { uid }) => ({
+        uid,
+        recording_session_id: "fixture-session",
+        conversation_id: "fixture-conversation",
+        owner_token: "fixture-owner",
+        lifecycle_sequence: 1,
+        transcript_segments_json: "[]",
+      }),
+      write: async () => {},
+    });
+  }
+}
 
 const productToken = "signed.product.jwt";
 function sessionAuthority(allowed = true, authority = "better-auth") {
@@ -429,6 +458,7 @@ describe("realtime gateway", () => {
       expect(pair?.server.sent).toEqual([
         JSON.stringify({ type: "auth_response", success: true }),
         JSON.stringify({ type: "ready", provider: "external" }),
+        JSON.stringify(recordingEvent),
       ]);
       const target = new URL(providerUrl);
       expect(target.searchParams.get("uid")).toBe("user-1");
@@ -692,6 +722,7 @@ describe("realtime gateway", () => {
     expect(pair?.server.sent).toEqual([
       JSON.stringify({ type: "auth_response", success: true }),
       JSON.stringify({ type: "ready", provider: "workers-ai" }),
+      JSON.stringify(recordingEvent),
     ]);
 
     const pcm8 = new Blob([Uint8Array.from([0, 128, 255])]);
@@ -749,7 +780,7 @@ describe("realtime gateway", () => {
     });
     await upstream.dispatch("message", { data: interim });
     await Promise.all(work);
-    expect(pair?.server.sent).toHaveLength(2);
+    expect(pair?.server.sent).toHaveLength(3);
 
     const final = JSON.stringify({
       is_final: true,
@@ -939,7 +970,16 @@ describe("realtime gateway", () => {
     await upstream.dispatch("message", { data: providerMessage });
     await Promise.all(work);
 
-    expect(pair?.server.sent).toContain(providerMessage);
+    // Both shipped terminals consume segment arrays; the ASR adapter envelope
+    // is normalized before durable storage and client delivery.
+    expect(JSON.parse(String(pair?.server.sent.at(-1)))).toEqual(
+      JSON.parse(providerMessage).segments.map((segment: object) => ({
+        ...segment,
+        speaker: "SPEAKER_00",
+        is_user: false,
+        person_id: null,
+      })),
+    );
     expect(database.writes).toHaveLength(1);
     expect(database.writes[0]).toMatchObject({
       0: "user-1",
@@ -998,6 +1038,149 @@ describe("realtime gateway", () => {
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining('"outcome":"recovered"'),
     );
+  });
+  it("holds early provider frames and client audio until the recording owner commits, then persists before display", async () => {
+    installFakeWebSockets();
+    const upstream = new FakeSocket();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ webSocket: upstream })),
+    );
+    const work: Promise<unknown>[] = [];
+    let opened!: (value: any) => void,
+      written!: () => void,
+      entered!: () => void;
+    const opening = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const write = vi.fn(
+      (_database: D1Database, _binding: unknown, _segments: unknown) =>
+        new Promise<void>((resolve) => {
+          written = resolve;
+        }),
+    );
+    const session = new ProductionRealtimeSession(
+      durableState(work).state as never,
+      {
+        ASR_WS_URL: "wss://asr.example/listen",
+        APP_DB: meterDatabase(),
+      } as never,
+      {
+        open: () => {
+          entered();
+          return new Promise((resolve) => {
+            opened = resolve;
+          });
+        },
+        write,
+      },
+    );
+    const signed = await realtimeContext();
+    await session.fetch(
+      new Request("https://realtime.test/v4/listen", {
+        headers: {
+          upgrade: "websocket",
+          "x-omi-auth-context": signed!.encoded,
+        },
+      }),
+    );
+    await opening;
+    const socket = FakeWebSocketPair.last!.server;
+    const forwarding = upstream.dispatch("message", {
+      data: JSON.stringify([{ text: "durable words", start: 0, end: 1 }]),
+    });
+    await socket.dispatch("message", { data: new ArrayBuffer(4) });
+    expect(socket.sent).toEqual([]);
+    expect(upstream.sent).toEqual([]);
+    opened({
+      uid: "user-1",
+      recording_session_id: "recording",
+      conversation_id: "conversation",
+      owner_token: "current",
+      lifecycle_sequence: 2,
+      transcript_segments_json: JSON.stringify([
+        { text: "prior connection", start: 0, end: 2, speaker: "SPEAKER_00" },
+      ]),
+    });
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    expect(socket.sent.map((frame) => JSON.parse(String(frame)).type)).toEqual([
+      "ready",
+      "conversation_session",
+    ]);
+    expect(upstream.sent).toHaveLength(1);
+    expect(write.mock.calls[0][2]).toMatchObject([
+      { text: "prior connection", end: 2 },
+      { text: "durable words", start: 2, end: 3 },
+    ]);
+    written();
+    await forwarding;
+    expect(JSON.parse(String(socket.sent.at(-1)))[0]).toMatchObject({
+      text: "durable words",
+      start: 2,
+      end: 3,
+    });
+    const count = socket.sent.length;
+    await upstream.dispatch("message", {
+      data: JSON.stringify({
+        type: "conversation_session",
+        conversation_id: "provider-forgery",
+      }),
+    });
+    expect(socket.sent).toHaveLength(count);
+    await Promise.all(work);
+  });
+
+  it("closes a recording on D1 write failure without displaying uncommitted transcript", async () => {
+    installFakeWebSockets();
+    const upstream = new FakeSocket();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ webSocket: upstream })),
+    );
+    const work: Promise<unknown>[] = [];
+    const session = new ProductionRealtimeSession(
+      durableState(work).state as never,
+      {
+        ASR_WS_URL: "wss://asr.example/listen",
+        APP_DB: meterDatabase(),
+      } as never,
+      {
+        open: async () => ({
+          uid: "user-1",
+          recording_session_id: "recording",
+          conversation_id: "conversation",
+          owner_token: "current",
+          lifecycle_sequence: 1,
+          transcript_segments_json: "[]",
+        }),
+        write: async () => {
+          throw new Error("D1 unavailable");
+        },
+      },
+    );
+    const signed = await realtimeContext();
+    await session.fetch(
+      new Request("https://realtime.test/v4/listen", {
+        headers: {
+          upgrade: "websocket",
+          "x-omi-auth-context": signed!.encoded,
+        },
+      }),
+    );
+    await Promise.all(work);
+    const socket = FakeWebSocketPair.last!.server;
+    await upstream.dispatch("message", {
+      data: JSON.stringify([
+        { text: "uncommitted secret words", start: 0, end: 1 },
+      ]),
+    });
+    expect(socket.closeCode).toBe(1013);
+    expect(socket.sent.map(String).join()).not.toContain(
+      "uncommitted secret words",
+    );
+    expect(JSON.parse(String(socket.sent.at(-1)))).toEqual({
+      type: "recording_unavailable",
+    });
   });
   it.each(["quota", "blob"])(
     "drops old connection audio resumed after a %s await",
@@ -1091,4 +1274,85 @@ describe("realtime gateway", () => {
       expect(providers[1].sent).toEqual([new Uint8Array([1, 2]).buffer]);
     },
   );
+  it("serializes recording admission across a replacement while the old D1 open is pending", async () => {
+    installFakeWebSockets();
+    const providers = [new FakeSocket(), new FakeSocket()];
+    const upstreamFetch = vi.fn(async () => ({
+      webSocket: providers[upstreamFetch.mock.calls.length - 1],
+    }));
+    vi.stubGlobal("fetch", upstreamFetch);
+    const work: Promise<unknown>[] = [];
+    let release!: () => void, entered!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let currentOwner = "";
+    const open = vi.fn(async () => {
+      const first = open.mock.calls.length === 1;
+      if (first) {
+        entered();
+        await pending;
+      }
+      currentOwner = first ? "retired" : "current";
+      return {
+        uid: "user-1",
+        recording_session_id: "shared-recording",
+        conversation_id: "shared-recording",
+        owner_token: currentOwner,
+        lifecycle_sequence: first ? 1 : 2,
+        transcript_segments_json: "[]",
+      };
+    });
+    const session = new ProductionRealtimeSession(
+      durableState(work).state as never,
+      {
+        ASR_WS_URL: "wss://asr.example/listen",
+        APP_DB: meterDatabase(),
+      } as never,
+      {
+        open,
+        write: async (_database, binding) => {
+          if (binding.owner_token !== currentOwner)
+            throw new Error("stale D1 owner");
+        },
+      },
+    );
+    const connect = async () => {
+      const signed = await realtimeContext();
+      await session.fetch(
+        new Request(
+          "https://realtime.test/v4/listen?client_conversation_id=11111111-1111-4111-8111-111111111111",
+          {
+            headers: {
+              upgrade: "websocket",
+              "x-omi-auth-context": signed!.encoded,
+            },
+          },
+        ),
+      );
+      return FakeWebSocketPair.last!.server;
+    };
+    const old = await connect();
+    await started;
+    old.close();
+    await old.dispatch("close");
+    const current = await connect();
+    await vi.waitFor(() => expect(providers[1].accepted).toBe(true));
+    expect(open).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all(work);
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(currentOwner).toBe("current");
+    await providers[1].dispatch("message", {
+      data: JSON.stringify([{ text: "current audio", start: 0, end: 1 }]),
+    });
+    expect(current.readyState).toBe(FakeSocket.OPEN);
+    expect(JSON.parse(String(current.sent.at(-1)))[0].text).toBe(
+      "current audio",
+    );
+    expect(old.sent).toEqual([]);
+  });
 });
