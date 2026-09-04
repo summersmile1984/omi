@@ -1,0 +1,89 @@
+import 'dart:async';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:omi/app_globals.dart';
+import 'package:omi/backend/preferences.dart';
+import 'package:omi/providers/base_provider.dart';
+import 'package:omi/services/account_cutover/account_cutover_runtime.dart';
+import 'package:omi/services/auth_service.dart';
+import 'package:omi/services/auth/auth_token_result.dart';
+import 'package:omi/utils/auth/clear_user_state.dart';
+import 'package:omi/fork/identity/runtime.dart';
+import 'package:omi/fork/identity/deployment.dart';
+import 'package:omi/fork/identity/credential.dart';
+
+class AuthenticationProvider extends BaseProvider {
+  AuthUserSnapshot? user = NativeIdentity.owner.currentUser;
+  bool _requiresReauthentication = false;
+  int _sessionExpirationGeneration = 0;
+  StreamSubscription<AuthUserSnapshot?>? _identitySubscription;
+  StreamSubscription<AuthSessionExpiredEvent>? _expirationSubscription;
+  bool get requiresReauthentication => _requiresReauthentication;
+  int get sessionExpirationGeneration => _sessionExpirationGeneration;
+  bool isSignedIn() => !_requiresReauthentication && user != null;
+
+  AuthenticationProvider({bool initializeListeners = true}) {
+    if (!initializeListeners) return;
+    _identitySubscription = NativeIdentity.owner.changes.listen(_adopt);
+    _expirationSubscription = AuthService.instance.sessionExpiredEvents.listen((event) {
+      _requiresReauthentication = true;
+      _sessionExpirationGeneration++;
+      _adopt(null);
+    });
+  }
+
+  void _adopt(AuthUserSnapshot? next) {
+    if (user?.uid != next?.uid) {
+      final context = globalNavigatorKey.currentContext;
+      if (context != null && context.mounted) clearAllUserState(context);
+      SharedPreferencesUtil().clearUserDisplayCache();
+    }
+    user = next;
+    AuthService.instance.handleAuthUserChanged(next?.uid);
+    if (next != null) {
+      AuthService.instance.markAuthenticatedUser(next.uid);
+      SharedPreferencesUtil().uid = next.uid;
+      SharedPreferencesUtil().email = next.email ?? '';
+      final name = next.displayName?.split(' ') ?? const <String>[];
+      SharedPreferencesUtil().givenName = name.isEmpty ? '' : name.first;
+      SharedPreferencesUtil().familyName = name.skip(1).join(' ');
+      _requiresReauthentication = false;
+    }
+    unawaited(AccountCutoverRuntime.instance.bindAuthenticatedOwner(next?.uid));
+    notifyListeners();
+  }
+
+  Future<void> authenticate({required String email, required String password, String? name}) async {
+    if (loading) return;
+    setLoadingState(true);
+    try {
+      await NativeIdentity.owner.authenticate(email: email, password: password, name: name);
+      final token = await AuthService.instance.getIdToken();
+      if (token == null) throw const IdentityException(IdentityFailure.unavailable);
+      await AuthService.instance.restoreOnboardingState();
+    } finally {
+      setLoadingState(false);
+    }
+  }
+
+  Future<void> retryRestore() async {
+    if (loading) return;
+    setLoadingState(true);
+    try {
+      await NativeIdentity.restore();
+      final failure = NativeIdentity.restoreFailure;
+      if (failure != null) throw IdentityException(failure);
+    } finally {
+      setLoadingState(false);
+    }
+  }
+
+  void openTermsOfService() => unawaited(launchUrl(NativeDeployment.current.terms, mode: LaunchMode.inAppBrowserView));
+  void openPrivacyPolicy() => unawaited(launchUrl(NativeDeployment.current.privacy, mode: LaunchMode.inAppBrowserView));
+
+  @override
+  void dispose() {
+    _identitySubscription?.cancel();
+    _expirationSubscription?.cancel();
+    super.dispose();
+  }
+}

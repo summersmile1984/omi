@@ -1,0 +1,166 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:omi/providers/auth_provider.dart';
+import 'package:omi/l10n/app_localizations.dart';
+import 'package:omi/pages/onboarding/auth.dart';
+import 'package:omi/pages/settings/change_name_widget.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:omi/backend/preferences.dart';
+import 'package:omi/backend/http/shared.dart';
+import 'package:omi/services/auth_service.dart';
+import 'package:omi/services/auth/auth_token_result.dart';
+import 'package:omi/fork/identity/client.dart';
+import 'package:omi/fork/identity/credential.dart';
+import 'package:omi/fork/identity/deployment.dart';
+import 'package:omi/fork/identity/owner.dart';
+import 'native_identity_test.dart' as fixtures;
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  testWidgets('login controls remain visible and switch modes under the upstream black button theme', (tester) async {
+    final provider = AuthenticationProvider(initializeListeners: false);
+    await tester.pumpWidget(ChangeNotifierProvider.value(
+      value: provider,
+      child: MaterialApp(
+        theme: ThemeData.dark().copyWith(
+            elevatedButtonTheme: ElevatedButtonThemeData(
+                style: ElevatedButton.styleFrom(foregroundColor: Colors.black, backgroundColor: Colors.black)),
+            textButtonTheme: TextButtonThemeData(style: TextButton.styleFrom(foregroundColor: Colors.black))),
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(body: AuthComponent(onSignIn: () {})),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    final submit = tester.widget<ElevatedButton>(find.byKey(const Key('identity_submit')));
+    expect(submit.style!.foregroundColor!.resolve({}), Colors.black);
+    expect(submit.style!.backgroundColor!.resolve({}), Colors.white);
+    for (final button in tester.widgetList<TextButton>(find.byType(TextButton))) {
+      expect(button.style!.foregroundColor!.resolve({}), Colors.white);
+    }
+    await tester.tap(find.byKey(const Key('identity_mode')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('identity_name')), findsOneWidget);
+    provider.dispose();
+  });
+  testWidgets('failed name save stays in the dialog and exposes a visible local error', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    await SharedPreferencesUtil.init();
+    SharedPreferencesUtil().givenName = 'Existing';
+    await tester.pumpWidget(MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: const Scaffold(body: ChangeNameWidget()),
+    ));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('identity_name_edit')), 'Unconfirmed');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+    // No authenticated owner exists: the production update fails before any
+    // network. Error feedback must live inside the still-visible modal.
+    expect(find.byType(ChangeNameWidget), findsOneWidget);
+    expect(find.descendant(of: find.byType(Dialog), matching: find.byKey(const Key('identity_name_error'))), findsOneWidget);
+    expect(SharedPreferencesUtil().givenName, 'Existing');
+  });
+  test('name mutation cannot write display preferences after the owner projection or a newer login', () async {
+    SharedPreferences.setMockInitialValues({});
+    await SharedPreferencesUtil.init();
+    final store = fixtures.MemoryStore();
+    Completer<http.Response>? delayedUpdate;
+    final entered = Completer<void>();
+    final owner = IdentityOwner(
+        store: store,
+        client: IdentityClient(deployment: NativeDeployment.current, transport: (request) async {
+          if (request.url.path.endsWith('sign-in/email')) {
+            final email = (jsonDecode(request.body) as Map<String, dynamic>)['email'];
+            return fixtures.login(email == 'b@example.invalid' ? 'owner-b' : 'owner-a');
+          }
+          if (request.url.path.endsWith('update-user')) {
+            if (delayedUpdate != null) { entered.complete(); return delayedUpdate!.future; }
+            return http.Response('{}', 200);
+          }
+          return http.Response(jsonEncode({'user': {'id': 'owner-a', 'name': 'Server Canonical'}}), 200);
+        }));
+    final service = AuthService.forTesting(tokenGateway: owner, invalidateSession: owner.invalidate,
+        recordTelemetry: (_, __) {}, telemetryContextProvider: () => {});
+    await owner.authenticate(email: 'a@example.invalid', password: 'synthetic');
+    // The auth provider owns display projection. The request adapter must not
+    // overwrite it later using an unconfirmed string from the form.
+    SharedPreferencesUtil().givenName = 'Projected';
+    SharedPreferencesUtil().familyName = 'Name';
+    await service.updateGivenName('User Typed');
+    expect(owner.currentUser?.displayName, 'Server Canonical');
+    expect(SharedPreferencesUtil().givenName, 'Projected');
+    expect(SharedPreferencesUtil().familyName, 'Name');
+    delayedUpdate = Completer<http.Response>();
+    final old = service.updateGivenName('Old Completion');
+    final rejected = expectLater(old, fixtures.fails(IdentityFailure.superseded));
+    await entered.future;
+    await owner.authenticate(email: 'b@example.invalid', password: 'synthetic');
+    SharedPreferencesUtil().givenName = 'New';
+    SharedPreferencesUtil().familyName = 'Owner';
+    delayedUpdate!.complete(http.Response('{}', 200));
+    await rejected;
+    expect(store.value?.user.uid, 'owner-b');
+    expect(SharedPreferencesUtil().givenName, 'New');
+    expect(SharedPreferencesUtil().familyName, 'Owner');
+  });
+  test('production AuthService gateway refreshes/replays JWT and invalidates only terminal sessions', () async {
+    SharedPreferences.setMockInitialValues({});
+    await SharedPreferencesUtil.init();
+    final store = fixtures.MemoryStore();
+    var response = http.Response(jsonEncode({'token': fixtures.jwt()}), 200);
+    final owner = IdentityOwner(
+        store: store,
+        client: IdentityClient(
+            deployment: NativeDeployment.current,
+            now: () => fixtures.now,
+            transport: (request) async => request.url.path.endsWith('sign-in/email') ? fixtures.login() : response));
+    final service = AuthService.forTesting(
+        tokenGateway: owner,
+        invalidateSession: owner.invalidate,
+        refreshDelay: (_) async {},
+        recordTelemetry: (_, __) {},
+        telemetryContextProvider: () => {});
+    owner.changes.listen((user) => service.handleAuthUserChanged(user?.uid));
+    await owner.authenticate(email: 'test@example.invalid', password: 'synthetic password');
+    service.markAuthenticatedUser(owner.currentUser!.uid);
+    var replays = 0;
+    final recovered = await refreshAndReplayAfter401(
+        firstResponse: http.Response('', 401),
+        statusCode: (value) => value.statusCode,
+        replay: () async {
+          replays++;
+          return http.Response('{}', 200);
+        },
+        expireTerminalSession: true,
+        authService: service);
+    expect(recovered.statusCode, 200);
+    expect(replays, 1);
+    expect(SharedPreferencesUtil().authToken, fixtures.jwt());
+    expect(store.value?.session, 'opaque-owner-a');
+    response = http.Response('{}', 503);
+    final unavailable = await service.refreshIdToken();
+    expect(unavailable, isA<AuthTokenTransientFailure>());
+    expect(owner.currentUser, isNotNull);
+    expect(store.value, isNotNull);
+    response = http.Response('{}', 401);
+    await refreshAndReplayAfter401(
+        firstResponse: http.Response('', 401),
+        statusCode: (value) => value.statusCode,
+        replay: () async {
+          fail('terminal session cannot replay');
+        },
+        expireTerminalSession: true,
+        authService: service);
+    expect(service.isSignedIn(), isFalse);
+    expect(owner.currentUser, isNull);
+    expect(store.value, isNull);
+    expect(SharedPreferencesUtil().authToken, isEmpty);
+    expect(SharedPreferencesUtil().uid, isEmpty);
+  });
+}

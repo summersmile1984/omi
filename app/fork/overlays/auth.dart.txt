@@ -1,0 +1,128 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:omi/providers/auth_provider.dart';
+import 'package:omi/utils/l10n_extensions.dart';
+import 'package:omi/fork/identity/credential.dart';
+import 'package:omi/fork/identity/deployment.dart';
+import 'package:omi/fork/identity/runtime.dart';
+
+class AuthComponent extends StatefulWidget {
+  const AuthComponent({super.key, required this.onSignIn});
+  final VoidCallback onSignIn;
+  @override
+  State<AuthComponent> createState() => _AuthComponentState();
+}
+
+class _AuthComponentState extends State<AuthComponent> {
+  final _email = TextEditingController(), _password = TextEditingController(), _name = TextEditingController();
+  bool _register = false;
+  IdentityFailure? _failure;
+  @override
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit(AuthenticationProvider provider) async {
+    setState(() => _failure = null);
+    try {
+      await provider.authenticate(
+          email: _email.text.trim(), password: _password.text, name: _register ? _name.text.trim() : null);
+      if (mounted) widget.onSignIn();
+    } on IdentityException catch (error) {
+      if (mounted) setState(() => _failure = error.failure);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Consumer<AuthenticationProvider>(builder: (context, provider, _) {
+        final failure = _failure ?? NativeIdentity.restoreFailure;
+        return SafeArea(
+            child: Center(
+                child: SingleChildScrollView(
+          padding: const EdgeInsets.all(28),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: Card(
+                color: Colors.black,
+                child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(NativeDeployment.current.productName, style: Theme.of(context).textTheme.headlineMedium),
+                        const SizedBox(height: 16),
+                        Text(_register ? context.l10n.createAccountTitle : context.l10n.signInTitle),
+                        if (_register)
+                          TextField(
+                              key: const Key('identity_name'),
+                              controller: _name,
+                              decoration: InputDecoration(labelText: context.l10n.nameLabel)),
+                        TextField(
+                            key: const Key('identity_email'),
+                            controller: _email,
+                            keyboardType: TextInputType.emailAddress,
+                            autocorrect: false,
+                            decoration: InputDecoration(labelText: context.l10n.emailLabel)),
+                        TextField(
+                            key: const Key('identity_password'),
+                            controller: _password,
+                            obscureText: true,
+                            autocorrect: false,
+                            decoration: InputDecoration(labelText: context.l10n.passwordLabel)),
+                        const SizedBox(height: 16),
+                        if (failure != null)
+                          Text(
+                              {IdentityFailure.unavailable, IdentityFailure.storageUnavailable}.contains(failure)
+                                  ? context.l10n.connectionError
+                                  : context.l10n.authenticationFailed,
+                              key: const Key('identity_error'),
+                              style: const TextStyle(color: Colors.redAccent)),
+                        ElevatedButton(
+                            style:
+                                ElevatedButton.styleFrom(backgroundColor: Colors.white, foregroundColor: Colors.black),
+                            key: const Key('identity_submit'),
+                            onPressed: provider.loading ? null : () => _submit(provider),
+                            child: Text(_register ? context.l10n.createAccountTitle : context.l10n.signInButton)),
+                        TextButton(
+                            style: TextButton.styleFrom(foregroundColor: Colors.white),
+                            key: const Key('identity_mode'),
+                            onPressed: provider.loading
+                                ? null
+                                : () => setState(() {
+                                      _register = !_register;
+                                      _failure = null;
+                                    }),
+                            child: Text(_register ? context.l10n.signInTitle : context.l10n.createAccountTitle)),
+                        if (NativeIdentity.restoreFailure != null)
+                          TextButton(
+                              style: TextButton.styleFrom(foregroundColor: Colors.white),
+                              key: const Key('identity_retry'),
+                              onPressed: provider.loading
+                                  ? null
+                                  : () async {
+                                      try {
+                                        await provider.retryRestore();
+                                        if (mounted && provider.isSignedIn()) widget.onSignIn();
+                                      } on IdentityException catch (error) {
+                                        if (mounted) setState(() => _failure = error.failure);
+                                      }
+                                    },
+                              child: Text(context.l10n.retry)),
+                        TextButton(
+                            style: TextButton.styleFrom(foregroundColor: Colors.white),
+                            onPressed: provider.openPrivacyPolicy,
+                            child: Text(context.l10n.privacyPolicy)),
+                        TextButton(
+                            style: TextButton.styleFrom(foregroundColor: Colors.white),
+                            onPressed: provider.openTermsOfService,
+                            child: Text(context.l10n.termsOfService)),
+                      ],
+                    ))),
+          ),
+        )));
+      });
+}
