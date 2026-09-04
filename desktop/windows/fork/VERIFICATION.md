@@ -278,3 +278,33 @@ resources共74个文件中，对9个已知退休上游栅格素材做精确SHA25
 
 本包pending上游12项通过，其中90日历史failure-class ratchet因shallow明确SKIP，
 不称历史审计通过；fork检查2项覆盖零upstream touch与完整Electron测试/构建矩阵。
+
+## WL-5：旧版 Home 的已见文案残留（2026-09-04）
+
+基线资产提交 `1bec8615179e48fa1887605fd90171dd3b81c20e`。前包真实
+`assets/harbor-ui-legacy-home.png`显示新H资产旁仍有小写omi和Ask Omi；本提交独立修
+这个已见同类边界，不重写API、协议或存储。
+
+`brand-text.json`的同一精确AST目录增加Sidebar与LegacyHome：产品wordmark、
+Ask/voice/typing人格文案。侧栏去除强制lowercase，长品牌名在原flex边界截断。
+已发 `omi.sidebar.collapsed` key保持；两条旧头像原始import/alt只在文本pass保留，
+随后原assets-stage严格替换并退休，coverage理由明确，不是最终产物的品牌保留许可。
+
+`/tmp/memweft-implementation/electron/legacy-text/before.log`：两个新增行为回归在
+旧的实际staged产品组件上均失败（缺少所选persona placeholder和product wordmark）；
+`staged.log`：新fresh stage 16项全部通过。测试执行实际LegacyHome及Sidebar，
+验证persona Ask/voice/typing、真实voiceOpen状态切换，以及读取已有collapse值1后
+通过UI展开并仍写同一个key为0。复杂Field产品/persona由原两target矩阵重复执行。
+实际图标/Orb、auth/session、录音等owner没有在这份文本提交中改变。
+
+真实UI、完整build及exact gates日志放同一legacy-text目录。所有本次素材仍合成，
+正式发行/系统/硬件、其他页面及prompt的资格不扩大；不是全应用词典清零声明。
+
+最终 `ui-final.log` exit0：真实CF账户恢复，实际开关/Back进入旧Home，确认
+产品名、Ask与voice label，折叠→展开，恢复新版Home后完整退出。`ui-visible.json`
+保存实际可见文字与aria/placeholder，该页无Omi命中；`ui-legacy-home.png`已人工
+看图确认Harbor大小写和H图形。前一次 `ui.log`真实email登录成功后，测试selector
+同时命中保留的隐藏About和Sidebar而停止；最终限定navigation并补完退出，不将此
+Playwright歧义说成产品故障。`build.log`完整构建通过。pending exact上游12项、fork
+2项通过（14 core、4 prepare、双target各16 staged及完整build）；历史90日ratchet
+仍明确shallow SKIP。提交后用相同base/head验证，见committed两份日志。

@@ -354,5 +354,51 @@
       "preserve": "Existing preload CLI contract controlling Mica, not visible branding",
       "count": 1
     }
+  ],
+  "src/renderer/src/components/layout/Sidebar.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "omi.sidebar.collapsed",
+      "count": 1,
+      "preserve": "Already-shipped sidebar preference key; presentation does not migrate storage"
+    },
+    {
+      "kind": "JsxText",
+      "source": "\n            omi\n          ",
+      "count": 1,
+      "template": "\n            {product}\n          "
+    }
+  ],
+  "src/renderer/src/pages/LegacyHome.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "../assets/omi-mark.png",
+      "count": 1,
+      "preserve": "Retained during text pass solely for the exact assets-stage replacement; import/markup is retired in that same prepare call"
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Ask Omi…",
+      "count": 1,
+      "template": "Ask {persona}…"
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Talk with Omi",
+      "count": 1,
+      "template": "Talk with {persona}"
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Omi",
+      "count": 1,
+      "preserve": "Retained during text pass solely for the exact assets-stage replacement; import/markup is retired in that same prepare call"
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Omi is replying",
+      "count": 1,
+      "template": "{persona} is replying"
+    }
   ]
 }
