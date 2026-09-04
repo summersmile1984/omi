@@ -261,3 +261,25 @@ func extremeNegativeIssuedAtFailsWithoutIntegerOverflow() async throws {
   let session = NativeAuthSession(token: "opaque", user: .init(id: "existing-user"))
   await #expect(throws: NativeAuthFailure.invalidResponse) { try await client.accessToken(for: session) }
 }
+
+@Test @MainActor
+func issuedAtSkewAllowsSixtySecondsWithoutExtendingExpiration() async throws {
+  let now = 1_800_000_000
+  for (offset, lifetime, accepted) in [(30, 300, true), (60, 300, true), (61, 300, false), (-3600, 3600, false)] {
+    let payload = try JSONSerialization.data(withJSONObject: [
+      "uid": "existing-user", "sub": "existing-user", "sid": "session-id",
+      "iat": now + offset, "exp": now + offset + lifetime,
+    ])
+    let jwt = "header." + payload.base64EncodedString() + ".signature"
+    let fixture = TransportFixture([.init("{\"token\":\"\(jwt)\"}")])
+    let client = NativeAuthClient(
+      profile: try profile(), transport: { try await fixture.send($0) },
+      now: { Date(timeIntervalSince1970: TimeInterval(now)) })
+    let session = NativeAuthSession(token: "opaque", user: .init(id: "existing-user"))
+    if accepted {
+      #expect(try await client.accessToken(for: session) == jwt)
+    } else {
+      await #expect(throws: NativeAuthFailure.invalidResponse) { try await client.accessToken(for: session) }
+    }
+  }
+}

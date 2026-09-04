@@ -31,6 +31,8 @@ function fixture(target = 'self_hosted') {
   let clock = 1_800_000_000_000;
   let state = 0;
   let accessStatus = 200;
+  let issuedAtOffset = 0,
+    lifetime = 3600;
   let tokenHook: (() => Promise<void>) | undefined;
   const storage = {
     getItem: (key: string) => stored.get(key) ?? null,
@@ -48,8 +50,8 @@ function fixture(target = 'self_hosted') {
         sub: 'existing-user',
         uid: 'existing-user',
         sid: `session-${state}`,
-        iat: Math.floor(clock / 1000),
-        exp: Math.floor(clock / 1000) + 3600,
+        iat: Math.floor(clock / 1000) + issuedAtOffset,
+        exp: Math.floor(clock / 1000) + issuedAtOffset + lifetime,
       }),
     )}.signature`;
   const transport: AuthFetch = async (input, init) => {
@@ -91,6 +93,10 @@ function fixture(target = 'self_hosted') {
     status: (status: number) => {
       accessStatus = status;
     },
+    timing: (offset: number, ttl: number) => {
+      issuedAtOffset = offset;
+      lifetime = ttl;
+    },
     hook: (callback?: () => Promise<void>) => {
       tokenHook = callback;
     },
@@ -130,6 +136,24 @@ describe('one session/access-token contract for both targets', () => {
       expect(f.requests.at(-1)?.url.endsWith('/get-session')).toBe(true);
     });
   }
+
+  test('client cache admits sixty seconds of issued-at skew without extending expiration', async () => {
+    const f = fixture();
+    await f.client.signIn('fixture@example.invalid', 'synthetic-password');
+    for (const offset of [30, 60]) {
+      f.timing(offset, 300);
+      expect(await f.client.getToken(true)).toContain('.signature');
+    }
+    for (const [offset, ttl] of [
+      [61, 300],
+      [-3600, 3600],
+      [30, 0],
+      [-1_800_000_001, 1_800_000_300],
+    ]) {
+      f.timing(offset, ttl);
+      await expect(f.client.getToken(true)).rejects.toBeInstanceOf(AuthRequestError);
+    }
+  });
 
   test('concurrent API and realtime requests share one refresh and refresh before expiry', async () => {
     const f = fixture();

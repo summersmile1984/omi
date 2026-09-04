@@ -181,9 +181,11 @@ public final class NativeAuthClient {
     guard let payload = Data(base64Encoded: encoded),
       let claims = try? JSONDecoder().decode(Claims.self, from: payload),
       claims.uid == session.user.id, claims.sub == session.user.id, !claims.sid.isEmpty,
-      claims.iat >= 0, claims.iat <= Int(now().timeIntervalSince1970), claims.exp > Int(now().timeIntervalSince1970),
+      claims.iat >= 0, claims.iat <= Int(now().timeIntervalSince1970) + 60,
+      claims.exp > Int(now().timeIntervalSince1970),
       claims.exp > claims.iat, claims.exp - claims.iat <= 3600
     else { throw NativeAuthFailure.invalidResponse }
+    // Issued-at skew is bounded by contracts/auth/client-cache-admission.md.
     // Cache lifetime/owner checks are not cryptographic verification. Every API
     // and realtime service validates JWT signature and the live session itself.
     guard generation == cacheGeneration else { throw NativeAuthFailure.superseded }
