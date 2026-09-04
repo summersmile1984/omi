@@ -256,7 +256,7 @@ def test_worker_dispatches_with_the_selected_route_and_secret(queue):
         post.assert_called_once_with(
             env[queue.handler_env],
             json={'job_id': 'synthetic'},
-            headers={'X-Omi-Queue-Secret': env[queue.secret_env]},
+            headers={'X-Omi-Queue-Secret': env[queue.secret_env], 'X-Omi-Queue-Retry-Count': '0'},
             timeout=30.0,
         )
 
