@@ -1,0 +1,21 @@
+{
+  "AppBuild.swift": "62ac90ee5efb026541bdf911550c6c8821f31a902a5b7fd04102bea36fb7cd6c",
+  "AuthService.swift:bootstrapLocalHarnessAuthIfNeeded()": "31bba6d01e8ba4335ebe2bd435da47058bf6aac7443ac5a4f01f0b2142a52736",
+  "AuthService.swift:cancelSignIn()": "9e1222f7126f3227c57dbcff1eb3b04c1583fd39caa6ad6e48e3a734e6f2170d",
+  "AuthService.swift:clearTokens()": "2c7137068ca85bf0916fb343db787a1fb839c312d72a4e32b58ec9dd92fa90d6",
+  "AuthService.swift:configure()": "21e7c9968e6c157af49b7d4408a77d013347f454e8b4ecb83a2208951a1c033f",
+  "AuthService.swift:expireStoredTokenForAutomation()": "f40381b2a292191d826b231ef7617ea73d1c5c7989e995c75deaebc71a54b3e3",
+  "AuthService.swift:getIdToken(forceRefresh:)": "84365b7aa37cb2876b12814c2f468c5ca1cfc7e434206216a7d9e2daa28da05b",
+  "AuthService.swift:handleOAuthCallback(url:)": "47aeff0c88e2db691cb4ff99d5ee64f8d40c73990ca173d60a67f78e12a43ef3",
+  "AuthService.swift:performLightSessionInvalidation()": "e48316229edc7bc63636642cc03b442f4e4130c9dc3d711d1c928206d078d5a6",
+  "AuthService.swift:retryRestoredSession()": "4d756505de609b9b083bc4d23d8dcde36e5987ee3de5bba809bc28671593663d",
+  "AuthService.swift:signInWithApple()": "45594c6a85bade2a50671a271bbd74c0b6f1d6eae5166abcc9b18e4caab63871",
+  "AuthService.swift:signInWithGoogle()": "9284275a5d173798a8e038c97788783e3c6eb1e34957a6d1c925d252202ab507",
+  "AuthService.swift:signOut(acceptedAccountDeletion:)": "1c2f873b6ff40ad77733bc9ecc8253284ec8997a9232ac387bc16937a0643a9d",
+  "AuthService.swift:tokenStatusForAutomation()": "930e88ff2de5f0a4125adc6127af33afc60f81aad3a4891e31b6728d28cb99aa",
+  "BundleEnvironment.swift:loadIfNeeded()": "d7d3e2a79b47545a8a5d47e2a7cb9f436e5d4d188bb7863c177ae7eb261a5279",
+  "DesktopBackendEnvironment.swift": "e41124dfdb683aabd876eb530dc6eb50fe094fe4c32681bdbcea032b61b49088",
+  "DesktopLocalProfile.swift": "d957cf606cc2403b4c27c3d8f2f2581ac2a12cd80d9a957a8fea44d9c15aa6b2",
+  "OmiApp.swift:firebase-bootstrap": "638986fa8749962e5d6a02a7f06e6262be1b17deb5287fba7b0765bf0fe8ead9",
+  "SignInView.swift": "56ff0c54c099c18f036f1aa2b8949e41885f2dde55ad5cf2b9ab43b8e1d982c6"
+}
