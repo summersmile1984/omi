@@ -59,6 +59,12 @@ admission failure closes 1013. It never silently selects a remote provider.
 Existing rate/budget dependencies remain enforced. Inference success does not
 imply a persisted conversation or LLM response.
 
+One terminal drain records accepted PCM duration on finalize, disconnect, idle,
+limit or cancellation. Input rejected before admission is excluded, and a
+provider rejection or failed drain is not charged. Cancelling a waiter cannot
+cancel the accepted tail or repeat its usage write. This retains the existing
+Redis quota owner's failure policy; it does not introduce durable billing.
+
 TTS admits 500 characters, with `af_heart` (English) and `zf_xiaobei` (Chinese).
 Already-shipped default voice requests select the deployment's default based on
 text; arbitrary vendor voices, model settings and instructions are refused.

@@ -161,14 +161,18 @@ class SenseVoiceSocket(STTSocket):
 
     async def drain_and_close(self) -> None:
         self.finish()
-        pump, self._pump_task = self._pump_task, None
-        if pump is not None:
-            try:
-                await pump
-            except asyncio.CancelledError:
-                pass
-        else:
-            await self._flush(force=True)
+        if self._pump_task is None:
+            self._pump_task = create_named_task(self._flush(force=True), name='sensevoice_stt_drain')
+        # Keep ownership until inference completes. Cancelling a waiter must
+        # neither cancel the accepted tail nor let a second drain skip it.
+        try:
+            await asyncio.shield(self._pump_task)
+        except asyncio.CancelledError:
+            if self._pump_task.cancelled():
+                self._dead = True
+                self._death_reason = 'sensevoice_pump_cancelled'
+                raise RuntimeError('local speech pump cancelled before finalization completed') from None
+            raise
         if self._dead:
             raise RuntimeError('local speech failed before finalization completed')
 
