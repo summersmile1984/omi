@@ -1250,3 +1250,67 @@ def test_model_completion_cannot_repopulate_cleared_or_deleted_selected_session(
         )
         # Paid model work remains accounted even though its answer was fenced.
         assert db.connection.execute("SELECT COUNT(*) FROM cf_llm_usage_daily").fetchone()[0] == 1
+
+
+def test_completion_retry_is_scoped_to_resolved_session_and_app_before_cached_response():
+    db, ai = FakeDb(), FakeAi()
+    for uid, session in [('chat-user', 'A'), ('chat-user', 'B'), ('other', 'C')]:
+        db.connection.execute(
+            'INSERT INTO cf_chat_sessions(uid,id,title,created_at,updated_at) VALUES(?,?,?,1,1)',
+            (uid, session, session),
+        )
+    db.connection.commit()
+    env = type('Env', (), {'APP_DB': db, 'AI': ai, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+    headers = {**signed_headers('secret'), 'idempotency-key': 'scoped-retry'}
+
+    def request(session):
+        return FakeRequest(
+            env, headers, body={'messages': [{'role': 'user', 'content': 'Scoped question'}], 'session_id': session}
+        )
+
+    assert asyncio.run(cloudflare_chat_completions(request('A'))).status_code == 200
+    assert asyncio.run(cloudflare_chat_completions(request('A'))).status_code == 200
+    for session in ['missing', 'C']:
+        response = asyncio.run(cloudflare_chat_completions(request(session)))
+        assert response.status_code == 404
+        assert json.loads(response.body) == {'detail': 'Chat session not found'}
+    assert asyncio.run(cloudflare_chat_completions(request('B'))).status_code == 409
+    db.connection.execute("UPDATE cf_chat_sessions SET app_id='changed-app' WHERE id='A'")
+    db.connection.commit()
+    assert asyncio.run(cloudflare_chat_completions(request('A'))).status_code == 409
+    db.connection.execute("UPDATE cf_chat_sessions SET app_id=NULL WHERE id='A'")
+    db.connection.commit()
+    # An old cached payload without provable session metadata is not replayable.
+    db.connection.execute(
+        "UPDATE cf_chat_messages SET message_json=json_remove(message_json,'$.chat_session_id','$.session_id') WHERE json_extract(message_json,'$.sender')='ai'"
+    )
+    db.connection.commit()
+    assert asyncio.run(cloudflare_chat_completions(request('A'))).status_code == 409
+    assert len(ai.calls) == 1
+    assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_messages').fetchone()[0] == 2
+    assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_quota_events').fetchone()[0] == 1
+
+
+def test_completion_explicit_app_session_reads_its_own_prior_turns():
+    db, ai = FakeDb(), FakeAi()
+    db.connection.execute(
+        "INSERT INTO cf_chat_sessions(uid,id,title,created_at,updated_at,app_id) VALUES('chat-user','A','A',1,1,'coach')"
+    )
+    uid, mid, created, raw = stored('chat-user', 'old-coach', 1, 'human', 'The selected coach context', 'A')
+    db.connection.execute(
+        'INSERT INTO cf_chat_messages(uid,id,app_id,created_at,message_json) VALUES(?,?,?,?,?)',
+        (uid, mid, 'coach', created, raw),
+    )
+    db.connection.commit()
+    env = type('Env', (), {'APP_DB': db, 'AI': ai, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+    response = asyncio.run(
+        cloudflare_chat_completions(
+            FakeRequest(
+                env,
+                signed_headers('secret'),
+                body={'messages': [{'role': 'user', 'content': 'Follow up'}], 'session_id': 'A'},
+            )
+        )
+    )
+    assert response.status_code == 200
+    assert {'role': 'user', 'content': 'The selected coach context'} in ai.calls[0][1]['messages']
