@@ -1,29 +1,17 @@
+import {
+  hashPassword,
+  verifyPassword,
+  upgradeMigratedFirebasePassword,
+} from "../workers/auth/firebase-migration-password";
 import { describe, expect, it, vi } from "vitest";
 import {
   encodeFirebasePasswordHash,
   FirebasePasswordMigrationConfigurationError,
-  hashPassword,
   isFirebasePasswordHash,
-  parseFirebaseScryptConfig,
-  upgradeMigratedFirebasePassword,
-  verifyMigratedFirebasePassword,
-  verifyPassword,
-} from "../workers/auth/firebase-migration-password";
+  workersFirebaseScrypt,
+} from "../../../auth/shared/firebase-scrypt.mjs";
 
-const OFFICIAL_FIREBASE_SAMPLE = Object.freeze({
-  config: {
-    algorithm: "SCRYPT",
-    base64_signer_key:
-      "jxspr8Ki0RYycVU8zykbdLGjFQ3McFUH0uiiTvC8pVMXAn210wjLNmdZJzxUECKbm0QsEmYUSDzZvpjeJ9WmXA==",
-    base64_salt_separator: "Bw==",
-    rounds: 8,
-    mem_cost: 14,
-  },
-  passwordSalt: "42xEC+ixf3L2lw==",
-  passwordHash:
-    "lSrfV15cpx95/sZS2W9c9Kp6i/LVgQNDNC/qzrCnh1SAyZvqmZqAjTdn3aoItz+VHjoZilo78198JAdRuid5lQ==",
-  password: "user1password",
-});
+import OFFICIAL_FIREBASE_SAMPLE from "../../../contracts/auth/firebase-scrypt.json";
 
 function envFor(config: typeof OFFICIAL_FIREBASE_SAMPLE.config) {
   return {
@@ -91,18 +79,20 @@ function passwordDatabase(
 
 describe("Firebase password migration", () => {
   it("verifies the password sample published by Firebase", async () => {
-    const config = parseFirebaseScryptConfig(OFFICIAL_FIREBASE_SAMPLE.config);
+    const config = workersFirebaseScrypt.parseConfig(
+      OFFICIAL_FIREBASE_SAMPLE.config,
+    );
     const hash = encodeFirebasePasswordHash(OFFICIAL_FIREBASE_SAMPLE, config);
 
     expect(isFirebasePasswordHash(hash)).toBe(true);
     await expect(
-      verifyMigratedFirebasePassword(
+      workersFirebaseScrypt.verify(
         { hash, password: OFFICIAL_FIREBASE_SAMPLE.password },
         envFor(OFFICIAL_FIREBASE_SAMPLE.config),
       ),
     ).resolves.toBe(true);
     await expect(
-      verifyMigratedFirebasePassword(
+      workersFirebaseScrypt.verify(
         { hash, password: "definitely-wrong" },
         envFor(OFFICIAL_FIREBASE_SAMPLE.config),
       ),
@@ -110,14 +100,16 @@ describe("Firebase password migration", () => {
   });
 
   it("fails closed when migration configuration is absent or mismatched", async () => {
-    const config = parseFirebaseScryptConfig(OFFICIAL_FIREBASE_SAMPLE.config);
+    const config = workersFirebaseScrypt.parseConfig(
+      OFFICIAL_FIREBASE_SAMPLE.config,
+    );
     const hash = encodeFirebasePasswordHash(OFFICIAL_FIREBASE_SAMPLE, config);
 
     await expect(
-      verifyMigratedFirebasePassword({ hash, password: "secret" }, {}),
+      workersFirebaseScrypt.verify({ hash, password: "secret" }, {}),
     ).rejects.toBeInstanceOf(FirebasePasswordMigrationConfigurationError);
     await expect(
-      verifyMigratedFirebasePassword(
+      workersFirebaseScrypt.verify(
         { hash, password: "secret" },
         {
           ...envFor(OFFICIAL_FIREBASE_SAMPLE.config),
@@ -143,19 +135,19 @@ describe("Firebase password migration", () => {
 
   it("rejects unsafe or incomplete Firebase scrypt parameters", () => {
     expect(() =>
-      parseFirebaseScryptConfig({
+      workersFirebaseScrypt.parseConfig({
         ...OFFICIAL_FIREBASE_SAMPLE.config,
         rounds: 9,
       }),
     ).toThrow(/rounds must be an integer/);
     expect(() =>
-      parseFirebaseScryptConfig({
+      workersFirebaseScrypt.parseConfig({
         ...OFFICIAL_FIREBASE_SAMPLE.config,
         rounds: 0,
       }),
     ).toThrow(/rounds must be an integer/);
     expect(() =>
-      parseFirebaseScryptConfig({
+      workersFirebaseScrypt.parseConfig({
         ...OFFICIAL_FIREBASE_SAMPLE.config,
         mem_cost: 18,
       }),
@@ -163,7 +155,7 @@ describe("Firebase password migration", () => {
     expect(() =>
       encodeFirebasePasswordHash(
         { passwordHash: "AQ==", passwordSalt: "Ag==" },
-        parseFirebaseScryptConfig(OFFICIAL_FIREBASE_SAMPLE.config),
+        workersFirebaseScrypt.parseConfig(OFFICIAL_FIREBASE_SAMPLE.config),
       ),
     ).toThrow(/hash length must match/);
   });

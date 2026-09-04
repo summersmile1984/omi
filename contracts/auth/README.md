@@ -62,5 +62,17 @@ actual local workerd+D1 both passed signup, JWT exchange, refresh and logout
 revocation; PG also passed account deletion through its existing smoke command.
 The hermetic Workers test exercises deletion fences and the real deletion route.
 These are identity-subsystem results, not the full SH-2/CI-1 product loop.
-Shared Firebase password implementation, complete migration/rotation acceptance,
-and the CLIENT-1 integration gate remain AUTH-1 work until recorded as passed.
+`auth/shared/firebase-scrypt.mjs` owns the Firebase modified-scrypt algorithm,
+credential envelope and fingerprint. Both importers and both auth adapters
+consume it. The explicit Server policy retains its previously accepted rounds
+and memory-cost range; Workers and its importer retain the 32 MiB estimated
+memory budget and maximum 8 rounds. Selecting Workers must reject an incompatible
+export before import, rather than accepting credentials the runtime cannot verify.
+Native Better Auth hashing and database updates remain target adapters.
+`firebase-scrypt.json` contains the unchanged
+[official Firebase test vector](https://github.com/firebase/scrypt#password-hashing),
+executed by both runtimes' contract tests. Shared contract selection includes
+both password suites and the D1 import suite, so a shared-module edit selects them.
+
+Complete migration/rotation acceptance and the CLIENT-1 integration gate remain
+AUTH-1 work until recorded as passed.

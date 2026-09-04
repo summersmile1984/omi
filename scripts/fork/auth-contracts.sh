@@ -9,7 +9,7 @@ for component in auth-server deploy/cloudflare; do
   fi
 done
 npm --prefix auth-server test
-(cd deploy/cloudflare && npm run typecheck && ./node_modules/.bin/vitest run tests/auth.test.ts tests/auth-mcp-oauth.test.ts)
+(cd deploy/cloudflare && npm run typecheck && ./node_modules/.bin/vitest run tests/auth.test.ts tests/auth-mcp-oauth.test.ts tests/firebase-migration-password.test.ts tests/identity-import.test.mjs tests/identity-import-dry-run.test.mjs)
 selection="$(mktemp)"
 trap 'rm -f "$selection"' EXIT
 printf '%s\n' fork/tests/test_auth_contract.py tests/unit/test_auth_shim.py > "$selection"

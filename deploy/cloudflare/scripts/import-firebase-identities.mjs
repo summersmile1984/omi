@@ -2,6 +2,11 @@
 // LIFECYCLE: permanent
 
 import { createHash } from "node:crypto";
+import {
+  workersFirebaseScrypt,
+  encodeFirebasePasswordHash,
+  FirebasePasswordMigrationConfigurationError,
+} from "../../../auth/shared/firebase-scrypt.mjs";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import path from "node:path";
@@ -50,9 +55,6 @@ const IMPORT_BATCH_SIZE = 50;
 const MAX_FIREBASE_EXPORT_BYTES = 64 * 1024 * 1024;
 const MAX_HASH_CONFIG_BYTES = 128 * 1024;
 const FILE_READ_CHUNK_BYTES = 64 * 1024;
-const MAX_MEM_COST = 18;
-const MAX_ROUNDS = 8;
-const MAX_ESTIMATED_SCRYPT_MEMORY_BYTES = 32 * 1024 * 1024;
 
 export class FirebaseIdentityMigrationError extends Error {
   constructor(message) {
@@ -122,113 +124,6 @@ function optionalBoolean(value, label, fallback = false) {
   return value;
 }
 
-function decodeBase64(value, label) {
-  const raw = requiredString(value, label);
-  const normalized = raw.replace(/-/g, "+").replace(/_/g, "/");
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
-    throw new FirebaseIdentityMigrationError(
-      `${label} must use a valid base64 alphabet`,
-    );
-  }
-  const decoded = Buffer.from(normalized, "base64");
-  if (
-    !decoded.length ||
-    decoded.toString("base64").replace(/=+$/, "") !==
-      normalized.replace(/=+$/, "")
-  ) {
-    throw new FirebaseIdentityMigrationError(
-      `${label} must be canonical base64`,
-    );
-  }
-  return decoded;
-}
-
-function positiveInteger(value, label, maximum) {
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > maximum) {
-    throw new FirebaseIdentityMigrationError(
-      `${label} must be an integer between 1 and ${maximum}`,
-    );
-  }
-  return parsed;
-}
-
-export function parseFirebaseImportScryptConfig(raw) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new FirebaseIdentityMigrationError(
-      "Firebase scrypt configuration must be an object",
-    );
-  }
-  const algorithm = String(raw.algorithm || "SCRYPT")
-    .trim()
-    .toUpperCase();
-  if (algorithm !== "SCRYPT") {
-    throw new FirebaseIdentityMigrationError(
-      `unsupported Firebase password algorithm ${algorithm || "<empty>"}`,
-    );
-  }
-  const signerKey = decodeBase64(
-    raw.base64_signer_key ?? raw.signerKey,
-    "base64_signer_key",
-  );
-  const saltSeparator = decodeBase64(
-    raw.base64_salt_separator ?? raw.saltSeparator,
-    "base64_salt_separator",
-  );
-  const rounds = positiveInteger(raw.rounds, "rounds", MAX_ROUNDS);
-  const memCost = positiveInteger(
-    raw.mem_cost ?? raw.memCost,
-    "mem_cost",
-    MAX_MEM_COST,
-  );
-  const estimatedMemory = 128 * 2 ** memCost * rounds;
-  if (estimatedMemory > MAX_ESTIMATED_SCRYPT_MEMORY_BYTES) {
-    throw new FirebaseIdentityMigrationError(
-      "Firebase scrypt parameters exceed the Workers password-verification memory budget",
-    );
-  }
-  const fingerprint = createHash("sha256")
-    .update("omi-firebase-scrypt-v1\0")
-    .update(signerKey)
-    .update("\0")
-    .update(saltSeparator)
-    .update(`\0${rounds}\0${memCost}`)
-    .digest("hex")
-    .slice(0, 24);
-  return Object.freeze({
-    signerKey,
-    saltSeparator,
-    rounds,
-    memCost,
-    fingerprint,
-  });
-}
-
-function encodeBase64Url(value) {
-  return value
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-}
-
-function encodeFirebasePasswordHash(credentials, config) {
-  const hash = decodeBase64(credentials.passwordHash, "passwordHash");
-  const salt = decodeBase64(credentials.passwordSalt, "passwordSalt");
-  if (hash.length !== config.signerKey.length) {
-    throw new FirebaseIdentityMigrationError(
-      "Firebase password hash length must match the signer key length",
-    );
-  }
-  return [
-    "firebase-scrypt-v1",
-    config.fingerprint,
-    encodeBase64Url(salt),
-    encodeBase64Url(hash),
-    "",
-  ].join("$");
-}
-
 function firebaseTimestamp(value, label, fallback = null) {
   if (value === undefined || value === null || value === "") {
     if (fallback) return fallback;
@@ -296,7 +191,9 @@ function normalizeProviderAccounts(user, userId, timestamps) {
     );
     if (unknown.length) {
       throw new FirebaseIdentityMigrationError(
-        `user ${userId}: providerUserInfo[${index}] contains unsupported fields: ${unknown.sort().join(", ")}`,
+        `user ${userId}: providerUserInfo[${index}] contains unsupported fields: ${unknown
+          .sort()
+          .join(", ")}`,
       );
     }
     const firebaseProvider = requiredString(
@@ -365,7 +262,9 @@ export function planFirebaseIdentityImport(source, hashConfig) {
     );
     if (unknown.length) {
       throw new FirebaseIdentityMigrationError(
-        `users[${index}] contains unsupported fields: ${unknown.sort().join(", ")}`,
+        `users[${index}] contains unsupported fields: ${unknown
+          .sort()
+          .join(", ")}`,
       );
     }
     const userId = requiredString(rawUser.localId, `users[${index}].localId`);
@@ -510,7 +409,9 @@ function assertRequiredSocialProviders(required, env) {
   const missing = [...required].filter((provider) => !configured.has(provider));
   if (missing.length) {
     throw new FirebaseIdentityMigrationError(
-      `identity import requires configured social providers: ${missing.sort().join(", ")}`,
+      `identity import requires configured social providers: ${missing
+        .sort()
+        .join(", ")}`,
     );
   }
 }
@@ -599,8 +500,8 @@ function identityBridgeRows(plan) {
         `user ${user.id}: identity projection timestamp is invalid`,
       );
     }
-    const accounts = [...(accountsByUser.get(user.id) || [])].sort((left, right) =>
-      left.id.localeCompare(right.id),
+    const accounts = [...(accountsByUser.get(user.id) || [])].sort(
+      (left, right) => left.id.localeCompare(right.id),
     );
     return {
       firebaseUid: user.id,
@@ -631,7 +532,10 @@ async function readIdentityBridgeRows(client) {
 
 function assertIdentityBridgeRows(actual, plan) {
   const expected = identityBridgeRows(plan);
-  if (actual.projections.length !== expected.length || actual.fences.length !== expected.length) {
+  if (
+    actual.projections.length !== expected.length ||
+    actual.fences.length !== expected.length
+  ) {
     throw new FirebaseIdentityMigrationError(
       "Firebase identity bridge projection/fence count does not match the export",
     );
@@ -649,7 +553,9 @@ function assertIdentityBridgeRows(actual, plan) {
       row.sourceRecordSha256 !== planned.sourceRecordSha256
     ) {
       throw new FirebaseIdentityMigrationError(
-        `Firebase identity projection conflicts for ${row.firebaseUid || "<unknown>"}`,
+        `Firebase identity projection conflicts for ${
+          row.firebaseUid || "<unknown>"
+        }`,
       );
     }
   }
@@ -898,7 +804,7 @@ async function applyDatabase(client, plan, sourceSha256) {
     sql: `INSERT OR IGNORE INTO cf_firebase_identity_projection
             (firebaseUid, betterAuthUserId, providersJson, sourceImportId,
              status, sourceUpdatedAt, updatedAt, sourceRecordSha256)
-          VALUES (?, ?, ?, ?, 'imported', ?, ?, ?)` ,
+          VALUES (?, ?, ?, ?, 'imported', ?, ?, ?)`,
     params: [
       row.firebaseUid,
       row.betterAuthUserId,
@@ -997,7 +903,9 @@ export function createCloudflareD1Client({
       "CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, and a valid CLOUDFLARE_D1_DATABASE_ID are required",
     );
   }
-  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/d1/database/${encodeURIComponent(databaseId)}/query`;
+  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(
+    accountId,
+  )}/d1/database/${encodeURIComponent(databaseId)}/query`;
 
   const execute = async (body) => {
     let response;
@@ -1160,7 +1068,7 @@ async function loadPlan(usersPath, hashConfigPath) {
   ]);
   const source = parseJson(usersRaw, "Firebase user export");
   const configDocument = parseJson(configRaw, "Firebase hash configuration");
-  const config = parseFirebaseImportScryptConfig(
+  const config = workersFirebaseScrypt.parseConfig(
     configDocument.hash_config ?? configDocument,
   );
   return {
@@ -1202,7 +1110,8 @@ async function main() {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
     const message =
-      error instanceof FirebaseIdentityMigrationError
+      error instanceof FirebaseIdentityMigrationError ||
+      error instanceof FirebasePasswordMigrationConfigurationError
         ? error.message
         : "identity migration failed";
     process.stderr.write(`${JSON.stringify({ error: message })}\n`);
