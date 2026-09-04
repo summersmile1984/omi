@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "FC-generated-output-follows-unowned-link",
+  "violated_contract": "A generated configuration writer must not follow pre-existing output links into paths outside its selected physical ownership boundary, including dangling leaves and linked ancestor directories.",
+  "canonical_prevention": "Inspect every existing entry from the selected output root through each destination with lstat before reading or writing. Reject output links except explicitly declared leaf links with exact source ownership, and exercise the production materializer with real filesystem layouts in both check and write modes.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/scripts/resource-bundle.mjs",
+    "deploy/cloudflare/tests/resource-plan.test.mjs"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/scripts/resource-bundle.mjs",
+    "deploy/cloudflare/tests/resource-plan.test.mjs"
+  ],
+  "status": "open"
+}
