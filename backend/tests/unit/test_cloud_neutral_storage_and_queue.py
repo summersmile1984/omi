@@ -24,14 +24,28 @@ def test_minio_client_reads_runtime_configuration(monkeypatch):
     monkeypatch.setattr(storage_minio, '_client', None)
     monkeypatch.setattr(storage_minio, '_client_config', None)
     monkeypatch.setenv('MINIO_ENDPOINT', 'http://minio-one:9000')
-    storage_minio.get_minio_client()
+    monkeypatch.setenv('MINIO_PUBLIC_ENDPOINT', 'https://objects.example')
+    monkeypatch.setenv('MINIO_ACCESS_KEY', 'synthetic-access')
+    monkeypatch.setenv('MINIO_SECRET_KEY', 'synthetic-secret')
+    monkeypatch.setenv('MINIO_REGION', 'us-east-1')
+    first = storage_minio.get_minio_client()
+    assert storage_minio.get_minio_client() is first
     monkeypatch.setenv('MINIO_ENDPOINT', 'http://minio-two:9000')
-    storage_minio.get_minio_client()
+    second = storage_minio.get_minio_client()
+    assert second is not first
+    monkeypatch.setenv('MINIO_PUBLIC_ENDPOINT', 'https://new-objects.example')
+    assert storage_minio.get_minio_client() is not second
 
     assert [config['endpoint_url'] for _, config in clients] == [
         'http://minio-one:9000',
+        'https://objects.example',
         'http://minio-two:9000',
+        'https://objects.example',
+        'http://minio-two:9000',
+        'https://new-objects.example',
     ]
+    assert all(config['aws_access_key_id'] == 'synthetic-access' for _, config in clients)
+    assert all(config['region_name'] == 'us-east-1' for _, config in clients)
 
 
 def test_redis_queue_deduplicates_and_uses_runtime_prefix(monkeypatch):
