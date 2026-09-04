@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "FC-request-validation-wire-class-erased",
+  "violated_contract": "A target adapter must preserve the canonical request-validation HTTP status and structured field errors; an input ValidationError must not be flattened into a generic domain 400 response.",
+  "canonical_prevention": "Use one response owner for Pydantic request errors and compare actual ASGI responses against the current upstream FastAPI request models. On 2026-09-04 the shared dual-target HTTP suite found an invalid POST /v1/action-items request returned 400 on Cloudflare and 422 on Server; six real ASGI regression cases fail before this repair.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/python/api-core/src/action_item_routes.py",
+    "deploy/cloudflare/python/api-core/tests/test_action_item_validation_contract.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/python/api-core/src/*routes.py",
+    "deploy/cloudflare/python/api-core/tests/test_*validation*.py"
+  ],
+  "status": "open"
+}
