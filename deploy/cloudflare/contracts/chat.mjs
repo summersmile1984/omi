@@ -217,6 +217,40 @@ try {
   );
   assert(history.every((row) => row.chat_session_id === A));
   pass("upstream-web-sse-utf8-persisted-pair");
+  const generated = (
+    await request("api", "/v1/app/generate", 200, {
+      bearer: owner,
+      method: "POST",
+      body: { prompt: "Build an Omi research assistant" },
+    })
+  ).data;
+  assert.equal(generated.app.name, "Omi Research");
+  assert(
+    generated.app.description.startsWith(
+      `You are an expert app designer for ${fixture.brand_runtime.display_name},`,
+    ),
+  );
+  assert(generated.app.chat_prompt.endsWith("Build an Omi research assistant"));
+  const goal = (
+    await request("api", "/v1/goals", 200, {
+      bearer: owner,
+      method: "POST",
+      body: {
+        title: "Omi research goal",
+        goal_type: "numeric",
+        target_value: 3,
+      },
+    })
+  ).data;
+  const advice = (
+    await request("api", `/v1/goals/${goal.id}/advice`, 200, { bearer: owner })
+  ).data.advice;
+  assert(advice.includes("GOAL: Omi research goal"));
+  assert(
+    advice.includes(`${fixture.brand_runtime.ai_persona_name}: Synthetic chat`),
+  );
+  await request("api", `/v1/goals/${goal.id}/advice`, 404, { bearer: other });
+  pass("configured-app-platform-and-goal-chat-persona");
   await send("Synthetic B private question", B);
   const again = await send("Synthetic A follow-up", A, {
     appId: "must-not-override-selected-app",

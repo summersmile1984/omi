@@ -128,6 +128,7 @@ def environment(responses=None):
         AI=FakeAi(responses),
         CONVERSATION_VECTORS=FakeVectorIndex(),
         INTERNAL_ASSERTION_SECRET=SECRET,
+        BRAND_RUNTIME_JSON=json.dumps({"brand_id": "omi-upstream", "display_name": "Omi", "ai_persona_name": "Omi"}),
         WORKERS_AI_SYNTHESIS_MODEL="test-goal-model",
         WORKERS_AI_VECTOR_MODEL="test-vector-model",
         FREE_CHAT_QUESTIONS_PER_MONTH="30",
@@ -370,3 +371,28 @@ def test_goal_progress_validation_no_active_goal_and_free_quota_gate():
     assert blocked.status_code == 402
     assert response_json(blocked)["detail"]["error"] == "quota_exceeded"
     assert env.AI.calls == []
+
+
+def test_goal_advice_labels_the_configured_persona_without_rewriting_chat_or_calling_with_missing_brand():
+    database, env = environment([{"advice": "Discuss Omi unchanged."}])
+    env.BRAND_RUNTIME_JSON = json.dumps({"brand_id": "atlas", "display_name": "Atlas", "ai_persona_name": "Mira"})
+    insert_goal(database)
+    database.connection.execute(
+        "INSERT INTO cf_chat_messages (uid, id, app_id, created_at, message_json) VALUES (?, 'brand-ai', NULL, 1, ?)",
+        (UID, json.dumps({"text": "Omi remains literal", "sender": "ai"})),
+    )
+    database.connection.commit()
+    result = asyncio.run(get_goal_advice(FakeRequest(env), "goal-run"))
+    assert result == {"advice": "Discuss Omi unchanged."}
+    assert "Mira: Omi remains literal" in env.AI.calls[-1][1]["messages"][1]["content"]
+    count = len(env.AI.calls)
+    for raw in [None, "{}"]:
+        env.BRAND_RUNTIME_JSON = raw
+        for operation in [
+            lambda: get_goal_advice(FakeRequest(env), "goal-run"),
+            lambda: get_current_goal_advice(FakeRequest(env)),
+        ]:
+            response = asyncio.run(operation())
+            assert response.status_code == 503
+            assert response_json(response) == {"error": "brand runtime is not configured"}
+        assert len(env.AI.calls) == count

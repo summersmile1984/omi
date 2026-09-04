@@ -190,9 +190,17 @@ plan/rebuild the Worker before use. An otherwise valid configuration retains the
 existing provider and storage error classification.
 
 This covers default text chat identity, not every white-label product surface.
-App-generation platform descriptions, share URL routing, OAuth/email templates
+Share URL routing, OAuth/email templates
 and the remaining CF4 route capabilities require their own owner verification.
 The old chat-share URL constant is not made correct by changing a display name.
+
+The app draft generator also formats its owned platform template with the
+configured product display name, preserving creator input and generated plugin
+text. Goal advice labels existing assistant chat lines with the configured AI
+persona. Both reject missing brand configuration before model/context work while
+keeping their existing provider-error behavior. The local contract exercises
+public app generation and goal creation/advice through real Core/AI/D1 and
+inference-only prompt echoes; remote vector retrieval quality is not qualified.
 
 
 `npm run resources -- --manifest /path/to/brand.json --inventory /path/to/resources.json --web-build /path/to/web-build --output /path/to/plan`

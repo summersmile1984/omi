@@ -8,6 +8,8 @@ import math
 import time
 import uuid
 
+from brand_runtime import BrandRuntime, load_brand_runtime
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
@@ -236,7 +238,7 @@ def _conversation_summary(row: dict[str, object], label: str, limit: int) -> str
     return f"[{label}] {overview}" if overview else None
 
 
-async def _goal_advice_context(env: object, uid: str, goal_title: str) -> dict[str, str]:
+async def _goal_advice_context(env: object, brand: BrandRuntime, uid: str, goal_title: str) -> dict[str, str]:
     summaries: list[str] = []
     seen_ids: set[str] = set()
     try:
@@ -292,7 +294,7 @@ async def _goal_advice_context(env: object, uid: str, goal_title: str) -> dict[s
             continue
         text = " ".join(str(message.get("text") or "").split())[:200]
         if text:
-            chat_lines.append(f"{'User' if message.get('sender') == 'human' else 'Omi'}: {text}")
+            chat_lines.append(f"{'User' if message.get('sender') == 'human' else brand.ai_persona_name}: {text}")
 
     memories = await _memory_rows(env, uid, limit=15)
     memory_lines = [str(row.get("content") or "")[:150] for row in memories if row.get("content")]
@@ -303,10 +305,10 @@ async def _goal_advice_context(env: object, uid: str, goal_title: str) -> dict[s
     }
 
 
-async def _advice_for_goal(env: object, uid: str, goal: dict[str, object]) -> str:
+async def _advice_for_goal(env: object, brand: BrandRuntime, uid: str, goal: dict[str, object]) -> str:
     title, current, target, _goal_type, _metric_value = _goal_values(goal)
     progress = current / target * 100 if target > 0 else 0.0
-    context = await _goal_advice_context(env, uid, title)
+    context = await _goal_advice_context(env, brand, uid, title)
     parsed = await _workers_ai_json(
         env,
         system=(
@@ -337,12 +339,16 @@ async def get_current_goal_advice(request: Request):
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     env = request.scope["env"]
+    try:
+        brand = load_brand_runtime(env)
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
     uid = str(context["uid"])
     try:
         goals = await _active_goals(env, uid)
         if not goals:
             return {"advice": "Set a goal to get personalized advice!"}
-        advice = await _advice_for_goal(env, uid, goals[0])
+        advice = await _advice_for_goal(env, brand, uid, goals[0])
     except Exception:
         return JSONResponse({"error": "goal advice unavailable"}, status_code=503)
     return {"advice": advice}
@@ -356,12 +362,16 @@ async def get_goal_advice(request: Request, goal_id: str):
     if not goal_id or len(goal_id) > 256:
         return JSONResponse({"detail": "Goal not found"}, status_code=404)
     env = request.scope["env"]
+    try:
+        brand = load_brand_runtime(env)
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
     uid = str(context["uid"])
     try:
         row = await env.APP_DB.prepare(_SELECT + "WHERE uid = ? AND id = ?").bind(uid, goal_id).first()
         if not isinstance(row, dict):
             return JSONResponse({"detail": "Goal not found"}, status_code=404)
-        advice = await _advice_for_goal(env, uid, row)
+        advice = await _advice_for_goal(env, brand, uid, row)
     except Exception:
         return JSONResponse({"error": "goal advice unavailable"}, status_code=503)
     return {"advice": advice}

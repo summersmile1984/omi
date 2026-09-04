@@ -11,6 +11,18 @@ export class Provider extends WorkerEntrypoint<{
       const reference = messages
         .filter((message) => message.role === "user")
         .map((message) => message.content);
+      if (
+        messages[0]?.content.startsWith("You are an expert app designer for ")
+      )
+        return {
+          response: JSON.stringify({
+            name: "Omi Research",
+            description: messages[0].content.split("\n")[0],
+            category: "other",
+            capabilities: ["chat"],
+            chat_prompt: reference.at(-1),
+          }),
+        };
       if (reference.at(-1) === "[fixture:provider-error]")
         throw new Error("controlled inference failure");
       const gate = /^\[fixture:wait:([0-9a-f-]{36})\]$/.exec(
@@ -32,6 +44,15 @@ export class Provider extends WorkerEntrypoint<{
             ? messages.map((message) => message.content).join("\n")
             : reference.join("\n")),
         usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+      };
+    }
+    const format = input.response_format as { json_schema?: { name?: string } };
+    if (format?.json_schema?.name === "omi_goal_advice") {
+      const messages = input.messages as { role: string; content: string }[];
+      return {
+        response: JSON.stringify({
+          advice: messages.find((message) => message.role === "user")?.content,
+        }),
       };
     }
     return {
