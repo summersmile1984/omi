@@ -11,7 +11,8 @@ function sessionAuthority(allowed = true, authority = "better-auth") {
       json: async () => ({
         uid: "user-1",
         authority,
-        sessionGeneration: authority === "better-auth" ? "session-1" : undefined,
+        sessionGeneration:
+          authority === "better-auth" ? "session-1" : undefined,
       }),
     })),
   };
@@ -370,73 +371,76 @@ describe("realtime gateway", () => {
     expect(pair?.client.sent).toEqual([]);
   });
 
-  it.each(["better-auth", "firebase"])("authenticates the admitted %s browser principal before opening ASR", async (authority) => {
-    installFakeWebSockets();
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const upstream = new FakeSocket();
-    const work: Promise<unknown>[] = [];
-    let providerUrl = "";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (request: Request | URL | string) => {
-        providerUrl = String(
-          request instanceof Request ? request.url : request,
-        );
-        return { webSocket: upstream } as unknown as Response;
-      }),
-    );
-    const session = new RealtimeSession(
-      {
-        waitUntil: (promise: Promise<unknown>) => {
-          work.push(promise);
-        },
-      } as unknown as DurableObjectState,
-      {
-        INTERNAL_ASSERTION_SECRET: "test-secret",
-        AUTH: sessionAuthority(true, authority),
-        ASR_WS_URL: "wss://asr.example/listen",
-        ASR_API_KEY: "provider-key",
-      } as never,
-    );
-    const response = await session.fetch(
-      new Request(
-        "https://realtime.test/v4/web/listen?language=en&sample_rate=16000&client_conversation_id=conversation-1",
-        { headers: { upgrade: "websocket", "x-request-id": "req-1" } },
-      ),
-    );
-    const pair = FakeWebSocketPair.last;
-    expect(response.status).toBe(101);
-    expect(pair?.server.sent).toEqual([]);
-    const replay = await session.fetch(
-      new Request("https://realtime.test/v4/web/listen", {
-        headers: { upgrade: "websocket" },
-      }),
-    );
-    expect(replay.status).toBe(409);
+  it.each(["better-auth", "firebase"])(
+    "authenticates the admitted %s browser principal before opening ASR",
+    async (authority) => {
+      installFakeWebSockets();
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const upstream = new FakeSocket();
+      const work: Promise<unknown>[] = [];
+      let providerUrl = "";
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (request: Request | URL | string) => {
+          providerUrl = String(
+            request instanceof Request ? request.url : request,
+          );
+          return { webSocket: upstream } as unknown as Response;
+        }),
+      );
+      const session = new RealtimeSession(
+        {
+          waitUntil: (promise: Promise<unknown>) => {
+            work.push(promise);
+          },
+        } as unknown as DurableObjectState,
+        {
+          INTERNAL_ASSERTION_SECRET: "test-secret",
+          AUTH: sessionAuthority(true, authority),
+          ASR_WS_URL: "wss://asr.example/listen",
+          ASR_API_KEY: "provider-key",
+        } as never,
+      );
+      const response = await session.fetch(
+        new Request(
+          "https://realtime.test/v4/web/listen?language=en&sample_rate=16000&client_conversation_id=conversation-1",
+          { headers: { upgrade: "websocket", "x-request-id": "req-1" } },
+        ),
+      );
+      const pair = FakeWebSocketPair.last;
+      expect(response.status).toBe(101);
+      expect(pair?.server.sent).toEqual([]);
+      const replay = await session.fetch(
+        new Request("https://realtime.test/v4/web/listen", {
+          headers: { upgrade: "websocket" },
+        }),
+      );
+      expect(replay.status).toBe(409);
 
-    await pair?.server.dispatch("message", {
-      data: JSON.stringify({
-        type: "auth",
-        token: productToken,
-        device_id_hash: "device-1",
-      }),
-    });
-    await Promise.all(work);
+      await pair?.server.dispatch("message", {
+        data: JSON.stringify({
+          type: "auth",
+          token: productToken,
+          device_id_hash: "device-1",
+        }),
+      });
+      await Promise.all(work);
 
-    expect(pair?.server.sent).toEqual([
-      JSON.stringify({ type: "auth_response", success: true }),
-      JSON.stringify({ type: "ready", provider: "external" }),
-    ]);
-    const target = new URL(providerUrl);
-    expect(target.searchParams.get("uid")).toBe("user-1");
-    expect(target.searchParams.get("device_id_hash")).toBe("device-1");
-    expect(target.searchParams.get("language")).toBe("en");
-    expect(target.searchParams.get("sample_rate")).toBe("16000");
-    const audio = new ArrayBuffer(4);
-    await pair?.server.dispatch("message", { data: audio });
-    await Promise.all(work);
-    expect(upstream.sent).toEqual([audio]);
-  });
+      expect(pair?.server.sent).toEqual([
+        JSON.stringify({ type: "auth_response", success: true }),
+        JSON.stringify({ type: "ready", provider: "external" }),
+      ]);
+      const target = new URL(providerUrl);
+      expect(target.searchParams.get("uid")).toBe("user-1");
+      expect(target.searchParams.get("device_id_hash")).toBe("device-1");
+      expect(target.searchParams.get("language")).toBe("en");
+      expect(target.searchParams.get("sample_rate")).toBe("16000");
+      const audio = new ArrayBuffer(4);
+      await pair?.server.dispatch("message", { data: audio });
+      await Promise.all(work);
+      expect(upstream.sent).toEqual([audio]);
+    },
+  );
 
   it.each([
     [
@@ -711,10 +715,7 @@ describe("realtime gateway", () => {
       releaseFast = resolve;
     });
     class GatedBlob extends Blob {
-      constructor(
-        parts: BlobPart[],
-        private readonly gate: Promise<void>,
-      ) {
+      constructor(parts: BlobPart[], private readonly gate: Promise<void>) {
         super(parts);
       }
 
@@ -822,7 +823,7 @@ describe("realtime gateway", () => {
     const upstream = new FakeSocket();
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({ webSocket: upstream }) as unknown as Response),
+      vi.fn(async () => ({ webSocket: upstream } as unknown as Response)),
     );
     const warning = vi
       .spyOn(console, "warn")
@@ -903,7 +904,7 @@ describe("realtime gateway", () => {
     const upstream = new FakeSocket();
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({ webSocket: upstream }) as unknown as Response),
+      vi.fn(async () => ({ webSocket: upstream } as unknown as Response)),
     );
     const work: Promise<unknown>[] = [];
     const database = meterDatabase();
@@ -954,7 +955,7 @@ describe("realtime gateway", () => {
     const upstream = new FakeSocket();
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({ webSocket: upstream }) as unknown as Response),
+      vi.fn(async () => ({ webSocket: upstream } as unknown as Response)),
     );
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const work: Promise<unknown>[] = [];
@@ -998,4 +999,96 @@ describe("realtime gateway", () => {
       expect.stringContaining('"outcome":"recovered"'),
     );
   });
+  it.each(["quota", "blob"])(
+    "drops old connection audio resumed after a %s await",
+    async (boundary) => {
+      installFakeWebSockets();
+      const providers = [new FakeSocket(), new FakeSocket()];
+      const fetchProvider = vi.fn(
+        async () =>
+          ({
+            webSocket: providers[fetchProvider.mock.calls.length - 1],
+          } as unknown as Response),
+      );
+      vi.stubGlobal("fetch", fetchProvider);
+      const work: Promise<unknown>[] = [];
+      let release!: () => void, entered!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const waiting = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let blockQuota = false;
+      const database = {
+        prepare: () => ({
+          bind: () => ({
+            first: async () => {
+              if (blockQuota) {
+                blockQuota = false;
+                entered();
+                await blocked;
+              }
+              return null;
+            },
+            run: async () => ({ success: true }),
+          }),
+        }),
+      };
+      const { state } = durableState(work);
+      const session = new RealtimeSession(
+        state as unknown as DurableObjectState,
+        {
+          INTERNAL_ASSERTION_SECRET: "test-secret",
+          ASR_WS_URL: "wss://asr.example/listen",
+          APP_DB: database,
+        } as never,
+      );
+      const connect = async (id: string) => {
+        const signed = await realtimeContext();
+        await session.fetch(
+          new Request(
+            `https://realtime.test/v4/listen?client_conversation_id=${id}`,
+            {
+              headers: {
+                upgrade: "websocket",
+                "x-omi-auth-context": signed!.encoded,
+                "x-omi-internal-signature": signed!.signature,
+              },
+            },
+          ),
+        );
+        await work.at(-1);
+        return FakeWebSocketPair.last!.server;
+      };
+      const old = await connect("old-recording");
+      let data: Blob | ArrayBuffer = new Uint8Array([91, 92]).buffer;
+      if (boundary === "quota") {
+        blockQuota = true;
+        vi.spyOn(Date, "now").mockReturnValue(Date.now() + 600000);
+      } else {
+        data = new Blob([data]);
+        vi.spyOn(data, "arrayBuffer").mockImplementation(async () => {
+          entered();
+          await blocked;
+          return new Uint8Array([91, 92]).buffer;
+        });
+      }
+      await old.dispatch("message", { data });
+      const pending = work.at(-1);
+      await waiting;
+      old.close();
+      await old.dispatch("close");
+      const current = await connect("new-recording");
+      release();
+      await pending;
+      expect(providers[1].sent).toEqual([]);
+      expect(current.readyState).toBe(FakeSocket.OPEN);
+      await current.dispatch("message", {
+        data: new Uint8Array([1, 2]).buffer,
+      });
+      await work.at(-1);
+      expect(providers[1].sent).toEqual([new Uint8Array([1, 2]).buffer]);
+    },
+  );
 });
