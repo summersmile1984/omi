@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "FC-subprocess-wrapper-drops-control-channel",
+  "violated_contract": "A subprocess wrapper must preserve every runtime control descriptor required by its caller, not only stdin/stdout/stderr. A worker that has started but cannot report readiness cannot be treated as an available deployment target.",
+  "canonical_prevention": "Resolve the native executable through the pinned workerd package API and exec it without the npm Node shim. A bounded real workerd HTTP readiness test exercises Miniflare control-fd 3. The 2026-09-04 isolated Cloudflare runner hung with both Wrangler CLI and TestHarness while direct internal HTTP answered 200; switching only to the package-native executable restored public readiness.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/scripts/python-worker.mjs",
+    "deploy/cloudflare/tests/python-worker.test.mjs"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/scripts/python-worker.mjs",
+    "deploy/cloudflare/scripts/workerd-python-cache.sh"
+  ],
+  "status": "open"
+}
