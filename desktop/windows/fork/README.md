@@ -60,9 +60,38 @@ Home 的 feedback/community 使用这些字段，空 community 隐藏；未提�
 合同，不继承上游 affiliate。About/托盘不提供 disabled updater 的 beta/feed/install
 入口。Name/Ask/goal 等 AI 表述使用 persona，产品/窗口/系统菜单使用 display name。
 
-此 stage 仍不是完整视觉白牌包：旧图标、其他页面/连接器的剩余文案、系统提示词、
+此 stage 仍不是完整视觉白牌包：其他页面/连接器的剩余文案、系统提示词、
 AI/provider UI 仍需后续品牌/能力包逐项生成和验收；扫描构建 UTF-8 与实际 UI 导出时
 须单列二进制、图标、字体的未扫描范围，不能把上游品牌自检当成无泄漏验收。
+
+## WL-5 品牌资产所有者
+
+`assets.mjs` 由同一个 `prepare.py` 入口执行，唯一输入为已校验 manifest 的
+`assets.icon_master`、`logo_light`、`logo_dark`。路径相对于 manifest 目录，禁止
+绝对路径、目录外引用和逃逸 symlink；每个文件至多16 MiB。当前只接静态8位PNG，
+每边最多2048像素，master必须是至少1024的正方形，logo每边至少32像素。
+损坏CRC、动画PNG、尾随数据、完全透明图片及缺失输入直接失败，不继承上游资产。
+现有upstream SVG占位输入不满足这个本地Electron合同。正式素材由品牌方提供；
+`tests/assets-fixture.mjs` 只生成临时的黑白H/N测试图，不生成正式品牌。
+
+校验全部通过后才生成资产。PNG缩放使用锁定pngjs解码和premultiplied-alpha
+插值，输出保留透明度；ICO包含16/24/32/48/64/128/256七帧。窗口与builder图标、
+托盘idle/listening/paused都来自同一个输入。托盘状态/菜单所有者不变，监听增加
+中性状态点，暂停降低透明度；原图标生成脚本在工件中明确拒绝运行，重新生成须
+重新prepare。旧PNG/ICO从stage退休。系统实际托盘显示与安装格式仍须对应OS验收。
+
+`BrandMark` 复用现有 `BrandImage` 的一次重试和GPU恢复。Login/About、内联连接器
+标记、思考指示器都消费light logo；LegacyHome白色头像底消费dark logo，保留原有
+圆形裁切。Orb的静态fallback和真实WebGL纹理消费同一light logo；构建时生成64×64
+premultiplied RGBA，运行时不另启Image/fetch异步所有者。纹理上传失败会释放纹理及
+构造器已分配资源，正常dispose随原renderer清理；不改OrbAnimator的时钟、speech
+门控、可见性、音量历史、重试和context recovery。shader用品牌图纹理替代八点外形，
+跟随原frame的旋转/genesis/failure pose，并用原barMix与waveBars转换为音量条；
+旧八点展开/圆盘变形外观不再是这个品牌叶子的效果，不能声称原像素形状完全不变。
+
+`build-manifest.json.assets` 与 `fork/asset-coverage.json` 同列输入hash/尺寸、每个
+生成产物hash及明确未消费的splash。本包没有Electron splash入口；也不将PNG/ICO
+产物宣称为签名、安装、macOS Dock、其他平台或全产品二进制泄漏清零证明。
 
 ## 命令与正式检查
 

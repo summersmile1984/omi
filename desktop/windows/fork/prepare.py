@@ -83,6 +83,13 @@ def prepare(manifest, target, output):
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, dest)
     shutil.copytree(COMPONENT / 'fork', stage / 'fork', ignore=shutil.ignore_patterns('__pycache__'))
+    asset_input = output / 'asset-input.json'
+    asset_input.write_text(json.dumps(brand['assets']))
+    subprocess.run(
+        ['node', str(COMPONENT / 'fork/assets.mjs'), str(manifest.parent), str(asset_input), str(stage)],
+        check=True,
+        cwd=COMPONENT,
+    )
     (stage / 'fork/native/profile.generated.ts').write_text(
         'export const profile = ' + json.dumps(profile, indent=2) + ' as const\n'
     )
@@ -95,6 +102,7 @@ def prepare(manifest, target, output):
         'stage': 'local',
         'identity': identity,
         'profile': profile,
+        'assets': json.loads((stage / 'fork/asset-coverage.json').read_text()),
         'reviewed_source_owners': owners,
         'fork_source_hashes': {
             str(p.relative_to(COMPONENT / 'fork')): hashlib.sha256(p.read_bytes()).hexdigest()

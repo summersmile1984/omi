@@ -9,7 +9,7 @@ import tempfile
 from prepare import ROOT, COMPONENT, load_module, prepare
 
 
-def synthetic_manifest():
+def synthetic_manifest(directory, variant='harbor'):
     render = load_module('electron_ci_profiles', ROOT / 'scripts/profiles/render.py')
     value = copy.deepcopy(render.load_manifest('omi-upstream', ROOT))
     value['brand'].update(
@@ -22,6 +22,10 @@ def synthetic_manifest():
     for key in ('docs', 'help', 'feedback', 'privacy', 'terms', 'status', 'community'):
         value['domains'][key] = f'https://desktop.example.invalid/{key}'
     value['identifiers']['windows_app_id'] = 'test.synthetic.desktop'
+    subprocess.run(['node', str(COMPONENT / 'fork/tests/assets-fixture.mjs'), str(directory), variant], check=True)
+    value['assets'].update(
+        {name: f'assets/{variant}-{name}.png' for name in ('icon_master', 'logo_light', 'logo_dark')}
+    )
     value['deployments'] = {
         target: {
             'local': {
@@ -42,7 +46,7 @@ def check_matrix():
         root = Path(temp)
         manifest = root / 'brand.json'
         for target in ('self_hosted', 'cloudflare'):
-            value = synthetic_manifest()
+            value = synthetic_manifest(root, 'harbor' if target == 'self_hosted' else 'field')
             if target == 'cloudflare':
                 value['brand'].update(display_name='Field <Guide> & "Co"', ai_persona_name='Robin & "R"')
                 value['domains']['community'] = ''
