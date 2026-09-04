@@ -11,7 +11,7 @@
 checks:
   - id: fork-auth-contracts
     command: ["bash", "scripts/fork/auth-contracts.sh"]
-    triggers: ["auth/**", "auth-server/**", "deploy/self-host/auth-runtime.mjs", "contracts/auth/**", "backend/utils/auth_shim.py", "backend/fork/tests/test_auth_contract.py", "backend/tests/unit/test_auth_shim.py", "deploy/cloudflare/workers/auth/**", "deploy/cloudflare/tests/auth*.ts", "scripts/fork/auth-contracts.sh"]
+    triggers: ["runtime/shared/**", "auth/**", "auth-server/**", "deploy/self-host/auth-runtime.mjs", "contracts/auth/**", "backend/utils/auth_shim.py", "backend/fork/tests/test_auth_contract.py", "backend/tests/unit/test_auth_shim.py", "deploy/cloudflare/workers/auth/**", "deploy/cloudflare/tests/auth*.ts", "scripts/fork/auth-contracts.sh"]
     lanes: ["local", "ci"]
     reason: "Shared production claims/session contract catches wrong issuer/audience acceptance shipped in self-host PR #7 and prevents divergent Workers/PG JWT revocation behavior."
 
@@ -23,7 +23,7 @@ checks:
 
   - id: fork-cloudflare-routes
     command: ["bash", "deploy/cloudflare/ci/routes.sh"]
-    triggers: ["deploy/cloudflare/**", "backend/main.py", "backend/routers/**", "backend/scripts/export_openapi.py", "backend/scripts/openapi_runner.sh", "backend/openapi-requirements.txt"]
+    triggers: ["runtime/shared/**", "deploy/cloudflare/**", "backend/main.py", "backend/routers/**", "backend/scripts/export_openapi.py", "backend/scripts/openapi_runner.sh", "backend/openapi-requirements.txt"]
     lanes: ["local", "ci"]
     reason: "the merged M2 command invoked a removed upstream export surface, leaving 36 new route identities outside the inventory; exercise real FastAPI registrations and Core/Edge handlers before release"
 

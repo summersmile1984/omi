@@ -1,4 +1,4 @@
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import {
   BASIC_MONTHLY_TRANSCRIPTION_SECONDS,
   FAIR_USE_CLASSIFIER_MODEL,

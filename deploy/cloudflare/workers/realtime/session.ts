@@ -5,7 +5,7 @@ import {
   type FairUseUsage,
 } from "../shared/fair-use-meter";
 import { readFairUseRestriction } from "../shared/fair-use-enforcement";
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import { defaultStreamingPolicy } from "../shared/provider-policy";
 import { verifyBearer } from "../shared/session-authority";
 import { enforceSessionAdmission } from "../shared/realtime-admission";

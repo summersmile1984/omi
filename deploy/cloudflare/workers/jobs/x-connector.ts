@@ -1,6 +1,6 @@
 import type { Context, Hono } from "hono";
 import type { SignedAuthContext } from "../shared/auth-context";
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import type { JobsEnv } from "./env";
 
 const AUTHORIZE_URL = "https://x.com/i/oauth2/authorize";

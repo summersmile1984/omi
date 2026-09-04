@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import pg from "pg";
 import { hashPassword, verifyPassword } from "./firebase-migration-password.js";
 import { buildSocialProviders } from "./social-providers.js";
+import { firebasePasswordUpgradeHook } from "./firebase-password-upgrade.js";
 
 export const PORT = process.env.PORT || 3000;
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
@@ -43,11 +44,11 @@ if (IS_PRODUCTION) {
   ].filter((name) => !process.env[name]?.trim());
   if (required.length)
     throw new Error(
-      `Production auth configuration missing: ${required.join(", ")}`
+      `Production auth configuration missing: ${required.join(", ")}`,
     );
   if (SECRET === DEV_SECRET || SECRET.length < 32)
     throw new Error(
-      "BETTER_AUTH_SECRET must be a non-development secret of at least 32 characters"
+      "BETTER_AUTH_SECRET must be a non-development secret of at least 32 characters",
     );
   if (DEV_ISSUER_SECRET)
     throw new Error("AUTH_DEV_ISSUER_SECRET must be unset in production");
@@ -57,11 +58,11 @@ if (IS_PRODUCTION) {
     TRUSTED_ORIGINS.some(
       (origin) =>
         new URL(origin).hostname === "localhost" ||
-        new URL(origin).hostname === "127.0.0.1"
+        new URL(origin).hostname === "127.0.0.1",
     )
   ) {
     throw new Error(
-      "Production trusted origins must not contain loopback hosts"
+      "Production trusted origins must not contain loopback hosts",
     );
   }
 }
@@ -73,7 +74,7 @@ const jwksAdapter = {
   async getJwks() {
     const result = await pool.query(
       `SELECT id, "publicKey", "privateKey", "createdAt", "expiresAt", alg, crv
-       FROM "jwks"`
+       FROM "jwks"`,
     );
     return result.rows;
   },
@@ -93,7 +94,7 @@ const jwksAdapter = {
         webKey.expiresAt || null,
         webKey.alg || null,
         webKey.crv || publicJwk.crv || null,
-      ]
+      ],
     );
     return result.rows[0];
   },
@@ -112,6 +113,7 @@ export const authOptions = {
     },
   },
   socialProviders: buildSocialProviders(),
+  hooks: { after: firebasePasswordUpgradeHook(pool) },
   user: {
     deleteUser: { enabled: true },
   },

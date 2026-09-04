@@ -1,4 +1,4 @@
-import { recordFallback } from "./fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 
 // Per-uid admission budget for new realtime sessions. Session Durable Objects
 // are named by the client-supplied x-omi-session-id, so without this window a

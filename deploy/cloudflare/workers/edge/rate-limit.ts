@@ -1,5 +1,5 @@
 import type { AuthContext } from "../shared/auth-context";
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import type { EdgeEnv } from "./env";
 
 export type RateLimitResult = {

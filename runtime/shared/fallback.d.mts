@@ -1,10 +1,11 @@
 export type FallbackOutcome = "recovered" | "degraded" | "exhausted";
 
-export type WorkerFallbackEvent = {
+export type FallbackEvent = {
   component: "rate_limit" | "stt" | "other";
   from:
     | "durable_object"
     | "d1"
+    | "postgres"
     | "fcm"
     | "workers_ai_streaming"
     | "workers_ai_classifier"
@@ -32,16 +33,4 @@ export type WorkerFallbackEvent = {
   requestId?: string;
 };
 
-export function recordFallback(event: WorkerFallbackEvent): void {
-  console.warn(
-    JSON.stringify({
-      event: "fallback",
-      component: event.component,
-      from: event.from,
-      to: event.to,
-      reason: event.reason,
-      outcome: event.outcome,
-      ...(event.requestId ? { request_id: event.requestId } : {}),
-    }),
-  );
-}
+export function recordFallback(event: FallbackEvent): void;

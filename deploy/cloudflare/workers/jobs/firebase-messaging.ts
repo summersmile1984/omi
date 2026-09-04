@@ -1,4 +1,4 @@
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import type { JobsEnv } from "./env";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";

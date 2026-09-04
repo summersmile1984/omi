@@ -9,6 +9,7 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY auth-server/auth.ts ./auth.ts
 COPY auth-server/src ./src
 COPY auth/shared /app/auth/shared
+COPY runtime/shared /app/runtime/shared
 COPY deploy/self-host/auth-runtime.mjs ./self-host-runtime.mjs
 
 ARG OMI_SOURCE_GIT_COMMIT=unattributed

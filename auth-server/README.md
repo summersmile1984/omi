@@ -86,7 +86,13 @@ the auth boundary and is never copied into PostgreSQL or an import receipt.
 Imported password accounts store an envelope containing the per-user salt and
 hash plus a non-secret configuration fingerprint. Better Auth verifies those
 passwords locally with Firebase's modified-scrypt algorithm; new passwords
-continue to use Better Auth's native scrypt format.
+continue to use Better Auth's native scrypt format. A successful email sign-in
+upgrades an imported credential to that native format. The PostgreSQL owner
+re-verifies the current envelope and conditionally updates that exact hash,
+so a concurrent password reset/import or account deletion keeps its newer state.
+Upgrade persistence failure preserves the already verified session and legacy
+credential for retry on the next login; shared `recordFallback` emits a bounded
+`postgres` event without user, password, hash, or SQL details.
 
 Run the normal schema migrator first, then validate, apply, and verify the exact
 immutable export:

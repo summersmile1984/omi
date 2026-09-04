@@ -5,7 +5,7 @@ import {
   AUTH_SIGNATURE_HEADER,
   createSignedAuthContext,
 } from "../shared/auth-context";
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import {
   ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS,
   ACCOUNT_DELETION_CHAT_FILES_PREFIX_PATTERNS,

@@ -14,7 +14,7 @@ import {
   createSignedAuthContext,
   type SignedAuthContext,
 } from "../shared/auth-context";
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import { validAccountDeletionUid } from "./account-deletion-residual";
 import { appLogoObjectKey, appLogoUrl } from "./app-logo";
 import type { JobsEnv } from "./env";
