@@ -60,6 +60,10 @@ Dynamic document paths must also be admitted: execute their business owners
 through `fork/tests/schema_firestore.py` in `test_pg_owner_inventory.py`, already
 registered in the startup local/CI lane. A literal collection scan alone misses
 the onboarding and legal-hold paths that caused the recorded local incidents.
+Both fork-owned Docker context filters exclude local `.openapi-venv` and
+`backend/_temp` state as well as `.venv`. The existing Fork Checks workflow runs
+`deploy/self-host/ci/build_context.py` locally and in CI using offline scratch
+Docker builds; keep real runtime sources in both contexts.
 
 - Self-host auth consumers are patched before importing upstream routers. Preserve
   the shim's authority-unavailable classification: HTTP dependencies return 503

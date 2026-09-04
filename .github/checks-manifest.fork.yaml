@@ -9,6 +9,12 @@
 # which `scripts/fork/preflight` and `.github/workflows/fork-checks.yml` both do.
 # Every entry declares both lanes, as the upstream runner's validator requires.
 checks:
+  - id: fork-selfhost-build-context
+    command: ["python3", "deploy/self-host/ci/build_context.py"]
+    triggers: ["backend/Dockerfile.dockerignore", "deploy/self-host/Dockerfile.dockerignore", "deploy/self-host/ci/build_context.py"]
+    lanes: ["local", "ci"]
+    reason: "Actual 2026-09-04 self-host images copied the 581MB local OpenAPI venv and 110MB test scratch directory; an offline scratch Docker build exercises both real context filters and preserves runtime sources. This uses the builder's matcher instead of another ignore parser."
+
   - id: fork-macos-native-identity
     command: ["bash", "desktop/macos/fork/test.sh"]
     triggers: ["backend/fork/model_contract.py", "desktop/macos/fork/**", "desktop/macos/Desktop/**", "deploy/profiles/**", "scripts/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
