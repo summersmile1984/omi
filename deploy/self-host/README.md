@@ -1,5 +1,28 @@
 # Self-host production profile
 
+## Current main startup boundary (SH-1)
+
+Use `operations.sh self-check` for startup source closure and `operations.sh start`
+with a reviewed environment file. Startup always builds the unchanged upstream
+backend runtime (`BACKEND_RUNTIME_IMAGE`), then the fork-only Dockerfile layer
+with a generated profile and source commit/tree labels. Set `SELF_HOST_STAGE`
+and `SELF_HOST_BRAND_MANIFEST` (a repository-relative public manifest); the
+manifest endpoints and `PUBLIC_*` environment values must agree. `SELF_HOST_STAGE`
+is `production`, `beta`, or `local`; Python derives its upstream env stage.
+
+The API runs `fork.main:app`; queue consumers run `python -m fork.worker`, which
+validates per-queue credentials and supervises child failures. Self-host API and worker processes
+require schema v3, installed by `python -m fork.migrate migrate`.
+
+**Startup admission is separate from full product/cutover acceptance.** The
+historical runbooks below still depend on unfinished provider and migration
+control-plane tools from the earlier target branch. In particular, source-write
+freeze/reconcile tools and the production Firestore import CLI are not shipped
+yet; `zero-vendor-acceptance.sh --self-check` remains nonzero until that closure
+is restored. Do not treat the startup self-check as a zero-vendor, full API, or
+production cutover authorization. The dated Server action plan tracks these
+remaining boundaries.
+
 This is the production entry point for a deployment that keeps identity, data,
 queues, object storage, vectors, LLM routing, embeddings, and pre-recorded STT
 behind operator-owned boundaries. It is separate from `dev/docker-compose.dev.yml`:

@@ -6,14 +6,15 @@ conflicts on an upstream sync.
 
 ## Cloud-neutral runtime switches
 
-The self-hosted deployment selects adapters through environment variables that
-are read at call boundaries, never at import time:
+The image contains one generated target/stage/brand table. `fork.bootstrap`
+admits the API or worker before workload import, then projects the selected row
+into the environment switches consumed at adapter call boundaries:
 
 | Variable | Effect |
 |---|---|
 | `FIRESTORE_PG_DSN` | Routes **both** customer and compute data through the `firestore_pg` PostgreSQL facade. Never split one process between PostgreSQL and Firestore. |
 | `STORAGE_BACKEND=minio` | Selects the GCS-compatible MinIO adapter instead of Google Cloud Storage. |
-| `QUEUE_BACKEND=redis` | Selects the Redis worker queue instead of Cloud Tasks; workers authenticate with `QUEUE_REDIS_WORKER_SECRET`. |
+| `QUEUE_BACKEND=redis` | Selects the Redis worker queue instead of Cloud Tasks; each queue authenticates with its `QUEUE_REDIS_{SYNC,AUDIO_MERGE,ACCOUNT_DELETION,FINALIZATION}_WORKER_SECRET`. |
 | `AUTH_PROVIDER=better_auth` | Verifies asymmetric JWTs fetched from `AUTH_JWKS_URL` instead of Firebase ID tokens. |
 
 `get_firestore_client()` from `database._client` remains the only supported way
@@ -34,3 +35,16 @@ Do not modify upstream files under `backend/`. Fork behavior belongs in
 fork-owned modules and is attached at startup; see
 [`dev/unified-main/00-upstream-touch-policy.md`](../dev/unified-main/00-upstream-touch-policy.md)
 for the technique catalog and the allowlist that CI enforces.
+
+## Explicit startup and schema admission
+
+Use `uvicorn fork.main:app` for the API and `python -m fork.worker` for all queue
+consumers. Do not install a `sitecustomize` hook: ordinary import errors there do
+not stop Python. The worker does not import ASGI or model providers and exits if
+any child consumer stops. Its `--check` command checks PG admission and Redis.
+
+Run `python -m fork.migrate migrate` once before either serving process; use
+`check` for read-only validation. New static collections require a new explicit
+schema version, never edits to v1/v2's frozen collection sets. The image and
+startup runner are `deploy/self-host/Dockerfile` and `build-images.sh`; upstream
+`backend/Dockerfile` remains the dependency/source base. See `fork/README.md`.

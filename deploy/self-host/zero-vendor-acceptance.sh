@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PY="${PYTHON:-$ROOT/backend/.venv/bin/python}"
-CHECKER="$ROOT/.github/scripts/check_self_host_deployment.py"
+CHECKER="$ROOT/deploy/self-host/check-config.py"
 OPS="$ROOT/deploy/self-host/operations.sh"
 COMPOSE_WRAPPER="$ROOT/deploy/self-host/compose-clean-env.sh"
 E2E_RUNNER="$ROOT/backend/testing/e2e/run.sh"

@@ -1,3 +1,9 @@
+> Current startup CLI: `python -m fork.migrate migrate|check` from `backend/`.
+> Schema v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
+> and `frame_requests` without changing v1/v2 mappings. The historical source
+> import/cutover CLI below is not yet shipped on unified main; do not execute its
+> example until the source-freeze/authority tooling is restored and verified.
+
 # firestore_pg — PostgreSQL shim for `google.cloud.firestore`
 
 A drop-in replacement for the Google Cloud Firestore client that backs the Omi
@@ -53,8 +59,8 @@ tables or indexes. Run migration and its read-only admission check before any
 backend or worker process:
 
 ```bash
-python scripts/firestore_pg_migrate.py migrate
-python scripts/firestore_pg_migrate.py check
+python -m fork.migrate migrate
+python -m fork.migrate check
 ```
 
 The migration uses a PostgreSQL advisory transaction lock and records every

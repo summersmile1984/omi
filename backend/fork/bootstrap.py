@@ -1,0 +1,103 @@
+"""Explicit process admission shared by the API and queue worker.
+
+Importing this module has no side effects. Entrypoints call bootstrap before
+importing their workload; an exception therefore terminates the real process.
+"""
+
+from __future__ import annotations
+
+import importlib
+import logging
+import os
+from dataclasses import dataclass
+from enum import Enum
+from functools import lru_cache
+
+from . import profile
+from .patches import collect
+from .registry import build_registry
+
+
+class Role(str, Enum):
+    API = 'api'
+    WORKER = 'worker'
+
+
+@dataclass(frozen=True)
+class Admission:
+    name: str
+    target: str
+    role: Role
+    patches: tuple[str, ...]
+
+
+def _require(name: str, minimum: int = 1) -> str:
+    value = os.environ.get(name, '').strip()
+    if len(value) < minimum:
+        raise profile.ProfileError(f'{name} is required (minimum {minimum} characters)')
+    return value
+
+
+def _bind(name: str, value: str) -> None:
+    existing = os.environ.get(name, '').strip()
+    if existing and existing != value:
+        raise profile.ProfileError(f'{name} conflicts with the selected deployment profile')
+    os.environ[name] = value
+
+
+def _require_modules(names: tuple[str, ...]) -> None:
+    for name in names:
+        try:
+            importlib.import_module(name)
+        except ImportError as error:
+            raise profile.ProfileError(f'missing runtime dependency: {name}') from error
+
+
+@lru_cache(maxsize=None)
+def bootstrap(role: Role = Role.API) -> Admission:
+    row = profile.current()
+    if row['target'] == 'omi_cloud':
+        if role != Role.API:
+            raise profile.ProfileError('the fork queue worker requires a self_hosted profile')
+        return Admission(row['name'], row['target'], role, ())
+    if row['target'] != 'self_hosted':
+        raise profile.ProfileError('this Python runtime supports self_hosted; cloudflare runs Workers')
+
+    expected = {'store': 'firestore_pg', 'object_store': 'minio', 'queue': 'redis', 'cache': 'redis'}
+    for name, value in expected.items():
+        if row.get('data_plane', {}).get(name) != value:
+            raise profile.ProfileError(f'self_hosted data_plane.{name} must be {value}')
+    _bind('OMI_DEPLOYMENT_TARGET', 'self_hosted')
+    stages = {'production': 'prod', 'beta': 'dev', 'local': 'local'}
+    if row.get('stage') not in stages:
+        raise profile.ProfileError('self_hosted requires a production, beta, or local stage')
+    _bind('OMI_ENV_STAGE', stages[row['stage']])
+    _bind('AUTH_PROVIDER', row['identity_provider'])
+    _bind('STORAGE_BACKEND', 'minio')
+    _bind('QUEUE_BACKEND', 'redis')
+    _require('FIRESTORE_PG_DSN')
+    _require('REDIS_DB_HOST')
+    _require('REDIS_DB_PASSWORD')
+    _require_modules(('sqlalchemy', 'psycopg', 'redis', 'httpx'))
+
+    if role == Role.API:
+        _require('ENCRYPTION_SECRET', 32)
+        _require('AUTH_JWKS_URL')
+        _require_modules(('jwt', 'boto3'))
+        registry = build_registry(collect()).apply(row)
+        applied = tuple(registry.applied)
+        from .queue_config import QUEUES
+
+        for queue in QUEUES:
+            queue.validate()
+    else:
+        # The consumer uses Redis directly, not the upstream producer/storage
+        # factories. Do not import ASGI routers and model providers in a worker.
+        applied = ()
+
+    from firestore_pg.migrations import check_schema
+
+    check_schema()
+    result = Admission(row['name'], row['target'], role, applied)
+    logging.getLogger(__name__).info('fork admitted %s role=%s patches=%s', result.name, role.value, applied)
+    return result

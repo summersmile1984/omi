@@ -52,4 +52,32 @@ def patches() -> List[Patch]:
             reason="operator-run deployments have no Cloud Tasks; the Redis worker takes the same payloads",
         )
         for name in ENQUEUE_SEAMS
+    ] + [
+        Patch(
+            name="queue.worker-authentication",
+            module="utils.cloud_tasks",
+            attribute="_verify_redis_worker",
+            build=_route_worker_auth,
+            applies_to=_uses_redis_queue,
+            reason="each Redis queue accepts only its configured worker credential",
+        )
     ]
+
+
+def _route_worker_auth(original: Callable[..., Any]) -> Callable[..., Any]:
+    def verify(request: Any) -> int:
+        import os
+        import secrets
+
+        from fastapi import HTTPException
+
+        from ..queue_config import QUEUES
+
+        queue = next((q for q in QUEUES if q.path == request.url.path), None)
+        expected = os.environ.get(queue.secret_env, '') if queue is not None else ''
+        presented = request.headers.get('x-omi-queue-secret', '')
+        if len(expected) < 32 or not secrets.compare_digest(expected.encode(), presented.encode()):
+            raise HTTPException(status_code=403, detail='Invalid Redis worker secret')
+        return 0
+
+    return verify
