@@ -12,7 +12,7 @@ is `production`, `beta`, or `local`; Python derives its upstream env stage.
 
 The API runs `fork.main:app`; queue consumers run `python -m fork.worker`, which
 validates per-queue credentials and supervises child failures. Self-host API and worker processes
-require schema v3, installed by `python -m fork.migrate migrate`.
+require schema v4 (including legal-hold authorities), installed by `python -m fork.migrate migrate`.
 
 **Startup admission is separate from full product/cutover acceptance.** The
 historical runbooks below still depend on unfinished provider and migration

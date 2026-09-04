@@ -1,5 +1,5 @@
 > Current startup CLI: `python -m fork.migrate migrate|check` from `backend/`.
-> Schema v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
+> Schema v4 additionally registers legal-hold and deletion-gate authorities; v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
 > and `frame_requests` without changing v1/v2 mappings. The historical source
 > import/cutover CLI below is not yet shipped on unified main; do not execute its
 > example until the source-freeze/authority tooling is restored and verified.
@@ -251,3 +251,41 @@ reconciles count/content hashes, then runs the live PG suite and 29-scenario
 emulator shadow diff. Production enablement still requires the repository-wide
 deployment gate, backups, live source freeze, and rollback—not merely setting
 `FIRESTORE_PG_DSN` on one process.
+
+
+## Self-hosted account deletion
+
+`fork.patches.account_deletion` attaches the upstream worker's existing database
+seams to `fork.account_deletion`. `firestore_pg.erasure` deletes registered
+`users/<uid>` namespaces (including orphaned descendants), the root user row,
+and top-level rows whose explicit `uid` or `user_uid` owns them. Conflicting
+owner fields fail before any deletion; document IDs own `users` rows. The
+entire erasure uses one database transaction. It does not infer ownership from
+arbitrary field names, provider identifiers, object keys or Auth SQL tables.
+
+Top-level `account_deletions`, `account_deletion_receipts`, `legal_holds` and
+`legal_hold_deletion_gates` are control authorities and survive the row wipe.
+Schema v4 provisions the legal-hold collections used by upstream dynamic paths,
+without changing any v1–v3 mapping. The upstream worker finishes its legal-hold
+lease after receipt publication; these control records have a separate
+retention policy and are not a claim that every UID has disappeared from PG.
+
+Completion requires no residual owned rows and no outstanding late VM cleanup.
+One serializable transaction replaces the private UID-keyed active marker with
+an HMAC-keyed receipt containing only schema version, status, opaque job ID and
+time. Retryable late provider cleanup can reopen a minimal active marker with
+the same job ID. Status, task resolution and stale mutation paths consume that
+same authority; a receipt never restores account access. Legacy principals with
+no marker/receipt remain admissible, and legacy running markers without job IDs
+receive a generated opaque ID when completed. Malformed receipts fail closed.
+
+Receipt HMACs domain-separate the deployment's `ENCRYPTION_SECRET` (at least 32
+bytes). Preserve this key: changing it without an explicit receipt/data
+migration makes existing receipt identities unresolvable. Key rotation is not
+implemented by changing the environment variable.
+
+Hermetic guards: `fork/tests/test_account_deletion.py` (the existing fork startup
+local/CI check includes it). Live guards: `firestore_pg/tests/test_transaction_semantics.py`
+with a disposable `FIRESTORE_PG_DSN`. The live worker test isolates external
+providers; production Better Auth deletion, vector/object purge, backups and
+provider races require their own contracts before full account-deletion signoff.

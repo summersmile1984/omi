@@ -62,6 +62,10 @@ def db():
         }
     )
 
+    from fork.patches.account_deletion import patches
+    from fork.registry import build_registry
+
+    build_registry(patches()).apply({'target': 'self_hosted'})
     client = firestore.Client(project="demo-omi-local")
     yield client
     # best-effort cleanup of this suite's namespace
@@ -217,6 +221,7 @@ def test_client_collections_only_enumerates_live_top_level_namespaces(db):
 
 def test_account_deletion_reconciles_user_tree_and_top_level_owned_rows(db):
     from database import users as users_db
+    from firestore_pg.erasure import count_user_owned_rows
 
     uid = 'pg-account-delete-user'
     other_uid = f'{uid}-other'
@@ -227,9 +232,9 @@ def test_account_deletion_reconciles_user_tree_and_top_level_owned_rows(db):
     db.collection('pg_global_jobs').document('other').set({'uid': other_uid, 'state': 'pending'})
     db.collection('account_deletions').document(uid).set({'wipe_status': 'running'})
 
-    assert users_db.count_user_owned_rows(uid) == 4
+    assert count_user_owned_rows(uid) == 4
     assert users_db.delete_user_data(uid)['status'] == 'ok'
-    assert users_db.count_user_owned_rows(uid) == 0
+    assert count_user_owned_rows(uid) == 0
     assert db.collection('pg_global_jobs').document('other').get().exists
     assert db.collection('account_deletions').document(uid).get().exists
 
@@ -238,13 +243,12 @@ def test_account_deletion_completion_replaces_private_marker_atomically(db, monk
     from google.cloud import firestore
 
     from database import users as users_db
-    from database.account_deletion_policy import account_deletion_receipt_id
-    from database.account_deletion_transitions import mark_wipe_completed, record_late_agent_vm_cleanup
+    from fork.account_deletion import receipt_id
 
     monkeypatch.setenv('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
     uid = 'pg-account-delete-receipt-user'
     active = db.collection('account_deletions').document(uid)
-    receipt = db.collection('account_deletion_receipts').document(account_deletion_receipt_id(uid))
+    receipt = db.collection('account_deletion_receipts').document(receipt_id(uid))
     active.delete()
     receipt.delete()
     active.set(
@@ -257,7 +261,7 @@ def test_account_deletion_completion_replaces_private_marker_atomically(db, monk
         }
     )
 
-    assert mark_wipe_completed(db.transaction(), active, receipt, 'unused-generated-id') is True
+    assert users_db.mark_user_deletion_wipe_completed(uid) is True
     assert not active.get().exists
     receipt_data = receipt.get().to_dict()
     assert set(receipt_data) == {'schema_version', 'wipe_status', 'wipe_job_id', 'wipe_completed_at'}
@@ -271,13 +275,13 @@ def test_account_deletion_completion_replaces_private_marker_atomically(db, monk
     # A provider resource arriving after completion reopens only the active
     # cleanup authority. Once that work is cleared, redelivery returns to the
     # same minimal receipt and removes the UID-keyed row again.
-    assert record_late_agent_vm_cleanup(db.transaction(), active, receipt, 'omi-agent-late', 'us-central1-a', '707')
+    assert users_db.record_late_agent_vm_cleanup(uid, 'omi-agent-late', 'us-central1-a', '707')
     reopened = active.get().to_dict()
     assert reopened['wipe_status'] == 'failed'
     assert reopened['wipe_job_id'] == 'opaque-job-id'
     assert {'uid', 'reason', 'reason_details'}.isdisjoint(reopened)
     active.update({'late_agent_vm_cleanup': firestore.DELETE_FIELD})
-    assert mark_wipe_completed(db.transaction(), active, receipt, 'unused-generated-id') is True
+    assert users_db.mark_user_deletion_wipe_completed(uid) is True
     assert not active.get().exists
     assert set(receipt.get().to_dict()) == {'schema_version', 'wipe_status', 'wipe_job_id', 'wipe_completed_at'}
 
@@ -468,3 +472,109 @@ def test_explicit_provision_rejects_populated_unknown_legacy_collection(db):
         provision_collections(['pg_legacy_future'])
     with get_engine().begin() as conn:
         conn.execute(text("DROP TABLE pg_legacy_future"))
+
+
+def test_account_deletion_preserves_legal_hold_lease_and_rejects_stale_reopening(db, monkeypatch):
+    from database import legal_holds, users
+    from firestore_pg.erasure import count_user_owned_rows
+    from fork.account_deletion import receipt_id
+
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
+    uid = 'pg-legal-gated-delete'
+    active = db.collection('account_deletions').document(uid)
+    receipt = db.collection('account_deletion_receipts').document(receipt_id(uid))
+    gate = db.collection('legal_hold_deletion_gates').document(uid)
+    for ref in (active, receipt, gate):
+        ref.delete()
+    active.set({'wipe_status': 'running', 'wipe_job_id': 'pg-legal-job'})
+    # A missing intermediate document must not hide its descendants from erasure.
+    db.document(f'users/{uid}/future_nested/missing/future_nested_data/orphan').set({'private': True})
+    legal_holds.acquire_destructive_operation(
+        uid, kind='account_deletion', token='opaque-worker-lease', firestore_client=db
+    )
+    assert count_user_owned_rows(uid) == 1
+    assert users.delete_user_data(uid)['status'] == 'ok'
+    assert gate.get().to_dict()['state'] == 'running'
+    assert users.mark_user_deletion_wipe_completed(uid)
+    legal_holds.finish_destructive_operation(
+        uid, kind='account_deletion', token='opaque-worker-lease', outcome='completed', firestore_client=db
+    )
+    assert gate.get().to_dict()['state'] == 'completed'
+    users.mark_user_deletion_wipe_running(uid)
+    users.mark_user_deletion_wipe_failed(uid)
+    users.set_user_deletion_feedback(uid, 'stale private feedback')
+    users.cancel_user_deletion_wipe(uid)
+    assert users.mark_user_deletion_billing_failed(uid, 'subscription', 'stale failure') is False
+    assert users.mark_user_deletion_wipe_intent(uid) == {'wipe_job_id': 'pg-legal-job', 'dispatch_claimed': False}
+    assert users.get_user_deletion_wipe_status(uid) == 'completed'
+    assert not active.get().exists
+    for ref in (receipt, gate):
+        ref.delete()
+
+
+def test_account_deletion_pg_fault_rolls_back_receipt_and_keeps_private_authority(db, monkeypatch):
+    from database import users
+    from firestore_pg.engine import get_engine
+    from firestore_pg.migrations import collection_table_name
+    from fork.account_deletion import receipt_id
+    from sqlalchemy import event
+
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
+    uid = 'pg-delete-receipt-fault'
+    active = db.collection('account_deletions').document(uid)
+    receipt = db.collection('account_deletion_receipts').document(receipt_id(uid))
+    receipt.delete()
+    original = {'wipe_status': 'running', 'wipe_job_id': 'fault-job', 'reason': 'synthetic private feedback'}
+    active.set(original)
+
+    def fail(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().startswith(f'DELETE FROM {collection_table_name("account_deletions")}'):
+            raise RuntimeError('synthetic marker deletion failure')
+
+    engine = get_engine()
+    event.listen(engine, 'before_cursor_execute', fail)
+    try:
+        with pytest.raises(RuntimeError, match='synthetic marker'):
+            users.mark_user_deletion_wipe_completed(uid)
+    finally:
+        event.remove(engine, 'before_cursor_execute', fail)
+    assert active.get().to_dict() == original
+    assert not receipt.get().exists
+    active.delete()
+
+
+def test_real_wipe_worker_uses_pg_authority_with_isolated_provider_seams(db, monkeypatch):
+    from database import users
+    from fork.account_deletion import receipt_id
+    from services.users import account_deletion as worker
+
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
+    uid = 'pg-worker-delete-fixture'
+    active = db.collection('account_deletions').document(uid)
+    receipt = db.collection('account_deletion_receipts').document(receipt_id(uid))
+    gate = db.collection('legal_hold_deletion_gates').document(uid)
+    for ref in (active, receipt, gate):
+        ref.delete()
+    active.set({'wipe_status': 'pending', 'wipe_job_id': 'pg-worker-job', 'reason': 'synthetic feedback'})
+    db.collection('users').document(uid).set({'email': 'synthetic@example.invalid'})
+    called = []
+    for name in (
+        '_cancel_subscription_for_account_deletion',
+        'delete_agent_vm_for_account',
+        'delete_account_credentials',
+        'delete_user_caller_ids',
+        '_delete_memory_maintenance_registry',
+    ):
+        monkeypatch.setattr(worker, name, lambda current_uid, name=name: called.append(name))
+    monkeypatch.setattr(worker.auth, 'delete_account', lambda current_uid: called.append('identity'))
+    monkeypatch.setattr(
+        worker, 'purge_derived_user_data', lambda current_uid: {'required_failures': [], 'best_effort_failures': []}
+    )
+    monkeypatch.setattr(worker, '_emit_deletion_telemetry', lambda *args, **kwargs: None)
+    assert worker.background_wipe_user_data(uid) is True
+    assert len(called) == 6
+    assert users.get_user_deletion_wipe_status(uid) == 'completed'
+    assert not active.get().exists and not db.collection('users').document(uid).get().exists
+    assert gate.get().to_dict()['state'] == 'completed'
+    for ref in (receipt, gate):
+        ref.delete()

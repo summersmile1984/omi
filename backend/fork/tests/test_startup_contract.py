@@ -121,9 +121,10 @@ def test_worker_bootstrap_does_not_import_asgi_or_model_modules():
             bootstrap.bootstrap.cache_clear()
 
 
-def test_migration_v3_admits_current_inventory_and_preserves_mapping():
+def test_migration_v4_admits_current_inventory_and_preserves_mapping():
     assert set(migrations.known_collections()) == migrations._declared_known_collections()
-    assert migrations.LATEST_SCHEMA_VERSION == 3
+    assert migrations.LATEST_SCHEMA_VERSION == 4
+    assert migrations.STATIC_HASHED_COLLECTION_IDS_V4 == {'legal_holds', 'legal_hold_deletion_gates'}
     assert migrations.STATIC_HASHED_COLLECTION_IDS_V3 == {
         'chat_first_dead_letters',
         'conversation_keyframe_jobs',

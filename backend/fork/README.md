@@ -2,7 +2,7 @@
 
 `python -m fork.migrate migrate` is the only schema-changing startup process.
 It requires an explicit `FIRESTORE_PG_DSN`; `check` performs read-only admission.
-Schema v3 registers frame requests/keyframe jobs and chat-first dead letters;
+Schema v4 adds legal-hold/deletion-gate authorities; v3 registers frame requests/keyframe jobs and chat-first dead letters;
 v1/v2 physical table mappings remain immutable.
 
 `uvicorn fork.main:app` calls `bootstrap(Role.API)` before importing upstream's
@@ -44,3 +44,11 @@ impersonation. AUTH-1 owns cryptography and the session-revocation authority.
 `auth_transport.py` ensures self-host retryable WebSocket errors (1013) cross the
 actual upgrade boundary: accept then immediately close, with no application data.
 Other close classifications and the upstream mode retain their existing policy.
+
+
+Self-host account deletion is owned by `account_deletion.py` and
+`firestore_pg/erasure.py`, attached through `patches/account_deletion.py` before
+upstream routers/services import. The marker-to-receipt transaction, receipt-aware
+status and retries must evolve together; do not add missing historical aliases
+to upstream modules. See `../firestore_pg/README.md` for ownership, key retention,
+control-state exclusions and live-versus-hermetic verification boundaries.
