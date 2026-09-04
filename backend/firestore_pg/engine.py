@@ -68,6 +68,8 @@ KNOWN_COLLECTIONS = frozenset(
         'account_cutover',
         'account_deletion_receipts',
         'account_deletions',
+        'legal_holds',
+        'legal_hold_deletion_gates',
         'action_items',
         'agentVmMigrations',
         'agentVmLeases',

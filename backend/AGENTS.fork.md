@@ -45,7 +45,7 @@ any child consumer stops. Its `--check` command checks PG admission and Redis.
 
 Run `python -m fork.migrate migrate` once before either serving process; use
 `check` for read-only validation. New static collections require a new explicit
-schema version, never edits to v1/v2's frozen collection sets. The image and
+schema version, never edits to prior frozen collection sets. The image and
 startup runner are `deploy/self-host/Dockerfile` and `build-images.sh`; upstream
 `backend/Dockerfile` remains the dependency/source base. See `fork/README.md`.
 
@@ -57,3 +57,12 @@ startup runner are `deploy/self-host/Dockerfile` and `build-images.sh`; upstream
   app accepts then closes only a retryable 1013 handshake so real clients receive
   the close code instead of Uvicorn HTTP 403. `fork/tests/test_auth_consumers.py`
   exercises the real dependencies through ASGI.
+
+
+- Self-host deletion changes use `fork/account_deletion.py` and
+  `firestore_pg/erasure.py`; the patch registry binds existing public users seams.
+  Keep receipt publication, access gating and retry mutations under one owner.
+  The startup local/CI gate runs `fork/tests/test_account_deletion.py`; exercise
+  `firestore_pg/tests/test_transaction_semantics.py` separately against disposable
+  PG for actual serialization/worker evidence. Never interpret provider stubs or
+  a minimal completion receipt as proof of complete external-account erasure.

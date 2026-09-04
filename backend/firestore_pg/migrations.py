@@ -24,7 +24,7 @@ from database.firestore_index_registry import INDEX_REQUIREMENTS
 from .engine import KNOWN_COLLECTIONS, create_composite_indexes, get_engine
 from .sql import build_ddl, resolve_collection
 
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 MIGRATION_LOCK_ID = 7_362_737_641_104_927_311
 MIGRATION_TABLE = 'firestore_pg_schema_migrations'
 COLLECTION_TABLE = 'firestore_pg_collections'
@@ -191,6 +191,10 @@ STATIC_HASHED_COLLECTION_IDS_V2 = frozenset(
 STATIC_HASHED_COLLECTION_IDS_V3 = frozenset({'chat_first_dead_letters', 'conversation_keyframe_jobs', 'frame_requests'})
 
 
+# The upstream legal-hold owner uses dynamic document paths, invisible to literal collection scans.
+STATIC_HASHED_COLLECTION_IDS_V4 = frozenset({'legal_holds', 'legal_hold_deletion_gates'})
+
+
 class SchemaNotCurrent(RuntimeError):
     """The database has not been admitted by the explicit migration owner."""
 
@@ -213,7 +217,12 @@ def _declared_known_collections() -> set[str]:
 
 
 def _assert_known_inventory_versioned() -> None:
-    versioned = LEGACY_RAW_COLLECTION_IDS_V1 | STATIC_HASHED_COLLECTION_IDS_V2 | STATIC_HASHED_COLLECTION_IDS_V3
+    versioned = (
+        LEGACY_RAW_COLLECTION_IDS_V1
+        | STATIC_HASHED_COLLECTION_IDS_V2
+        | STATIC_HASHED_COLLECTION_IDS_V3
+        | STATIC_HASHED_COLLECTION_IDS_V4
+    )
     declared = _declared_known_collections()
     added = declared - versioned
     if added:
@@ -232,7 +241,12 @@ def known_collections() -> tuple[str, ...]:
     """Return every frozen statically-known production collection ID."""
     _assert_known_inventory_versioned()
     return tuple(
-        sorted(LEGACY_RAW_COLLECTION_IDS_V1 | STATIC_HASHED_COLLECTION_IDS_V2 | STATIC_HASHED_COLLECTION_IDS_V3)
+        sorted(
+            LEGACY_RAW_COLLECTION_IDS_V1
+            | STATIC_HASHED_COLLECTION_IDS_V2
+            | STATIC_HASHED_COLLECTION_IDS_V3
+            | STATIC_HASHED_COLLECTION_IDS_V4
+        )
     )
 
 
@@ -377,6 +391,13 @@ def migrate(engine: Optional[Engine] = None) -> SchemaStatus:
             conn.execute(
                 text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (3, :name)'),
                 {'name': 'frame_requests_and_chat_first_dead_letters'},
+            )
+        if 4 not in applied:
+            for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V4):
+                _register_collection(conn, collection_id)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (4, :name)'),
+                {'name': 'account_deletion_legal_hold_authorities'},
             )
     return check_schema(engine)
 
