@@ -41,6 +41,7 @@ export class AuthSession {
   private session: string | null = null;
   private user: AppUser | null = null;
   private jwt: { token: string; expires: number } | null = null;
+  private authEpoch = 0;
   private restoring: Promise<void> | null = null;
   private refreshing: { session: string; promise: Promise<string | null> } | null = null;
   private listeners = new Set<(user: AppUser | null) => void>();
@@ -120,22 +121,30 @@ export class AuthSession {
 
   async restore(): Promise<void> {
     if (!this.restoring) {
-      this.restoring = this.restoreStored().catch((error) => {
-        this.restoring = null;
-        throw error;
-      });
+      const epoch = this.authEpoch;
+      const restoring = this.restoreStored(epoch).then(
+        () => {
+          if (epoch !== this.authEpoch && this.restoring === restoring)
+            this.restoring = null;
+        },
+        (error) => {
+          if (this.restoring === restoring) this.restoring = null;
+          throw error;
+        },
+      );
+      this.restoring = restoring;
     }
     return this.restoring;
   }
 
-  private async restoreStored() {
+  private async restoreStored(epoch: number) {
     const saved = this.dependencies.storage.getItem(this.storageKey);
     if (!saved) return;
     this.session = saved;
     try {
       const response = await this.request('get-session', undefined, saved);
       const body = (await response.json()) as { user?: unknown } | null;
-      if (this.session !== saved) return;
+      if (this.session !== saved || epoch !== this.authEpoch) return;
       const user = userFromResponse(body?.user);
       if (!user) this.clear();
       else this.publish(user);
@@ -154,8 +163,10 @@ export class AuthSession {
   }
 
   private async authenticate(path: string, credentials: object) {
+    const epoch = ++this.authEpoch;
     const response = await this.request(path, credentials);
     const body = (await response.json()) as { user?: unknown };
+    this.assertOwner(epoch);
     const user = userFromResponse(body.user);
     const session = response.headers.get('set-auth-token');
     if (!user || !session)
@@ -171,7 +182,9 @@ export class AuthSession {
   }
 
   async signOut(): Promise<void> {
+    const epoch = ++this.authEpoch;
     await this.restore();
+    this.assertOwner(epoch);
     const session = this.session;
     if (session) {
       try {
@@ -180,8 +193,16 @@ export class AuthSession {
         if (!(error instanceof AuthRequestError) || error.status !== 401) throw error;
       }
     }
-    // A delayed logout cannot erase a newer sign-in.
-    if (!this.session || this.session === session) this.clear();
+    this.assertOwner(epoch);
+    this.clear();
+  }
+
+  private assertOwner(epoch: number) {
+    if (epoch !== this.authEpoch)
+      throw new AuthRequestError(
+        409,
+        'A newer sign-in or sign-out replaced this request.',
+      );
   }
 
   async getToken(forceRefresh = false): Promise<string | null> {
