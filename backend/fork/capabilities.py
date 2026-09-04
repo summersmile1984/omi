@@ -40,10 +40,15 @@ def push_not_delivered(*args, **kwargs):
     from utils.observability.fallback import record_fallback
 
     record_fallback(
-        component='push', from_mode='send', to_mode='disabled', reason='dispatch_disabled', outcome='degraded'
+        component='pusher', from_mode='send', to_mode='disabled', reason='dispatch_disabled', outcome='degraded'
     )
     return 0
 
 
 async def push_not_delivered_async(*args, **kwargs):
     return push_not_delivered(*args, **kwargs)
+
+
+def push_notification_not_delivered(*args, **kwargs):
+    """Void notification callers get no delivery claim or cooldown side effect."""
+    push_not_delivered()

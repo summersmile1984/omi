@@ -89,3 +89,55 @@ def test_admission_rejects_unsupported_enabled_capability():
         validate(
             {'capabilities': {'stt_providers': ['sensevoice'], 'tts_provider': 'disabled', 'push_provider': 'disabled'}}
         )
+
+
+def test_real_byok_error_entrypoints_cannot_bypass_disabled_delivery_or_set_cooldown(monkeypatch, caplog):
+    import asyncio
+    from utils import byok
+    from utils.llm import byok_errors
+
+    class RejectedKey(Exception):
+        status_code = 401
+
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted.local')
+    before_keys, before_uid = byok.get_byok_keys(), byok.get_byok_uid()
+    before_validated = byok.has_validated_byok_keys()
+    byok.set_validated_byok_keys({'openai': 'synthetic-existing-enrolled-key'}, 'existing-principal')
+    try:
+        # The production handler has no profile capability check: even with
+        # self_hosted selected, an already-enrolled request reaches this owner.
+        with mock.patch.object(byok_errors, '_send_byok_llm_error_notification') as reached:
+            byok_errors.handle_llm_error(RejectedKey('synthetic failure'), 'openai')
+            reached.assert_called_once_with('existing-principal', 'openai', 'invalid')
+        with ExitStack() as stack:
+            for patch in patches():
+                module, original = patch.target()
+                stack.enter_context(mock.patch.object(module, patch.attribute, patch.build(original)))
+            attempts = [
+                stack.enter_context(mock.patch.object(owner, name))
+                for owner, name in (
+                    (byok_errors.messaging, 'send_each'),
+                    (byok_errors.notification_db, 'get_all_tokens'),
+                    (byok_errors.notification_db, 'remove_bulk_tokens'),
+                    (byok_errors, 'try_acquire_byok_llm_error_notification_lock'),
+                    (byok_errors, 'release_byok_llm_error_notification_lock'),
+                )
+            ]
+            byok_errors.handle_llm_error(RejectedKey('synthetic failure'), 'openai')
+            asyncio.run(byok_errors.handle_llm_error_async(RejectedKey('synthetic failure'), 'openai'))
+            assert byok_errors._send_byok_llm_error_notification('existing-principal', 'openai', 'invalid') is None
+            for attempt in attempts:
+                attempt.assert_not_called()
+        events = [record.message for record in caplog.records if 'omi_fallback_event' in record.message]
+        assert len(events) == 3
+        assert all('component=pusher' in message and 'to=disabled' in message for message in events)
+        assert not any(
+            'BYOK LLM notification sent' in record.message or 'already sent recently' in record.message
+            for record in caplog.records
+        )
+    finally:
+        if before_validated:
+            byok.set_validated_byok_keys(before_keys, before_uid)
+        else:
+            byok.set_byok_keys(before_keys)
+            byok.set_byok_uid(before_uid)
