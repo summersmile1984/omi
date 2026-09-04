@@ -122,3 +122,8 @@ proof that this context is unreachable. Disabled errors neither look up/prune
 FCM tokens nor acquire a cooldown, and retain the upstream void return without
 logging a successful delivery. Shared telemetry uses its registered `pusher`
 component. The real sync/async error handlers are covered by the startup suite.
+
+The startup lane also executes the older fork-owned cloud-neutral storage/queue
+fixture. MinIO fixtures declare internal/public origins, credentials and region
+explicitly and check both transfer and signer cache refresh; inherited ambient
+configuration is never a substitute for the current runtime contract.
