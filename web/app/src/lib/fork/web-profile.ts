@@ -63,6 +63,13 @@ export function mcpServerUrl(): string {
   return `${webProfile().mcp_base_url.replace(/\/$/, '')}/v1/mcp/sse`;
 }
 
+export function directModelProvidersEnabled(): boolean {
+  const enabled = webProfile().capabilities.allow_direct_model_providers;
+  if (typeof enabled !== 'boolean')
+    throw new Error('The direct model provider capability is missing.');
+  return enabled;
+}
+
 export function productName(): string {
   const name = process.env.NEXT_PUBLIC_OMI_PRODUCT_NAME?.trim();
   if (!name) throw new Error('The Web product name is missing.');
