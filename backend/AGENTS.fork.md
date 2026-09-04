@@ -30,6 +30,13 @@ auth-server `/auth-issue` development bridge must stay disabled unless it is
 protected by `AUTH_DEV_ISSUER_SECRET`, and it must never be reachable in a
 production deployment.
 
+The self-host deletion worker's existing `endpoints.delete_account` seam calls
+`fork/auth_identity.py`, using the same trusted internal origin/secret as live
+session verification. A missing user is accepted only after exact zero counts
+for users, sessions and accounts; final receipt publication checks again.
+Unknown responses and outages retain retryable deletion state. See
+`fork/tests/test_auth_identity.py` and the shared AUTH local/CI lane.
+
 ## Fork discipline
 
 Do not modify upstream files under `backend/`. Fork behavior belongs in

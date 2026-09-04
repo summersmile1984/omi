@@ -41,6 +41,16 @@ activates for self_hosted; omi_cloud keeps the upstream Firebase/admin behavior.
 Self-host identity always comes from the validated shim, never ADMIN_KEY prefix
 impersonation. AUTH-1 owns cryptography and the session-revocation authority.
 
+`auth_identity.py` replaces the existing worker's Firebase deletion call for
+self_hosted only. It shares `auth_shim.internal_authority()` with live-session
+verification. A successful deletion or explicit user-not-found response must
+be followed by exact zero `users`/`sessions`/`accounts` counts. The final
+`provider_guard.complete` wrapper repeats identity proof before the PG receipt
+transaction. Provider purge remains its own phase; it does not delete identity.
+Lost responses, malformed counts, wrong credentials and outages raise a bounded
+retryable error. The unchanged worker records failure and retries its durable
+intent. This does not certify other provider families or every PG writer.
+
 `auth_transport.py` ensures self-host retryable WebSocket errors (1013) cross the
 actual upgrade boundary: accept then immediately close, with no application data.
 Other close classifications and the upstream mode retain their existing policy.

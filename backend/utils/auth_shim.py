@@ -153,8 +153,8 @@ def verify_id_token(token: str, **_: Any) -> Dict[str, Any]:
     return claims
 
 
-def _verify_active_session(token: str, uid: str, sid: str) -> None:
-    """A valid signature does not survive logout or account deletion."""
+def internal_authority() -> tuple[str, str]:
+    """One trusted internal origin/credential for session and identity operations."""
     base_url = os.getenv("AUTH_SERVER_INTERNAL_URL", "").rstrip("/")
     secret = os.getenv("AUTH_INTERNAL_ADMIN_SECRET", "")
     parsed = urlsplit(base_url)
@@ -170,6 +170,12 @@ def _verify_active_session(token: str, uid: str, sid: str) -> None:
         or (parsed.scheme != "https" and not (parsed.scheme == "http" and allow_http))
     ):
         raise CertificateFetchError("A trusted internal auth URL and secret are required")
+    return base_url, secret
+
+
+def _verify_active_session(token: str, uid: str, sid: str) -> None:
+    """A valid signature does not survive logout or account deletion."""
+    base_url, secret = internal_authority()
     try:
         response = httpx.post(
             f"{base_url}/internal/verify",

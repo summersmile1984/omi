@@ -76,6 +76,8 @@ def _first_message_consumer(original: Callable) -> Callable:
 
 
 def patches() -> list[Patch]:
+    from ..auth_identity import delete_account
+
     return [
         Patch(
             name=f'auth.{attribute}',
@@ -83,7 +85,7 @@ def patches() -> list[Patch]:
             attribute=attribute,
             build=build,
             applies_to=_self_hosted,
-            reason='auth authority outages must remain retryable through HTTP and WebSocket consumers',
+            reason='selected identity authority preserves retryable failures and proven revocation across consumers',
         )
         for attribute, build in (
             ('verify_token', _verify_token),
@@ -91,5 +93,6 @@ def patches() -> list[Patch]:
             ('get_current_user_uid_no_byok_validation', _http_consumer),
             ('_get_ws_auth_close', _ws_failure),
             ('get_current_user_uid_from_ws_message', _first_message_consumer),
+            ('delete_account', lambda original: delete_account),
         )
     ]

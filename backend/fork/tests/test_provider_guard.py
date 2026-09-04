@@ -31,14 +31,20 @@ def test_existing_principal_can_write_but_receipt_blocks_every_consumer(monkeypa
 
 
 def test_completion_proof_failure_preserves_receipt_authority(monkeypatch):
+    from fork import auth_identity
+
     monkeypatch.setattr(owner, 'account_lock', lambda *args, **kwargs: nullcontext())
+    identity = mock.Mock()
+    monkeypatch.setattr(auth_identity, 'assert_erased', identity)
     complete = mock.Mock(return_value=True)
     monkeypatch.setattr(owner, 'assert_erased', mock.Mock(side_effect=RuntimeError('residual')))
     with pytest.raises(RuntimeError):
         owner.complete(complete)('owner')
     complete.assert_not_called()
+    identity.assert_not_called()
     monkeypatch.setattr(owner, 'assert_erased', mock.Mock())
     assert owner.complete(complete)('owner') is True
+    identity.assert_called_once_with('owner')
 
 
 def test_provider_failure_is_required_and_keeps_upstream_failure(monkeypatch):

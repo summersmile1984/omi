@@ -111,8 +111,11 @@ def assert_erased(uid):
 def complete(original):
     @wraps(original)
     def run(uid):
+        from .auth_identity import assert_erased as assert_identity_erased
+
         with account_lock(uid, destructive=True):
             assert_erased(uid)
+            assert_identity_erased(uid)
             return original(uid)
 
     return run

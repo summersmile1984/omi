@@ -12,5 +12,5 @@ npm --prefix auth-server test
 (cd deploy/cloudflare && npm run typecheck && ./node_modules/.bin/vitest run tests/auth.test.ts tests/auth-mcp-oauth.test.ts tests/firebase-migration-password.test.ts tests/identity-import.test.mjs tests/identity-import-dry-run.test.mjs)
 selection="$(mktemp)"
 trap 'rm -f "$selection"' EXIT
-printf '%s\n' fork/tests/test_auth_contract.py tests/unit/test_auth_shim.py > "$selection"
+printf '%s\n' fork/tests/test_auth_contract.py fork/tests/test_auth_identity.py tests/unit/test_auth_shim.py > "$selection"
 PYTHON="$root/backend/.venv/bin/python" BACKEND_UNIT_TEST_FILE_LIST="$selection" bash backend/test.sh
