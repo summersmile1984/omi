@@ -13,4 +13,11 @@ if admission.target == 'self_hosted':
 
     from .capability_transport import install as install_capabilities
 
-    install_capabilities(app)
+    from .profile import current
+
+    row = current()
+    install_capabilities(app, row)
+    if row.get('speech'):
+        from .speech_transport import install as install_speech
+
+        install_speech(app)

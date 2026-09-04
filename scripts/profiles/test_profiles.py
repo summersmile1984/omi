@@ -85,8 +85,9 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(row["embedding"]["dimension"], 1024)
         self.assertTrue(row["embedding"]["manifest_digest"].startswith("sha256:"))
         self.assertTrue(row["embedding"]["artifact_digest"].startswith("sha256:"))
-        self.assertEqual(row["capabilities"]["stt_providers"], [])
-        self.assertEqual(row["capabilities"]["tts_provider"], "disabled")
+        self.assertEqual(row["capabilities"]["stt_providers"], ["sensevoice"])
+        self.assertEqual(row["capabilities"]["tts_provider"], "kokoro")
+        self.assertTrue(row["speech"]["bundle_digest"].startswith("sha256:"))
         self.assertEqual(row["capabilities"]["push_provider"], "disabled")
 
     def test_all_five_generated_outputs_are_checked_and_missing_is_failure(self):

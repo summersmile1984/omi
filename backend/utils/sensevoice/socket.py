@@ -10,6 +10,7 @@ the CPU decoder directly.
 from __future__ import annotations
 
 import array
+import sys
 import asyncio
 import importlib
 import logging
@@ -76,9 +77,14 @@ def get_sensevoice_recognizer() -> Any:
     return _recognizer
 
 
-def pcm16_to_samples(pcm: bytes) -> List[int]:
-    aligned = pcm[: len(pcm) - (len(pcm) % 2)]
-    return list(array.array('h', aligned))
+def pcm16_to_samples(pcm: bytes) -> List[float]:
+    if len(pcm) % 2:
+        raise ValueError('PCM16 input must contain whole samples')
+    values = array.array('h', pcm)
+    if sys.byteorder != 'little':
+        values.byteswap()
+    # Sherpa accepts normalized floating point PCM, not int16 amplitudes.
+    return [value / 32768.0 for value in values]
 
 
 def decode_pcm(recognizer: Any, sample_rate: int, pcm: bytes) -> str:
@@ -101,12 +107,14 @@ class SenseVoiceSocket(STTSocket):
         window_seconds: float = SENSEVOICE_STREAM_WINDOW_SECONDS,
         poll_seconds: float = SENSEVOICE_STREAM_POLL_SECONDS,
         speaker_clusterer: Optional[WindowSpeakerClusterer] = None,
+        silence_detector: Optional[Callable[..., bool]] = None,
     ) -> None:
         if sample_rate <= 0 or window_seconds <= 0 or poll_seconds <= 0:
             raise ValueError('SenseVoice streaming timing and sample rate must be positive')
         self._sample_rate = sample_rate
         self._callback = transcript_callback
         self._recognizer = recognizer
+        self._silence_detector = silence_detector
         mode = sensevoice_speaker_mode()
         self._speaker_clusterer = (
             speaker_clusterer
@@ -135,6 +143,10 @@ class SenseVoiceSocket(STTSocket):
         if not data:
             return True
         with self._lock:
+            if len(data) % 2 or len(self._pcm) + len(data) > self._sample_rate * 2 * 15:
+                self._dead = True
+                self._death_reason = 'invalid_or_excess_audio'
+                return False
             self._pcm.extend(data)
         return True
 
@@ -157,6 +169,8 @@ class SenseVoiceSocket(STTSocket):
                 pass
         else:
             await self._flush(force=True)
+        if self._dead:
+            raise RuntimeError('local speech failed before finalization completed')
 
     async def _pump(self) -> None:
         try:
@@ -195,6 +209,12 @@ class SenseVoiceSocket(STTSocket):
                 duration = take / (2 * self._sample_rate)
                 self._emitted_seconds += duration
 
+            if self._silence_detector is not None and await run_blocking(
+                sync_executor, self._silence_detector, pcm, sample_rate=self._sample_rate, channels=1
+            ):
+                # A real VAD silence decision is a valid empty window. Never
+                # convert VAD errors or a speech-positive decode failure here.
+                continue
             recognizer = self._recognizer or await run_blocking(sync_executor, get_sensevoice_recognizer)
             self._recognizer = recognizer
             text = await run_blocking(

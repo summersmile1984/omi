@@ -16,9 +16,7 @@ capabilities:
   sync_upload_batch_limit: 5
   max_request_bytes: 0
   push_provider: disabled
-  tts_provider: disabled
   realtime_relay: operator
-  stt_providers: []
 
 data_plane:
   store: firestore_pg
@@ -64,3 +62,14 @@ embedding:
   artifact_digest: sha256:daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c
   dimension: 1024
   context_length: 8192
+
+# One licensed, content-addressed CPU bundle; capabilities derive from it.
+# Omitting this bundle explicitly disables STT/TTS at their real consumers.
+speech:
+  runtime_version: 1.13.4
+  stt_model: sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17
+  tts_model: kokoro-multi-lang-v1_0
+  bundle_digest: sha256:75734cf4e9c25611e1c4676ce37b5946eb12fa22c03a41a794371cfea0031b0a
+  stt_archive_digest: sha256:7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e
+  tts_archive_digest: sha256:c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046
+  vad_digest: sha256:1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3

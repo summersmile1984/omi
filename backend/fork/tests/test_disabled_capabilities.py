@@ -12,6 +12,7 @@ from starlette.websockets import WebSocketDisconnect
 from fork.capabilities import CapabilityDisabled, validate
 from fork.capability_transport import install
 from fork.patches.capabilities import patches
+from fork.patches.speech import patches as speech_patches
 
 
 @pytest.fixture
@@ -59,13 +60,16 @@ def test_real_websocket_owner_closes_explicitly_without_accepting_audio(applicat
     assert failure.value.reason == 'stt_disabled'
 
 
-def test_background_stt_is_not_empty_transcription_and_push_count_is_not_delivery():
+def test_background_stt_is_not_empty_transcription_and_push_count_is_not_delivery(monkeypatch):
+    from fork import profile
+
+    monkeypatch.setattr(profile, 'current', lambda: {'target': 'self_hosted'})
     import utils.stt.pre_recorded as recorded
     import utils.notifications as notifications
     from firebase_admin import messaging
 
     with ExitStack() as stack:
-        for patch in patches():
+        for patch in patches() + speech_patches():
             module, original = patch.target()
             stack.enter_context(mock.patch.object(module, patch.attribute, patch.build(original)))
         network = stack.enter_context(
@@ -85,7 +89,7 @@ def test_background_stt_is_not_empty_transcription_and_push_count_is_not_deliver
 
 
 def test_admission_rejects_unsupported_enabled_capability():
-    with pytest.raises(ValueError, match='no admitted provider'):
+    with pytest.raises(ValueError, match='admitted model bundle'):
         validate(
             {'capabilities': {'stt_providers': ['sensevoice'], 'tts_provider': 'disabled', 'push_provider': 'disabled'}}
         )

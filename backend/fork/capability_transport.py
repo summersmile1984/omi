@@ -38,14 +38,18 @@ class DisabledCapabilityMiddleware:
         await self.app(scope, receive, send)
 
 
-def install(app):
+def install(app, row=None):
+    enabled = set()
+    if row and row.get('speech'):
+        enabled = {Capability.STT, Capability.TTS}
     routes, found = {}, set()
     for route in app.routes:
         endpoint = getattr(route, 'endpoint', None)
         owner = (getattr(endpoint, '__module__', ''), getattr(endpoint, '__name__', ''))
         if owner in OWNERS:
             kind = 'http' if getattr(route, 'methods', None) else 'websocket'
-            routes[(kind, route.path.rstrip('/'))] = OWNERS[owner]
+            if OWNERS[owner] not in enabled:
+                routes[(kind, route.path.rstrip('/'))] = OWNERS[owner]
             found.add(owner)
     if found != set(OWNERS):
         raise RuntimeError('disabled capability route owner missing: ' + repr(set(OWNERS) - found))

@@ -110,3 +110,11 @@ Docker builds; keep real runtime sources in both contexts.
   PostgreSQL locks/snapshots require `firestore_pg/tests/test_deletion_write_fence.py`
   against a disposable database. Do not weaken control-collection identity or
   release writer locks before SQL commit.
+
+- Local speech uses the same `fork/model_contract.py` and profile owner as
+  embeddings. Run `deploy/self-host/prepare-speech.py` before deployment; mount
+  the verified bundle read-only via `SPEECH_MODEL_STORE`. Bootstrap pins model,
+  thread, ITN, window and local-VAD configuration before imports. Do not restore
+  vendor fallbacks or infer readiness from file existence. Existing startup
+  local/CI tests cover normalized PCM, artifact faults, actual HTTP/WS consumers
+  and disabled mode; native recordings remain separately verified evidence.

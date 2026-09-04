@@ -111,13 +111,22 @@ Compose starts Ollama. Collection creation stores the complete model identity
 atomically. Operators must use a reviewed new prefix and backfill for identity
 changes; never bind old vectors by patching metadata in place.
 
-`capabilities.py` / `capability_transport.py` own explicitly disabled speech
-and push. Registered HTTP owners return nonretryable 503 and WebSockets close
-1008 (`stt_disabled`) before accepting audio. Captured STT selectors also reject
-background transcription. Public push/token routes reject; internal reminder
-counts return zero with shared telemetry so a committed Task with `due_at`
-remains successful. These are disabled capabilities, not completed speech/push
-providers. See `deploy/self-host/model-runtime.md` for the current deploy path.
+`speech.py` / `speech_assets.py` admit the complete pinned SenseVoice/Kokoro
+bundle before serving. The shared `model_contract.py` includes the runtime,
+both archive hashes, full unpacked inventory hash and existing local VAD hash.
+`patches/speech.py` binds canonical and captured STT consumers; the existing
+SenseVoice adapter now normalizes PCM, bounds input and reports failed drains.
+`speech_transport.py` preserves actual FastAPI dependencies while adapting both
+TTS routes and the PTT WebSocket. Models run on shared executors with two CPU
+threads, no runtime download, vendor credentials or provider failover.
+
+`capabilities.py` / `capability_transport.py` derive enabled speech from that
+bundle. A profile without it retains nonretryable HTTP 503 and WS 1008
+(`stt_disabled`) before audio acceptance; background selectors also reject.
+Push remains disabled: public token/send routes refuse; internal delivery counts
+return zero with shared telemetry, preserving committed Tasks with `due_at`.
+See `deploy/self-host/model-runtime.md` and `speech-runtime.md` for deployment,
+wire limits and the distinction between model inference and full recording E2E.
 
 The BYOK error handler also dispatches through the disabled notification owner,
 including requests with an existing enrolled key. `allow_byok: false` is not

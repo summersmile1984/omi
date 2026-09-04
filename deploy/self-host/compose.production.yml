@@ -309,6 +309,7 @@ services:
       - DESKTOP_UPDATE_LEGACY_FALLBACK=disabled
       - DESKTOP_UPDATE_DOWNLOAD_URL=${DESKTOP_UPDATE_DOWNLOAD_URL-}
       - EMBEDDING_ENDPOINT=http://embedding:11434
+      - SPEECH_MODEL_STORE=/models/speech
       - OMI_LLM_DEFAULT_PROVIDER=generic
       - OMI_LLM_DEFAULT_MODEL=${GENERIC_OPENAI_MODEL:?GENERIC_OPENAI_MODEL is required}
       - OMI_LLM_DEFAULT_FALLBACKS=
@@ -367,6 +368,7 @@ services:
       - "${SELF_HOST_BIND_ADDRESS:?SELF_HOST_BIND_ADDRESS is required}:${BACKEND_PORT:?BACKEND_PORT is required}:8080"
     volumes:
       - backend-syncing:/app/syncing
+      - ${SPEECH_MODEL_STORE:?SPEECH_MODEL_STORE is required}:/models/speech:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

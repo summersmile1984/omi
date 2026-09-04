@@ -92,12 +92,28 @@ def bootstrap(role: Role = Role.API) -> Admission:
         validate_capabilities(row)
         for name, value in {
             'SPEAKER_EMBEDDING_PROVIDER': 'disabled',
-            'TTS_PROVIDER': 'disabled',
+            'TTS_PROVIDER': 'kokoro' if row.get('speech') else 'disabled',
             'PUSH_PROVIDER': 'disabled',
-            'STT_SERVICE_MODELS': 'disabled',
-            'STT_PRERECORDED_MODEL': 'disabled',
+            'STT_SERVICE_MODELS': 'sensevoice' if row.get('speech') else 'disabled',
+            'STT_PRERECORDED_MODEL': 'sensevoice' if row.get('speech') else 'disabled',
+            'SENSEVOICE_SPEAKER_MODE': 'single_speaker',
         }.items():
             _bind(name, value)
+        if row.get('speech'):
+            from pathlib import Path
+
+            store = _require('SPEECH_MODEL_STORE')
+            if not Path(store).is_absolute():
+                raise profile.ProfileError('SPEECH_MODEL_STORE must be absolute')
+            for name, value in {
+                'SENSEVOICE_MODEL_DIR': str(Path(store) / row['speech']['stt_model']),
+                'SENSEVOICE_NUM_THREADS': '2',
+                'SENSEVOICE_USE_ITN': '1',
+                'SENSEVOICE_STREAM_WINDOW_SECONDS': '5.0',
+                'SENSEVOICE_STREAM_POLL_SECONDS': '0.1',
+                'HOSTED_VAD_API_URL': '',
+            }.items():
+                _bind(name, value)
         _require('ENCRYPTION_SECRET', 32)
         _require('AUTH_JWKS_URL')
         _bind('VECTOR_STORE_PROVIDER', 'qdrant')
@@ -109,6 +125,10 @@ def bootstrap(role: Role = Role.API) -> Admission:
         ObjectConfig.from_env()
         registry = build_registry(collect()).apply(row)
         applied = tuple(registry.applied)
+        if row.get('speech'):
+            from .speech import check as check_speech
+
+            check_speech()
         from .queue_config import QUEUES
 
         for queue in QUEUES:

@@ -23,6 +23,8 @@ COMPOSE = ROOT / 'deploy/self-host/compose.production.yml'
 REQUIRED_SOURCE = (
     'backend/fork/bootstrap.py', 'backend/fork/main.py', 'backend/fork/profile.py',
     'backend/fork/embedding.py', 'backend/fork/model_contract.py', 'backend/fork/model_store.py',
+    'backend/fork/speech.py', 'backend/fork/speech_assets.py', 'backend/fork/speech_transport.py',
+    'deploy/self-host/prepare-speech.py',
     'backend/fork/vector_qdrant.py', 'backend/fork/worker.py', 'backend/fork/migrate.py', 'backend/fork/queue_config.py',
     'backend/firestore_pg/migrations.py', 'backend/Dockerfile',
     'deploy/self-host/auth-runtime.mjs',

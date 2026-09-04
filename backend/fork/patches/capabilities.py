@@ -18,13 +18,6 @@ def patches():
         return unavailable
 
     targets = [
-        ('utils.stt.pre_recorded', 'get_prerecorded_service', stt),
-        ('utils.stt.streaming', 'get_stt_service_for_language', stt),
-        ('routers.chat', 'get_prerecorded_service', stt),
-        ('utils.sync.pipeline', 'get_prerecorded_service', stt),
-        ('routers.chat', 'get_stt_service_for_language', stt),
-        ('routers.listen.runtime', 'get_stt_service_for_language', stt),
-        ('routers.listen.receiver', 'get_stt_service_for_language', stt),
         (
             'utils.llm.byok_errors',
             '_send_byok_llm_error_notification',

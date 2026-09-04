@@ -14,6 +14,7 @@ from . import account_deletion as _account_deletion
 from . import auth as _auth
 from . import embedding as _embedding
 from . import capabilities as _capabilities
+from . import speech as _speech
 from . import provider_guard as _provider_guard
 from . import queue as _queue
 from . import vector as _vector
@@ -24,6 +25,7 @@ ALL = (
     _auth,
     _embedding,
     _capabilities,
+    _speech,
     _account_deletion,
     _provider_guard,
     _storage,
