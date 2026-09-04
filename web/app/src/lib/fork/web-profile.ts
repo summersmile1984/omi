@@ -1,0 +1,70 @@
+export interface WebProfile {
+  name: string;
+  target: 'self_hosted' | 'cloudflare';
+  stage: 'local' | 'beta' | 'production';
+  identity_provider: 'better_auth';
+  api_base_url: string;
+  auth_base_url: string;
+  web_base_url: string;
+  mcp_base_url: string;
+  share_base_url: string;
+  objects_base_url: string;
+  auth_callback_scheme: string;
+  capabilities: { push_provider: string; [key: string]: unknown };
+}
+
+/** Only the explicitly selected, build-validated profile enters a fork client. */
+export function parseWebProfile(serialized: string | undefined): WebProfile {
+  if (!serialized) throw new Error('The Web deployment profile is missing.');
+  const value = JSON.parse(serialized) as WebProfile;
+  if (
+    !value ||
+    !['self_hosted', 'cloudflare'].includes(value.target) ||
+    !['local', 'beta', 'production'].includes(value.stage) ||
+    value.name !== `${value.target}.${value.stage}` ||
+    value.identity_provider !== 'better_auth' ||
+    !value.auth_callback_scheme ||
+    !value.capabilities ||
+    value.capabilities.push_provider !== 'webhook'
+  )
+    throw new Error('The Web deployment profile is invalid.');
+  for (const key of [
+    'api_base_url',
+    'auth_base_url',
+    'web_base_url',
+    'mcp_base_url',
+    'share_base_url',
+    'objects_base_url',
+  ] as const) {
+    if (typeof value[key] !== 'string' || !value[key])
+      throw new Error(`The profile requires ${key}.`);
+    const url = new URL(value[key]);
+    if (
+      !['http:', 'https:'].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      (value.stage !== 'local' && url.protocol !== 'https:')
+    )
+      throw new Error(`The profile has an invalid ${key}.`);
+    if ((key === 'auth_base_url' || key === 'web_base_url') && url.pathname !== '/') {
+      throw new Error(`${key} must be an origin.`);
+    }
+  }
+  return value;
+}
+
+export function webProfile(): WebProfile {
+  return parseWebProfile(process.env.NEXT_PUBLIC_OMI_PROFILE_JSON);
+}
+
+export function mcpServerUrl(): string {
+  return `${webProfile().mcp_base_url.replace(/\/$/, '')}/v1/mcp/sse`;
+}
+
+export function productName(): string {
+  const name = process.env.NEXT_PUBLIC_OMI_PRODUCT_NAME?.trim();
+  if (!name) throw new Error('The Web product name is missing.');
+  return name;
+}
