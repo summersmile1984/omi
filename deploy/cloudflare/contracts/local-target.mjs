@@ -40,6 +40,27 @@ function privateJson(path, value) {
   writeFileSync(path, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
 }
 
+export function prepareLocalCache(output, env) {
+  const explicit = env.CLOUDFLARE_PYODIDE_CACHE_DIR;
+  if (
+    explicit !== undefined &&
+    (typeof explicit !== "string" || !explicit.trim())
+  )
+    throw new Error("explicit local Pyodide cache must be a nonempty path");
+  const directory = resolve(explicit ?? resolve(output, "pyodide"));
+  if (explicit === undefined) mkdirSync(directory, { mode: 0o700 });
+  const stat = lstatSync(directory, { throwIfNoEntry: false });
+  if (!stat?.isDirectory() || stat.isSymbolicLink())
+    throw new Error(
+      "local Pyodide cache must be an existing ordinary directory",
+    );
+  env.CLOUDFLARE_PYODIDE_CACHE_DIR = directory;
+  return {
+    directory,
+    owner: explicit === undefined ? "fixture" : "explicit-reuse",
+  };
+}
+
 export async function startLocalTarget({
   output,
   brandId = "contract",
@@ -71,9 +92,14 @@ export async function startLocalTarget({
     "CLOUDFLARE_EMAIL",
   ])
     delete env[key];
+  const cache = prepareLocalCache(output, env);
+  privateJson(resolve(output, "cache-owner.json"), cache);
   const processes = new LocalProcesses();
+  let cancellationFailure;
   const cancel = () => {
-    void processes.close();
+    void processes.close().catch((error) => {
+      cancellationFailure = error;
+    });
   };
   signal?.addEventListener("abort", cancel, { once: true });
   if (signal?.aborted) cancel();
@@ -120,9 +146,13 @@ export async function startLocalTarget({
   const close = () =>
     (closing ??= (async () => {
       signal?.removeEventListener("abort", cancel);
-      await processes.close();
-      for (const client of asr.clients) client.terminate();
-      await new Promise((resolve) => asr.close(resolve));
+      try {
+        await processes.close();
+        if (cancellationFailure) throw cancellationFailure;
+      } finally {
+        for (const client of asr.clients) client.terminate();
+        await new Promise((resolve) => asr.close(resolve));
+      }
     })());
   try {
     port ??= await freePort();
@@ -304,6 +334,7 @@ export async function startLocalTarget({
         ].map((path) => [path, digest(readFileSync(resolve(root, path)))]),
       ),
       artifacts,
+      pyodide_cache: cache,
       command: [process.execPath, ...args],
       provider_boundary:
         "synthetic ASR and structured/text inference; actual application Workers, D1, R2, DO, Queue",
@@ -317,7 +348,14 @@ export async function startLocalTarget({
     });
     return { metadata, close, command, runtimeDone };
   } catch (error) {
-    await close();
+    try {
+      await close();
+    } catch (cleanup) {
+      throw new AggregateError(
+        [error, cleanup],
+        `${error.message}; local cleanup also failed`,
+      );
+    }
     throw error;
   }
 }

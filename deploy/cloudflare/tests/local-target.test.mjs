@@ -13,7 +13,10 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { localConfigs } from "../contracts/local-config.mjs";
 import { LocalProcesses } from "../contracts/local-process.mjs";
-import { startLocalTarget } from "../contracts/local-target.mjs";
+import {
+  prepareLocalCache,
+  startLocalTarget,
+} from "../contracts/local-target.mjs";
 import { readWorkerTemplates } from "../scripts/resource-configs.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -32,6 +35,28 @@ const inputs = {
 };
 
 describe("disposable actual Cloudflare target", () => {
+  it("creates a private default cache and only reuses an explicitly existing ordinary cache", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "cf-cache-"));
+    directories.push(directory);
+    for (const path of ["", " \t", null, true])
+      expect(() =>
+        prepareLocalCache(directory, { CLOUDFLARE_PYODIDE_CACHE_DIR: path }),
+      ).toThrow("nonempty path");
+    const env = {};
+    const cache = prepareLocalCache(directory, env);
+    expect(cache).toEqual({
+      directory: resolve(directory, "pyodide"),
+      owner: "fixture",
+    });
+    expect(env.CLOUDFLARE_PYODIDE_CACHE_DIR).toBe(cache.directory);
+    expect(prepareLocalCache(directory, env).owner).toBe("explicit-reuse");
+    const broken = resolve(directory, "broken");
+    symlinkSync(resolve(directory, "missing"), broken);
+    for (const path of [broken, resolve(directory, "missing")])
+      expect(() =>
+        prepareLocalCache(directory, { CLOUDFLARE_PYODIDE_CACHE_DIR: path }),
+      ).toThrow("ordinary directory");
+  });
   it("projects all seven production owners and isolates every storage and queue binding", () => {
     const { configs, origin } = localConfigs(inputs);
     expect(Object.keys(configs).sort()).toEqual([
@@ -176,6 +201,79 @@ describe("disposable actual Cloudflare target", () => {
       });
       expect(missing.status).toBeNull();
       expect(missing.error.code).toBe("ENOENT");
+    } finally {
+      await owner.close();
+    }
+  });
+  it("reaps a completed tool's inherited-pipe descendants while its group leader is still owned", async () => {
+    const owner = new LocalProcesses();
+    const { child, completion } = owner.start(process.execPath, [
+      "-e",
+      `const child=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'}); console.log(child.pid); process.exit(7);`,
+    ]);
+    let output = "";
+    child.stdout.on("data", (data) => (output += data));
+    try {
+      expect(await completion).toMatchObject({
+        status: 7,
+        signal: null,
+        timedOut: false,
+      });
+      const descendant = Number(output.trim());
+      expect(descendant).toBeGreaterThan(1);
+      let status = "";
+      try {
+        status = execFileSync("ps", ["-p", String(descendant), "-o", "stat="], {
+          encoding: "utf8",
+        }).trim();
+      } catch {}
+      expect(!status || status.startsWith("Z")).toBe(true);
+    } finally {
+      await owner.close();
+    }
+  });
+  it("preserves a tool's extra control descriptor and keeps supervisor IPC separate", async () => {
+    const owner = new LocalProcesses();
+    const { child, completion } = owner.start(
+      process.execPath,
+      ["-e", "require('node:fs').writeSync(3,'actual control channel')"],
+      { stdio: ["ignore", "ignore", "ignore", "pipe"] },
+    );
+    let control = "";
+    child.stdio[3].on("data", (data) => (control += data));
+    try {
+      expect((await completion).status).toBe(0);
+      expect(control).toBe("actual control channel");
+    } finally {
+      await owner.close();
+    }
+  });
+  it("reports a denied cleanup without losing the tool failure or throwing from its event callback", async () => {
+    let denied = true;
+    const owner = new LocalProcesses({
+      signal: (pid, signal) => {
+        if (denied) {
+          denied = false;
+          throw Object.assign(new Error("fixture signal denied"), {
+            code: "EPERM",
+          });
+        }
+        return process.kill(pid, signal);
+      },
+    });
+    try {
+      const result = await owner.run(
+        process.execPath,
+        ["-e", "process.exit(9)"],
+        { stdio: "ignore" },
+      );
+      expect(result).toMatchObject({
+        status: null,
+        error: { code: "EPERM" },
+        toolResult: { status: 9 },
+        timedOut: false,
+      });
+      expect(() => owner.start(process.execPath, [])).toThrow("cancelled");
     } finally {
       await owner.close();
     }
