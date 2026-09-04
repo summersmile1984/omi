@@ -21,6 +21,12 @@ checks:
     lanes: ["local", "ci"]
     reason: "the merged M2 command invoked a removed upstream export surface, leaving 36 new route identities outside the inventory; exercise real FastAPI registrations and Core/Edge handlers before release"
 
+  - id: fork-web-client-contract
+    command: ["bash", "web/app/fork/test.sh"]
+    triggers: ["web/app/fork/**", "web/app/src/lib/fork/**", "web/app/src/components/fork/**", "scripts/profiles/**", "deploy/profiles/**"]
+    lanes: ["local", "ci"]
+    reason: "Executes the profile/session consumer boundary missing from main at the 2026-09-04 audit: API and realtime callers otherwise still obtained Firebase credentials after selecting a fork target."
+
   - id: fork-upstream-touch
     command: ["python3", "scripts/fork/check-upstream-touch.py", "--base", "{base}"]
     triggers: ["all"]

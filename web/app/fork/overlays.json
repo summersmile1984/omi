@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "files": {
+    "src/lib/firebase.ts": "fork/overlays/firebase.ts",
+    "src/components/auth/AuthProvider.tsx": "fork/overlays/AuthProvider.tsx",
+    "src/app/login/LoginClient.tsx": "fork/overlays/LoginClient.tsx",
+    "src/components/auth/LoginPanel.tsx": "fork/overlays/LoginPanel.tsx"
+  }
+}
