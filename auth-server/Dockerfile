@@ -6,13 +6,14 @@ LABEL com.omi.source.git-commit="${OMI_SOURCE_GIT_COMMIT}" \
       com.omi.source.git-tree="${OMI_SOURCE_GIT_TREE}"
 
 ENV NODE_ENV=production
-WORKDIR /app
+WORKDIR /app/auth-server
 
 COPY auth-server/package.json auth-server/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 
 COPY auth-server/auth.ts ./auth.ts
 COPY auth-server/src ./src
+COPY auth/shared /app/auth/shared
 
 USER node
 EXPOSE 3000

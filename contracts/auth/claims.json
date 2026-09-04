@@ -1,0 +1,25 @@
+{
+  "issuer": "https://auth.fixture.invalid",
+  "audience": "https://api.fixture.invalid",
+  "cases": [
+    {"name": "existing principal with current session", "valid": true},
+    {"name": "wrong issuer", "set": {"iss": "https://untrusted.invalid"}},
+    {"name": "wrong audience", "set": {"aud": "https://another.invalid"}},
+    {"name": "audience array is outside this contract", "set": {"aud": ["https://api.fixture.invalid"]}},
+    {"name": "missing issuer", "drop": "iss"},
+    {"name": "missing audience", "drop": "aud"},
+    {"name": "missing expiry", "drop": "exp"},
+    {"name": "missing issued-at", "drop": "iat"},
+    {"name": "missing session", "drop": "sid"},
+    {"name": "missing subject", "drop": "sub"},
+    {"name": "legacy JWT needs session refresh", "drop": "uid"},
+    {"name": "different identity", "set": {"uid": "other-user"}},
+    {"name": "empty session", "set": {"sid": ""}},
+    {"name": "empty subject", "set": {"uid": "", "sub": ""}},
+    {"name": "expired", "expOffset": -1},
+    {"name": "issued in future", "iatOffset": 60},
+    {"name": "excessive lifetime", "expOffset": 3600},
+    {"name": "expiry before issuance", "expOffset": -20},
+    {"name": "string time", "set": {"iat": "1"}}
+  ]
+}

@@ -1,4 +1,6 @@
 import { betterAuth } from "better-auth";
+import { jwtOptions } from "../../../../auth/shared/jwt-policy.mjs";
+import { cloudflareJwtOptions, verifyProductToken } from "./jwt-adapter";
 import { createMcpProtectedRequestHandler, mcp } from "@better-auth/mcp";
 import { createAuthMiddleware } from "better-auth/api";
 import { createDpopReplayStore } from "better-auth/oauth2";
@@ -31,8 +33,6 @@ import { registerNativeAuthCompatibilityRoutes } from "./native-auth-compatibili
 
 const app = new Hono<{ Bindings: AuthEnv }>();
 const AUTH_BASE_PATH = "/api/auth";
-const JWT_ROTATION_INTERVAL_SECONDS = 30 * 24 * 60 * 60;
-const JWT_GRACE_PERIOD_SECONDS = 2 * 24 * 60 * 60;
 export const MCP_SCOPES = [
   "action_items.read",
   "action_items.write",
@@ -212,16 +212,7 @@ function buildAuth(env: AuthEnv, requestUrl: string) {
     },
     plugins: [
       bearer(),
-      jwt({
-        jwt: {
-          jwks: {
-            keyPairConfig: { alg: "ES256" },
-            rotationInterval: JWT_ROTATION_INTERVAL_SECONDS,
-            gracePeriod: JWT_GRACE_PERIOD_SECONDS,
-          },
-          expirationTime: "24h",
-        },
-      }),
+      jwt(cloudflareJwtOptions(env, baseURL)),
       mcp({
         loginPage: "/login",
         consentPage: "/mcp/consent",
@@ -266,14 +257,6 @@ function firebaseBearerToken(request: Request): string | null {
     return null;
   }
   return value;
-}
-
-function payloadUid(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") return null;
-  const uid = (payload as { uid?: unknown }).uid;
-  if (typeof uid === "string" && uid.length > 0) return uid;
-  const subject = (payload as { sub?: unknown }).sub;
-  return typeof subject === "string" && subject.length > 0 ? subject : null;
 }
 
 async function verifyFirebaseBearerContext(
@@ -478,9 +461,9 @@ async function activeMcpConsent(
     const resources = oauthStringArray(row.resources);
     return Boolean(
       scopes &&
-      resources &&
-      tokenScopes.every((scope) => scopes.includes(scope)) &&
-      resources.includes(resource),
+        resources &&
+        tokenScopes.every((scope) => scopes.includes(scope)) &&
+        resources.includes(resource),
     );
   });
 }
@@ -663,8 +646,21 @@ app.post("/auth-issue", async (c) => {
 
   try {
     const auth = buildAuth(c.env, c.req.url);
+    const { internalAdapter } = await auth.$context;
+    const user = await internalAdapter.findUserById(uid);
+    if (!user) return c.json({ error: "user_not_found" }, 404);
+    const session = await internalAdapter.createSession(uid);
     const result = await auth.api.signJWT({
-      body: { payload: { uid, sub: uid } },
+      body: {
+        payload: {
+          ...jwtOptions(
+            c.env,
+            c.env.BETTER_AUTH_URL || new URL(c.req.url).origin,
+          ).jwt.definePayload({ user, session }),
+          sub: uid,
+          iat: Math.floor(Date.now() / 1000),
+        },
+      },
       headers: c.req.raw.headers,
     });
     return c.json({ ...result, uid });
@@ -777,9 +773,7 @@ app.post("/internal/firebase/custom-token", async (c) => {
 // being linked to the authenticated Better Auth target. Identity Toolkit
 // validates the bearer token first; App D1 receives only keyed hashes.
 app.post("/internal/firebase/anonymous-identity", async (c) => {
-  if (
-    c.env.FIREBASE_ANONYMOUS_IDENTITY_BRIDGE_STAGING_ENABLED !== "true"
-  ) {
+  if (c.env.FIREBASE_ANONYMOUS_IDENTITY_BRIDGE_STAGING_ENABLED !== "true") {
     return c.json({ error: "not_found" }, 404);
   }
   const context = await verifyRequestAuthContext(
@@ -846,13 +840,22 @@ app.post("/internal/firebase/anonymous-identity", async (c) => {
       error instanceof FirebaseAnonymousIdentityError
         ? error.code
         : "bridge_unavailable";
-    return c.json(
-      { error: code },
-      code === "bridge_unavailable" ? 503 : 403,
-      { "cache-control": "no-store" },
-    );
+    return c.json({ error: code }, code === "bridge_unavailable" ? 503 : 403, {
+      "cache-control": "no-store",
+    });
   }
 });
+
+function activeProductSession(env: AuthEnv, uid: string, sid: string) {
+  return env.AUTH_DB.prepare(
+    `SELECT u.createdAt FROM session s JOIN user u ON u.id = s.userId
+     LEFT JOIN cf_auth_deletion_fences f ON f.uid = u.id
+     WHERE s.id = ? AND s.userId = ? AND s.expiresAt > ?
+       AND (f.status IS NULL OR f.status = 'clear')`,
+  )
+    .bind(sid, uid, new Date().toISOString())
+    .first<{ createdAt?: unknown }>();
+}
 
 app.post("/internal/verify", async (c) => {
   const expected = c.env.INTERNAL_ASSERTION_SECRET;
@@ -882,12 +885,18 @@ app.post("/internal/verify", async (c) => {
     if (response.ok) {
       const body = (await response.json()) as {
         user?: { id?: string; name?: string; createdAt?: unknown };
+        session?: { id?: string };
       } | null;
       const sessionUid = body?.user?.id;
       if (sessionUid) {
+        const sid = body?.session?.id;
+        if (!sid || !(await activeProductSession(c.env, sessionUid, sid))) {
+          return c.json({ error: "unauthorized" }, 401);
+        }
         const result: AuthContext = {
           uid: sessionUid,
           authority: "better-auth",
+          sessionGeneration: sid,
           displayName:
             typeof body?.user?.name === "string" && body.user.name.trim()
               ? body.user.name.trim().slice(0, 120)
@@ -899,32 +908,24 @@ app.post("/internal/verify", async (c) => {
       }
     }
 
-    // A JWT issued by the server-only Better Auth plugin is not a database
-    // session, so `/get-session` correctly returns null for the dev bridge.
-    // Verify its signature and issuer instead of treating that valid token as
-    // anonymous traffic.
+    // A JWT is a signed projection of a database session. Both the signature
+    // and its current session owner must pass, so revocation takes effect now.
     if (!token) return c.json({ error: "unauthorized" }, 401);
-    const verified = await auth.api.verifyJWT({
-      body: { token },
-      headers: c.req.raw.headers,
-    });
-    const uid = payloadUid(verified?.payload);
-    if (uid) {
-      let accountCreatedAt: number | undefined;
-      try {
-        const user = await c.env.AUTH_DB.prepare(
-          "SELECT createdAt FROM user WHERE id = ?",
-        )
-          .bind(uid)
-          .first<{ createdAt?: unknown }>();
-        accountCreatedAt = authContextCreatedAt(user?.createdAt);
-      } catch {
-        // Creation time is a fail-open trial input, never an auth prerequisite.
-      }
+    const identity = await verifyProductToken(token, c.env, baseURL, () =>
+      auth.api.getJwks(),
+    );
+    if (identity) {
+      const active = await activeProductSession(
+        c.env,
+        identity.uid,
+        identity.sid,
+      );
+      if (!active) return c.json({ error: "unauthorized" }, 401);
       const result: AuthContext = {
-        uid,
+        uid: identity.uid,
         authority: "better-auth",
-        accountCreatedAt,
+        sessionGeneration: identity.sid,
+        accountCreatedAt: authContextCreatedAt(active.createdAt),
         requestId: c.req.header("x-request-id") || "internal",
       };
       return c.json(result);
@@ -940,7 +941,7 @@ app.post("/internal/verify", async (c) => {
   } catch {
     const firebase = await verifyFirebaseBearerContext(c.req.raw, c.env);
     if (firebase) return c.json(firebase);
-    return c.json({ error: "unauthorized" }, 401);
+    return c.json({ error: "identity_store_unavailable" }, 503);
   }
 });
 
