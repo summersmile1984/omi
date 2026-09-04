@@ -118,6 +118,12 @@ Docker builds; keep real runtime sources in both contexts.
   vendor fallbacks or infer readiness from file existence. Existing startup
   local/CI tests cover normalized PCM, artifact faults, actual HTTP/WS consumers
   and disabled mode; native recordings remain separately verified evidence.
+
+- `deploy/self-host/ci/product.sh` runs shared HTTP identity/onboarding/task
+  cases through a fresh real Compose target in the existing fork local/CI lane.
+  Its explicit speech-disabled profile and controlled embedding HTTP fixture
+  qualify product state only; they do not qualify model inference, recording,
+  supported client platforms or release. Read `contracts/deployment/README.md`.
   PTT terminal drain owns usage on finalize, disconnect, idle, limit and task
   cancellation. Charge accepted bytes once after a healthy drain; provider
   rejection/failure is not billable. Cancellation must not discard that tail.

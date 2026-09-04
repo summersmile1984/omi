@@ -9,6 +9,12 @@
 # which `scripts/fork/preflight` and `.github/workflows/fork-checks.yml` both do.
 # Every entry declares both lanes, as the upstream runner's validator requires.
 checks:
+  - id: fork-selfhost-product-core
+    command: ["bash", "deploy/self-host/ci/product.sh"]
+    triggers: ["contracts/deployment/**", "deploy/self-host/**", "backend/fork/**", "backend/firestore_pg/**", "auth-server/**", "auth/shared/**", "runtime/shared/**", "backend/routers/action_items.py", "backend/routers/users.py", "backend/models/action_item.py"]
+    lanes: ["local", "ci"]
+    reason: "The 2026-09-04 real Android onboarding request failed on the missing dynamic PG owner, while the same invalid task body returned Server422/CF400. Run shared HTTP product cases through actual Auth/API/PG/Redis/MinIO/Qdrant and fresh migrations; this tests existing product owners instead of adding another state or validation primitive."
+
   - id: fork-selfhost-build-context
     command: ["python3", "deploy/self-host/ci/build_context.py"]
     triggers: ["backend/Dockerfile.dockerignore", "deploy/self-host/Dockerfile.dockerignore", "deploy/self-host/ci/build_context.py"]
