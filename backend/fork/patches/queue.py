@@ -20,7 +20,6 @@ ENQUEUE_SEAMS = (
     "enqueue_sync_job",
     "enqueue_audio_merge_job",
     "enqueue_account_deletion_wipe",
-    "enqueue_listen_finalization_job",
 )
 
 
@@ -42,25 +41,57 @@ def _redis_enqueue(fork_function_name: str) -> Callable[[Any], Any]:
 
 
 def patches() -> List[Patch]:
+    return (
+        [
+            Patch(
+                name=f"queue.{name}",
+                module="utils.cloud_tasks",
+                attribute=name,
+                build=_redis_enqueue(name),
+                applies_to=_uses_redis_queue,
+                reason="operator-run deployments have no Cloud Tasks; the Redis worker takes the same payloads",
+            )
+            for name in ENQUEUE_SEAMS
+        ]
+        + [
+            Patch(
+                name="queue.worker-authentication",
+                module="utils.cloud_tasks",
+                attribute="_verify_redis_worker",
+                build=_route_worker_auth,
+                applies_to=_uses_redis_queue,
+                reason="each Redis queue accepts only its configured worker credential",
+            )
+        ]
+        + _finalization_patches()
+    )
+
+
+def _finalization_patches():
+    from .. import finalization_queue as owner
+    from utils.cloud_tasks_redis import enqueue_listen_finalization_job
+
+    targets = [
+        ("utils.cloud_tasks", "enqueue_listen_finalization_job", enqueue_listen_finalization_job),
+        ("utils.cloud_tasks", "is_listen_finalization_dispatch_enabled", owner.enabled),
+        ("utils.cloud_tasks", "is_listen_finalization_dispatch_configured", owner.configured),
+        ("utils.conversations.lifecycle", "enqueue_listen_finalization_job", enqueue_listen_finalization_job),
+        ("utils.conversations.lifecycle", "is_listen_finalization_dispatch_enabled", owner.enabled),
+        ("utils.conversations.lifecycle", "is_listen_finalization_dispatch_configured", owner.configured),
+        ("services.conversation_finalization", "enqueue_listen_finalization_job", enqueue_listen_finalization_job),
+        ("services.conversation_finalization", "is_listen_finalization_dispatch_enabled", owner.enabled),
+        ("routers.listen.conversations", "is_listen_finalization_dispatch_enabled", owner.enabled),
+    ]
     return [
         Patch(
-            name=f"queue.{name}",
-            module="utils.cloud_tasks",
-            attribute=name,
-            build=_redis_enqueue(name),
+            name="queue.finalization." + module + "." + attribute,
+            module=module,
+            attribute=attribute,
+            build=lambda _, function=function: function,
             applies_to=_uses_redis_queue,
-            reason="operator-run deployments have no Cloud Tasks; the Redis worker takes the same payloads",
+            reason="Redis dispatch admission and replay use the existing PG outbox/lease authority",
         )
-        for name in ENQUEUE_SEAMS
-    ] + [
-        Patch(
-            name="queue.worker-authentication",
-            module="utils.cloud_tasks",
-            attribute="_verify_redis_worker",
-            build=_route_worker_auth,
-            applies_to=_uses_redis_queue,
-            reason="each Redis queue accepts only its configured worker credential",
-        )
+        for module, attribute, function in targets
     ]
 
 

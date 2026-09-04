@@ -136,3 +136,11 @@ Docker builds; keep real runtime sources in both contexts.
   PTT terminal drain owns usage on finalize, disconnect, idle, limit and task
   cancellation. Charge accepted bytes once after a healthy drain; provider
   rejection/failure is not billable. Cancellation must not discard that tail.
+
+- Finalization queue admission, canonical/captured dispatch helpers and replay
+  belong to `fork/finalization_queue.py`. Reuse the finalizer entry in `QUEUES`;
+  do not require fabricated GCP binding values for Redis. Publish job id and
+  dispatch generation with one Redis command; PostgreSQL's existing lease and
+  generation own duplicate handling. Never add a permanent Redis name set that
+  can swallow a later replay. The startup lane covers old jobs, duplicate/new
+  generations and rejected publication retaining a durable queued intent.
