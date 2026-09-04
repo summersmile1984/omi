@@ -6,13 +6,17 @@ Self-hosted auth for the 4C8G Omi deployment, replacing Firebase Auth.
 
 - email+password signup / signin (Better Auth), plus explicitly configured
   operator Google/Apple OAuth
-- JWT plugin signs **ES256** JWTs carrying the Better Auth user id in `sub`, with public keys at `/api/auth/jwks`
+- JWT plugin signs **ES256**, 3,600-second JWTs with matching `uid`/`sub` and a real session `sid`; public keys are at `/api/auth/jwks`
 - signed bearer session tokens let native clients exchange a persisted session for a short-lived JWT
 - internal, secret-protected user lookup/deletion keeps account lifecycle provider-neutral
 - User data stored in PostgreSQL (same server as the shim DB)
 
 The Python backend verifies these JWTs via `utils/auth_shim.py` — the single
-identity boundary before business routers run.
+identity boundary before business routers run. It requires issuer/audience and
+checks the current user/session through the trusted `/internal/verify` endpoint;
+logout and deletion invalidate previously issued JWTs. See the shared
+[access contract](../contracts/auth/README.md) for required environment variables,
+legacy-token refresh, rotation and two-target validation.
 
 The Express 4 bridge catches every Better Auth handler rejection explicitly.
 Database, schema, or signing-key outages return `503

@@ -1,18 +1,42 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSignedAuthContext } from "../workers/shared/auth-context";
 import { betterAuth } from "better-auth";
+import { SignJWT, generateKeyPair, exportJWK } from "jose";
 
 const signJWT = vi.fn(async () => ({ token: "jwt-from-workers" }));
-const verifyJWT = vi.fn(async ({ body }: { body: { token: string } }) =>
-  body.token === "bridge-token"
-    ? { payload: { uid: "jwt-user", sub: "jwt-user" } }
-    : { payload: null },
-);
+const getJwks = vi.fn(async (): Promise<{ keys: object[] }> => ({ keys: [] }));
+let bridgeToken: string;
+beforeAll(async () => {
+  const { privateKey, publicKey } = await generateKeyPair("ES256");
+  const key = {
+    ...(await exportJWK(publicKey)),
+    kid: "test-key",
+    alg: "ES256",
+  };
+  getJwks.mockImplementation(async () => ({ keys: [key] }));
+  bridgeToken = await new SignJWT({ uid: "jwt-user", sid: "jwt-session" })
+    .setProtectedHeader({ alg: "ES256", kid: "test-key" })
+    .setSubject("jwt-user")
+    .setIssuer("https://auth.test")
+    .setAudience("https://auth.test")
+    .setIssuedAt()
+    .setExpirationTime("1h")
+    .sign(privateKey);
+});
 const authHandler = vi.fn(async (_request: Request) => Response.json(null));
 
 vi.mock("better-auth", () => ({
   betterAuth: vi.fn(() => ({
-    api: { signJWT, verifyJWT },
+    api: { signJWT, getJwks },
+    $context: Promise.resolve({
+      internalAdapter: {
+        findUserById: async (uid: string) => ({ id: uid }),
+        createSession: async (uid: string) => ({
+          id: "dev-session",
+          userId: uid,
+        }),
+      },
+    }),
     handler: authHandler,
   })),
 }));
@@ -276,7 +300,7 @@ describe("auth worker Better Auth dev issuer", () => {
   beforeEach(() => {
     vi.mocked(betterAuth).mockClear();
     signJWT.mockClear();
-    verifyJWT.mockClear();
+    getJwks.mockClear();
     authHandler.mockReset();
     authHandler.mockResolvedValue(Response.json(null));
   });
@@ -423,19 +447,28 @@ describe("auth worker Better Auth dev issuer", () => {
       uid: "mobile-user",
     });
     expect(signJWT).toHaveBeenCalledWith({
-      body: { payload: { uid: "mobile-user", sub: "mobile-user" } },
+      body: {
+        payload: {
+          uid: "mobile-user",
+          sub: "mobile-user",
+          sid: "dev-session",
+          iss: "https://auth.test",
+          aud: "https://auth.test",
+          iat: expect.any(Number),
+        },
+      },
       headers: expect.any(Headers),
     });
   });
 
-  it("verifies a server-issued JWT when there is no Better Auth database session", async () => {
+  it("verifies a session-bound JWT against its live database session", async () => {
     const jwtEnv = profileEnv({ createdAt: "2026-08-29T00:00:00.000Z" });
     const response = await auth.fetch(
       new Request("https://auth.test/internal/verify", {
         method: "POST",
         headers: {
           "x-internal-assertion-secret": "internal-secret",
-          authorization: "Bearer bridge-token",
+          authorization: `Bearer ${bridgeToken}`,
         },
       }),
       jwtEnv,
@@ -444,13 +477,11 @@ describe("auth worker Better Auth dev issuer", () => {
     expect(await response.json()).toEqual({
       uid: "jwt-user",
       authority: "better-auth",
+      sessionGeneration: "jwt-session",
       accountCreatedAt: 1_787_961_600,
       requestId: "internal",
     });
-    expect(verifyJWT).toHaveBeenCalledWith({
-      body: { token: "bridge-token" },
-      headers: expect.any(Headers),
-    });
+    expect(getJwks).toHaveBeenCalled();
   });
 
   it("verifies a Firebase ID token only through the imported identity projection", async () => {
@@ -529,21 +560,20 @@ describe("auth worker Better Auth dev issuer", () => {
           "x-request-id": "cookie-request",
         },
       }),
-      env(),
+      profileEnv({ createdAt: "2026-08-29T00:00:00.000Z" }),
     );
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       uid: "cookie-user",
       authority: "better-auth",
+      sessionGeneration: "session-1",
       displayName: "Alice",
       accountCreatedAt: 1_787_961_600,
       requestId: "cookie-request",
     });
     const sessionRequest = authHandler.mock.calls[0][0] as Request;
-    expect(new URL(sessionRequest.url).pathname).toBe(
-      "/api/auth/get-session",
-    );
+    expect(new URL(sessionRequest.url).pathname).toBe("/api/auth/get-session");
     expect(sessionRequest.headers.get("cookie")).toBe(
       "__Secure-better-auth.session_token=cookie-session",
     );
@@ -614,13 +644,15 @@ describe("auth worker Better Auth dev issuer", () => {
     const jwtPlugin = options?.plugins?.find((plugin) => plugin.id === "jwt");
     expect(jwtPlugin).toMatchObject({
       options: {
+        jwks: {
+          keyPairConfig: { alg: "ES256" },
+          rotationInterval: 2_592_000,
+          gracePeriod: 172_800,
+        },
         jwt: {
-          jwks: {
-            keyPairConfig: { alg: "ES256" },
-            rotationInterval: 2_592_000,
-            gracePeriod: 172_800,
-          },
-          expirationTime: "24h",
+          issuer: "https://auth.test/api/auth",
+          audience: "https://auth.test",
+          expirationTime: "3600s",
         },
       },
     });

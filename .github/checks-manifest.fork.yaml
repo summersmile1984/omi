@@ -9,6 +9,12 @@
 # which `scripts/fork/preflight` and `.github/workflows/fork-checks.yml` both do.
 # Every entry declares both lanes, as the upstream runner's validator requires.
 checks:
+  - id: fork-auth-contracts
+    command: ["bash", "scripts/fork/auth-contracts.sh"]
+    triggers: ["auth/**", "auth-server/**", "contracts/auth/**", "backend/utils/auth_shim.py", "backend/fork/tests/test_auth_contract.py", "backend/tests/unit/test_auth_shim.py", "deploy/cloudflare/workers/auth/**", "deploy/cloudflare/tests/auth*.ts", "scripts/fork/auth-contracts.sh"]
+    lanes: ["local", "ci"]
+    reason: "Shared production claims/session contract catches wrong issuer/audience acceptance shipped in self-host PR #7 and prevents divergent Workers/PG JWT revocation behavior."
+
   - id: fork-upstream-touch
     command: ["python3", "scripts/fork/check-upstream-touch.py", "--base", "{base}"]
     triggers: ["all"]

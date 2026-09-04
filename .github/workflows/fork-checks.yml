@@ -66,6 +66,19 @@ jobs:
       - name: Provision backend environment
         run: make setup-backend
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            auth-server/package-lock.json
+            deploy/cloudflare/package-lock.json
+
+      - name: Provision authentication contract dependencies
+        run: |
+          npm ci --prefix auth-server --ignore-scripts --no-audit --no-fund
+          npm ci --prefix deploy/cloudflare --ignore-scripts --no-audit --no-fund
+
       - name: Fork manifest (ci lane)
         run: |
           python3 .github/scripts/run_checks.py \

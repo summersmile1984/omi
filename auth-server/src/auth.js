@@ -1,11 +1,9 @@
 import { betterAuth } from "better-auth";
+import { jwtOptions, jwtPolicy } from "../../auth/shared/jwt-policy.mjs";
 import { bearer, jwt } from "better-auth/plugins";
 import crypto from "node:crypto";
 import pg from "pg";
-import {
-  hashPassword,
-  verifyPassword,
-} from "./firebase-migration-password.js";
+import { hashPassword, verifyPassword } from "./firebase-migration-password.js";
 import { buildSocialProviders } from "./social-providers.js";
 
 export const PORT = process.env.PORT || 3000;
@@ -31,8 +29,7 @@ const IP_ADDRESS_HEADERS = (
   .split(",")
   .map((header) => header.trim().toLowerCase())
   .filter(Boolean);
-const JWT_ISSUER = process.env.AUTH_JWT_ISSUER || new URL(BASE_URL).origin;
-const JWT_AUDIENCE = process.env.AUTH_JWT_AUDIENCE || JWT_ISSUER;
+export const accessPolicy = jwtPolicy(process.env, BASE_URL);
 const DEV_SECRET = "dev-only-better-auth-secret-change-me-32bytes-min";
 
 if (IS_PRODUCTION) {
@@ -46,11 +43,11 @@ if (IS_PRODUCTION) {
   ].filter((name) => !process.env[name]?.trim());
   if (required.length)
     throw new Error(
-      `Production auth configuration missing: ${required.join(", ")}`,
+      `Production auth configuration missing: ${required.join(", ")}`
     );
   if (SECRET === DEV_SECRET || SECRET.length < 32)
     throw new Error(
-      "BETTER_AUTH_SECRET must be a non-development secret of at least 32 characters",
+      "BETTER_AUTH_SECRET must be a non-development secret of at least 32 characters"
     );
   if (DEV_ISSUER_SECRET)
     throw new Error("AUTH_DEV_ISSUER_SECRET must be unset in production");
@@ -60,11 +57,11 @@ if (IS_PRODUCTION) {
     TRUSTED_ORIGINS.some(
       (origin) =>
         new URL(origin).hostname === "localhost" ||
-        new URL(origin).hostname === "127.0.0.1",
+        new URL(origin).hostname === "127.0.0.1"
     )
   ) {
     throw new Error(
-      "Production trusted origins must not contain loopback hosts",
+      "Production trusted origins must not contain loopback hosts"
     );
   }
 }
@@ -76,7 +73,7 @@ const jwksAdapter = {
   async getJwks() {
     const result = await pool.query(
       `SELECT id, "publicKey", "privateKey", "createdAt", "expiresAt", alg, crv
-       FROM "jwks"`,
+       FROM "jwks"`
     );
     return result.rows;
   },
@@ -96,7 +93,7 @@ const jwksAdapter = {
         webKey.expiresAt || null,
         webKey.alg || null,
         webKey.crv || publicJwk.crv || null,
-      ],
+      ]
     );
     return result.rows[0];
   },
@@ -127,19 +124,8 @@ export const authOptions = {
   plugins: [
     bearer({ requireSignature: true }),
     jwt({
+      ...jwtOptions(process.env, BASE_URL),
       adapter: jwksAdapter,
-      jwks: {
-        keyPairConfig: { alg: "ES256" },
-        rotationInterval: Number(
-          process.env.AUTH_JWKS_ROTATION_SECONDS || 2592000,
-        ),
-        gracePeriod: Number(process.env.AUTH_JWKS_GRACE_SECONDS || 2592000),
-      },
-      jwt: {
-        issuer: JWT_ISSUER,
-        audience: JWT_AUDIENCE,
-        expirationTime: process.env.AUTH_JWT_EXPIRATION || "15m",
-      },
     }),
   ],
 };

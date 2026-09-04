@@ -6,6 +6,7 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import auth from "../workers/auth/index";
 import type { AuthEnv } from "../workers/auth/env";
+import { decodeJwt } from "jose";
 import {
   AUTH_CONTEXT_HEADER,
   AUTH_SIGNATURE_HEADER,
@@ -92,6 +93,163 @@ function environment(overrides: Partial<AuthEnv> = {}): AuthEnv {
 afterEach(() => {
   for (const database of databases.splice(0)) database.close();
   vi.unstubAllGlobals();
+});
+
+async function productLogin(env: AuthEnv) {
+  const response = await auth.fetch(
+    new Request("https://auth.test/api/auth/sign-up/email", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://web.test",
+      },
+      body: JSON.stringify({
+        name: "Contract user",
+        email: `${crypto.randomUUID()}@example.test`,
+        password: "Correct-Horse-Battery-Staple-1!",
+      }),
+    }),
+    env,
+  );
+  expect(response.status).toBe(200);
+  const session = response.headers.get("set-auth-token")!;
+  const user = ((await response.json()) as { user: { id: string } }).user.id;
+  const exchange = await auth.fetch(
+    new Request("https://auth.test/api/auth/token", {
+      headers: {
+        authorization: `Bearer ${session}`,
+        origin: "https://web.test",
+      },
+    }),
+    env,
+  );
+  expect(exchange.status).toBe(200);
+  const token = ((await exchange.json()) as { token: string }).token;
+  return { session, user, token };
+}
+
+function verifyProduct(env: AuthEnv, token: string) {
+  return auth.fetch(
+    new Request("https://auth.test/internal/verify", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "x-internal-assertion-secret": "internal-secret",
+      },
+    }),
+    env,
+  );
+}
+
+describe("shared product authentication contract through real Better Auth and SQLite", () => {
+  it("issues and refreshes session-bound JWTs and rejects both after logout", async () => {
+    const env = environment();
+    const login = await productLogin(env);
+    const claims = decodeJwt(login.token);
+    expect(claims).toMatchObject({
+      uid: login.user,
+      sub: login.user,
+      sid: expect.any(String),
+      iss: "https://auth.test",
+      aud: "https://auth.test",
+    });
+    expect(Number(claims.exp) - Number(claims.iat)).toBe(3600);
+    expect((await verifyProduct(env, login.token)).status).toBe(200);
+    expect((await verifyProduct(env, login.session)).status).toBe(200);
+    const refreshed = await auth.fetch(
+      new Request("https://auth.test/api/auth/token", {
+        headers: {
+          authorization: `Bearer ${login.session}`,
+          origin: "https://web.test",
+        },
+      }),
+      env,
+    );
+    expect(refreshed.status).toBe(200);
+    const refreshedToken = ((await refreshed.json()) as { token: string })
+      .token;
+    const logout = await auth.fetch(
+      new Request("https://auth.test/api/auth/sign-out", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${login.session}`,
+          origin: "https://web.test",
+          "content-type": "application/json",
+        },
+        body: "{}",
+      }),
+      env,
+    );
+    expect(logout.status).toBe(200);
+    for (const token of [login.token, refreshedToken, login.session])
+      expect((await verifyProduct(env, token)).status).toBe(401);
+  });
+
+  it("denies a deleting account before row removal and denies its old JWT after deletion", async () => {
+    const env = environment();
+    const login = await productLogin(env);
+    const db = databases.at(-1)!.database;
+    db.prepare(
+      "INSERT INTO cf_auth_deletion_fences (uid,generation,status,startedAt) VALUES (?,1,'deleting',1)",
+    ).run(login.user);
+    for (const token of [login.token, login.session])
+      expect((await verifyProduct(env, token)).status).toBe(401);
+    const deletion = await auth.fetch(
+      await internalAuthRequest(
+        `https://auth.test/internal/users/${login.user}`,
+        "DELETE",
+        login.user,
+      ),
+      env,
+    );
+    expect(deletion.status).toBe(200);
+    expect((await verifyProduct(env, login.token)).status).toBe(401);
+  });
+
+  it("applies the shared negative claims corpus after actual signature verification", async () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL("../../../contracts/auth/claims.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    const env = environment({
+      AUTH_JWT_ISSUER: fixture.issuer,
+      AUTH_JWT_AUDIENCE: fixture.audience,
+    });
+    const login = await productLogin(env);
+    const baseline = decodeJwt(login.token);
+    const { privateKey, publicKey } = await generateKeyPair("ES256");
+    const jwk = await exportJWK(publicKey);
+    databases
+      .at(-1)!
+      .database.prepare(
+        "INSERT INTO jwks(id,publicKey,privateKey,createdAt,alg) VALUES (?,?,?,?,?)",
+      )
+      .run(
+        "contract-key",
+        JSON.stringify(jwk),
+        "unused",
+        new Date(0).toISOString(),
+        "ES256",
+      );
+    for (const example of fixture.cases) {
+      const now = Math.floor(Date.now() / 1000);
+      const claims = {
+        ...baseline,
+        iat: now + (example.iatOffset ?? -10),
+        exp: now + (example.expOffset ?? 3590),
+        ...example.set,
+      };
+      if (example.drop) delete claims[example.drop];
+      const token = await new SignJWT(claims)
+        .setProtectedHeader({ alg: "ES256", kid: "contract-key" })
+        .sign(privateKey);
+      expect((await verifyProduct(env, token)).status, example.name).toBe(
+        example.valid ? 200 : 401,
+      );
+    }
+  });
 });
 
 async function accessToken(scope = "memories.read offline_access") {
@@ -250,11 +408,9 @@ describe("auth worker MCP OAuth provider", () => {
     const metadata = (await metadataResponse.json()) as Record<string, unknown>;
     expect(metadata).toMatchObject({
       issuer: "https://auth.test/api/auth",
-      authorization_endpoint:
-        "https://auth.test/api/auth/oauth2/authorize",
+      authorization_endpoint: "https://auth.test/api/auth/oauth2/authorize",
       token_endpoint: "https://auth.test/api/auth/oauth2/token",
-      registration_endpoint:
-        "https://auth.test/api/auth/oauth2/register",
+      registration_endpoint: "https://auth.test/api/auth/oauth2/register",
       code_challenge_methods_supported: ["S256"],
     });
     expect(metadata.client_id_metadata_document_supported).toBeUndefined();
