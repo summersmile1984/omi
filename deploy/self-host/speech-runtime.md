@@ -53,7 +53,8 @@ single-speaker label. Segment timestamps are window bounds, not word alignment.
 PTT applies the same admitted Silero VAD before decoding each window; genuine
 silence skips ASR, while VAD errors fail finalization. It emits independent
 windows of at most five seconds, retains no more than
-15 seconds of pending PCM, and has a 30-second input idle timeout. A failed
+15 seconds of pending PCM, and has a 30-second audio idle timeout. Empty audio
+and non-finalize text frames do not renew that deadline. A failed
 native pump makes finalization fail with `stt_failed` and WS 1011; provider
 admission failure closes 1013. It never silently selects a remote provider.
 Existing rate/budget dependencies remain enforced. Inference success does not

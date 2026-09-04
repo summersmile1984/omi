@@ -34,3 +34,16 @@ PTT 外层取消仍然传播，但在收尾期间再次取消也不能跳过该�
 
 本修复不改变原 Redis quota helper 的 fail-open 策略，不将它称为持久计费系统；
 完整 LLM/会话/记忆闭环仍是后续包。没有 push、PR、merge 或外部部署。
+
+## 后续独立修复：音频空闲期限
+
+同文件复读发现每次 message 的 `wait_for(..., 30)` 允许无音频文本帧无限续期。
+上游 PTT 合同使用 last-audio deadline；本地入口现在用单调时钟记录最后一次接受
+非空 PCM 的时刻。普通文本与空音频不续期，合法音频续期；超时仍通过上述统一
+drain/usage owner 结束。新增两个可控时钟的生产 PTT 行为测试，无网络或 sleep。
+
+正式 selected runner 的 20 transport + 15 speech tests 通过。相同隔离实例的
+真实 JWT/原生音频 WS 在最后一段音频后每 2 秒持续发送文本与空音频，仍在实测
+30.0 秒以 1008 关闭，5592ms 只记录一次；人造账户与用量键已清理，仅该证明
+容器已停止。日志 `speech-idle-focused.log` / `speech-idle-live.log` 位于前述
+临时证据目录。这仍是明确的源码 mount 回归，不是新不可变镜像证明。
