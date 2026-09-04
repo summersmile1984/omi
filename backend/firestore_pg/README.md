@@ -6,6 +6,24 @@
 
 # firestore_pg — PostgreSQL shim for `google.cloud.firestore`
 
+Nested write values are normalized before JSONB serialization. `set(merge=True)`
+walks map leaves, preserving siblings and treating a supplied empty map as a
+replacement. Nested keys are literal (including dots); the existing top-level
+dotted-path compatibility behavior is unchanged. `set` without merge, `create`
+and `update` materialize nested transforms with their replacement semantics.
+Delete markers require merge for set, are forbidden in create, and require an
+explicit top-level field path in update. Arrays cannot contain transform values.
+
+The existing `write_policy.policy.lock` and SQL transaction still own admission;
+this adds no second lock or retry policy. In self-host mode a contended document
+raises `ProviderOperationBusy`, including a not-yet-committed first usage row.
+Callers must handle that explicit rejection. `fork/tests/test_pg_nested_transforms.py`
+runs in the existing startup local/CI lane. The live suite
+`firestore_pg/tests/test_deletion_write_fence.py` additionally exercises actual
+LLM/question usage owners and a first-use conflict followed by an explicit retry.
+See the recorded incident and verification in
+`../../dev/unified-main/implementation-2026-09-04/PG-nested-usage-verification.md`.
+
 A drop-in replacement for the Google Cloud Firestore client that backs the Omi
 backend's `database/*.py` modules against PostgreSQL instead of Firestore. The
 repo can run **zero-change** business code on a local Postgres; the same code

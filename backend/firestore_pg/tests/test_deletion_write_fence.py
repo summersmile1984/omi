@@ -123,6 +123,51 @@ def test_actual_writer_lease_survives_ref_set_until_commit_and_blocks_wipe(db):
     assert not db.collection('users').document(uid).get().exists
 
 
+def test_nested_llm_usage_and_question_owner_persist_for_legacy_principal(db):
+    from datetime import datetime, timezone
+    from database.llm_usage import record_chat_quota_question, record_llm_usage
+
+    uid = subject()
+    # No subscription/deletion state is required for an existing principal.
+    for _ in range(2):
+        record_llm_usage(uid, 'chat', 'qwen3:1.7b', 3, 2, firestore_client=db)
+    record_llm_usage(uid, 'chat', 'other-model', 1, 1, firestore_client=db)
+    args = dict(uid=uid, idempotency_key='synthetic-visible-question', source='test', firestore_client=db)
+    assert record_chat_quota_question(**args)
+    assert not record_chat_quota_question(**args)
+    day = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    value = db.collection('users').document(uid).collection('llm_usage').document(day).get().to_dict()
+    assert value['chat']['qwen3:1_7b'] == {'input_tokens': 6, 'output_tokens': 4, 'call_count': 2}
+    assert value['chat']['other-model']['call_count'] == 1
+    assert value['backend_chat']['quota_questions'] == 1
+    assert value['plan_usage']['_unattributed']['chat']['qwen3:1_7b']['call_count'] == 2
+
+
+def test_nested_first_usage_conflict_keeps_existing_writer_authority(db):
+    from datetime import datetime, timezone
+    from database.llm_usage import record_llm_usage
+    from fork.provider_guard import ProviderOperationBusy
+
+    uid = subject()
+    tx = db.transaction()
+    tx._begin()
+    try:
+        record_llm_usage(uid, 'chat', 'fixture', 3, 2, firestore_client=db)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(record_llm_usage, uid, 'chat', 'fixture', 4, 5, firestore_client=db)
+            with pytest.raises(ProviderOperationBusy):
+                future.result(timeout=10)
+        tx._commit()
+    finally:
+        tx._rollback()
+    # The caller explicitly retries the rejected attempt after the first commit.
+    # This test does not claim callbacks or HTTP callers automatically retry it.
+    record_llm_usage(uid, 'chat', 'fixture', 4, 5, firestore_client=db)
+    day = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    value = db.collection('users').document(uid).collection('llm_usage').document(day).get().to_dict()
+    assert value['chat']['fixture'] == {'input_tokens': 7, 'output_tokens': 7, 'call_count': 2}
+
+
 def test_terminal_owner_blocks_entire_real_batch_and_metadata_laundering(db, monkeypatch):
     from firestore_pg import write_policy
     from fork.pg_write_policy import AccountWriteRejected

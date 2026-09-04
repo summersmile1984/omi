@@ -110,6 +110,10 @@ Docker builds; keep real runtime sources in both contexts.
   PostgreSQL locks/snapshots require `firestore_pg/tests/test_deletion_write_fence.py`
   against a disposable database. Do not weaken control-collection identity or
   release writer locks before SQL commit.
+  Nested mutation values are normalized by that same document owner before
+  serialization; preserve merge siblings and reject forbidden delete placements.
+  The startup lane includes `fork/tests/test_pg_nested_transforms.py`; live usage
+  and contention evidence stays in the disposable PostgreSQL fence suite.
 
 - Local speech uses the same `fork/model_contract.py` and profile owner as
   embeddings. Run `deploy/self-host/prepare-speech.py` before deployment; mount
