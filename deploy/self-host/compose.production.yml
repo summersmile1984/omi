@@ -107,9 +107,9 @@ services:
         OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
     image: ${AUTH_SERVER_IMAGE:?AUTH_SERVER_IMAGE is required}
     restart: "no"
-    command: ["node", "src/migrate.js"]
+    command: ["node", "self-host-runtime.mjs", "migrate"]
     environment:
-      - NODE_ENV=production
+      - SELF_HOST_STAGE=${SELF_HOST_STAGE:-production}
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required}
@@ -146,6 +146,7 @@ services:
         condition: service_healthy
 
   auth-server:
+    command: ["node", "self-host-runtime.mjs", "serve"]
     build:
       context: ../..
       dockerfile: auth-server/Dockerfile
@@ -157,7 +158,7 @@ services:
     labels:
       com.omi.runtime.config-sha256: ${OMI_RUNTIME_CONFIG_SHA256:-unattributed}
     environment:
-      - NODE_ENV=production
+      - SELF_HOST_STAGE=${SELF_HOST_STAGE:-production}
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET is required}

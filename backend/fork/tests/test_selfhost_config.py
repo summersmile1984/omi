@@ -44,3 +44,13 @@ def test_typo_in_compose_command_fails(source):
 def test_example_environment_cannot_admit_a_deployment():
     with pytest.raises(ValueError, match='not reviewed'):
         CHECK['check_environment'](ROOT / 'deploy/self-host/.env.production.example')
+
+
+@pytest.mark.parametrize('service', ['auth-server', 'auth-migrate'])
+def test_auth_stage_owner_cannot_be_bypassed(source, service):
+    path = source / 'deploy/self-host/compose.production.yml'
+    config = yaml.safe_load(path.read_text())
+    config['services'][service]['command'] = ['node', 'src/index.js']
+    path.write_text(yaml.safe_dump(config))
+    with pytest.raises(ValueError, match='stage-aware Auth entrypoint'):
+        CHECK['check_sources'](source)

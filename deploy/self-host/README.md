@@ -13,6 +13,7 @@ is `production`, `beta`, or `local`; Python derives its upstream env stage.
 The API runs `fork.main:app`; queue consumers run `python -m fork.worker`, which
 validates per-queue credentials and supervises child failures. Self-host API and worker processes
 require schema v4 (including legal-hold authorities), installed by `python -m fork.migrate migrate`.
+Auth serving and migration use the same stage-aware image entrypoint: `SELF_HOST_STAGE=local` selects development, while `beta` and `production` enforce production guards. Ambient `NODE_ENV` cannot relax those two stages.
 
 **Startup admission is separate from full product/cutover acceptance.** The
 historical runbooks below still depend on unfinished provider and migration
