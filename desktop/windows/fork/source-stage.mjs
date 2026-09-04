@@ -254,6 +254,12 @@ teardown =
 write('src/renderer/src/lib/authTeardown.ts', teardown)
 rewritten.add('src/renderer/src/lib/authTeardown.ts')
 
+replaceOnce(
+  'src/renderer/src/pages/Onboarding.tsx',
+  "import { BrainGraph } from '../components/graph/BrainGraph'",
+  "import { BrainGraph } from '../../../../fork/renderer/OnboardingGraph'"
+)
+
 const mapping = new Map([
   ['src/renderer/src/lib/firebase', 'fork/renderer/identity'],
   ['src/renderer/src/lib/authSession', 'fork/renderer/authSession'],

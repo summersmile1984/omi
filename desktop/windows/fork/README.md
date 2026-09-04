@@ -88,6 +88,10 @@ pnpm exec electron .
 这里只允许 `.forktest.` 身份和本地目标。禁止启动/停止生产 Omi；不要给测试输入
 附带真实 OAuth、发布、签名或硬件资格。详细实际证据见 `VERIFICATION.md`。
 
+引导图谱由 `renderer/OnboardingGraph.tsx` 的局部 Suspense 边界承载；字体未就绪
+只影响图谱加载，不阻塞步骤提交/持久化。它不宣称图谱已成功，也不绕过可选权限
+或 onboarding。真实 Tasks 页面补证目前为 Cloudflare target，本机 Electron 运行。
+
 ## 依据
 
 Electron 官方 [safeStorage](https://www.electronjs.org/docs/latest/api/safe-storage)
