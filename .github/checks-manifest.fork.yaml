@@ -9,6 +9,14 @@
 # which `scripts/fork/preflight` and `.github/workflows/fork-checks.yml` both do.
 # Every entry declares both lanes, as the upstream runner's validator requires.
 checks:
+  - id: fork-macos-native-identity
+    command: ["bash", "desktop/macos/fork/test.sh"]
+    triggers: ["desktop/macos/fork/**", "desktop/macos/Desktop/Sources/**", "scripts/profiles/**", "scripts/brand/**", "brand/schema/**"]
+    lanes: ["local", "ci"]
+    platforms: ["macos"]
+    reason: "The 2026-09-04 main audit B1 found custom bundles classified as production and sharing upstream storage; exercises staged identity behavior, opaque session/JWT/storage failures and reviewed Swift owner drift. This is a platform consumer contract, not another auth issuer."
+
+
   - id: fork-ci-diff-base
     command: ["python3", "scripts/fork/test_ci_diff_base.py"]
     triggers: [".github/workflows/fork-checks.yml", "scripts/fork/test_ci_diff_base.py"]
