@@ -9,6 +9,12 @@
 # which `scripts/fork/preflight` and `.github/workflows/fork-checks.yml` both do.
 # Every entry declares both lanes, as the upstream runner's validator requires.
 checks:
+  - id: fork-ci-diff-base
+    command: ["python3", "scripts/fork/test_ci_diff_base.py"]
+    triggers: [".github/workflows/fork-checks.yml", "scripts/fork/test_ci_diff_base.py"]
+    lanes: ["local", "ci"]
+    reason: "The advertised manual Fork Checks entry emitted an empty diff base because workflow_dispatch has no event.before; execute that exact shell in real Git fixtures for PR, push and manual events. This tests the workflow consumer rather than duplicating the shared manifest selector."
+
   - id: fork-auth-contracts
     command: ["bash", "scripts/fork/auth-contracts.sh"]
     triggers: ["runtime/shared/**", "auth/**", "auth-server/**", "deploy/self-host/auth-runtime.mjs", "contracts/auth/**", "backend/utils/auth_shim.py", "backend/fork/tests/test_auth_contract.py", "backend/tests/unit/test_auth_shim.py", "deploy/cloudflare/workers/auth/**", "deploy/cloudflare/tests/auth*.ts", "scripts/fork/auth-contracts.sh"]

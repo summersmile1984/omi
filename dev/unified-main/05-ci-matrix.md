@@ -36,6 +36,13 @@ done
 
 ## 3. fork 检查清单与本地入口
 
+2026-09-04 的实际工作流以 `.github/workflows/fork-checks.yml` 和
+`.github/checks-manifest.fork.yaml` 为准；下表仍包含规划项。PR 使用目标分支的
+已获取提交作 diff base，push 使用事件的 `before`；手动运行没有 `before`，
+使用当前提交的父提交，因此检查当前提交的变更。无法解析提交时立即失败。
+`fork-ci-diff-base` 在真实临时 Git 仓库中执行工作流原始 shell，覆盖上述事件，
+避免手动入口再次传入空 ref。
+
 `.github/checks-manifest.fork.yaml`（与上游同 schema：`id/command/triggers/lanes/reason`，每条都声明 `["local","ci"]`）：
 
 | id | command | triggers | 目的 |

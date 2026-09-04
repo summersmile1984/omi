@@ -43,13 +43,22 @@ jobs:
 
       - name: Resolve diff base
         id: base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            echo "ref=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags origin "$BASE_REF"
+            ref=FETCH_HEAD
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            ref="$BEFORE_SHA"
           else
-            echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+            # Manual runs have no event.before; inspect the current commit.
+            ref=HEAD^
           fi
+          resolved=$(git rev-parse --verify --end-of-options "$ref^{commit}")
+          echo "ref=$resolved" >> "$GITHUB_OUTPUT"
 
       # fork-backend-seams runs the real backend suite through test.sh, which
       # needs the pinned interpreter. Without it the check silently degrades to
