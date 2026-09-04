@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render deployment-profile tables for every client and the backend.
 
-One source (`deploy/profiles/*.yaml`), one resolver, four generated tables. The
+One source (`deploy/profiles/*.yaml`), one resolver, five generated tables. The
 point is that a client never learns *which* backend implementation it is talking
 to -- it reads a profile: endpoints, identity provider, and capability switches.
 That is what lets `deploy/self-host/` and `deploy/cloudflare/` be directories
@@ -20,6 +20,10 @@ Usage:
     scripts/profiles/render.py --target self_hosted [--brand <id>] [--check]
     scripts/profiles/render.py --target omi_cloud --emit-json    # equivalence probe
 
+`--manifest PATH` validates a private YAML/JSON overlay. `--stage` resolves only
+that stage. `--output-root` writes an isolated build tree. Endpoint overrides
+come from deployments.<target>.<stage>, without inferred auth/MCP/object URLs.
+
 `--check` renders to memory and fails if any file on disk differs, which is how
 CI proves the checked-in tables match the source.
 """
@@ -30,6 +34,11 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "brand"))
+from manifest import ManifestError, load_manifest  # noqa: E402
+from yaml_lite import YamlError, load_yaml  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROFILE_DIR = REPO_ROOT / "deploy/profiles"
@@ -64,120 +73,43 @@ class ProfileError(RuntimeError):
     pass
 
 
-# --------------------------------------------------------------------------
-# A deliberately small YAML reader.
-#
-# The repository's own check runner parses its manifest with a hand-rolled
-# subset for the same reason: these files must be readable by a bare Python with
-# no install step, on any machine, before any environment is provisioned.
-# Supported: nested mappings by indentation, inline [a, b] lists, block "- "
-# lists, and int/bool/null scalars.
-# --------------------------------------------------------------------------
-def _strip_inline_comment(text: str) -> str:
-    """Drop a trailing ` # comment`, leaving quoted values intact."""
-    text = text.strip()
-    if text[:1] in ("\"", "'"):
-        closing = text.find(text[0], 1)
-        if closing != -1:
-            return text[: closing + 1]
-        return text
-    cut = text.find(" #")
-    return text[:cut].rstrip() if cut != -1 else text
+ENDPOINT_KEYS = {
+    "api": "api_base",
+    "auth": "auth_base",
+    "web": "web_app",
+    "mcp": "mcp_base",
+    "share": "share_base",
+    "objects": "objects_base",
+}
 
 
-def _scalar(text: str):
-    text = _strip_inline_comment(text)
-    if not text:
-        return ""
-    if text[0] in "\"'" and text[-1] == text[0] and len(text) >= 2:
-        return text[1:-1]
-    if text.startswith("[") and text.endswith("]"):
-        inner = text[1:-1].strip()
-        return [_scalar(p) for p in inner.split(",")] if inner else []
-    low = text.lower()
-    if low in ("true", "false"):
-        return low == "true"
-    if low in ("null", "~", "none"):
-        return None
-    try:
-        return int(text)
-    except ValueError:
-        return text
-
-
-def load_yaml(path: Path) -> dict:
-    if not path.exists():
-        raise ProfileError(f"missing profile source: {path}")
-    root: dict = {}
-    # stack of (indent, container) so nesting follows indentation
-    stack: list[tuple[int, dict]] = [(-1, root)]
-    pending_list: list | None = None
-    pending_indent = -1
-
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        if not raw.strip() or raw.lstrip().startswith("#"):
-            continue
-        indent = len(raw) - len(raw.lstrip())
-        line = raw.strip()
-
-        if line.startswith("- "):
-            if pending_list is None or indent <= pending_indent:
-                raise ProfileError(f"{path}:{lineno}: list item outside a list key")
-            pending_list.append(_scalar(line[2:]))
-            continue
-
-        pending_list = None
-        if ":" not in line:
-            raise ProfileError(f"{path}:{lineno}: expected 'key: value'")
-        key, _, value = line.partition(":")
-        key, value = key.strip(), value.strip()
-
-        while stack and indent <= stack[-1][0]:
-            stack.pop()
-        if not stack:
-            raise ProfileError(f"{path}:{lineno}: broken indentation")
-        parent = stack[-1][1]
-
-        if value == "":
-            child: dict = {}
-            parent[key] = child
-            stack.append((indent, child))
-            pending_list = None
-        elif value == "[]":
-            parent[key] = []
-        else:
-            parsed = _scalar(value)
-            parent[key] = parsed
-            if parsed == "" or parsed is None:
-                # "key:" followed by block list items
-                parent[key] = []
-                pending_list = parent[key]
-                pending_indent = indent
-    return root
-
-
-def load_brand(brand_id: str) -> dict:
-    """Domains and scheme for URL templating.
-
-    Absent brand directory is not an error: only `self_hosted`/`cloudflare`
-    templates reference it, and S1 renders `omi_cloud` (which has none) as its
-    equivalence probe before any brand exists.
-    """
-    manifest = BRAND_DIR / brand_id / "manifest.yaml"
-    if not manifest.exists():
-        return {}
-    data = load_yaml(manifest)
-    domains = data.get("domains", {}) or {}
-    identifiers = data.get("identifiers", {}) or {}
+def stage_bindings(manifest: dict, target: str, stage: str) -> dict:
+    domains = dict(manifest["domains"])
+    domains.update(manifest.get("deployments", {}).get(target, {}).get(stage, {}))
     return {
-        "api": str(domains.get("api_base", "")).rstrip("/"),
-        "auth": str(domains.get("auth_base", domains.get("api_base", ""))).rstrip("/"),
-        "web": str(domains.get("web_app", "")).rstrip("/"),
-        "mcp": str(domains.get("mcp_base", domains.get("api_base", ""))).rstrip("/"),
-        "share": str(domains.get("share_base", "")).rstrip("/"),
-        "objects": str(domains.get("objects_base", "")).rstrip("/"),
-        "scheme": str(identifiers.get("url_scheme", brand_id)),
+        **{key: str(domains.get(field, "")).rstrip("/") for key, field in ENDPOINT_KEYS.items()},
+        "scheme": manifest["identifiers"]["url_scheme"],
     }
+
+
+def validate_endpoint(value: str, field: str, target: str, stage: str, requires_https: bool) -> None:
+    parsed = urlsplit(value)
+    if (
+        not value
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+        or parsed.query
+        or parsed.scheme not in (("https",) if requires_https else ("http", "https"))
+    ):
+        raise ProfileError(
+            f"{target}.{stage}: {field} must be an explicit {'https' if requires_https else 'http(s)'} URL without credentials/query/fragment"
+        )
+    try:
+        parsed.port
+    except ValueError as error:
+        raise ProfileError(f"{target}.{stage}: invalid {field} port") from error
 
 
 def substitute(value, brand: dict, target: str, stage: str):
@@ -185,6 +117,8 @@ def substitute(value, brand: dict, target: str, stage: str):
         return value
     out = value
     for key, replacement in brand.items():
+        if "{" + key + "}" in out and not replacement:
+            raise ProfileError(f"{target}.{stage}: missing explicit endpoint {ENDPOINT_KEYS.get(key, key)}")
         out = out.replace("{" + key + "}", replacement)
     if "{" in out:
         missing = out[out.index("{") + 1 : out.index("}")] if "}" in out else out
@@ -195,10 +129,19 @@ def substitute(value, brand: dict, target: str, stage: str):
     return out
 
 
-def resolve(target: str, brand_id: str) -> dict:
-    target_doc = load_yaml(PROFILE_DIR / f"{target}.yaml")
-    stage_doc = load_yaml(PROFILE_DIR / "stages.yaml")
-    brand = load_brand(brand_id)
+def resolve(
+    target: str, brand_id: str | None = None, manifest_path: Path | None = None, stage: str | None = None
+) -> dict:
+    if target not in ("omi_cloud", "self_hosted", "cloudflare") or (stage is not None and stage not in STAGES):
+        raise ProfileError("unknown deployment target or stage")
+    try:
+        target_doc = load_yaml(PROFILE_DIR / f"{target}.yaml")
+        stage_doc = load_yaml(PROFILE_DIR / "stages.yaml")
+        manifest = load_manifest(brand_id, REPO_ROOT, manifest_path)
+    except (ManifestError, YamlError) as error:
+        raise ProfileError(str(error)) from error
+    brand_id = manifest["brand"]["id"]
+    selected_stages = (stage,) if stage else STAGES
 
     if target_doc.get("target") != target:
         raise ProfileError(f"{target}.yaml declares target '{target_doc.get('target')}'")
@@ -220,7 +163,8 @@ def resolve(target: str, brand_id: str) -> dict:
         raise ProfileError(f"{target}: identity_provider must be '{expected}', got '{identity}'")
 
     entries: dict[str, dict] = {}
-    for stage in STAGES:
+    for stage in selected_stages:
+        brand = stage_bindings(manifest, target, stage)
         stage_values = target_doc.get("stages", {}).get(stage)
         if stage_values is None:
             raise ProfileError(f"{target}.yaml has no stage '{stage}'")
@@ -235,20 +179,39 @@ def resolve(target: str, brand_id: str) -> dict:
             "requires_https": bool(stage_policy.get("requires_https", False)),
             "allows_env_url_override": bool(stage_policy.get("allows_env_url_override", False)),
         }
+        overrides = manifest.get("deployments", {}).get(target, {}).get(stage, {})
+        output_fields = {
+            "api_base_url": "api_base",
+            "auth_base_url": "auth_base",
+            "web_base_url": "web_app",
+            "mcp_base_url": "mcp_base",
+            "share_base_url": "share_base",
+            "objects_base_url": "objects_base",
+        }
         for key, value in stage_values.items():
-            row[key] = substitute(value, brand, target, stage)
+            row[key] = (
+                overrides[output_fields[key]]
+                if output_fields.get(key) in overrides
+                else substitute(value, brand, target, stage)
+            )
         row["capabilities"] = {k: substitute(caps[k], brand, target, stage) for k in REQUIRED_CAPABILITIES}
         row["data_plane"] = {k: plane[k] for k in REQUIRED_DATA_PLANE}
-        if row["requires_https"]:
-            for key, value in row.items():
-                if key.endswith("_base_url") and isinstance(value, str) and value and not value.startswith("https://"):
-                    raise ProfileError(f"{target}.{stage}: {key} must be https, got '{value}'")
+        for key, value in row.items():
+            if key.endswith("_base_url") and (target != "omi_cloud" or value):
+                validate_endpoint(value, key, target, stage, row["requires_https"])
         entries[row["name"]] = row
 
-    for alias, values in (target_doc.get("legacy_aliases", {}) or {}).items():
-        row = {"name": alias, "target": target, "stage": "legacy", "identity_provider": identity,
-               "managed": bool(target_doc.get("managed", False)), "requires_https": False,
-               "allows_env_url_override": True, "legacy": True}
+    for alias, values in (target_doc.get("legacy_aliases", {}) if len(selected_stages) == len(STAGES) else {}).items():
+        row = {
+            "name": alias,
+            "target": target,
+            "stage": "legacy",
+            "identity_provider": identity,
+            "managed": bool(target_doc.get("managed", False)),
+            "requires_https": False,
+            "allows_env_url_override": True,
+            "legacy": True,
+        }
         row.update(values)
         row["capabilities"] = dict(entries[f"{target}.production"]["capabilities"])
         row["data_plane"] = dict(entries[f"{target}.production"]["data_plane"])
@@ -364,26 +327,33 @@ def render_swift(resolved: dict) -> str:
 
 def render_ts(resolved: dict) -> str:
     body = json.dumps(resolved["profiles"], indent=2, sort_keys=True, ensure_ascii=False)
-    return "\n".join([
-        f"// {GENERATED_HEADER}",
-        f"// target: {resolved['target']}  brand: {resolved['brand']}",
-        "",
-        "// The type is derived from the table rather than hand-written: a field",
-        "// added to deploy/profiles/ must not require editing a mirror here, and",
-        "// tsc caught exactly that drift the first time this file was generated.",
-        f"export const forkDeploymentProfiles = {body} as const",
-        "",
-        "export type ForkProfileName = keyof typeof forkDeploymentProfiles",
-        "export type ForkDeploymentProfile = (typeof forkDeploymentProfiles)[ForkProfileName]",
-        "",
-    ])
+    return "\n".join(
+        [
+            f"// {GENERATED_HEADER}",
+            f"// target: {resolved['target']}  brand: {resolved['brand']}",
+            "",
+            "// The type is derived from the table rather than hand-written: a field",
+            "// added to deploy/profiles/ must not require editing a mirror here, and",
+            "// tsc caught exactly that drift the first time this file was generated.",
+            f"export const forkDeploymentProfiles = {body} as const",
+            "",
+            "export type ForkProfileName = keyof typeof forkDeploymentProfiles",
+            "export type ForkDeploymentProfile = (typeof forkDeploymentProfiles)[ForkProfileName]",
+            "",
+        ]
+    )
 
 
 def render_backend_json(resolved: dict) -> str:
-    return json.dumps(
-        {"_comment": GENERATED_HEADER, **resolved},
-        indent=2, sort_keys=True, ensure_ascii=False,
-    ) + "\n"
+    return (
+        json.dumps(
+            {"_comment": GENERATED_HEADER, **resolved},
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
 
 
 OUTPUTS = {
@@ -398,13 +368,16 @@ OUTPUTS = {
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--target", required=True, choices=["omi_cloud", "self_hosted", "cloudflare"])
-    parser.add_argument("--brand", default="omi-upstream")
+    parser.add_argument("--brand")
+    parser.add_argument("--manifest", type=Path, help="explicit validated brand manifest (YAML or JSON)")
+    parser.add_argument("--stage", choices=STAGES, help="resolve one stage; default resolves all stages")
+    parser.add_argument("--output-root", type=Path, default=REPO_ROOT, help="isolated build tree for generated files")
     parser.add_argument("--check", action="store_true", help="fail if generated files differ from source")
     parser.add_argument("--emit-json", action="store_true", help="print the resolved table and write nothing")
     args = parser.parse_args()
 
     try:
-        resolved = resolve(args.target, args.brand)
+        resolved = resolve(args.target, args.brand, args.manifest, args.stage)
     except ProfileError as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
@@ -416,7 +389,7 @@ def main() -> int:
     drift: list[str] = []
     for rel, renderer in OUTPUTS.items():
         content = renderer(resolved)
-        path = REPO_ROOT / rel
+        path = args.output_root / rel
         if args.check:
             if not path.exists() or path.read_text(encoding="utf-8") != content:
                 drift.append(rel)
@@ -429,7 +402,9 @@ def main() -> int:
             print("FAIL: generated profile tables are stale:", file=sys.stderr)
             for rel in drift:
                 print(f"  {rel}", file=sys.stderr)
-            print(f"\nRegenerate: scripts/profiles/render.py --target {args.target} --brand {args.brand}", file=sys.stderr)
+            print(
+                f"\nRegenerate: scripts/profiles/render.py --target {args.target} --brand {args.brand}", file=sys.stderr
+            )
             return 1
         print(f"OK: {len(OUTPUTS)} generated table(s) match deploy/profiles/ for {args.target}.")
         return 0
