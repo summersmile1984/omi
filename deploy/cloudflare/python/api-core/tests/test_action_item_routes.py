@@ -137,7 +137,7 @@ def test_action_item_crud_is_uid_scoped_and_idempotent():
     headers = signed_headers(secret)
 
     invalid = asyncio.run(create_action_item(FakeRequest(env, headers, {"description": ""})))
-    assert invalid.status_code == 400
+    assert invalid.status_code == 422
 
     created = asyncio.run(
         create_action_item(
@@ -283,7 +283,7 @@ def test_action_item_batch_create_preserves_order_and_idempotency():
     assert retry["created_count"] == 2
 
     invalid = asyncio.run(batch_create_action_items(FakeRequest(env, headers, [{"description": ""}])))
-    assert invalid.status_code == 400
+    assert invalid.status_code == 422
 
 
 def test_reminders_sync_projection_and_batch_update_are_d1_backed():
@@ -335,7 +335,7 @@ def test_reminders_sync_projection_and_batch_update_are_d1_backed():
     assert synced["synced_items"][0]["description"] == "Sync the reminders now"
 
     invalid = asyncio.run(sync_batch_update(FakeRequest(env, headers, {"items": [{"id": ""}]})))
-    assert invalid.status_code == 400
+    assert invalid.status_code == 422
 
 
 def test_conversation_action_item_reads_use_d1_projection_and_locked_boundary():
