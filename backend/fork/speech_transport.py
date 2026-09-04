@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import re
 import subprocess
+from time import monotonic
 
 from fastapi import HTTPException
 from starlette.responses import Response
@@ -192,9 +193,13 @@ async def ptt(
                 segments.task_done()
 
     sender = asyncio.create_task(send_segments())
+    last_audio_at = monotonic()
     try:
         while True:
-            message = await asyncio.wait_for(websocket.receive(), timeout=30)
+            remaining_idle = 30 - (monotonic() - last_audio_at)
+            if remaining_idle <= 0:
+                raise asyncio.TimeoutError
+            message = await asyncio.wait_for(websocket.receive(), timeout=remaining_idle)
             if message['type'] == 'websocket.disconnect':
                 return
             if message.get('text') == 'finalize':
@@ -223,6 +228,8 @@ async def ptt(
                 send_failed = True
                 raise SpeechError('speech_provider_rejected_audio', retryable=True)
             received = prospective
+            if data:
+                last_audio_at = monotonic()
     except asyncio.TimeoutError:
         await websocket.close(1008, 'speech_audio_idle_timeout')
     except WebSocketDisconnect:

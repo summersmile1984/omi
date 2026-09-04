@@ -300,3 +300,34 @@ async def test_cancelled_drain_waiter_cannot_drop_or_replay_socket_tail(ptt_runt
     await socket.drain_and_close()
     await socket.drain_and_close()
     assert ptt_runtime.decoded.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('with_audio', [False, True])
+async def test_ptt_idle_deadline_only_renews_for_accepted_audio(ptt_runtime, monkeypatch, with_audio):
+    clock = [0]
+    monkeypatch.setattr(speech_transport, 'monotonic', lambda: clock[0])
+    frames = [
+        (20, {'type': 'websocket.receive', 'bytes': b''}),
+        (25, {'type': 'websocket.receive', 'text': 'keepalive'}),
+        (31, {'type': 'websocket.receive', 'text': 'ignored'}),
+    ]
+    if with_audio:
+        frames[1] = (25, {'type': 'websocket.receive', 'bytes': b'\x00\x01' * 1600})
+        frames.extend([(45, {'type': 'websocket.receive', 'text': 'keepalive'}), (56, frames[2][1])])
+    frames.append((60, {'type': 'websocket.receive', 'text': 'finalize'}))
+
+    class TimedSession(Session):
+        async def receive(self):
+            timestamp, message = next(self.messages)
+            clock[0] = timestamp
+            return message
+
+    ws = TimedSession(frames)
+    await speech_transport.ptt(ws, 'existing-principal')
+    assert ws.closed == [(1008, 'speech_audio_idle_timeout')]
+    assert clock[0] == (56 if with_audio else 31)
+    if with_audio:
+        ptt_runtime.recorded.assert_called_once_with('existing-principal', 100)
+    else:
+        ptt_runtime.recorded.assert_not_called()
