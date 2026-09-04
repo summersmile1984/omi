@@ -107,8 +107,20 @@ def enqueue_account_deletion_wipe(wipe_job_id: str) -> None:
 
 
 def enqueue_listen_finalization_job(job_id: str, dispatch_generation: int) -> None:
-    _enqueue(
-        _queue_names()["finalization"], f"fin-{job_id}", {"job_id": job_id, "dispatch_generation": dispatch_generation}
+    if not isinstance(job_id, str) or not job_id or type(dispatch_generation) is not int or dispatch_generation < 1:
+        raise ValueError("finalization requires job identity and a positive dispatch generation")
+    next(queue for queue in QUEUES if queue.name == "finalization").validate()
+    # PostgreSQL's persisted generation and lease own duplicate handling. One
+    # Redis command publishes the opaque identity; an uncertain reply is safe
+    # to replay. A permanent names set would swallow later dispatch generations.
+    _r().rpush(
+        _queue_names()["finalization"],
+        json.dumps(
+            {
+                "task_id": f"fin-{job_id}-{dispatch_generation}",
+                "payload": {"job_id": job_id, "dispatch_generation": dispatch_generation},
+            }
+        ),
     )
 
 
