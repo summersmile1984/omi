@@ -1505,6 +1505,11 @@ messages and the existing narrow completion contract. Migration
 explicit clear rotates it. The target captured before model IO includes uid,
 session, app and epoch. Conditional D1 inserts reject a late result after clear
 or deletion without recreating its session; paid model work remains accounted.
+The narrow completion contract also resolves its target before idempotent cache
+replay. Reusing a key for a different owned session/app, or an old cached row
+without a provable session, returns 409 without another provider or quota write;
+missing/foreign explicit sessions still return 404. Its context read uses the
+selected app as well as UID/session, including non-default app sessions.
 This forward migration has only local qualification here; previous-release and
 remote rollout/rollback eligibility remain pending.
 Before provider work, API AI atomically reserves one D1 quota event. The

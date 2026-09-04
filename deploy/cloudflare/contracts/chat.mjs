@@ -41,7 +41,7 @@ async function request(
   service,
   path,
   status,
-  { bearer, method = "GET", body, retry = true } = {},
+  { bearer, method = "GET", body, retry = true, extraHeaders = {} } = {},
 ) {
   const response = await originalFetch(metadata[`${service}_origin`] + path, {
     method,
@@ -50,6 +50,7 @@ async function request(
     headers: {
       Origin: metadata.auth_origin,
       "Content-Type": "application/json",
+      ...extraHeaders,
       ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -71,6 +72,7 @@ async function request(
       method,
       body,
       retry: false,
+      extraHeaders,
     });
   }
   assert.equal(response.status, status, `${method} ${path}`);
@@ -91,12 +93,12 @@ async function signup() {
   return (await request("auth", "/api/auth/token", 200, { bearer: session }))
     .data.token;
 }
-async function createSession(bearer, title) {
+async function createSession(bearer, title, appId) {
   return (
     await request("api", "/v2/chat-sessions", 200, {
       bearer,
       method: "POST",
-      body: { title },
+      body: { title, app_id: appId },
     })
   ).data.id;
 }
@@ -218,6 +220,40 @@ try {
   assert.equal((await client.getMessages(undefined, C)).length, 2);
   pass("cross-uid-read-write-clear-denied");
   token = owner;
+  const coach = await createSession(owner, "Synthetic Coach", "fixture-coach");
+  await request("api", "/v2/desktop/messages", 200, {
+    bearer: owner,
+    method: "POST",
+    body: {
+      session_id: coach,
+      app_id: "fixture-coach",
+      sender: "human",
+      text: "Synthetic coach context",
+    },
+  });
+  const retryKey = randomUUID();
+  const complete = (session, expected) =>
+    request("api", "/v2/cf/chat/completions", expected, {
+      bearer: owner,
+      method: "POST",
+      extraHeaders: { "Idempotency-Key": retryKey },
+      body: {
+        session_id: session,
+        messages: [{ role: "user", content: "Synthetic follow-up" }],
+      },
+    });
+  const completion = await complete(coach, 200);
+  assert(
+    completion.data.choices[0].message.content.includes(
+      "Synthetic coach context",
+    ),
+  );
+  assert.equal((await complete(coach, 200)).data.id, completion.data.id);
+  await complete(B, 409);
+  await complete(C, 404);
+  await complete(randomUUID(), 404);
+  assert.equal((await client.getMessages(undefined, B)).length, 2);
+  pass("compat-replay-and-context-respect-selected-target");
   const before = await client.getMessages(undefined, A);
   await assert.rejects(
     () =>

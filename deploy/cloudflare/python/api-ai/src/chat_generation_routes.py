@@ -22,7 +22,7 @@ except ModuleNotFoundError as error:  # CPython unit tests do not provide Pyodid
         raise
     worker_fetch = None  # type: ignore[assignment]
 
-from chat_target import APP_SCOPE, resolve_chat_target, persist_chat_messages
+from chat_target import APP_SCOPE, ChatTarget, resolve_chat_target, persist_chat_messages
 from chat_quota import (
     free_quota_detail,
     provider_cost_usd,
@@ -659,10 +659,6 @@ def _prompt_message(row: dict[str, object]) -> dict[str, str] | None:
     return {"role": "user" if sender == "human" else "assistant", "content": text}
 
 
-async def _history(env: object, uid: str, session_id: str) -> list[dict[str, str]]:
-    return await _scoped_history(env, uid, session_id, None)
-
-
 async def _scoped_history(env: object, uid: str, session_id: str, app_id: str | None) -> list[dict[str, str]]:
     app_clause = f"{APP_SCOPE} IS NULL" if app_id is None else f"{APP_SCOPE} = ?"
     app_args: tuple[object, ...] = () if app_id is None else (app_id,)
@@ -1127,12 +1123,18 @@ def _compat_stable_message_id(uid: str, idempotency_key: str, suffix: str) -> st
     return f"cf-compat-{digest}-{suffix}"
 
 
-async def _compat_existing_response(env: object, uid: str, message_id: str, model: str) -> dict[str, object] | None:
-    """Return a previously persisted response for a retried idempotency key."""
+class ChatReplayConflict(Exception):
+    """An idempotency key cannot return a different target's cached result."""
+
+
+async def _compat_existing_response(
+    env: object, target: ChatTarget, message_id: str, model: str
+) -> dict[str, object] | None:
+    """Replay only a response owned by the already resolved UID/session/app."""
 
     row = (
-        await env.APP_DB.prepare("SELECT message_json FROM cf_chat_messages WHERE uid = ? AND id = ? LIMIT 1")
-        .bind(uid, message_id)
+        await env.APP_DB.prepare("SELECT app_id, message_json FROM cf_chat_messages WHERE uid = ? AND id = ? LIMIT 1")
+        .bind(target.uid, message_id)
         .first()
     )
     raw = row.get("message_json") if isinstance(row, dict) else None
@@ -1146,6 +1148,12 @@ async def _compat_existing_response(env: object, uid: str, message_id: str, mode
         message = parsed if isinstance(parsed, dict) else None
     if not isinstance(message, dict) or message.get("sender") != "ai" or not isinstance(message.get("text"), str):
         return None
+    cached_app = row.get("app_id")
+    if cached_app in ("", "null"):
+        cached_app = None
+    cached_session = message.get("chat_session_id") or message.get("session_id")
+    if cached_session != target.session_id or cached_app != target.app_id:
+        raise ChatReplayConflict()
     raw_usage = message.get("compat_usage")
     usage: tuple[int, int] | None = None
     if isinstance(raw_usage, dict):
@@ -1268,7 +1276,15 @@ async def cloudflare_chat_completions(request: Request):
     human_message_id = _compat_stable_message_id(uid, request_key, "human")
     ai_message_id = _compat_stable_message_id(uid, request_key, "assistant")
     try:
-        existing = await _compat_existing_response(env, uid, ai_message_id, requested_model)
+        target = await resolve_chat_target(env, uid, None, payload.session_id, create=True)
+        session_id = target.session_id
+        existing = await _compat_existing_response(env, target, ai_message_id, requested_model)
+    except LookupError:
+        return JSONResponse({"detail": "Chat session not found"}, status_code=404)
+    except ChatReplayConflict:
+        return JSONResponse(
+            {"error": "idempotency key belongs to a different or unverifiable chat target"}, status_code=409
+        )
     except Exception:
         return JSONResponse({"error": "chat history unavailable"}, status_code=503)
     if existing is not None:
@@ -1281,15 +1297,13 @@ async def cloudflare_chat_completions(request: Request):
         return JSONResponse(existing, headers={"cache-control": "no-store", "x-omi-chat-contract": "cf-v1"})
 
     try:
-        target = await resolve_chat_target(env, uid, None, payload.session_id, create=True)
-        session_id = target.session_id
         prompt_messages = list(payload.messages)
         if payload.session_id is not None and len(prompt_messages) == 1:
             prompt_messages = [
                 CompatChatMessage(role="system", content=SYSTEM_PROMPT),
                 *[
                     CompatChatMessage(role=item["role"], content=item["content"])
-                    for item in await _history(env, uid, session_id)
+                    for item in await _scoped_history(env, uid, session_id, target.app_id)
                 ],
                 *prompt_messages,
             ]
