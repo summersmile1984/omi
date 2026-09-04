@@ -20,7 +20,7 @@ export function assertPlanIntegrity(plan) {
 // Check the selected output root and every existing descendant before reading
 // or writing. lstat sees dangling links that existsSync intentionally hides.
 // System aliases above the selected root (for example macOS /tmp) are allowed.
-function outputEntry(destination, path, ownedLink = false) {
+export function outputEntry(destination, path, ownedLink = false) {
   const suffix = relative(destination, path);
   if (isAbsolute(suffix) || suffix === ".." || suffix.startsWith(`..${sep}`))
     throw new Error("generated path is outside its output owner");

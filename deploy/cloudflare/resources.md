@@ -3,8 +3,8 @@
 `npm run resources` renders one non-secret deployment plan from the existing
 brand/profile authority, a resource inventory, and the current Moonshine Web
 artifact. It does not provision resources, upload secrets, deploy Workers, query
-the Cloudflare account, or change DNS. Historical `deploy:staging` and
-`deploy:production` publishers are not consumers yet; CF-5 owns that migration.
+the Cloudflare account, or change DNS. The current `deploy:staging` and `deploy:production` candidate builders consume
+this plan; [release.md](release.md) defines their qualification and apply boundary.
 
 ## Input and ownership
 

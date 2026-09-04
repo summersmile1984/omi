@@ -89,13 +89,12 @@ contract tests in the local and CI fork manifest. It covers public projection,
 source/MCP drift, original-source preservation, path escape and symlink
 counterexamples. It is not browser, Auth, WebSocket, D1 or production evidence.
 
-The current release scripts under `deploy/cloudflare/scripts/` still reference
-retired Next/vinext commands. The joint INTEGRATION-1 delivery must move their
-qualification/publish/smoke contract to these artifacts before release; this
-builder does not make those old commands usable. Full browser login, logout,
+The current [Cloudflare release workflow](../cloudflare/release.md) builds both
+Moonshine targets before remote mutation and publishes only frozen Worker
+artifacts. Local build/dry-run success does not provide the remaining CF-4,
+CI-1, prior-schema or remote qualification. Full browser login, logout,
 refresh/reconnect and first-frame WebSocket contracts are shared with AUTH-1,
-CLIENT-1 and CF-2. Brand strings, image assets and links still need the complete
-white-label qualification; a branded login form alone does not prove it.
+CLIENT-1 and CF-2. Complete brand assets and links remain separate qualification.
 
 ## Local verification, 2026-09-04
 
@@ -115,5 +114,5 @@ Evidence is in `/tmp/memweft-implementation/cloudflare/`: `web-ci-final.log`
 publish), `web-{cf,os}-http-final.log` and `web-{cf,os}-browser-final.log`, plus
 `web-cf-hydration-final.log`. The fixture API serves only one synthetic marketplace
 record at `/v2/apps` and `/v1/approved-apps`; it is not a product API qualification.
-A Server OS Docker image build is not claimed here. The old release publisher
-commands and complete white-label assets remain explicit follow-up work.
+A Server OS Docker image build is not claimed here. This historical builder-only evidence does not qualify a new release or the
+complete white-label asset set.
