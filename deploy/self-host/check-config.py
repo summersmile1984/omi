@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / 'deploy/self-host/compose.production.yml'
 REQUIRED_SOURCE = (
     'backend/fork/bootstrap.py', 'backend/fork/main.py', 'backend/fork/profile.py',
-    'backend/fork/worker.py', 'backend/fork/migrate.py', 'backend/fork/queue_config.py',
+    'backend/fork/vector_qdrant.py', 'backend/fork/worker.py', 'backend/fork/migrate.py', 'backend/fork/queue_config.py',
     'backend/firestore_pg/migrations.py', 'backend/Dockerfile',
     'deploy/self-host/auth-runtime.mjs',
     'deploy/self-host/Dockerfile', 'deploy/self-host/build-images.sh',
@@ -56,7 +56,9 @@ def check_sources(root: Path = ROOT) -> None:
             raise ValueError(f'{name}: stage-aware Auth entrypoint is required')
         if 'SELF_HOST_STAGE=${SELF_HOST_STAGE:-production}' not in service.get('environment', []):
             raise ValueError(f'{name}: Auth stage must come from SELF_HOST_STAGE')
-    for name in ('backend', 'queue-worker', 'firestore-pg-migrate'):
+    if compose['services']['backend'].get('depends_on', {}).get('qdrant-migrate', {}).get('condition') != 'service_completed_successfully':
+        raise ValueError('backend: successful Qdrant migration is required before serving')
+    for name in ('backend', 'queue-worker', 'firestore-pg-migrate', 'qdrant-migrate'):
         if compose['services'][name]['build']['dockerfile'] != 'deploy/self-host/Dockerfile':
             raise ValueError(f'{name}: the self-host profile image layer is required')
 

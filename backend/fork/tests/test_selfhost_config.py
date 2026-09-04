@@ -54,3 +54,12 @@ def test_auth_stage_owner_cannot_be_bypassed(source, service):
     path.write_text(yaml.safe_dump(config))
     with pytest.raises(ValueError, match='stage-aware Auth entrypoint'):
         CHECK['check_sources'](source)
+
+
+def test_vector_migration_cannot_be_bypassed(source):
+    path = source / 'deploy/self-host/compose.production.yml'
+    config = yaml.safe_load(path.read_text())
+    del config['services']['backend']['depends_on']['qdrant-migrate']
+    path.write_text(yaml.safe_dump(config))
+    with pytest.raises(ValueError, match='successful Qdrant migration'):
+        CHECK['check_sources'](source)

@@ -14,6 +14,7 @@ into the environment switches consumed at adapter call boundaries:
 |---|---|
 | `FIRESTORE_PG_DSN` | Routes **both** customer and compute data through the `firestore_pg` PostgreSQL facade. Never split one process between PostgreSQL and Firestore. |
 | `STORAGE_BACKEND=minio` | Selects the GCS-compatible MinIO adapter instead of Google Cloud Storage. |
+| `VECTOR_STORE_PROVIDER=qdrant` | Routes the existing vector index to the explicitly migrated Qdrant collections; dimension/schema mismatch is fatal. |
 | `QUEUE_BACKEND=redis` | Selects the Redis worker queue instead of Cloud Tasks; each queue authenticates with its `QUEUE_REDIS_{SYNC,AUDIO_MERGE,ACCOUNT_DELETION,FINALIZATION}_WORKER_SECRET`. |
 | `AUTH_PROVIDER=better_auth` | Verifies asymmetric JWTs fetched from `AUTH_JWKS_URL` instead of Firebase ID tokens. |
 
@@ -73,3 +74,9 @@ startup runner are `deploy/self-host/Dockerfile` and `build-images.sh`; upstream
   relaxed by ambient NODE_ENV. Compose and migration gates invoke this owner
   for both serve and migrate. Its tests run under the existing Auth contracts
   lane (`auth-server/test/self-host-runtime.test.js`).
+
+- Provider changes use `fork/vector_qdrant.py`, `fork/storage_minio*.py` and
+  `fork/provider_guard.py`. Keep receipt lookup, all captured write-fence imports,
+  wipe lock and provider completion proof together. The existing startup local/CI
+  lane runs vector/MinIO/provider hermetic contracts. Real PG/Qdrant/MinIO/Redis
+  evidence remains separate; successful /ready is not account-erasure attestation.
