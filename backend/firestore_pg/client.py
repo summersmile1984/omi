@@ -55,6 +55,7 @@ from .engine import (
 from .field_path import UnsupportedFirestoreQuery, parse_field_path
 from .migrations import COLLECTION_TABLE, check_schema, collection_table_name, require_table
 from .sql import delete_sql, document_dumps, get_sql, json_dumps, merge_sql, resolve_collection, upsert_sql
+from . import write_policy
 
 logger = logging.getLogger(__name__)
 
@@ -1417,12 +1418,12 @@ class DocumentReference:
             payload = materialized
         payload = _strip_sentinels(payload)
         sql = merge_sql(self._table) if merge else upsert_sql(self._table)
-        _run_with_conn(
-            lambda conn: conn.execute(
-                text(sql), {"uid": self._uid or "", "doc_id": self._id, "data": document_dumps(payload)}
-            ),
-            table=self._table,
-        )
+
+        def _do(conn):
+            write_policy.policy.admit(conn, self._write_address, payload, merge=merge)
+            conn.execute(text(sql), {"uid": self._uid or "", "doc_id": self._id, "data": document_dumps(payload)})
+
+        _run_with_conn(_do, table=self._table)
         return self
 
     def update(self, field_updates: Mapping[str, Any], option: Any = None, **kwargs: Any) -> "DocumentReference":
@@ -1480,12 +1481,14 @@ class DocumentReference:
                 _set_path(current, key, value)
 
     def _read_row_for_update(self, conn: Any) -> Any:
+        write_policy.policy.lock(conn, self._write_address)
         return conn.execute(
             text(get_sql(self._table) + " FOR UPDATE"),
             {"uid": self._uid or "", "doc_id": self._id},
         ).fetchone()
 
     def _write_existing(self, conn: Any, current: Dict[str, Any]) -> None:
+        write_policy.policy.admit(conn, self._write_address, current)
         conn.execute(
             text(
                 f"UPDATE {self._table} SET data = CAST(:data AS jsonb), "
@@ -1534,6 +1537,7 @@ class DocumentReference:
                 current.update(plain)
             self._apply_transforms(current, payload)
             if row is None:
+                write_policy.policy.admit(conn, self._write_address, current)
                 conn.execute(
                     text(upsert_sql(self._table)),
                     {"uid": self._uid or "", "doc_id": self._id, "data": document_dumps(current)},
@@ -1569,6 +1573,7 @@ class DocumentReference:
         payload = _strip_sentinels(payload)
 
         def _do(conn: Any) -> None:
+            write_policy.policy.admit(conn, self._write_address, payload)
             result = conn.execute(
                 text(
                     f"INSERT INTO {self._table} (uid, doc_id, data, created_at, updated_at, version) "
@@ -1582,6 +1587,10 @@ class DocumentReference:
 
         _run_with_conn(_do, table=self._table)
         return self
+
+    @property
+    def _write_address(self) -> write_policy.DocumentAddress:
+        return write_policy.DocumentAddress(self._collection_id, self._table, self._uid or '', self._id)
 
 
 # ---------------------------------------------------------------------------

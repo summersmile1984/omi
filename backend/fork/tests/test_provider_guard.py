@@ -14,7 +14,9 @@ def test_existing_principal_can_write_but_receipt_blocks_every_consumer(monkeypa
 
     monkeypatch.setattr(owner, 'account_lock', lambda *args, **kwargs: nullcontext())
     state = [None]
-    monkeypatch.setattr(owner, 'get_status', lambda *args, **kwargs: state[0])
+    monkeypatch.setattr(
+        owner.deletion_read, 'read', lambda uid: owner.deletion_read.DeletionState(state[0], state[0] == 'completed')
+    )
     for patch in patches():
         if patch.module not in CONSUMERS or patch.attribute != 'external_write_fence':
             continue

@@ -279,6 +279,32 @@ same authority; a receipt never restores account access. Legacy principals with
 no marker/receipt remain admissible, and legacy running markers without job IDs
 receive a generated opaque ID when completed. Malformed receipts fail closed.
 
+The self-host registry also binds `write_policy.WritePolicy` to
+`fork.pg_write_policy.TerminalReceiptWrites`. Every facade set/create/update,
+including transforms, transactions and batches, checks the existing and proposed
+owner before SQL effects. Root users, nested user namespaces and top-level
+`uid`/`user_uid` follow the erasure ownership rules; changing/removing metadata
+cannot conceal a completed former owner. Only the exact four root control
+collections are exempt. Unknown/ambiguous owner identities fail closed.
+
+Document and account advisory locks belong to the actual SQL transaction and
+last through commit. A wipe remains exclusive; a busy writer/wipe must retry.
+The existing worker mutates control records and deletes product rows while its
+lease is held; the guard adds no privileged path for recreating product data.
+This is terminal-receipt admission, not a new active-deletion lifecycle. Existing
+active-marker/API/provider admission policies still apply. Ordinary shim mode
+without the self-host registry retains its existing PostgreSQL behavior.
+
+`fork.deletion_read` reads the same marker/receipt tables through a separate,
+bounded two-connection pool to the primary engine's exact URL. Its single
+read-only READ COMMITTED query cannot inherit a caller's old SERIALIZABLE
+snapshot or wait for a free writer-pool connection. Pool/connect waits and the
+server statement have two-second limits; this is not an absolute network
+deadline. External provider fences use this fresh view before the call. An
+ambient SQL writer lends its existing account lock until commit; a wipe cannot
+start inside an older SQL transaction. Database connection loss and an unknown
+external provider result still do not constitute a distributed transaction.
+
 Receipt HMACs domain-separate the deployment's `ENCRYPTION_SECRET` (at least 32
 bytes). Preserve this key: changing it without an explicit receipt/data
 migration makes existing receipt identities unresolvable. Key rotation is not
@@ -289,3 +315,9 @@ local/CI check includes it). Live guards: `firestore_pg/tests/test_transaction_s
 with a disposable `FIRESTORE_PG_DSN`. The live worker test isolates external
 providers; production Better Auth deletion, vector/object purge, backups and
 provider races require their own contracts before full account-deletion signoff.
+The startup local/CI lane also runs `fork/tests/test_pg_write_policy.py`.
+Run `firestore_pg/tests/test_deletion_write_fence.py` on disposable PostgreSQL
+for the actual snapshot, commit-lock, batch rollback, writer-pool saturation
+and existing deletion-worker contracts; it is deliberately not a hermetic CI
+claim. The [verification record](../../dev/unified-main/implementation-2026-09-04/SH2-pg-write-fence-verification.md)
+separates local/image evidence from full account/provider erasure acceptance.

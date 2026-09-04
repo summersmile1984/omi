@@ -93,3 +93,12 @@ startup runner are `deploy/self-host/Dockerfile` and `build-images.sh`; upstream
   collections with identical metadata before serving; no in-place rebind or
   independent EMBEDDING_DIMENSION is permitted. The startup lane includes model
   and disabled-capability behavior; real CPU/HTTP evidence remains separate.
+
+- PG write admission uses `firestore_pg/write_policy.py`, bound to the existing
+  deletion authority by the self-host registry. Keep every set/create/update,
+  transaction and batch behind that boundary, including old and proposed owners.
+  External fences use `fork/deletion_read.py`, never a caller's stale transaction
+  snapshot. The startup lane runs the hermetic write-policy contracts; actual
+  PostgreSQL locks/snapshots require `firestore_pg/tests/test_deletion_write_fence.py`
+  against a disposable database. Do not weaken control-collection identity or
+  release writer locks before SQL commit.

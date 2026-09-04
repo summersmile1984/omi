@@ -61,6 +61,18 @@ def patches():
             )
         )
     from .. import provider_objects
+    from ..pg_write_policy import TerminalReceiptWrites
+
+    entries.append(
+        Patch(
+            name='provider.pg-terminal-write',
+            module='firestore_pg.write_policy',
+            attribute='policy',
+            build=lambda original: TerminalReceiptWrites(),
+            applies_to=selected,
+            reason='late SQL writers and provider calls must observe the same completed deletion authority',
+        )
+    )
 
     for module in ('utils.other.storage', 'services.users.account_deletion'):
         entries.append(

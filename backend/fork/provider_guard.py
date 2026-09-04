@@ -6,22 +6,32 @@ never wait indefinitely behind a slow provider. No distributed transaction is
 claimed if the database connection or an external write outcome is unknown.
 """
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import wraps
 import hashlib
 import threading
 
 from sqlalchemy import text
 
-from firestore_pg.engine import get_engine
+from firestore_pg.engine import get_engine, get_tx_conn
 from firestore_pg.erasure import validate_uid
-from .account_deletion import get_status
+from . import deletion_read
 
 _held = threading.local()
 
 
 class ProviderOperationBusy(RuntimeError):
     pass
+
+
+def acquire_account_lock(conn, uid, *, destructive=False):
+    validate_uid(uid)
+    key = int.from_bytes(
+        hashlib.blake2b(uid.encode(), digest_size=8, person=b'omi-provider-v1').digest(), 'big', signed=True
+    )
+    function = 'pg_try_advisory_xact_lock' if destructive else 'pg_try_advisory_xact_lock_shared'
+    if not conn.execute(text(f'SELECT {function}(:key)'), {'key': key}).scalar_one():
+        raise ProviderOperationBusy('an account provider operation is in progress; retry')
 
 
 @contextmanager
@@ -33,13 +43,11 @@ def account_lock(uid, *, destructive=False):
             raise ProviderOperationBusy('cannot promote an admitted writer into a wipe')
         yield
         return
-    key = int.from_bytes(
-        hashlib.blake2b(uid.encode(), digest_size=8, person=b'omi-provider-v1').digest(), 'big', signed=True
-    )
-    function = 'pg_try_advisory_xact_lock' if destructive else 'pg_try_advisory_xact_lock_shared'
-    with get_engine().begin() as conn:
-        if not conn.execute(text(f'SELECT {function}(:key)'), {'key': key}).scalar_one():
-            raise ProviderOperationBusy('an account provider operation is in progress; retry')
+    active = get_tx_conn()
+    if destructive and active is not None:
+        raise ProviderOperationBusy('an account wipe cannot borrow an earlier SQL transaction')
+    with nullcontext(active) if active is not None else get_engine().begin() as conn:
+        acquire_account_lock(conn, uid, destructive=destructive)
         _held.accounts = {**held, uid: destructive}
         try:
             yield
@@ -55,7 +63,7 @@ def fence(original):
         from database.legal_holds import DestructiveOperationInProgress
 
         with account_lock(uid):
-            if account_deletion_blocks_access(get_status(uid, firestore_client=firestore_client)):
+            if account_deletion_blocks_access(deletion_read.read(uid).status):
                 raise DestructiveOperationInProgress('external write blocked by account deletion authority')
             with original(uid, firestore_client=firestore_client):
                 yield

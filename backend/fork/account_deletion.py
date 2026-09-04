@@ -73,7 +73,11 @@ def get_status(uid, *, firestore_client=None):
         FirestoreReadSite.USER_DELETION_WIPE_STATUS,
         FirestoreReadOutcome.HIT if data is not None else FirestoreReadOutcome.MISS,
     )
-    completed = _receipt(_read(receipt))
+    return status_from_records(data, _receipt(_read(receipt)))
+
+
+def status_from_records(data, completed):
+    """Interpret one authority snapshot identically for reads and write fences."""
     if data is not None:
         status = normalize_account_deletion_status(marker_exists=True, raw_status=data.get('wipe_status'))
         return 'completed' if completed and not account_deletion_blocks_access(status) else status
