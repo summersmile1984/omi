@@ -87,3 +87,9 @@ startup runner are `deploy/self-host/Dockerfile` and `build-images.sh`; upstream
   wipe lock and provider completion proof together. The existing startup local/CI
   lane runs vector/MinIO/provider hermetic contracts. Real PG/Qdrant/MinIO/Redis
   evidence remains separate; successful /ready is not account-erasure attestation.
+
+- Model changes belong to the shared `fork/model_contract.py` owner and target
+  profile, including both artifact identity and dimensions. Migrate fresh Qdrant
+  collections with identical metadata before serving; no in-place rebind or
+  independent EMBEDDING_DIMENSION is permitted. The startup lane includes model
+  and disabled-capability behavior; real CPU/HTTP evidence remains separate.

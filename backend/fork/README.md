@@ -66,8 +66,9 @@ control-state exclusions and live-versus-hermetic verification boundaries.
 
 `vector_qdrant.py` implements the existing `database.vector_db.index` boundary.
 Compose runs its `migrate` CLI before serving; `check` and API admission require
-all seven collections to have the selected dimension and Cosine distance. A
-changed dimension requires a reviewed new prefix and backfill, never destructive
+all seven collections to have the exact public embedding contract metadata,
+its derived dimension and Cosine distance. An unbound collection or any changed
+model identity (even at the same dimension) requires a reviewed new prefix and backfill, never destructive
 in-place recreation. No Pinecone fallback is allowed. `vector_filter.py` maps
 only the filter operators used by this upstream revision and rejects unknown
 syntax. UUID points retain their upstream string IDs as payloads.
@@ -91,3 +92,26 @@ metadata.uid, including records absent from PG inventories. A failed proof retai
 the recoverable marker. This is not a distributed transaction after a lost PG
 connection or unknown remote write outcome. Direct PG writers and unowned/global
 object paths remain separately tracked; see the dated SH2 provider evidence.
+
+
+`model_contract.py` is the dependency-free owner shared by the renderer, model
+store admission and vector migration. `deploy/profiles/self_hosted.yaml` pins
+BGE-M3's manifest/GGUF SHA-256, model, 1024 dimensions and 8192-token context.
+`embedding.py` binds both canonical/captured consumers, verifies the runtime
+model inventory and metadata, and uses native Ollama `/api/embed` without
+truncation. It requests four CPU threads, a 128-token evaluation batch, and
+read-only mmap; there is no model download, BYOK or vendor fallback. Async
+consumers use the repository's bounded `llm_executor`.
+
+`model_store.py` verifies the pinned manifest and every referenced blob before
+Compose starts Ollama. Collection creation stores the complete model identity
+atomically. Operators must use a reviewed new prefix and backfill for identity
+changes; never bind old vectors by patching metadata in place.
+
+`capabilities.py` / `capability_transport.py` own explicitly disabled speech
+and push. Registered HTTP owners return nonretryable 503 and WebSockets close
+1008 (`stt_disabled`) before accepting audio. Captured STT selectors also reject
+background transcription. Public push/token routes reject; internal reminder
+counts return zero with shared telemetry so a committed Task with `due_at`
+remains successful. These are disabled capabilities, not completed speech/push
+providers. See `deploy/self-host/model-runtime.md` for the current deploy path.

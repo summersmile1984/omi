@@ -77,6 +77,18 @@ class ProfileTests(unittest.TestCase):
                 self.assertFalse(row["managed"])
         self.assertFalse((ROOT / "brand/fixture-weft").exists())
 
+    def test_selfhost_model_identity_is_the_capability_dimension_owner(self):
+        self.configure()
+        table = json.loads(self.cli("self_hosted", "--emit-json").stdout)
+        row = table["profiles"]["self_hosted.production"]
+        self.assertEqual(row["embedding"]["dimension"], row["capabilities"]["embedding_dims"])
+        self.assertEqual(row["embedding"]["dimension"], 1024)
+        self.assertTrue(row["embedding"]["manifest_digest"].startswith("sha256:"))
+        self.assertTrue(row["embedding"]["artifact_digest"].startswith("sha256:"))
+        self.assertEqual(row["capabilities"]["stt_providers"], [])
+        self.assertEqual(row["capabilities"]["tts_provider"], "disabled")
+        self.assertEqual(row["capabilities"]["push_provider"], "disabled")
+
     def test_all_five_generated_outputs_are_checked_and_missing_is_failure(self):
         self.configure()
         for target in ("self_hosted", "cloudflare"):

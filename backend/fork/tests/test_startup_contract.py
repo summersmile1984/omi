@@ -24,6 +24,7 @@ SELF_HOST = {
     'target': 'self_hosted',
     'stage': 'local',
     'identity_provider': 'better_auth',
+    'capabilities': {'stt_providers': [], 'tts_provider': 'disabled', 'push_provider': 'disabled'},
     'data_plane': {
         'store': 'firestore_pg',
         'object_store': 'minio',

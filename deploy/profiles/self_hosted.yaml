@@ -13,13 +13,12 @@ capabilities:
   marketplace_enabled: false       # first release ships curated integrations only
   model_downloads: false
   account_activation_fence: false
-  embedding_dims: 3072             # Qdrant has no dimension ceiling
   sync_upload_batch_limit: 5
   max_request_bytes: 0
-  push_provider: webhook
-  tts_provider: mimo
+  push_provider: disabled
+  tts_provider: disabled
   realtime_relay: operator
-  stt_providers: [operator_mimo, operator_moss, sensevoice_local]
+  stt_providers: []
 
 data_plane:
   store: firestore_pg
@@ -55,3 +54,13 @@ stages:
     share_base_url: http://127.0.0.1:8100
     objects_base_url: http://127.0.0.1:9000
     auth_callback_scheme: "{scheme}-dev"
+
+# Public, reproducible reference model. Both profile capability and the runtime
+# migration derive dimension from this identity; endpoint/credentials stay env.
+embedding:
+  provider: ollama
+  model: bge-m3:latest
+  manifest_digest: sha256:7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab
+  artifact_digest: sha256:daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c
+  dimension: 1024
+  context_length: 8192

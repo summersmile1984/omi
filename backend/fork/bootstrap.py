@@ -87,6 +87,17 @@ def bootstrap(role: Role = Role.API) -> Admission:
     _require_modules(('sqlalchemy', 'psycopg', 'redis', 'httpx'))
 
     if role == Role.API:
+        from .capabilities import validate as validate_capabilities
+
+        validate_capabilities(row)
+        for name, value in {
+            'SPEAKER_EMBEDDING_PROVIDER': 'disabled',
+            'TTS_PROVIDER': 'disabled',
+            'PUSH_PROVIDER': 'disabled',
+            'STT_SERVICE_MODELS': 'disabled',
+            'STT_PRERECORDED_MODEL': 'disabled',
+        }.items():
+            _bind(name, value)
         _require('ENCRYPTION_SECRET', 32)
         _require('AUTH_JWKS_URL')
         _bind('VECTOR_STORE_PROVIDER', 'qdrant')

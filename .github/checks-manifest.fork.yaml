@@ -11,14 +11,14 @@
 checks:
   - id: fork-macos-native-identity
     command: ["bash", "desktop/macos/fork/test.sh"]
-    triggers: ["desktop/macos/fork/**", "desktop/macos/Desktop/**", "deploy/profiles/**", "scripts/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
+    triggers: ["backend/fork/model_contract.py", "desktop/macos/fork/**", "desktop/macos/Desktop/**", "deploy/profiles/**", "scripts/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
     lanes: ["local", "ci"]
     platforms: ["macos"]
     reason: "The 2026-09-04 main audit B1 found custom bundles classified as production and sharing upstream storage; exercises staged identity behavior, opaque session/JWT/storage failures and reviewed Swift owner drift. This is a platform consumer contract, not another auth issuer."
 
   - id: fork-macos-native-compile
     command: ["bash", "desktop/macos/fork/compile.sh"]
-    triggers: ["desktop/macos/fork/**", "desktop/macos/Desktop/**", "deploy/profiles/**", "scripts/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
+    triggers: ["backend/fork/model_contract.py", "desktop/macos/fork/**", "desktop/macos/Desktop/**", "deploy/profiles/**", "scripts/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
     lanes: ["local", "ci"]
     platforms: ["macos"]
     reason: "The audit B1 native package replaces complete Swift app owners: leaf tests cannot prove those adapters compile into the real consumer. Execute the same staged debug build locally and on the existing fork CI macOS route; no additional auth policy or release pipeline is introduced."
@@ -37,7 +37,7 @@ checks:
 
   - id: fork-web-build-contracts
     command: ["bash", "deploy/web/ci.sh"]
-    triggers: ["deploy/web/**", "web/app/fork/**", "web/app/src/lib/fork/**", "web/app/src/components/fork/**", "web/app/scripts/copy-moonshine-assets.ts", "web/app/moonshine.config.ts", "scripts/profiles/**", "brand/_schema/**"]
+    triggers: ["backend/fork/model_contract.py", "deploy/profiles/**", "deploy/web/**", "web/app/fork/**", "web/app/src/lib/fork/**", "web/app/src/components/fork/**", "web/app/scripts/copy-moonshine-assets.ts", "web/app/moonshine.config.ts", "scripts/profiles/**", "brand/_schema/**"]
     lanes: ["local", "ci"]
     reason: "the merged deployment scripts still requested removed Next/vinext outputs after upstream switched to Moonshine; a shared source-stage and profile boundary prevents fallback origins and duplicate runtime owners"
 
@@ -49,7 +49,7 @@ checks:
 
   - id: fork-web-client-contract
     command: ["bash", "web/app/fork/test.sh"]
-    triggers: ["web/app/fork/**", "web/app/src/lib/fork/**", "web/app/src/components/fork/**", "web/app/src/hooks/useGeminiLive.ts", "web/app/src/components/home/HomePage.tsx", "scripts/profiles/**", "deploy/profiles/**"]
+    triggers: ["backend/fork/model_contract.py", "web/app/fork/**", "web/app/src/lib/fork/**", "web/app/src/components/fork/**", "web/app/src/hooks/useGeminiLive.ts", "web/app/src/components/home/HomePage.tsx", "scripts/profiles/**", "deploy/profiles/**"]
     lanes: ["local", "ci"]
     reason: "Executes the profile/session/realtime boundary missing from main at the 2026-09-04 audit: fork callers retained Firebase credentials and direct Gemini controls despite their selected capability policy."
 
@@ -67,7 +67,7 @@ checks:
 
   - id: fork-profile-tables
     command: ["python3", "scripts/profiles/check_tables.py"]
-    triggers: ["deploy/profiles/**", "scripts/profiles/**", "brand/**", "scripts/brand/**", "app/lib/env/environment_profile.dart", "app/lib/env/fork/**", "desktop/macos/Desktop/Sources/Generated/**", "desktop/windows/src/shared/fork/**", "web/app/src/lib/fork/**", "backend/fork/deployment_profiles.generated.json"]
+    triggers: ["backend/fork/model_contract.py", "deploy/profiles/**", "scripts/profiles/**", "brand/**", "scripts/brand/**", "app/lib/env/environment_profile.dart", "app/lib/env/fork/**", "desktop/macos/Desktop/Sources/Generated/**", "desktop/windows/src/shared/fork/**", "web/app/src/lib/fork/**", "backend/fork/deployment_profiles.generated.json"]
     lanes: ["local", "ci"]
     reason: "one profile source drives four platforms; omi_cloud must still reproduce upstream's environment_profile.dart literals, so upstream retuning them fails here on the next sync instead of drifting silently"
 
@@ -91,12 +91,12 @@ checks:
 
   - id: fork-profile-boundary-tests
     command: ["python3", "scripts/profiles/test_profiles.py"]
-    triggers: ["deploy/profiles/**", "scripts/profiles/**", "brand/**", "scripts/brand/**"]
+    triggers: ["backend/fork/model_contract.py", "deploy/profiles/**", "scripts/profiles/**", "brand/**", "scripts/brand/**"]
     lanes: ["local", "ci"]
     reason: "2026-09-04 main audit E2 reproduced a schema-valid brand generating blank objects URLs and implicit auth routing; both target fixtures must exercise the same production renderer and all five output checks"
 
   - id: fork-selfhost-startup
-    command: ["bash", "-c", "cd backend && tests=$(mktemp) && trap 'rm -f \"$tests\"' EXIT && printf '%s\\n' fork/tests/test_startup_contract.py fork/tests/test_selfhost_config.py fork/tests/test_auth_consumers.py fork/tests/test_account_deletion.py fork/tests/test_vector_qdrant.py fork/tests/test_minio_contract.py fork/tests/test_provider_guard.py > \"$tests\" && BACKEND_UNIT_TEST_FILE_LIST=\"$tests\" bash test.sh"]
+    command: ["bash", "-c", "cd backend && tests=$(mktemp) && trap 'rm -f \"$tests\"' EXIT && printf '%s\\n' fork/tests/test_startup_contract.py fork/tests/test_selfhost_config.py fork/tests/test_auth_consumers.py fork/tests/test_account_deletion.py fork/tests/test_vector_qdrant.py fork/tests/test_embedding.py fork/tests/test_disabled_capabilities.py fork/tests/test_minio_contract.py fork/tests/test_provider_guard.py > \"$tests\" && BACKEND_UNIT_TEST_FILE_LIST=\"$tests\" bash test.sh"]
     triggers: ["deploy/self-host/**", "backend/fork/**", "backend/firestore_pg/**", "backend/utils/cloud_tasks_redis.py", "backend/utils/cloud_tasks.py", "backend/utils/auth_shim.py", "backend/utils/other/endpoints.py", "backend/database/users.py", "backend/database/account_deletion_transitions.py", "backend/database/legal_holds.py", "backend/database/vector_db.py", "backend/utils/other/storage.py", "backend/Dockerfile", "backend/Dockerfile.dockerignore", "deploy/profiles/**", "scripts/profiles/**"]
     lanes: ["local", "ci"]
     reason: "fork PR #7 shipped a missing PG migration command and an ungenerated profile; prove source closure and fatal process admission through the real entrypoints; the same main audit reproduced PG deletion gaps, now guarded by transactional erasure/receipt behaviors"
