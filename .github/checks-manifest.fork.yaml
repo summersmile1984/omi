@@ -9,6 +9,12 @@
 # which `scripts/fork/preflight` and `.github/workflows/fork-checks.yml` both do.
 # Every entry declares both lanes, as the upstream runner's validator requires.
 checks:
+  - id: fork-electron-native-identity
+    command: ["bash", "desktop/windows/fork/test.sh"]
+    triggers: ["desktop/windows/**", "scripts/profiles/**", "deploy/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
+    lanes: ["local", "ci"]
+    reason: "The audited Electron renderer owned Firebase persistence and pushed caller-supplied identity/base URLs into main. Production owner/IPC/renderer tests and two full staged builds enforce opaque main-only identity; real cold-start blank-window failure and native Origin/HTTP transport incidents are retained as regressions. Packaging, Windows DPAPI/Linux keyring runtime, and live services are separate acceptance."
+
   - id: fork-selfhost-build-context
     command: ["python3", "deploy/self-host/ci/build_context.py"]
     triggers: ["backend/Dockerfile.dockerignore", "deploy/self-host/Dockerfile.dockerignore", "deploy/self-host/ci/build_context.py"]
