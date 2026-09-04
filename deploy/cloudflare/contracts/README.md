@@ -18,7 +18,11 @@ locked Wrangler/workerd, then executes:
 - `chat.mjs`, the current upstream Web `api.ts` get/send/clear functions against
   actual HTTP/SSE, Python model RPC and D1: UTF-8/newline decoding, selected
   session/app history, cross-user 404, provider failure without partial history,
-  explicit clear retaining the session, and terminal deletion. Only the actual
+  explicit clear retaining the session, and terminal deletion. A controlled
+  inference IO barrier also permits actual public clear/delete while the first
+  model RPC waits: the session must already be visible, and the late completion
+  must fail without restoring messages. A failed first model leaves a publicly
+  clearable empty session. Only the actual
   signup-issued token and `/api/proxy` base mapping are injected into the client;
   its requests, responses and SSE parser are unchanged. This is a text-chat
   contract, not a browser UI, tools/attachments or full chat qualification.

@@ -102,7 +102,6 @@ suite runs the real ASGI route beside current upstream `ActionItemCreateRequest`
 and `ActionItemUpdateRequest`; this validates typed rejection parity, not the
 entire task schema or all query/batch semantics.
 
-
 ## Local setup
 
 ```bash
@@ -138,7 +137,6 @@ relative migration paths retain their original owner, and cleanup runs after the
 command. Neither the source tree nor CF5's regular-source-only rule is changed.
 Dev runs use that source snapshot; restart the command after editing source.
 CPython tests load the same canonical shared directory through their conftest.
-
 
 Local development on Linux/macOS resolves the native executable from the locked
 `workerd` package export, then uses its official Pyodide bundle/package cache
@@ -278,7 +276,6 @@ configuration returns 503. Seed this table through reviewed operator migrations
 or the existing D1 administration workflow; this route creates no admin write
 API and never returns targeting metadata. No account data is stored in this
 global configuration table.
-
 
 The authenticated App Generator routes (`GET /v1/app/generate-prompts`,
 `POST /v1/app/generate`,
@@ -2439,7 +2436,12 @@ fixed OpenAI Chat Completions endpoint with the user's request-local OpenAI key
 and does not reserve or settle Omi quota. The API AI Worker never accepts raw
 BYOK header presence as authority. Model output is validated before both
 exchange rows are committed; a provider or D1 failure emits no partial
-persisted exchange. The Worker emits one compatibility `data:` frame followed
+persisted exchange. After app authorization and quota admission, a first default
+session is atomically visible before model IO; concurrent first requests share
+its ID and quota ownership. Clear/delete fences the captured epoch, and a late
+model completion cannot recreate a removed owner. Model failure may leave a
+zero-message session removable with the public clear endpoint; a rejected first
+quota request creates neither a session nor messages. The Worker emits one compatibility `data:` frame followed
 by the legacy base64 `done:` message; native provider-token streaming remains a
 later latency qualification.
 

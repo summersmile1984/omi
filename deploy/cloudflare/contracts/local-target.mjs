@@ -21,6 +21,7 @@ import {
 } from "../scripts/python-worker.mjs";
 import { freezeWorkerConfig } from "../scripts/release-build.mjs";
 import { LocalProcesses } from "./local-process.mjs";
+import { startInferenceControl } from "./inference-control.mjs";
 import { digest, REQUIRED_SECRETS } from "../scripts/resource-input.mjs";
 import { fileTree, git } from "../scripts/release-files.mjs";
 
@@ -142,7 +143,7 @@ export async function startLocalTarget({
         );
     });
   });
-  let closing;
+  let closing, inferenceControl;
   const close = () =>
     (closing ??= (async () => {
       signal?.removeEventListener("abort", cancel);
@@ -152,9 +153,11 @@ export async function startLocalTarget({
       } finally {
         for (const client of asr.clients) client.terminate();
         await new Promise((resolve) => asr.close(resolve));
+        await inferenceControl?.close();
       }
     })());
   try {
+    inferenceControl = await startInferenceControl();
     port ??= await freePort();
     const namespace = `cf-${brandId}-${randomBytes(4).toString("hex")}`;
     const { origin, configs } = localConfigs({
@@ -164,6 +167,9 @@ export async function startLocalTarget({
       port,
       asrPort: asr.address().port,
     });
+    configs.provider.vars = {
+      INFERENCE_CONTROL_ORIGIN: inferenceControl.origin,
+    };
     const assertionSecret = randomBytes(32).toString("hex"),
       frozen = {},
       artifacts = {};
@@ -335,6 +341,7 @@ export async function startLocalTarget({
       ),
       artifacts,
       pyodide_cache: cache,
+      inference_control_origin: inferenceControl.origin,
       command: [process.execPath, ...args],
       provider_boundary:
         "synthetic ASR and structured/text inference; actual application Workers, D1, R2, DO, Queue",
