@@ -113,6 +113,8 @@ function publicConfig(role, config, input, projected, names, origins) {
       }));
   }
   config.vars ??= {};
+  if (["api-core", "api-ai"].includes(role))
+    config.vars.BRAND_RUNTIME_JSON = JSON.stringify(projected.brand_runtime);
   if (["edge", "auth"].includes(role)) {
     config.vars.ALLOWED_ORIGINS = origins.web;
     config.vars.MCP_RESOURCE_URL = `${origins.mcp}/v1/mcp/sse`;

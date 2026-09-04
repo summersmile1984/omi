@@ -116,7 +116,12 @@ def test_chat_messages_fails_closed_without_workers_ai_binding():
     secret = "test-secret"
     encoded, signature = signed_context(secret)
     request = FakeRequest(
-        SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+        SimpleNamespace(
+            INTERNAL_ASSERTION_SECRET=secret,
+            BRAND_RUNTIME_JSON=json.dumps(
+                {"brand_id": "omi-upstream", "display_name": "Omi", "ai_persona_name": "Omi"}
+            ),
+        ),
         {"x-omi-auth-context": encoded, "x-omi-internal-signature": signature},
         {"text": "hello"},
         url="https://api.test/v2/messages",
@@ -1030,14 +1035,13 @@ def test_workers_ai_translation_caches_repeated_content():
     assert [t["translated_text"] for t in second["translations"]] == ["zh:hello", "zh:fresh"]
     assert second["translations"][0]["detected_language_code"] == "en"
     assert calls == ["hello", "world", "fresh"]
-    assert (
-        database.connection.execute("SELECT COUNT(*) FROM cf_translation_cache").fetchone()[0]
-        == 3
-    )
+    assert database.connection.execute("SELECT COUNT(*) FROM cf_translation_cache").fetchone()[0] == 3
 
     # An expired row is a miss and traffic prunes it away.
-    database.connection.execute("UPDATE cf_translation_cache SET expires_at = 1 WHERE fingerprint IN "
-                                "(SELECT fingerprint FROM cf_translation_cache LIMIT 1)")
+    database.connection.execute(
+        "UPDATE cf_translation_cache SET expires_at = 1 WHERE fingerprint IN "
+        "(SELECT fingerprint FROM cf_translation_cache LIMIT 1)"
+    )
     database.connection.commit()
     translate(["hello", "world", "fresh"])
     assert len(calls) >= 4

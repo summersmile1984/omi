@@ -11,6 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from brand_runtime import BrandRuntime, load_brand_runtime
 from chat_target import APP_SCOPE, resolve_chat_target
 from feedback_routes import chat_feedback_statements
 from internal_auth import decode_context
@@ -55,10 +56,10 @@ def _app_id(request: Request) -> str | None:
     return value[:MAX_ID_LENGTH] if len(value) <= MAX_ID_LENGTH else None
 
 
-def _initial_message(app_id: str | None, session_id: str | None = None) -> dict[str, object]:
+def _initial_message(brand: BrandRuntime, app_id: str | None, session_id: str | None = None) -> dict[str, object]:
     return {
         "id": "cf-initial-chat" + (f"-{app_id}" if app_id else ""),
-        "text": "Hi! I'm Omi. How can I help?",
+        "text": f"Hi! I'm {brand.ai_persona_name}. How can I help?",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "sender": "ai",
         "type": "text",
@@ -123,6 +124,10 @@ async def get_messages(request: Request):
     if isinstance(pagination, JSONResponse):
         return pagination
     limit, offset = pagination
+    try:
+        brand = load_brand_runtime(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
     uid = str(context["uid"])
     try:
         target = await resolve_chat_target(
@@ -155,7 +160,7 @@ async def get_messages(request: Request):
     rows = result.get("results", []) if isinstance(result, dict) else []
     messages = [_stored_message(row) for row in rows if isinstance(row, dict)]
     messages = [message for message in messages if message is not None]
-    return messages or ([] if offset else [_initial_message(app_id, target.session_id)])
+    return messages or ([] if offset else [_initial_message(brand, app_id, target.session_id)])
 
 
 @router.delete("/v1/messages")
@@ -168,6 +173,10 @@ async def clear_messages(request: Request):
     app_id = _app_id(request)
     if raw_app_id not in {None, "", "null"} and app_id is None:
         return JSONResponse({"error": "invalid app id"}, status_code=400)
+    try:
+        brand = load_brand_runtime(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
     uid = str(context["uid"])
     env = request.scope["env"]
     try:
@@ -203,7 +212,7 @@ async def clear_messages(request: Request):
         return JSONResponse({"detail": "Chat session not found"}, status_code=404)
     except Exception:
         return JSONResponse({"error": "messages unavailable"}, status_code=503)
-    return _initial_message(app_id, target.session_id if target.explicit else None)
+    return _initial_message(brand, app_id, target.session_id if target.explicit else None)
 
 
 async def _message_row(env: object, uid: str, message_id: str) -> dict[str, object] | None:
@@ -329,6 +338,10 @@ async def share_chat_messages(request: Request):
         return JSONResponse({"error": "invalid message ids"}, status_code=400)
 
     env = request.scope["env"]
+    try:
+        brand = load_brand_runtime(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
     uid = str(context["uid"])
     placeholders = ", ".join("?" for _ in payload.message_ids)
     try:
@@ -345,7 +358,10 @@ async def share_chat_messages(request: Request):
 
         token = uuid.uuid4().hex
         now = int(time.time())
-        sender_name = str(context.get("displayName") or "Omi user").strip()[:120] or "Omi user"
+        sender_name = (
+            str(context.get("displayName") or f"{brand.display_name} user").strip()[:120]
+            or f"{brand.display_name} user"
+        )
         statements = [
             env.APP_DB.prepare(
                 "DELETE FROM cf_chat_share_messages WHERE token IN "
@@ -373,6 +389,10 @@ async def share_chat_messages(request: Request):
 async def get_shared_chat_messages(request: Request, token: str):
     if not token or len(token) > MAX_SHARE_TOKEN_LENGTH:
         return JSONResponse({"error": "share link expired or not found"}, status_code=404)
+    try:
+        brand = load_brand_runtime(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
     try:
         now = int(time.time())
         share = await _chat_share(request.scope["env"], token, now)
@@ -402,7 +422,7 @@ async def get_shared_chat_messages(request: Request, token: str):
             }
         )
     return {
-        "sender_name": str(share.get("sender_name") or "Omi user"),
+        "sender_name": str(share.get("sender_name") or f"{brand.display_name} user"),
         "messages": messages,
         "count": len(messages),
     }

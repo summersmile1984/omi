@@ -27,6 +27,7 @@
     ],
   },
   "vars": {
+    "BRAND_RUNTIME_JSON": "{\"brand_id\":\"omi-upstream\",\"display_name\":\"Omi\",\"ai_persona_name\":\"Omi\"}",
     "WORKERS_AI_EMBEDDING_MODEL": "@cf/baai/bge-base-en-v1.5",
     "WORKERS_AI_CHAT_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "WORKERS_AI_CHAT_INPUT_USD_PER_MILLION": "0.051",

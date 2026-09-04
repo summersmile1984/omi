@@ -31,6 +31,11 @@ def main() -> int:
             {
                 'brand_id': manifest['brand']['id'],
                 'product_name': manifest['brand']['display_name'],
+                'brand_runtime': {
+                    'brand_id': manifest['brand']['id'],
+                    'display_name': manifest['brand']['display_name'],
+                    'ai_persona_name': manifest['brand']['ai_persona_name'],
+                },
                 'profile': resolved['profiles'][f'{args.target}.{args.stage}'],
             }
         )

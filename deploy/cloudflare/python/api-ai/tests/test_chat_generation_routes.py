@@ -121,6 +121,10 @@ class FakeAi:
 
 class FakeRequest:
     def __init__(self, env, headers=None, body=None, query=None):
+        if not hasattr(env, "BRAND_RUNTIME_JSON"):
+            env.BRAND_RUNTIME_JSON = json.dumps(
+                {"brand_id": "omi-upstream", "display_name": "Omi", "ai_persona_name": "Omi"}
+            )
         self.scope = {"env": env}
         self.headers = headers or {}
         self.body = body if body is not None else {"text": "Current question", "file_ids": [], "context": None}
@@ -1476,3 +1480,68 @@ def test_first_admission_rejects_absent_settled_or_foreign_quota_authority():
         with pytest.raises(LookupError):
             asyncio.run(admit_chat_target(env, target, 'key'))
         assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_sessions').fetchone()[0] == 0
+
+
+def test_manifest_brand_drives_default_prompts_without_rewriting_user_or_app_content():
+    brand = {"brand_id": "atlas", "display_name": "Atlas 中文", "ai_persona_name": "Mira"}
+    operations = [
+        (chat_messages, {"text": "Omi stays literal", "file_ids": []}),
+        (
+            cloudflare_chat_completions,
+            {"model": "workers-ai", "messages": [{"role": "user", "content": "Omi stays literal"}]},
+        ),
+        (generate_reply, {"text": "Omi stays literal", "history": []}),
+        (create_initial_message, {}),
+    ]
+    for operation, body in operations:
+        db, ai = FakeDb(), FakeAi()
+        env = type(
+            "Env",
+            (),
+            {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": "secret", "BRAND_RUNTIME_JSON": json.dumps(brand)},
+        )()
+        result = asyncio.run(operation(FakeRequest(env, signed_headers("secret"), body=body)))
+        assert isinstance(result, dict) or result.status_code == 200
+        prompt = ai.calls[0][1]["messages"]
+        assert prompt[0]["content"].startswith("You are Mira,")
+        if operation != create_initial_message:
+            assert prompt[-1]["content"] == "Omi stays literal"
+    from brand_runtime import load_brand_runtime
+
+    identity = load_brand_runtime(env)
+    plugin = {"name": "Omi Research", "capabilities": ["persona"], "persona_prompt": "Discuss Omi unchanged."}
+    assert "You are Omi Research." in chat_generation_routes._chat_system_prompt(identity, plugin)
+    assert "Discuss Omi unchanged." in chat_generation_routes._initial_system_prompt(identity, plugin)[0]
+    assert "Atlas 中文 free" in chat_generation_routes._quota_exceeded_text(identity, {})
+
+
+def test_missing_or_invalid_brand_rejects_before_model_quota_and_session_mutation():
+    valid = {"brand_id": "atlas", "display_name": "Atlas", "ai_persona_name": "Mira"}
+    invalid = [
+        None,
+        "not-json",
+        "[]",
+        "{}",
+        json.dumps({**valid, "extra": "unowned"}),
+        json.dumps({**valid, "ai_persona_name": True}),
+        json.dumps({**valid, "display_name": " \t"}),
+        json.dumps({**valid, "ai_persona_name": "Mira\nInjected"}),
+    ]
+    operations = [
+        (chat_messages, {"text": "hello"}),
+        (cloudflare_chat_completions, {"model": "workers-ai", "messages": [{"role": "user", "content": "hello"}]}),
+        (generate_reply, {"text": "hello", "history": []}),
+        (create_initial_message, {}),
+    ]
+    for raw in invalid:
+        for operation, body in operations:
+            db, ai = FakeDb(), FakeAi()
+            env = type(
+                "Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": "secret", "BRAND_RUNTIME_JSON": raw}
+            )()
+            response = asyncio.run(operation(FakeRequest(env, signed_headers("secret"), body=body)))
+            assert response.status_code == 503
+            assert json.loads(response.body) == {"error": "brand runtime is not configured"}
+            assert ai.calls == []
+            for table in ["cf_chat_sessions", "cf_chat_messages", "cf_chat_quota_events"]:
+                assert db.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0

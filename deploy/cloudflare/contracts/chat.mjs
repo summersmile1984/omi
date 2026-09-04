@@ -10,9 +10,11 @@ import { build } from "esbuild";
 // Seams only provide a real public-auth JWT and the Web proxy's base mapping.
 const { values } = parseArgs({ options: { metadata: { type: "string" } } });
 const metadata = JSON.parse(readFileSync(values.metadata));
-const controlOrigin = JSON.parse(
+const fixture = JSON.parse(
   readFileSync(resolve(dirname(values.metadata), "fixture.json")),
-).inference_control_origin;
+);
+const controlOrigin = fixture.inference_control_origin;
+assert.equal(fixture.brand_runtime.brand_id, metadata.brand_id);
 for (const origin of [
   metadata.api_origin,
   metadata.auth_origin,
@@ -175,6 +177,23 @@ try {
     );
     return chunks;
   }
+  const greeting = await client.getMessages(undefined, A);
+  assert.equal(
+    greeting[0].text,
+    `Hi! I'm ${fixture.brand_runtime.ai_persona_name}. How can I help?`,
+  );
+  const brandReply = await send("[fixture:brand-prompt] Omi stays literal", A);
+  const brandText = brandReply.find((chunk) => chunk.type === "done").message
+    .text;
+  assert(
+    brandText.includes(
+      `You are ${fixture.brand_runtime.ai_persona_name}, a concise`,
+    ),
+  );
+  assert(brandText.includes("Omi stays literal"));
+  assert(!brandText.includes("You are Omi,"));
+  await client.clearMessages(undefined, A);
+  pass("manifest-brand-greeting-and-model-prompt");
   const first = await send("Synthetic A question 中文", A);
   // Current parser returns the decoded ServerMessage as done.message.
   const done = first.find((chunk) => chunk.type === "done");
