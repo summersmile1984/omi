@@ -17,6 +17,7 @@ Inherits all rules from the root [`../AGENTS.md`](../AGENTS.md). This file adds 
 | pigeon | `lib/pigeon_interfaces.dart` | `lib/gen/pigeon_communicator.g.dart` + iOS/Android stubs | `flutter pub run build_runner build` |
 | flutter_gen | `pubspec.yaml` assets/fonts | `lib/gen/assets.gen.dart`, `lib/gen/fonts.gen.dart` | `flutter pub run build_runner build` |
 | flutter_localizations | `lib/l10n/*.arb` | `lib/gen_l10n/app_localizations*.dart` | `flutter gen-l10n` |
+| brand apply.py | `brand/<id>/manifest.yaml` `brand.display_name` | `lib/flavors.brand.dart` (`kBrandDisplayName`, read by `lib/flavors.dart`) | `scripts/brand/apply.py --brand <id> --only flutter` |
 
 ### Setup Sequence
 ```bash

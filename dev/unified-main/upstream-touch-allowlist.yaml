@@ -58,6 +58,12 @@ allow:
     upstream_pr: "configurable bundle-id prefix for named bundles"
     owner: B1
 
+  - path: app/lib/flavors.dart
+    max_added_lines: 3
+    reason: F.title 改读品牌显示名（当前写死 'Omi'/'Omi Dev'）
+    upstream_pr: "brand-configurable app title"
+    owner: B2
+
   - path: app/lib/main.dart
     max_added_lines: 1
     reason: localizationsDelegates 追加品牌委托（替代改 190 个 ARB 键）
