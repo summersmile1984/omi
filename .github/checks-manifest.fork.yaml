@@ -11,11 +11,17 @@
 checks:
   - id: fork-macos-native-identity
     command: ["bash", "desktop/macos/fork/test.sh"]
-    triggers: ["desktop/macos/fork/**", "desktop/macos/Desktop/Sources/**", "scripts/profiles/**", "scripts/brand/**", "brand/schema/**"]
+    triggers: ["desktop/macos/fork/**", "desktop/macos/Desktop/**", "deploy/profiles/**", "scripts/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
     lanes: ["local", "ci"]
     platforms: ["macos"]
     reason: "The 2026-09-04 main audit B1 found custom bundles classified as production and sharing upstream storage; exercises staged identity behavior, opaque session/JWT/storage failures and reviewed Swift owner drift. This is a platform consumer contract, not another auth issuer."
 
+  - id: fork-macos-native-compile
+    command: ["bash", "desktop/macos/fork/compile.sh"]
+    triggers: ["desktop/macos/fork/**", "desktop/macos/Desktop/**", "deploy/profiles/**", "scripts/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
+    lanes: ["local", "ci"]
+    platforms: ["macos"]
+    reason: "The audit B1 native package replaces complete Swift app owners: leaf tests cannot prove those adapters compile into the real consumer. Execute the same staged debug build locally and on the existing fork CI macOS route; no additional auth policy or release pipeline is introduced."
 
   - id: fork-ci-diff-base
     command: ["python3", "scripts/fork/test_ci_diff_base.py"]

@@ -90,8 +90,15 @@ locked dependency resolution, and neither packages/signs nor launches the app.
 The production transport/cache/storage tests
 are behavioral; compiler owner drift is explicitly a static tripwire. Full app
 compilation and live services are separate evidence, never counted as hermetic
-unit test coverage. Root integration owns the existing workflow macOS runner
-and the frozen dependency preparation for its full app compilation gate.
+unit test coverage. The existing `fork-checks.yml` selects macOS-only checks
+with the shared manifest runner, then runs both this suite and
+`fork-macos-native-compile` on `macos-26` with Xcode 26.6 and Python 3.12.
+`bash desktop/macos/fork/compile.sh` is the same local compile entry. It creates
+and removes an isolated stage; no signing, service or personal dependency cache
+is required. CI caches SwiftPM downloads only and installs `pkg-config`/`webp`.
+The compile is a debug source check, not a supported-OS or distribution proof;
+it does not enter the pre-push gate. Remote CI has not yet been executed for
+this local candidate.
 
 For a live check, launch only the resulting named app executable with a unique
 `OMI_AUTOMATION_PORT`. Verify the unauthenticated `omi-ctl health` exact bundle,

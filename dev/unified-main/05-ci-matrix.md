@@ -43,6 +43,12 @@ done
 `fork-ci-diff-base` 在真实临时 Git 仓库中执行工作流原始 shell，覆盖上述事件，
 避免手动入口再次传入空 ref。
 
+原生 macOS 的现有 fork CI 入口使用共用 manifest selector 按 diff 选出
+macOS-only 检查；Linux gate 通过后，有原生检查才启动标准 `macos-26` runner。
+固定 Xcode 26.6 和 Python 3.12，执行 native identity 测试及完整 staged debug
+编译。两项都同时注册 local/ci，Linux 的平台跳过不计为原生验证通过。
+SwiftPM 只缓存下载依赖，不复用带绝对路径的 `.build`，也不签名、发布或启动应用。
+
 `.github/checks-manifest.fork.yaml`（与上游同 schema：`id/command/triggers/lanes/reason`，每条都声明 `["local","ci"]`）：
 
 | id | command | triggers | 目的 |

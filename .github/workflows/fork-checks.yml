@@ -21,6 +21,9 @@ jobs:
     name: Fork gate
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      base: ${{ steps.base.outputs.ref }}
+      macos: ${{ steps.platforms.outputs.macos }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,6 +78,23 @@ jobs:
       - name: Provision backend environment
         run: make setup-backend
 
+      - name: Select platform checks
+        id: platforms
+        env:
+          DIFF_BASE: ${{ steps.base.outputs.ref }}
+        run: |
+          python3 .github/scripts/run_checks.py \
+            --manifest .github/checks-manifest.fork.yaml \
+            --lane ci --base "$DIFF_BASE" --platform macos \
+            --exclusive-platform --output json > "$RUNNER_TEMP/fork-macos-checks.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          selection = json.loads((Path(os.environ['RUNNER_TEMP']) / 'fork-macos-checks.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"macos={str(bool(selection['checks'])).lower()}\n")
+          PY
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -114,3 +134,43 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "This number should only fall. It counts everything, including" >> "$GITHUB_STEP_SUMMARY"
           echo "upstream commits not yet merged here, so read it as a trend." >> "$GITHUB_STEP_SUMMARY"
+
+  fork-macos:
+    name: Fork macOS native contracts
+    needs: fork-gate
+    if: needs.fork-gate.outputs.macos == 'true'
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify native compiler
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+
+      - name: Install native build dependencies
+        timeout-minutes: 10
+        run: brew install pkg-config webp
+
+      # Cache downloaded dependencies only; compiled .build paths are stage-specific.
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: fork-native-${{ runner.os }}-${{ runner.arch }}-xcode26.6-${{ hashFiles('desktop/macos/Desktop/Package.resolved') }}
+
+      - name: Run selected native manifest checks
+        env:
+          DIFF_BASE: ${{ needs.fork-gate.outputs.base }}
+        run: |
+          python3 .github/scripts/run_checks.py \
+            --manifest .github/checks-manifest.fork.yaml \
+            --lane ci --base "$DIFF_BASE" --platform macos --exclusive-platform
