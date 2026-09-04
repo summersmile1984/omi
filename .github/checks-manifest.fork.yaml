@@ -20,6 +20,11 @@ checks:
     triggers: ["contracts/deployment/**", "deploy/self-host/**", "backend/fork/**", "backend/firestore_pg/**", "auth-server/**", "auth/shared/**", "runtime/shared/**", "backend/routers/action_items.py", "backend/routers/users.py", "backend/models/action_item.py"]
     lanes: ["local", "ci"]
     reason: "The 2026-09-04 real Android onboarding request failed on the missing dynamic PG owner, while the same invalid task body returned Server422/CF400. Run shared HTTP product cases through actual Auth/API/PG/Redis/MinIO/Qdrant and fresh migrations; this tests existing product owners instead of adding another state or validation primitive."
+  - id: fork-electron-native-identity
+    command: ["bash", "desktop/windows/fork/test.sh"]
+    triggers: ["desktop/windows/**", "scripts/profiles/**", "deploy/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
+    lanes: ["local", "ci"]
+    reason: "The audited Electron renderer owned Firebase persistence and pushed caller-supplied identity/base URLs into main. Production owner/IPC/renderer tests and two full staged builds enforce opaque main-only identity; real cold-start blank-window failure and native Origin/HTTP transport incidents are retained as regressions. Packaging, Windows DPAPI/Linux keyring runtime, and live services are separate acceptance."
 
   - id: fork-selfhost-build-context
     command: ["python3", "deploy/self-host/ci/build_context.py"]

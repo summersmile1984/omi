@@ -1,0 +1,5 @@
+{
+  "changes": [
+    "Local white-label desktop candidates can sign in with their selected server or Cloudflare identity service, restore a securely stored session, and sign out without sharing credentials between deployment targets."
+  ]
+}

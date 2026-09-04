@@ -127,6 +127,7 @@ jobs:
           enabled = any(check['id'] == 'fork-flutter-native-identity' for check in selected)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'enabled={str(enabled).lower()}\n')
+              output.write(f"electron={str(any(check['id'] == 'fork-electron-native-identity' for check in selected)).lower()}\n")
           PY
 
       - name: Provision pinned Flutter
@@ -141,6 +142,17 @@ jobs:
         if: steps.flutter.outputs.enabled == 'true'
         working-directory: app
         run: flutter pub get --enforce-lockfile
+
+      - name: Provision Electron package manager
+        if: steps.flutter.outputs.electron == 'true'
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Provision Electron build dependencies
+        if: steps.flutter.outputs.electron == 'true'
+        working-directory: desktop/windows
+        run: pnpm install --frozen-lockfile
 
       - name: Fork manifest (ci lane)
         run: |
