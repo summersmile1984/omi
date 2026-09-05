@@ -100,8 +100,9 @@ python3 desktop/macos/fork/build.py \
 
 The `fork-macos-native-identity` entry in the existing fork check manifest runs
 both local and CI lanes on macOS. Full compile CI entry: `python3 desktop/macos/fork/ci_build.py --output /tmp/new-native-ci`
-(optionally `--dependency-cache`). It creates its own synthetic manifest, uses
-locked dependency resolution, and neither packages/signs nor launches the app.
+(optionally `--dependency-cache`). It creates one synthetic private manifest and
+compiles isolated `self_hosted.local` and `cloudflare.local` named bundles with
+locked dependency resolution. It neither packages/signs nor launches either app.
 
 The production transport/cache/storage tests and AppKit image-decoding tests
 are behavioral; compiler owner drift is explicitly a static tripwire. Full app

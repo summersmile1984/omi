@@ -8,9 +8,10 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from build import install_brand_package_resources, local_info_plist
-from ci_build import synthetic_manifest
+from ci_build import TARGETS, build_matrix, synthetic_manifest
 from prepare import AUTH_REPLACEMENTS, ROOT, stage
 from swift_overlay import OverlayError, load_owners, rewrite_functions
 
@@ -87,6 +88,47 @@ print("native identity behavior passed")
                 self.proof["assets"]["outputs"][f"Desktop/Sources/Resources/{name}"]["sha256"],
                 self.proof["source_owners"][f"Resources/{name}"],
             )
+
+    def test_compile_matrix_selects_both_deployment_targets_with_distinct_named_bundles(self):
+        output = self.directory / "matrix-output"
+        calls = []
+
+        def fake_build(manifest, target, app_name, stage, dependency_cache, *, compile_only):
+            calls.append((manifest, target, app_name, stage, dependency_cache, compile_only))
+            return stage / "Desktop/.build/debug/Omi Computer"
+
+        with patch("ci_build.build", side_effect=fake_build):
+            result = build_matrix(output)
+
+        self.assertEqual(tuple(result), TARGETS)
+        self.assertEqual([call[1] for call in calls], ["self_hosted", "cloudflare"])
+        self.assertEqual([call[2] for call in calls], ["omi-native-ci-self-hosted", "omi-native-ci-cloudflare"])
+        self.assertEqual(
+            [call[3] for call in calls],
+            [(output / "self_hosted").resolve(), (output / "cloudflare").resolve()],
+        )
+        self.assertTrue(all(call[5] for call in calls))
+
+    def test_compile_matrix_refuses_existing_output_before_staging(self):
+        output = self.directory / "existing-matrix-output"
+        output.mkdir()
+        with self.assertRaisesRegex(ValueError, "fresh directory"):
+            build_matrix(output)
+
+    def test_compile_matrix_removes_partial_first_target_after_second_target_failure(self):
+        output = self.directory / "failed-matrix-output"
+
+        def fail_on_cloudflare(_manifest, target, _app_name, stage, _cache, *, compile_only):
+            stage.mkdir(parents=True)
+            if target == "cloudflare":
+                raise RuntimeError("synthetic Cloudflare compile failure")
+            return stage / "Desktop/.build/debug/Omi Computer"
+
+        with patch("ci_build.build", side_effect=fail_on_cloudflare), self.assertRaisesRegex(
+            RuntimeError, "Cloudflare"
+        ):
+            build_matrix(output)
+        self.assertFalse(output.exists())
 
     def test_generated_brand_images_decode_with_appkit_and_actual_sign_in_view_typechecks(self):
         good = self.directory / "Good.bundle/Contents"
