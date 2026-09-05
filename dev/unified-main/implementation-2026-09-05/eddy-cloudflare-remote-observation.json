@@ -1,0 +1,57 @@
+{
+  "observed_at": "2026-09-05T13:43:01.667Z",
+  "brand": "eddy",
+  "stage": "production",
+  "production_application_verified": false,
+  "workers": {
+    "status": 200,
+    "success": true,
+    "errors": [],
+    "workers": [
+      {
+        "name": "eddy-cf-auth-production",
+        "present": false
+      },
+      {
+        "name": "eddy-cf-rate-limit-production",
+        "present": false
+      },
+      {
+        "name": "eddy-cf-api-core-production",
+        "present": false
+      },
+      {
+        "name": "eddy-cf-api-ai-production",
+        "present": false
+      },
+      {
+        "name": "eddy-cf-realtime-production",
+        "present": false
+      },
+      {
+        "name": "eddy-cf-jobs-production",
+        "present": false
+      },
+      {
+        "name": "eddy-cf-edge-production",
+        "present": false
+      },
+      {
+        "name": "eddy-web-production",
+        "present": false
+      }
+    ]
+  },
+  "app": {
+    "status": 200,
+    "success": true,
+    "errors": [],
+    "tables": ["_cf_KV"]
+  },
+  "auth": {
+    "status": 200,
+    "success": true,
+    "errors": [],
+    "tables": ["_cf_KV"]
+  }
+}

@@ -1,5 +1,14 @@
 # Cloudflare 适配架构与完成度审计
 
+> **历史环境说明（2026-09-05 补充）：** 下文是 2026-09-01
+> `codex/cloudflare-adaptation` 分支的 `omi-cf-*-production` /
+> `omi-web-app-production` 部署记录，不代表当前统一主线的 Eddy 已发布。
+> 截至北京时间 21:43，Cloudflare API 读取确认 8 个 Eddy Worker 均不存在，
+> 两份 Eddy D1 只有系统表。当前版本、测试范围和远端结果以
+> [Eddy 验收核对](../../dev/unified-main/implementation-2026-09-05/eddy-cloudflare-release-verification.md)
+> 为准；[统一架构图集](../../dev/unified-main/architecture/three-track-architecture.md)
+> 描述一个 main、两个部署目标和白牌终端的目标架构。
+
 本目录保存 Cloudflare Workers 适配的架构视图，以及截至 2026-09-01 的完成度审计。结论先行：独立的 Cloudflare production 空数据新部署已上线并通过鉴权、Workers AI、性能、浏览器和删号残留验证；它使用专属 `*-production` 资源与 `workers.dev` 域名，没有合流其他适配分支，也没有修改 `api.omi.me` / `app.omi.me`。可选业务集成凭据、正式域名 rollout 和旧基础设施清理仍需单独发布门槛；生产数据回填与旧协议兼容不在本期范围。Workers AI 主路径不需要 OpenAI/Gemini secret。
 
 ## 架构图

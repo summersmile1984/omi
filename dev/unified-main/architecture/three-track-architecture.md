@@ -9,13 +9,15 @@
 **Cloudflare 验证状态（2026-09-05）：** 冻结候选 `095a38c9…cab89`
 完成 35 项真实本地运行时检查，覆盖注册、会话、录音、转写、队列生成
 记忆/任务、聊天、分享、导出及账户删除；ASR/模型推理 IO 受控。
-20:55（北京时间）Cloudflare API 再次读取显示，8 个 Eddy 生产 Worker 尚不存在，
+21:43（北京时间）Cloudflare API 再次读取显示，8 个 Eddy 生产 Worker 尚不存在，
 Auth/App 两份 D1 只有系统表。资源创建、构建 dry-run、本地验收均不能代替
 生产验收。完整业务、双目标一致性及 macOS 到生产的闭环仍待验证。
 每日使用量的后续源码检查已通过，尚未进入上述冻结候选；详见
 [每日使用量证据](../implementation-2026-09-05/eddy-desktop-daily-usage.md)。
 后续源码已完成 [每日回顾生成](../implementation-2026-09-05/eddy-daily-recap.md)
 及品牌导出文件名的本地运行验证；这些变更尚未进入旧冻结候选或生产环境。
+当前源码重新校验旧候选时明确拒绝版本不一致；生产状态与历史 Omi 部署的
+区别见 [Eddy 验收核对](../implementation-2026-09-05/eddy-cloudflare-release-verification.md)。
 
 ## 1. 架构目标与约束
 
