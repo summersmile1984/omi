@@ -42,3 +42,22 @@ def collect() -> List[Patch]:
     for module in ALL:
         found.extend(module.patches())
     return found
+
+
+def collect_memory_projection() -> List[Patch]:
+    """Return only the seams needed by the canonical-memory outbox process.
+
+    The projection worker does not serve HTTP, consume Redis jobs, or touch
+    object storage. Keeping its registry narrow prevents those workloads from
+    becoming accidental startup dependencies while preserving the existing
+    embedding, vector, and account-deletion fence authorities.
+    """
+    provider_names = {
+        'provider.receipt-fence.database.vector_db',
+        'provider.receipt-fence.utils.memory.atom_keyword_index',
+    }
+    return [
+        *_embedding.patches(),
+        *_vector.patches(),
+        *(patch for patch in _provider_guard.patches() if patch.name in provider_names),
+    ]

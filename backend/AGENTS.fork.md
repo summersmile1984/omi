@@ -55,6 +55,14 @@ Use `uvicorn fork.main:app` for the API and `python -m fork.worker` for all queu
 consumers. Do not install a `sitecustomize` hook: ordinary import errors there do
 not stop Python. The worker does not import ASGI or model providers and exits if
 any child consumer stops. Its `--check` command checks PG admission and Redis.
+Canonical-memory provider outbox delivery runs separately as
+`python -m fork.memory_maintenance_worker`. It may page only the existing bounded
+  maintenance registry and must call the existing leased outbox worker/side-effect
+  owners; never add another projection ledger, queue, or direct source write. Its
+  startup role loads only embedding, Qdrant, Typesense, and the shared provider
+  write fence, keeping Redis/ASGI/Auth/model generation outside this process.
+  Discovery pagination is process-local; outbox documents and their existing
+  leases remain the only durable delivery state.
 
 Run `python -m fork.migrate migrate` once before either serving process; use
 `check` for read-only validation. New static collections require a new explicit
@@ -107,6 +115,13 @@ Docker builds; keep the intended runtime sources in each context.
   collections with identical metadata before serving; no in-place rebind or
   independent EMBEDDING_DIMENSION is permitted. The startup lane includes model
   and disabled-capability behavior; real CPU/HTTP evidence remains separate.
+
+- Standard Server canonical-memory projection is supervised by the dedicated
+  memory-maintenance worker. A successful source transaction is not searchable
+  until its projection and vector outbox events are delivered. Keep scheduling
+  bounded by the neutral registry, retain existing lease/retry/dead-letter
+  semantics, and make provider failures visible without acknowledging them.
+  Full TTL/consolidation maintenance and retrieval qualification remain separate.
 
 - PG write admission uses `firestore_pg/write_policy.py`, bound to the existing
   deletion authority by the self-host registry. Keep every set/create/update,

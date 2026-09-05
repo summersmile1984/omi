@@ -18,7 +18,11 @@ manifest endpoints and `PUBLIC_*` environment values must agree. `SELF_HOST_STAG
 is `production`, `beta`, or `local`; Python derives its upstream env stage.
 
 The API runs `fork.main:app`; queue consumers run `python -m fork.worker`, which
-validates per-queue credentials and supervises child failures. Self-host API and worker processes
+validates per-queue credentials and supervises child failures. Canonical-memory
+projection delivery runs in `python -m fork.memory_maintenance_worker`: it pages
+the existing bounded registry and drains the existing leased PostgreSQL outbox
+into Typesense and Qdrant. It does not run TTL, consolidation, or model generation.
+Self-host API and worker processes
 require schema v6 (including onboarding admission, legal-hold, and canonical-memory receipt authorities), installed by `python -m fork.migrate migrate`.
 Auth serving and migration use the same stage-aware image entrypoint: `SELF_HOST_STAGE=local` selects development, while `beta` and `production` enforce production guards. Ambient `NODE_ENV` cannot relax those two stages.
 
@@ -40,7 +44,8 @@ the dev file remains the emulator harness and is reused by the migration gate.
 
 `compose.production.yml` runs the backend, Better Auth server, PostgreSQL,
 password-protected Redis plus its durable queue worker, MinIO, Qdrant, and a
-reviewed SearXNG search boundary. Every service has a health check. PostgreSQL,
+dedicated canonical-memory projection worker, Typesense, and a reviewed SearXNG
+search boundary. Every service has a health check. PostgreSQL,
 Redis, MinIO, Qdrant, and backend sync staging use named persistent volumes. The
 SenseVoice model directory is an explicit read-only host mount. Remote
 base/state images are pinned by immutable multi-architecture digest as well as
@@ -58,7 +63,7 @@ silently create or update identity tables.
 `firestore-pg-migrate` independently owns the forward-only Firestore shim
 schema. It takes the PostgreSQL advisory migration lock, applies the version
 ledger and collection registry, and performs a read-only current-schema check
-before exit. Backend and queue-worker are admitted only after it succeeds;
+before exit. Backend, queue-worker, and memory-maintenance-worker are admitted only after it succeeds;
 their runtime Firestore clients contain no lazy DDL path.
 
 The profile selects Qdrant explicitly for vector projections. The backend also

@@ -486,6 +486,63 @@ services:
       retries: 10
       start_period: 10s
 
+  memory-maintenance-worker:
+    platform: ${BACKEND_PLATFORM:?BACKEND_PLATFORM is required}
+    build:
+      context: ../..
+      dockerfile: deploy/self-host/Dockerfile
+      args:
+        UPSTREAM_BACKEND_IMAGE: ${BACKEND_RUNTIME_IMAGE:?BACKEND_RUNTIME_IMAGE is required}
+        BRAND_MANIFEST: ${SELF_HOST_BRAND_MANIFEST:?SELF_HOST_BRAND_MANIFEST is required}
+        DEPLOYMENT_STAGE: ${SELF_HOST_STAGE:-production}
+        OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
+        OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    restart: unless-stopped
+    labels:
+      com.omi.runtime.config-sha256: ${OMI_RUNTIME_CONFIG_SHA256:-unattributed}
+    command: ["python", "-m", "fork.memory_maintenance_worker"]
+    environment:
+      - OMI_DEPLOYMENT_PROFILE=self_hosted.${SELF_HOST_STAGE:-production}
+      - SELF_HOST_EGRESS_ALLOWLIST=${SELF_HOST_EGRESS_ALLOWLIST:?SELF_HOST_EGRESS_ALLOWLIST is required}
+      - FIRESTORE_PG_DSN=postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      - EMBEDDING_ENDPOINT=http://embedding:11434
+      - VECTOR_STORE_PROVIDER=qdrant
+      - VECTOR_PROJECTION_MODE=${VECTOR_PROJECTION_MODE:?VECTOR_PROJECTION_MODE is required}
+      - VECTOR_PROJECTION_ACTIVE_VERSION=${VECTOR_PROJECTION_ACTIVE_VERSION:?VECTOR_PROJECTION_ACTIVE_VERSION is required}
+      - VECTOR_PROJECTION_TARGET_VERSION=${VECTOR_PROJECTION_TARGET_VERSION-}
+      - VECTOR_PROJECTION_SCHEMA_VERSION=${VECTOR_PROJECTION_SCHEMA_VERSION:?VECTOR_PROJECTION_SCHEMA_VERSION is required}
+      - VECTOR_PROJECTION_DELETE_VERSIONS=${VECTOR_PROJECTION_DELETE_VERSIONS:?VECTOR_PROJECTION_DELETE_VERSIONS is required}
+      - VECTOR_PROJECTION_REQUIRED_NAMESPACES=${VECTOR_PROJECTION_REQUIRED_NAMESPACES:?VECTOR_PROJECTION_REQUIRED_NAMESPACES is required}
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?QDRANT_API_KEY is required}
+      - QDRANT_COLLECTION_PREFIX=${QDRANT_COLLECTION_PREFIX:?QDRANT_COLLECTION_PREFIX is required}
+      - MEMORY_KEYWORD_INDEX_PROVIDER=typesense
+      - TYPESENSE_HOST=typesense
+      - TYPESENSE_HOST_PORT=8108
+      - TYPESENSE_PROTOCOL=http
+      - TYPESENSE_API_KEY=${TYPESENSE_API_KEY:?TYPESENSE_API_KEY is required}
+      - MEMORY_TYPESENSE_COLLECTION=canonical_memory_atoms
+      - MEMORY_OUTBOX_POLL_SECONDS=${MEMORY_OUTBOX_POLL_SECONDS:-5}
+      - MEMORY_OUTBOX_UID_LIMIT=${MEMORY_OUTBOX_UID_LIMIT:-50}
+    depends_on:
+      embedding:
+        condition: service_healthy
+      firestore-pg-migrate:
+        condition: service_completed_successfully
+      qdrant-migrate:
+        condition: service_completed_successfully
+      typesense:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "fork.memory_maintenance_worker", "--health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    mem_limit: 1g
+    cpus: 1
+
 volumes:
   postgres-data:
   redis-data:

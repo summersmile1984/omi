@@ -14,13 +14,14 @@ from enum import Enum
 from functools import lru_cache
 
 from . import profile
-from .patches import collect
+from .patches import collect, collect_memory_projection
 from .registry import build_registry
 
 
 class Role(str, Enum):
     API = 'api'
     WORKER = 'worker'
+    MEMORY_MAINTENANCE = 'memory_maintenance'
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,7 @@ def bootstrap(role: Role = Role.API) -> Admission:
     row = profile.current()
     if row['target'] == 'omi_cloud':
         if role != Role.API:
-            raise profile.ProfileError('the fork queue worker requires a self_hosted profile')
+            raise profile.ProfileError('fork background workers require a self_hosted profile')
         return Admission(row['name'], row['target'], role, ())
     if row['target'] != 'self_hosted':
         raise profile.ProfileError('this Python runtime supports self_hosted; cloudflare runs Workers')
@@ -82,9 +83,12 @@ def bootstrap(role: Role = Role.API) -> Admission:
     _bind('STORAGE_BACKEND', 'minio')
     _bind('QUEUE_BACKEND', 'redis')
     _require('FIRESTORE_PG_DSN')
-    _require('REDIS_DB_HOST')
-    _require('REDIS_DB_PASSWORD')
-    _require_modules(('sqlalchemy', 'psycopg', 'redis', 'httpx'))
+    _require_modules(('sqlalchemy', 'psycopg', 'httpx'))
+
+    if role in (Role.API, Role.WORKER):
+        _require('REDIS_DB_HOST')
+        _require('REDIS_DB_PASSWORD')
+        _require_modules(('redis',))
 
     if row.get('llm'):
         from .model_contract import validate_llm
@@ -157,10 +161,29 @@ def bootstrap(role: Role = Role.API) -> Admission:
 
         for queue in QUEUES:
             queue.validate()
-    else:
+    elif role == Role.WORKER:
         # The consumer uses Redis directly, not the upstream producer/storage
         # factories. Do not import ASGI routers and model providers in a worker.
         applied = ()
+    else:
+        from .capabilities import validate as validate_capabilities
+
+        validate_capabilities(row)
+        _bind('VECTOR_STORE_PROVIDER', 'qdrant')
+        _bind('MEMORY_KEYWORD_INDEX_PROVIDER', 'typesense')
+        if os.environ.get('PINECONE_API_KEY') or os.environ.get('PINECONE_INDEX_NAME'):
+            raise profile.ProfileError('Pinecone configuration conflicts with the self-host Qdrant authority')
+        for name in ('EMBEDDING_ENDPOINT', 'QDRANT_URL', 'QDRANT_API_KEY', 'QDRANT_COLLECTION_PREFIX'):
+            _require(name)
+        for name in ('TYPESENSE_HOST', 'TYPESENSE_HOST_PORT', 'TYPESENSE_API_KEY', 'MEMORY_TYPESENSE_COLLECTION'):
+            _require(name)
+        _require_modules(('typesense',))
+        registry = build_registry(collect_memory_projection()).apply(row)
+        applied = tuple(registry.applied)
+        from utils.memory.atom_keyword_index import ensure_ledger_keyword_schema, ensure_memories_collection
+
+        ensure_memories_collection()
+        ensure_ledger_keyword_schema()
 
     from firestore_pg.migrations import check_schema
 
