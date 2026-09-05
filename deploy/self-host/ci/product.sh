@@ -8,6 +8,11 @@ args=(--output "$REPORT/server" --brand-id core-server-fixture --port "${SELF_HO
 if [ -n "${SELF_HOST_CI_RUNTIME_IMAGE:-}" ]; then
   args+=(--runtime-image "$SELF_HOST_CI_RUNTIME_IMAGE")
 fi
+if [ -n "${SELF_HOST_CI_EMBEDDING_STORE:-}${SELF_HOST_CI_LLM_STORE:-}${SELF_HOST_CI_SPEECH_STORE:-}" ]; then
+  args+=(--embedding-store "${SELF_HOST_CI_EMBEDDING_STORE:?all three model stores are required}"
+    --llm-store "${SELF_HOST_CI_LLM_STORE:?all three model stores are required}"
+    --speech-store "${SELF_HOST_CI_SPEECH_STORE:?all three model stores are required}")
+fi
 cd "$ROOT"
 "${PYTHON:-python3}" deploy/self-host/ci/test_product.py
 exec "${PYTHON:-python3}" deploy/self-host/ci/product.py "${args[@]}"

@@ -37,6 +37,46 @@ real model-identity/dimension adapter. This is controlled inference for product
 state tests; it is not model quality, speech, external egress, or production
 configuration evidence. LLM routes on this fixture remain unavailable.
 
+For real speech and text-model verification, supply **all three** existing,
+absolute model-store directories. The runner preserves the complete rendered
+Server profile, mounts stores read-only, builds the normal `Dockerfile.llm`,
+runs both production Ollama artifact checks, and starts actual BGE-M3/Qwen
+services. Backend admission verifies the speech bundle and executes real
+Kokoro/SenseVoice and Qwen readiness. This mode does not start the controlled
+embedding provider. Incomplete store selections are rejected.
+
+```bash
+python3 deploy/self-host/ci/product.py \
+  --output /absolute/new-server-fixture --brand-id eddy \
+  --embedding-store /absolute/bge-m3-store \
+  --llm-store /absolute/qwen-store \
+  --speech-store /absolute/speech-store
+```
+
+The same local/CI shell entry accepts `SELF_HOST_CI_EMBEDDING_STORE`,
+`SELF_HOST_CI_LLM_STORE` and `SELF_HOST_CI_SPEECH_STORE` together. Provision the
+models with the normal Server commands beforehand; startup/tests never download
+them. Before building or starting application containers, real-model mode
+checks Docker's memory allocation against the two Compose model limits plus
+4 GiB application/engine headroom (currently 12 GiB required).
+`model-capacity.json` records the decision. This rejects the actual 2026-09-05
+8 GiB VM that killed `llama-server` during finalization; it is an admission
+floor, not a throughput or concurrent-workload guarantee. Existing core mode
+keeps its original requirements.
+
+Both modes expose actual WebSocket Upgrade through the same Auth/API proxy.
+The upstream server owns authentication and the handshake response. The tunnel
+preserves parser-buffered first frames and binary PCM in both directions, and
+closes both sockets on disconnect, 30-second inactivity, its 15-minute deadline
+or its 64 MiB per-direction bound. It never synthesizes transcripts. Real socket
+tests run in the existing `product.sh` lane alongside HTTP-framing and process
+ownership tests.
+
+`--self-test` still executes only the eight common core cases, including when
+real models are enabled. Enabling this runtime is not evidence that recording,
+finalization, canonical-memory retrieval or the complete CI-1 qualifier passed.
+See the [real-model execution record](../../dev/unified-main/implementation-2026-09-05/server-real-model-product.md).
+
 For local iteration, `SELF_HOST_CI_RUNTIME_IMAGE` may name a previously built
 standard runtime image. The runner hashes every tracked backend Python source
 inside that actual image and refuses missing or different bytes before serving.

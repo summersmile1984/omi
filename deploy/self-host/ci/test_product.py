@@ -7,6 +7,7 @@ from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,85 @@ from loopback import handler as proxy_handler
 
 
 class FixtureHTTP(unittest.TestCase):
+    def test_websocket_preserves_buffered_frames_audio_and_upstream_auth_denial(self):
+        # RFC 6455 frames over real sockets. The first client/server frame shares
+        # one write with its HTTP headers, exposing HTTP-parser read-ahead loss.
+        pcm = bytes(range(256)) * 400
+        mask = b'\x12\x34\x56\x78'
+        audio = b'\x82\xff' + struct.pack('!Q', len(pcm)) + mask
+        audio += bytes(value ^ mask[index % 4] for index, value in enumerate(pcm))
+        first = b'\x81\x82' + mask + bytes((ord('h') ^ mask[0], ord('i') ^ mask[1]))
+        ready = b'\x81\x05ready'
+        reply = b'\x82\x7f' + struct.pack('!Q', len(pcm)) + pcm
+        close_frame = b'\x88\x02\x03\xe8'
+        received = []
+        peer_closed = threading.Event()
+
+        class AudioInput(BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1'
+
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                self.close_connection = True
+                if self.headers.get('Authorization') != 'Bearer synthetic-session':
+                    self.send_response(401)
+                    self.send_header('Content-Length', '0')
+                    self.send_header('WWW-Authenticate', 'Bearer')
+                    self.end_headers()
+                    return
+                received.append((self.path, self.headers.get('Sec-WebSocket-Key')))
+                self.connection.sendall(
+                    b'HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n'
+                    b'Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n' + ready
+                )
+                received.append(self.rfile.read(len(first)))
+                received.append(self.rfile.read(len(audio)))
+                self.connection.sendall(reply + close_frame)
+                peer_closed.set()
+
+        with ExitStack() as stack:
+            upstream = ThreadingHTTPServer(('127.0.0.1', 0), AudioInput)
+            proxy = ThreadingHTTPServer(('127.0.0.1', 0), proxy_handler('127.0.0.1', upstream.server_port))
+            for server in (upstream, proxy):
+                thread = threading.Thread(target=lambda server=server: server.serve_forever(poll_interval=0.01))
+                thread.start()
+                stack.callback(server.server_close)
+                stack.callback(thread.join, 5)
+                stack.callback(server.shutdown)
+            headers = {
+                'Connection': 'keep-alive, Upgrade',
+                'Upgrade': 'websocket',
+                'Sec-WebSocket-Version': '13',
+                'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+            }
+            with closing(HTTPConnection('127.0.0.1', proxy.server_port, timeout=5)) as client:
+                client.request('GET', '/v4/listen', headers=headers)
+                response = client.getresponse()
+                self.assertEqual(response.status, 401)
+                self.assertEqual(response.getheader('WWW-Authenticate'), 'Bearer')
+                response.read()
+                self.assertFalse(received, 'proxy fabricated an authenticated upgrade')
+            with socket.create_connection(('127.0.0.1', proxy.server_port), timeout=5) as client:
+                headers.update(Host='127.0.0.1', Authorization='Bearer synthetic-session')
+                wire = 'GET /v4/listen?sample_rate=16000 HTTP/1.1\r\n'
+                wire += ''.join(f'{key}: {value}\r\n' for key, value in headers.items()) + '\r\n'
+                client.sendall(wire.encode() + first)
+                with client.makefile('rb') as reader:
+                    self.assertTrue(reader.readline().startswith(b'HTTP/1.1 101 '))
+                    response_headers = []
+                    while (line := reader.readline()) != b'\r\n':
+                        self.assertTrue(line)
+                        response_headers.append(line.lower())
+                    self.assertIn(b'upgrade: websocket\r\n', response_headers)
+                    self.assertEqual(reader.read(len(ready)), ready)
+                    client.sendall(audio)
+                    self.assertEqual(reader.read(len(reply) + len(close_frame)), reply + close_frame)
+                    self.assertEqual(reader.read(1), b'')
+            self.assertTrue(peer_closed.wait(5))
+            self.assertEqual(received, [('/v4/listen?sample_rate=16000', headers['Sec-WebSocket-Key']), first, audio])
+
     def test_json_framing_is_preserved_and_ambiguous_framing_never_reaches_auth(self):
         calls = []
 
@@ -165,6 +245,43 @@ signal.pause()
 
 
 class FixtureProfile(unittest.TestCase):
+    def test_model_capacity_rejects_the_observed_oom_host_and_leaves_core_mode_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stores = {kind: root for kind in ('embedding', 'llm', 'speech')}
+            services = {name: {'mem_limit': '4294967296'} for name in ('embedding', 'llm')}
+            fixture = Fixture(root / 'models', 'fixture-models', 34800, model_stores=stores)
+            calls = []
+
+            def engine_info(args, **kwargs):
+                calls.append(args)
+                return '8318562304\n'
+
+            fixture.command = engine_info
+            with self.assertRaisesRegex(RuntimeError, 'at least 12 GiB Docker memory'):
+                fixture.admit_model_capacity(services)
+            self.assertEqual(calls, [['docker', 'info', '--format', '{{.MemTotal}}']])
+            self.assertFalse(fixture.created)
+            self.assertFalse(json.loads((fixture.output / 'model-capacity.json').read_text())['admitted'])
+            fixture.command = lambda *args, **kwargs: str(16 * 1024**3)
+            fixture.admit_model_capacity(services)
+            self.assertTrue(json.loads((fixture.output / 'model-capacity.json').read_text())['admitted'])
+            core = Fixture(root / 'core', 'fixture-core', 34800)
+            core.command = lambda *args, **kwargs: self.fail('core mode acquired real-model resource requirements')
+            core.admit_model_capacity({})
+
+    def test_partial_or_missing_model_stores_fail_before_creating_fixture_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for stores in (
+                {'speech': root},
+                {'embedding': root, 'llm': None, 'speech': root},
+                {'embedding': root, 'llm': root, 'speech': root / 'missing'},
+            ):
+                with self.subTest(stores=stores), self.assertRaises(ValueError):
+                    Fixture(root / 'output', 'fixture-models', 34800, model_stores=stores)
+                self.assertFalse((root / 'output').exists())
+
     def test_core_contract_disables_unowned_media_and_llm_capabilities(self):
         profile = core_only_profile(
             {

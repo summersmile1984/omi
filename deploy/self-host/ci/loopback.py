@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Expose fixture HTTP ports while application containers remain internal-only."""
+"""Expose fixture HTTP/WebSocket ports while application containers stay internal."""
 
-from contextlib import closing
+from contextlib import closing, suppress
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import re
+import socket
 import threading
+import time
 
 BODY_LIMIT = 1024 * 1024
 LINE_LIMIT = 8192
+TUNNEL_BYTE_LIMIT = 64 * 1024 * 1024
+TUNNEL_SECONDS = 900
 
 HOP_HEADERS = {
     'connection',
@@ -20,6 +24,49 @@ HOP_HEADERS = {
     'transfer-encoding',
     'upgrade',
 }
+
+
+def tokens(headers, name):
+    return {token.strip().lower() for value in headers.get_all(name, []) for token in value.split(',')}
+
+
+def tunnel(client, upstream, upstream_socket):
+    """Forward the two actual peers, including bytes buffered with their headers."""
+    deadline = time.monotonic() + TUNNEL_SECONDS
+
+    def stop():
+        for connection in (client.connection, upstream_socket):
+            with suppress(OSError):
+                connection.shutdown(socket.SHUT_RDWR)
+
+    def copy(reader, source, destination):
+        total = 0
+        try:
+            while time.monotonic() < deadline:
+                source.settimeout(min(30, max(0.001, deadline - time.monotonic())))
+                # Reading from the HTTP parser's file retains a first audio or
+                # ready frame received in the same TCP packet as the handshake.
+                chunk = reader.read1(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > TUNNEL_BYTE_LIMIT:
+                    break
+                destination.sendall(chunk)
+        except (OSError, ValueError):
+            pass
+        finally:
+            stop()
+
+    outgoing = threading.Thread(target=copy, args=(client.rfile, client.connection, upstream_socket), daemon=True)
+    outgoing.start()
+    try:
+        copy(upstream.fp, upstream_socket, client.connection)
+    finally:
+        stop()
+        outgoing.join(5)
+        if outgoing.is_alive():
+            raise RuntimeError('fixture WebSocket reader did not stop')
 
 
 def handler(host, port):
@@ -78,6 +125,19 @@ def handler(host, port):
                 if not self.path.startswith('/'):
                     raise ValueError('invalid request path')
                 request_body = self.body()
+                upgrades = self.headers.get_all('Upgrade', [])
+                websocket = bool(upgrades)
+                if websocket and (
+                    self.command != 'GET'
+                    or len(upgrades) != 1
+                    or upgrades[0].lower() != 'websocket'
+                    or 'upgrade' not in tokens(self.headers, 'Connection')
+                    or request_body
+                    or self.headers.get_all('Transfer-Encoding')
+                ):
+                    raise ValueError('invalid WebSocket upgrade')
+                if not websocket and 'upgrade' in tokens(self.headers, 'Connection'):
+                    raise ValueError('missing upgrade protocol')
             except (ValueError, TimeoutError, OSError):
                 self.send_error(400)
                 return
@@ -87,9 +147,35 @@ def handler(host, port):
             # Transfer framing belongs to each HTTP hop. Once decoded, the
             # forwarded length must describe these exact bytes, including UTF-8.
             headers['Content-Length'] = str(len(request_body))
+            if websocket:
+                headers.update(Connection='Upgrade', Upgrade='websocket')
             with closing(HTTPConnection(host, port, timeout=30)) as connection:
                 connection.request(self.command, self.path, request_body, headers)
                 result = connection.getresponse()
+                if result.status == 101:
+                    if (
+                        not websocket
+                        or connection.sock is None
+                        or result.getheader('Upgrade', '').lower() != 'websocket'
+                        or 'upgrade' not in tokens(result.headers, 'Connection')
+                    ):
+                        self.send_error(502)
+                        return
+                    self.protocol_version = 'HTTP/1.1'
+                    self.close_connection = True
+                    self.send_response(101)
+                    for key, value in result.getheaders():
+                        if key.lower() not in HOP_HEADERS | {'content-length'}:
+                            self.send_header(key, value)
+                    self.send_header('Connection', 'Upgrade')
+                    self.send_header('Upgrade', 'websocket')
+                    self.end_headers()
+                    self.wfile.flush()
+                    try:
+                        tunnel(self, result, connection.sock)
+                    finally:
+                        result.close()
+                    return
                 body = result.read(1024 * 1024 + 1)
                 if len(body) > 1024 * 1024:
                     self.send_error(502)

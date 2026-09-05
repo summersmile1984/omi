@@ -3,8 +3,9 @@
 
 LIFECYCLE: permanent
 This owns a fresh Compose project, normal migrations and application images.
-Its explicit core-only profile disables speech; only the embedding HTTP
-provider is controlled. There are no route, identity or persistence substitutes.
+Its default core-only profile disables speech and controls embedding HTTP IO.
+Supplying all three model stores selects the unmodified speech/LLM/embedding
+profile and real admitted CPU runtimes. Neither mode replaces product state.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import sys
 import threading
 
 ROOT = Path(__file__).resolve().parents[3]
+MODEL_APPLICATION_HEADROOM = 4 * 1024**3
 PYTHON_BASE = 'python:3.11.10-slim-bookworm@sha256:840e180ebcc6e5c8efab209c43f5e40fd2af98cb49db5c7103c90539c56bb30e'
 sys.path.insert(0, str(ROOT / 'scripts/profiles'))
 import render  # noqa: E402
@@ -43,9 +45,18 @@ def core_only_profile(row):
 
 
 class Fixture:
-    def __init__(self, output, brand_id, port, runtime_image=None):
+    def __init__(self, output, brand_id, port, runtime_image=None, *, model_stores=None):
         if not re.fullmatch(r'[a-z][a-z0-9-]{2,40}', brand_id) or not 1024 <= port <= 65000:
             raise ValueError('fixture needs a safe brand id and unprivileged port')
+        self.model_stores = {}
+        if model_stores is not None:
+            if set(model_stores) != {'embedding', 'llm', 'speech'} or not all(model_stores.values()):
+                raise ValueError('real-model fixture requires embedding, llm and speech stores together')
+            for kind, path in model_stores.items():
+                path = Path(path)
+                if not path.is_absolute() or not path.is_dir():
+                    raise ValueError(f'{kind} model store must be an existing absolute directory')
+                self.model_stores[kind] = path.resolve()
         os.umask(0o077)
         output.mkdir(parents=True, exist_ok=False)
         self.output = output.resolve()
@@ -54,6 +65,7 @@ class Fixture:
         self.runtime_image = runtime_image or self.project + '-base'
         self.auth_image = self.project + '-auth'
         self.api_image = self.project + '-api'
+        self.llm_image = self.project + '-llm'
         self.compose_file = self.output / 'compose.json'
         self.stopped = threading.Event()
         self.created = False
@@ -117,6 +129,31 @@ class Fixture:
             **kwargs,
         )
 
+    def admit_model_capacity(self, services):
+        if not self.model_stores:
+            return
+        limits = {name: services[name].get('mem_limit') for name in ('embedding', 'llm')}
+        # `docker compose config --format json` emits byte counts as decimal
+        # strings, including the production YAML's `4g` model limits.
+        if any(not isinstance(value, str) or not re.fullmatch(r'[1-9][0-9]*', value) for value in limits.values()):
+            raise ValueError('real-model fixture requires explicit Compose model memory limits')
+        limits = {name: int(value) for name, value in limits.items()}
+        total = int(self.command(['docker', 'info', '--format', '{{.MemTotal}}'], capture=True, timeout=30).strip())
+        required = sum(limits.values()) + MODEL_APPLICATION_HEADROOM
+        report = {
+            'engine_memory_bytes': total,
+            'model_memory_limits': limits,
+            'application_headroom_bytes': MODEL_APPLICATION_HEADROOM,
+            'required_engine_memory_bytes': required,
+            'admitted': total >= required,
+        }
+        (self.output / 'model-capacity.json').write_text(json.dumps(report, indent=2) + '\n')
+        if not report['admitted']:
+            raise RuntimeError(
+                f'real-model fixture needs at least {required / 1024**3:g} GiB Docker memory '
+                f'for model limits and application headroom; engine reports {total / 1024**3:.2f} GiB'
+            )
+
     def prepare(self):
         manifest = copy.deepcopy(render.load_yaml(ROOT / 'brand/omi-upstream/manifest.yaml'))
         manifest['brand'].update(id=self.brand_id, display_name='Product Fixture', short_name='Product Fixture')
@@ -137,7 +174,8 @@ class Fixture:
         manifest_file = self.output / 'brand.json'
         manifest_file.write_text(json.dumps(manifest))
         table = render.resolve('self_hosted', None, manifest_file, 'local')
-        table['profiles']['self_hosted.local'] = core_only_profile(table['profiles']['self_hosted.local'])
+        if not self.model_stores:
+            table['profiles']['self_hosted.local'] = core_only_profile(table['profiles']['self_hosted.local'])
         profile_file = self.output / 'profile.json'
         profile_file.write_text(json.dumps(table, indent=2) + '\n')
         env = {}
@@ -160,12 +198,14 @@ class Fixture:
             OMI_SHARE_BASE_URL=api,
             CORS_ALLOWED_ORIGINS=auth,
             BETTER_AUTH_TRUSTED_ORIGINS=auth,
-            SELF_HOST_EGRESS_ALLOWLIST='embedding',
+            SELF_HOST_EGRESS_ALLOWLIST='embedding,llm' if self.model_stores else 'embedding',
             BACKEND_RUNTIME_IMAGE=self.runtime_image,
             BACKEND_IMAGE=self.api_image,
             AUTH_SERVER_IMAGE=self.auth_image,
-            EMBEDDING_MODEL_STORE=str(self.output / 'unused-model-store'),
-            SPEECH_MODEL_STORE=str(self.output / 'unused-speech-store'),
+            LLM_IMAGE=self.llm_image,
+            EMBEDDING_MODEL_STORE=str(self.model_stores.get('embedding', self.output / 'unused-model-store')),
+            SPEECH_MODEL_STORE=str(self.model_stores.get('speech', self.output / 'unused-speech-store')),
+            LLM_MODEL_STORE=str(self.model_stores.get('llm', self.output / 'unused-llm-store')),
             GENERIC_OPENAI_BASE_URL='http://embedding:11434/v1',
             GENERIC_OPENAI_MODEL='controlled-unavailable',
             GENERIC_OPENAI_API_KEY=secrets.token_hex(24),
@@ -196,6 +236,10 @@ class Fixture:
                 capture=True,
             )
         )
+        # The 2026-09-05 real-model run exhausted an 8 GiB Docker VM during
+        # finalization and killed llama-server. Reject that known insufficient
+        # allocation before building or starting any application containers.
+        self.admit_model_capacity(config['services'])
         # Keep actual service environments, commands, immutable state images and
         # migrations. Only network/ports/restart/storage are fixture-owned.
         selected = (
@@ -212,6 +256,8 @@ class Fixture:
             'queue-worker',
             'memory-maintenance-worker',
         )
+        if self.model_stores:
+            selected += ('embedding-artifact-check', 'embedding', 'llm-artifact-check', 'llm')
         services = {name: config['services'][name] for name in selected}
         for name, service in services.items():
             service.pop('build', None)
@@ -221,11 +267,11 @@ class Fixture:
             service['networks'] = ['default']
             if name not in ('auth-server', 'backend', 'minio'):
                 service.pop('ports', None)
-            if name in ('backend', 'queue-worker'):
+            if name in ('backend', 'queue-worker') and not self.model_stores:
                 service['volumes'] = [{'type': 'volume', 'source': 'backend-syncing', 'target': '/app/syncing'}]
             if 'healthcheck' in service:
                 service['healthcheck'].update(interval='2s', start_period='2s', retries=60)
-        services['embedding'] = {
+        controlled_embedding = {
             'image': self.api_image,
             'platform': 'linux/amd64',
             'command': ['python', '/contract/providers.py'],
@@ -241,6 +287,8 @@ class Fixture:
                 'retries': 30,
             },
         }
+        if not self.model_stores:
+            services['embedding'] = controlled_embedding
         services['loopback'] = {
             'image': self.api_image,
             'platform': 'linux/amd64',
@@ -281,12 +329,16 @@ class Fixture:
         (self.output / 'fixture-scope.json').write_text(
             json.dumps(
                 {
-                    'scope': 'identity-onboarding-tasks',
+                    'scope': 'real-model-product-runtime' if self.model_stores else 'identity-onboarding-tasks',
                     'profile_sha256': hashlib.sha256(profile_file.read_bytes()).hexdigest(),
-                    'speech': 'explicitly-disabled',
-                    'embedding': 'controlled-HTTP-no-model-inference',
+                    'speech': 'admitted-local-SenseVoice-Kokoro' if self.model_stores else 'explicitly-disabled',
+                    'llm': 'admitted-local-Qwen-Ollama' if self.model_stores else 'explicitly-disabled',
+                    'embedding': (
+                        'admitted-local-BGE-M3-Ollama' if self.model_stores else 'controlled-HTTP-no-model-inference'
+                    ),
                     'application_network': 'internal-only',
                     'http_ingress': 'isolated-two-port-loopback-proxy',
+                    'websocket_ingress': 'same-proxy-bounded-bidirectional-tunnel',
                     'release_qualified': False,
                 },
                 indent=2,
@@ -362,9 +414,28 @@ class Fixture:
             ],
             timeout=600,
         )
+        if self.model_stores:
+            self.command(
+                [
+                    'docker',
+                    'build',
+                    '--platform=linux/amd64',
+                    '-f',
+                    'deploy/self-host/Dockerfile.llm',
+                    '--build-arg',
+                    'BACKEND_IMAGE=' + self.api_image,
+                    '-t',
+                    self.llm_image,
+                    '.',
+                ],
+                timeout=600,
+            )
 
     def start(self):
         self.created = True
+        if self.model_stores:
+            for service in ('embedding-artifact-check', 'llm-artifact-check'):
+                self.compose('run', '--rm', service)
         self.compose(
             'up',
             '-d',
@@ -377,6 +448,7 @@ class Fixture:
             'qdrant',
             'typesense',
             'embedding',
+            *(['llm'] if self.model_stores else []),
         )
         for service in ('auth-migrate', 'firestore-pg-migrate', 'qdrant-migrate'):
             self.compose('run', '--rm', service)
@@ -385,11 +457,12 @@ class Fixture:
             '-d',
             '--wait',
             '--wait-timeout',
-            '180',
+            '600' if self.model_stores else '180',
             'auth-server',
             'backend',
             'queue-worker',
             'memory-maintenance-worker',
+            timeout=630 if self.model_stores else 300,
         )
         self.compose('up', '-d', '--wait', '--wait-timeout', '90', 'loopback')
         (self.output / 'metadata.json').write_text(json.dumps(self.metadata, indent=2))
@@ -424,9 +497,17 @@ def main():
     parser.add_argument('--brand-id', default='product-fixture')
     parser.add_argument('--port', type=int, default=34800)
     parser.add_argument('--runtime-image', help='reuse only after actual source-byte admission')
+    parser.add_argument('--embedding-store', type=Path, help='admitted BGE-M3 store; requires both other stores')
+    parser.add_argument('--llm-store', type=Path, help='admitted Qwen store; requires both other stores')
+    parser.add_argument(
+        '--speech-store', type=Path, help='admitted SenseVoice/Kokoro store; requires both other stores'
+    )
     parser.add_argument('--self-test', action='store_true', help='run common HTTP contract and clean up')
     args = parser.parse_args()
-    fixture = Fixture(args.output, args.brand_id, args.port, args.runtime_image)
+    stores = {kind: getattr(args, kind + '_store') for kind in ('embedding', 'llm', 'speech')}
+    fixture = Fixture(
+        args.output, args.brand_id, args.port, args.runtime_image, model_stores=stores if any(stores.values()) else None
+    )
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, fixture.stop)
     try:
