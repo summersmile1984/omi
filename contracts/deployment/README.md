@@ -2,7 +2,7 @@
 
 `core.py` executes the same HTTP cases against either real target: two public
 signups, opaque session restore and JWT exchange, protected admission,
-onboarding persistence, CSAT configuration/validation/create-only ratings,
+onboarding persistence, calendar capture-gap query/auth/disconnected admission, CSAT configuration/validation/create-only ratings,
 task creation/completion, cross-account denial, refresh
 and logout revocation. It imports no backend handlers and seeds no business
 records. The task request contract comes from the actual FastAPI
@@ -92,7 +92,7 @@ platform input, 422/400 validation, 201 creation, 409 resubmission and account
 isolation. Cloudflare also checks rating export and actual account deletion in
 its recording/privacy suite. These are synthetic ratings in disposable accounts.
 
-This is the identity/onboarding/CSAT/tasks slice of **CI-1**. It deliberately does
+This is the identity/onboarding/calendar/CSAT/tasks slice of **CI-1**. It deliberately does
 not implement `qualify-dual-target.mjs`, which owns the complete candidate and
 platform/brand product qualification. Recording finalization, conversation and
 memory retrieval, process restart, full error shapes, client UI, supported OSes

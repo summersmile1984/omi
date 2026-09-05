@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write and CSAT implementations, the inventory has 619 unique method/path/protocol slots: 580 have Worker owners and 39 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT and calendar capture-gap implementations, the inventory has 619 unique method/path/protocol slots: 581 have Worker owners and 38 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -98,7 +98,7 @@ Referral cookie/codes, account-age admission and exactly-once trial entitlement 
 
 Owner: `jobs`. Upstream authority: `backend/routers/google_calendar.py`.
 
-Join accepted Calendar event windows with eligible D1 conversation intervals through the existing Google Calendar connector.
+Implemented by the existing Jobs Google Calendar grant/refresh owner and a uid-scoped, indexed D1 recording range. The route keeps upstream's 31-day window, 250-event / 500-conversation ceilings, 24-hour lookback, ten-second overlap floor and discarded/declined/cancelled/tentative/all-day exclusions. It never creates or mutates conversations. Worker HTTP query/disconnected checks pass alongside Server OS; positive joins and refresh/failure cases execute the actual Jobs route with real SQLite and controlled provider responses. Hosted Calendar-account execution remains unverified. See [evidence](implementation-2026-09-05/eddy-calendar-capture-gaps-2026-09-06.md).
 
 | Method | Path |
 |---|---|

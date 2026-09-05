@@ -8,7 +8,7 @@ The entry builds seven real application Workers and an inference-only Worker,
 applies the actual Auth/App migrations into a new local state directory, starts
 locked Wrangler/workerd, then executes:
 
-- The same `contracts/deployment/core.py` identity/onboarding/CSAT/Tasks HTTP suite
+- The same `contracts/deployment/core.py` identity/onboarding/calendar/CSAT/Tasks HTTP suite
   used by the Server OS runner.
 - `recording.mjs`, separate public `/v4/listen` (Upgrade Bearer) and
   `/v4/web/listen` (first-frame JWT) PCM recording flows: authenticated

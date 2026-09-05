@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One HTTP product contract against either real, disposable deployment target.
 
-This is the identity/onboarding/CSAT/tasks slice of CI-1, not a release qualifier.
+This is the identity/onboarding/calendar/CSAT/tasks slice of CI-1, not a release qualifier.
 Target runners own disposable state, provider fixtures and teardown. This client
 never seeds a database, imports a backend handler or supplies an auth bypass.
 """
@@ -204,6 +204,24 @@ class ProductContract:
             require(isolated['completed'] is False, 'onboarding crossed account boundary')
 
         self.case('onboarding.persist-and-isolate', onboarding)
+
+        def calendar_capture_admission():
+            path = '/v1/calendar/capture-gaps'
+            self.request('api', 'GET', path, 401)
+            for query in ('', '?start=not-a-date&end=2026-09-02', '?start=2026-02-30&end=2026-09-02'):
+                invalid, _ = self.request('api', 'GET', path + query, 422, bearer=owner.jwt)
+                require(
+                    invalid['detail'][0]['loc'] == ['query', 'start'], 'calendar query validation lost field location'
+                )
+            for query, expected in (
+                ('?start=2026-09-01&end=2026-09-01', 'end must be after start'),
+                ('?start=2026-09-01&end=2026-10-03', 'window too large (max 31 days)'),
+                ('?start=2026-09-01T08:00:00%2B08:00&end=2026-09-02T00:00:00', 'Google Calendar not connected'),
+            ):
+                denied, _ = self.request('api', 'GET', path + query, 400, bearer=owner.jwt)
+                require(denied == {'detail': expected}, 'calendar capture admission differs')
+
+        self.case('calendar.capture-gap-query-and-disconnected-admission', calendar_capture_admission)
 
         def csat_config():
             self.request('api', 'GET', '/v1/csat/config', 401)

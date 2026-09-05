@@ -269,6 +269,148 @@ afterEach(() => {
   while (databases.length) databases.pop()?.close();
 });
 
+describe("calendar capture gaps", () => {
+  const start = Date.parse("2026-09-01T00:00:00Z") / 1_000;
+  const gapPath = "/v1/calendar/capture-gaps?start=2026-09-01&end=2026-09-02";
+  const event = (id: string, offset = 3_600, duration = 1_800) => ({
+    id, summary: id, status: "confirmed",
+    start: { dateTime: new Date((start + offset) * 1_000).toISOString() },
+    end: { dateTime: new Date((start + offset + duration) * 1_000).toISOString() },
+  });
+  async function fixture(items: unknown[]) {
+    const value = environment();
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ items }));
+    const app = testApp(value.env, { fetchImpl, now: () => start });
+    expect((await app.request("/v1/integrations/google_calendar", {
+      method: "PUT",
+      body: JSON.stringify({ connected: true, access_token: "capture-access" }),
+    })).status).toBe(200);
+    return { ...value, fetchImpl, app };
+  }
+  function recording(database: SqliteD1, id: string, offset: number, duration: number, discarded = 0, uid = "calendar-user") {
+    database.database.prepare(
+      "INSERT INTO cf_conversations (uid,id,created_at,started_at,finished_at,discarded) VALUES (?,?,?,?,?,?)",
+    ).run(uid, id, start, start + offset, start + offset + duration, discarded);
+  }
+
+  it("joins only eligible own recordings, honors the ten-second floor and never mutates history", async () => {
+    const { app, database, fetchImpl } = await fixture([
+      event("covered"), event("nine-seconds", 7_200), event("discarded-only", 10_800),
+      event("other-account", 14_400), event("spans-midnight", 0),
+      { ...event("declined"), attendees: [{ self: true, responseStatus: "declined" }] },
+      { ...event("cancelled"), status: "cancelled" },
+      { ...event("tentative"), status: "tentative" },
+      { ...event("invalid-status"), status: null },
+      { ...event("all-day"), start: { date: "2026-09-01" }, end: { date: "2026-09-02" } },
+      event("long-block", 0, 8 * 3_600 + 1), event("invalid-duration", 0, 0),
+      { ...event("invalid-date"), start: { dateTime: "2026-02-30T00:00:00Z" } },
+    ]);
+    recording(database, "own", 3_600, 10);
+    recording(database, "short", 7_200, 9);
+    recording(database, "discarded", 10_800, 60, 1);
+    recording(database, "other", 14_400, 60, 0, "other-user");
+    recording(database, "overnight", -60, 120);
+    recording(database, "unfinished", 14_400, 0);
+    const before = database.database.prepare("SELECT * FROM cf_conversations ORDER BY uid,id").all();
+    const response = await app.request(gapPath);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([
+      { event_id: "nine-seconds", title: "nine-seconds", start_time: "2026-09-01T02:00:00.000Z", end_time: "2026-09-01T02:30:00.000Z", status: "confirmed", coverage: "not_captured" },
+      { event_id: "discarded-only", title: "discarded-only", start_time: "2026-09-01T03:00:00.000Z", end_time: "2026-09-01T03:30:00.000Z", status: "confirmed", coverage: "not_captured" },
+      { event_id: "other-account", title: "other-account", start_time: "2026-09-01T04:00:00.000Z", end_time: "2026-09-01T04:30:00.000Z", status: "confirmed", coverage: "not_captured" },
+    ]);
+    expect(database.database.prepare("SELECT * FROM cf_conversations ORDER BY uid,id").all()).toEqual(before);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
+    expect(url.searchParams.get("maxResults")).toBe("250");
+    expect(url.searchParams.get("fields")).toContain("responseStatus");
+    expect(url.searchParams.get("fields")).toContain("status");
+  });
+
+  it("requires auth and valid bounded UTC queries before any provider call", async () => {
+    const { app, fetchImpl } = await fixture([]);
+    expect((await app.request(gapPath, {}, false)).status).toBe(401);
+    for (const query of ["", "?start=no&end=2026-09-02", "?start=2026-02-30&end=2026-09-02"]) {
+      const response = await app.request("/v1/calendar/capture-gaps" + query);
+      expect(response.status).toBe(422);
+      expect((await response.json() as { detail: { loc: string[] }[] }).detail[0].loc).toEqual(["query", "start"]);
+    }
+    for (const [query, detail] of [
+      ["?start=2026-09-01&end=2026-09-01", "end must be after start"],
+      ["?start=2026-09-01&end=2026-10-03", "window too large (max 31 days)"],
+    ]) {
+      const response = await app.request("/v1/calendar/capture-gaps" + query);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ detail });
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+    for (const query of [
+      "?start=2026-09-01T08:00:00%2B08:00&end=2026-09-02T00:00:00",
+      `?start=${start}&end=${(start + 86_400) * 1_000}`,
+    ]) {
+      expect((await app.request("/v1/calendar/capture-gaps" + query)).status).toBe(200);
+      const url = new URL(String(fetchImpl.mock.calls.at(-1)?.[0]));
+      expect(url.searchParams.get("timeMin")).toBe("2026-09-01T00:00:00.000Z");
+      expect(url.searchParams.get("timeMax")).toBe("2026-09-02T00:00:00.000Z");
+    }
+  });
+
+  it("bounds provider rows and the padded descending D1 range", async () => {
+    const { app, database } = await fixture(Array.from({ length: 251 }, (_, index) => event(`event-${index}`)));
+    recording(database, "outside-pad", -86_401, 100_000);
+    recording(database, "old-covered", 3_600, 60);
+    for (let index = 0; index < 500; index++) recording(database, `discarded-${index}`, 7_200 + index, 60, 1);
+    const response = await app.request(gapPath);
+    expect(response.status).toBe(200);
+    const rows = await response.json() as { event_id: string }[];
+    expect(rows).toHaveLength(250);
+    expect(rows.at(-1)?.event_id).toBe("event-249");
+    const plan = database.database.prepare(
+      "EXPLAIN QUERY PLAN SELECT started_at,finished_at,discarded FROM cf_conversations WHERE uid=? AND started_at>=? AND started_at<=? ORDER BY started_at DESC,id DESC LIMIT 500",
+    ).all("calendar-user", start - 86_400, start + 86_400);
+    expect(JSON.stringify(plan)).toContain("cf_conversations_uid_started_idx");
+  });
+
+  it("reuses grant refresh and fails on provider/store errors instead of reporting no gaps", async () => {
+    const { app, fetchImpl, database } = await fixture([event("missing")]);
+    expect((await app.request("/v1/integrations/google_calendar", {
+      method: "PUT", body: JSON.stringify({ connected: true, access_token: "old", refresh_token: "refresh" }),
+    })).status).toBe(200);
+    // Keep the stored grant fresh so this exercises the provider-401 refresh path.
+    database.database.prepare("UPDATE cf_google_calendar_integrations SET token_expires_at=?").run(start + 7_200);
+    fetchImpl.mockResolvedValueOnce(new Response("", { status: 401 }))
+      .mockResolvedValueOnce(Response.json({ access_token: "new-access", expires_in: 3_600 }))
+      .mockResolvedValueOnce(Response.json({ items: [event("missing")] }));
+    expect((await app.request(gapPath)).status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(String(fetchImpl.mock.calls[1]?.[0])).toBe("https://oauth2.googleapis.com/token");
+    for (const [response, detail] of [
+      [Response.json({ message: "private upstream message" }, { status: 500 }), "Failed to fetch calendar events"],
+      [Response.json({ items: "invalid" }), "Failed to fetch calendar events"],
+      [new Response("private upstream message", { status: 500 }), "Provider returned invalid JSON"],
+    ] as const) {
+      fetchImpl.mockResolvedValueOnce(response);
+      const result = await app.request(gapPath);
+      expect(result.status).toBe(502);
+      expect(await result.json()).toEqual({ detail });
+    }
+    const original = database.prepare.bind(database);
+    const prepare = vi.spyOn(database, "prepare");
+    prepare.mockImplementation((sql) => {
+      if (sql.startsWith("SELECT started_at")) throw new Error("private D1 error");
+      return original(sql);
+    });
+    const failed = await app.request(gapPath);
+    expect(failed.status).toBe(503);
+    expect(await failed.text()).not.toContain("private D1");
+    prepare.mockRestore();
+    expect((await app.request("/v1/integrations/google_calendar", { method: "DELETE" })).status).toBe(204);
+    const disconnected = await app.request(gapPath);
+    expect(disconnected.status).toBe(400);
+    expect(await disconnected.json()).toEqual({ detail: "Google Calendar not connected" });
+  });
+});
+
 describe("Google Calendar Worker routes", () => {
   it("requires auth and stores only encrypted manual credentials", async () => {
     const { database, env, fetchImpl } = environment();

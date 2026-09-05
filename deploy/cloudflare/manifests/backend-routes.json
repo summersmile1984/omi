@@ -113,7 +113,7 @@
     {"method": "GET", "migration_state": "staging-owned", "owner": "auth", "path": "/v1/auth/authorize", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "auth", "path": "/v1/auth/callback/google", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-ai", "path": "/v1/auto/model-pick", "protocol": "http", "target_runtime": "python-worker"},
-    {"follow_up": "dev/unified-main/09-cloudflare-route-migrations.md#cf4-calendar-capture-gaps", "method": "GET", "migration_note": "Join accepted Calendar event windows with eligible D1 conversation intervals through the existing Google Calendar connector.", "migration_state": "blocked", "owner": "jobs", "path": "/v1/calendar/capture-gaps", "protocol": "http", "target_runtime": "blocked"},
+    {"method": "GET", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/calendar/capture-gaps", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "jobs", "path": "/v1/calendar/google/events", "protocol": "http", "target_runtime": "typescript-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/calendar/meetings", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "GET", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/calendar/meetings/{meeting_id}", "protocol": "http", "target_runtime": "python-worker"},

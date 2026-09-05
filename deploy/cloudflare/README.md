@@ -96,6 +96,16 @@ for staging. It is not dual-written to the legacy Redis set; a production
 cutover must explicitly import the existing set before routing these mutations
 to Workers.
 
+`GET /v1/calendar/capture-gaps` is now owned by Jobs alongside the event picker.
+It reuses the encrypted Calendar grant and bounded refresh path, then joins at
+most 250 provider events with 500 uid-scoped D1 recording intervals using the
+indexed start-time range. The upstream 31-day window, 24-hour recording lookback,
+ten-second coverage threshold and discarded/attendance exclusions are preserved.
+It does not create or change recordings; provider/database failures are errors,
+not an empty successful result. Missing/invalid dates return query-field 422;
+zone-less dates are UTC. [Verification](../../dev/unified-main/implementation-2026-09-05/eddy-calendar-capture-gaps-2026-09-06.md)
+separates real dual-target admission from controlled provider joins.
+
 Task request model validation returns HTTP 422 with FastAPI's `detail` field-error
 array, including the `body` location and no Pydantic documentation URL. The same
 response owner serves task creation, updates, shares and sync/batch model errors.

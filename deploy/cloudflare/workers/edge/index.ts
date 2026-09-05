@@ -1442,6 +1442,7 @@ app.post("/v1/personas", proxyAuthenticatedJobs);
 app.patch("/v1/personas/:personaId", proxyAuthenticatedJobs);
 app.get("/v1/integrations/:app_key/oauth-url", proxyAuthenticatedJobs);
 app.get("/v1/calendar/google/events", proxyAuthenticatedJobs);
+app.get("/v1/calendar/capture-gaps", proxyAuthenticatedJobs);
 app.get("/v1/personas/twitter/profile", proxyAuthenticatedJobs);
 app.delete("/v1/users/delete-account", proxyAuthenticatedAccountDeletion);
 app.post(
