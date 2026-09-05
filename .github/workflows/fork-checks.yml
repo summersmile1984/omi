@@ -102,6 +102,7 @@ jobs:
           cache-dependency-path: |
             auth-server/package-lock.json
             deploy/cloudflare/package-lock.json
+            scripts/brand/raster/package-lock.json
 
       - name: Provision authentication contract dependencies
         run: |
@@ -116,7 +117,7 @@ jobs:
         working-directory: web/app
         run: bun install --frozen-lockfile
 
-      - name: Select Flutter native contract dependencies
+      - name: Select native terminal contract dependencies
         id: flutter
         run: |
           python3 .github/scripts/run_checks.py --manifest .github/checks-manifest.fork.yaml \
@@ -128,7 +129,12 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'enabled={str(enabled).lower()}\n')
               output.write(f"electron={str(any(check['id'] == 'fork-electron-native-identity' for check in selected)).lower()}\n")
+              output.write(f"raster={str(any(check['id'] in {'fork-brand-raster', 'fork-flutter-native-identity', 'fork-electron-native-identity'} for check in selected)).lower()}\n")
           PY
+
+      - name: Provision shared brand raster dependencies
+        if: steps.flutter.outputs.raster == 'true'
+        run: npm ci --prefix scripts/brand/raster --ignore-scripts --no-audit --no-fund
 
       - name: Provision pinned Flutter
         if: steps.flutter.outputs.enabled == 'true'
@@ -189,6 +195,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: scripts/brand/raster/package-lock.json
+
+      - name: Provision shared brand raster dependencies
+        run: npm ci --prefix scripts/brand/raster --ignore-scripts --no-audit --no-fund
 
       - name: Verify native compiler
         run: |

@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -93,6 +94,9 @@ def stage(manifest_path: Path, target: str, app_name: str, output: Path) -> dict
     }:
         raise ValueError("A local test cannot claim an installed production/development identity")
     owners = load_owners()
+    for name in ("omi_app_icon.png", "omi_menu_bar_icon.png", "herologo.png"):
+        path = ROOT / "desktop/macos/Desktop/Sources/Resources" / name
+        verify_owner("Resources/" + name, path.read_bytes(), owners)
     desktop = output / "Desktop"
     shutil.copytree(
         ROOT / "desktop/macos/Desktop", desktop, ignore=shutil.ignore_patterns(".build", ".swiftpm", ".DS_Store")
@@ -107,6 +111,15 @@ def stage(manifest_path: Path, target: str, app_name: str, output: Path) -> dict
     for name in ("SignInView.swift", "DesktopBackendEnvironment.swift"):
         verify_owner(name, (source / name).read_bytes(), owners)
         shutil.copy2(FORK / "overlays" / name, source / name)
+    asset_input = output / "brand-asset-input.json"
+    asset_input.write_text(json.dumps(manifest["assets"]))
+    try:
+        subprocess.run(
+            ["node", str(FORK / "assets.mjs"), str(manifest_path.parent), str(asset_input), str(output)], check=True
+        )
+    except Exception:
+        shutil.rmtree(output, ignore_errors=True)
+        raise
     auth = source / "AuthService.swift"
     content = auth.read_bytes()
     ranges = declarations(auth)["signOut(acceptedAccountDeletion:)"]
@@ -199,6 +212,8 @@ enum ForkDesktopBuild {{
         "bundle_id": bundle_id,
         "app_name": app_name,
         "brand": manifest["brand"]["id"],
+        "product_name": manifest["brand"]["display_name"],
+        "assets": json.loads((output / "brand-assets.json").read_text()),
         "profile": profile["name"],
         "release_ready": False,
         "source_owners": owners,

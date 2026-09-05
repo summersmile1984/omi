@@ -75,7 +75,8 @@ AI/provider UI 仍需后续品牌/能力包逐项生成和验收；扫描构建 
 每边最多2048像素，master必须是至少1024的正方形，logo每边至少32像素。
 损坏CRC、动画PNG、尾随数据、完全透明图片及缺失输入直接失败，不继承上游资产。
 现有upstream SVG占位输入不满足这个本地Electron合同。正式素材由品牌方提供；
-`tests/assets-fixture.mjs` 只生成临时的黑白H/N测试图，不生成正式品牌。
+`../../../scripts/brand/raster/fixture.mjs` 只在调用方临时目录生成黑白H/N测试图，
+不生成正式品牌。PNG校验和缩放由同目录的共享内核负责，Electron不保留第二套解码器。
 
 校验全部通过后才生成资产。PNG缩放使用锁定pngjs解码和premultiplied-alpha
 插值，输出保留透明度；ICO包含16/24/32/48/64/128/256七帧。窗口与builder图标、

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SignInView: View {
+  @Environment(\.colorScheme) private var colorScheme
   @ObservedObject var authState: AuthState
   @State private var email = ""
   @State private var password = ""
@@ -9,6 +10,12 @@ struct SignInView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 18) {
+      if let image = try? ForkNativeBrand.image(dark: colorScheme == .light, in: Bundle.resourceBundle) {
+        Image(nsImage: image).resizable().scaledToFit().frame(width: 64, height: 64)
+          .accessibilityHidden(true)
+      } else {
+        Text("Brand asset unavailable").foregroundStyle(.secondary)
+      }
       Text(ForkDesktopBuild.productName).font(.largeTitle.weight(.semibold))
       Text(createAccount ? "Create an account" : "Sign in").font(.title2)
       if createAccount {

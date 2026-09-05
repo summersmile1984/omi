@@ -22,7 +22,7 @@ def synthetic_manifest(directory, variant='harbor'):
     for key in ('docs', 'help', 'feedback', 'privacy', 'terms', 'status', 'community'):
         value['domains'][key] = f'https://desktop.example.invalid/{key}'
     value['identifiers']['windows_app_id'] = 'test.synthetic.desktop'
-    subprocess.run(['node', str(COMPONENT / 'fork/tests/assets-fixture.mjs'), str(directory), variant], check=True)
+    subprocess.run(['node', str(ROOT / 'scripts/brand/raster/fixture.mjs'), str(directory), variant], check=True)
     value['assets'].update(
         {name: f'assets/{variant}-{name}.png' for name in ('icon_master', 'logo_light', 'logo_dark')}
     )

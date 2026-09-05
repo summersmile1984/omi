@@ -2,9 +2,9 @@ import { afterEach, expect, it } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, symlinkSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PNG } from 'pngjs'
-import { buildAssets, readAsset, resize, ICON_SIZES } from '../assets.mjs'
-import { writeFixtureAssets } from './assets-fixture.mjs'
+import { PNG, readAsset, resize } from '../../../../scripts/brand/raster/png.mjs'
+import { buildAssets, ICON_SIZES } from '../assets.mjs'
+import { writeFixtureAssets } from '../../../../scripts/brand/raster/fixture.mjs'
 const roots: string[] = []
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'brand-assets-'))

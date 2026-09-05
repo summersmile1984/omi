@@ -8,5 +8,6 @@ if [ "$(uname -s)" != Darwin ]; then
   exit 2
 fi
 cd "$ROOT"
+node --test desktop/macos/fork/Tests/assets.test.mjs
 xcrun swift test --package-path desktop/macos/fork
 python3 desktop/macos/fork/test_stage.py
