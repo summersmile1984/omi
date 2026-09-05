@@ -5,6 +5,8 @@ Execute their real owners against this shared seam; do not scrape source strings
 or add inferred collections while a production request is serving.
 """
 
+from copy import deepcopy
+
 from firestore_pg.migrations import SchemaNotCurrent, known_collections
 from tests.unit.fixtures.strict_firestore_transaction import (
     StrictFirestore,
@@ -21,6 +23,9 @@ class Document(StrictFirestoreDocument):
 
     def collection(self, name):
         return Collection(self._database, (*self.path, name))
+
+    def set(self, data):
+        self._database.rows[self.path] = deepcopy(data)
 
 
 class Collection(StrictFirestoreCollection):

@@ -286,12 +286,12 @@ def test_v5_upgrade_registers_memory_collections_without_rewriting_existing_rows
         )
         conn.execute(text(f'DELETE FROM {MIGRATION_TABLE} WHERE version = 6'))
 
-    with pytest.raises(SchemaNotCurrent, match='1..6'):
+    with pytest.raises(SchemaNotCurrent, match='1..7'):
         check_schema(engine)
 
     status = migrate(engine)
 
-    assert status.current_version == status.latest_version == 6
+    assert status.current_version == status.latest_version == 7
     assert legacy.get().to_dict() == {'state': 'created-under-v5'}
     with engine.connect() as conn:
         registered = dict(
@@ -307,6 +307,52 @@ def test_v5_upgrade_registers_memory_collections_without_rewriting_existing_rows
         collection_id: collection_table_name(collection_id) for collection_id in STATIC_HASHED_COLLECTION_IDS_V6
     }
     legacy.delete()
+
+
+def test_v6_upgrade_registers_feedback_collections_without_rewriting_existing_rows(db):
+    """The v7 ledger admission preserves rows already valid under v6."""
+    from firestore_pg.migrations import (
+        COLLECTION_TABLE,
+        MIGRATION_TABLE,
+        STATIC_HASHED_COLLECTION_IDS_V7,
+        SchemaNotCurrent,
+        check_schema,
+        collection_table_name,
+        get_engine,
+        migrate,
+    )
+
+    event_id = f'pg-v6-upgrade-{uuid4().hex}'
+    event = db.collection('feedback_events').document(event_id)
+    event.set({'uid': 'pg-v6-owner', 'state': 'created-under-v6'})
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(f'DELETE FROM {COLLECTION_TABLE} WHERE collection_id = ANY(:collection_ids)'),
+            {'collection_ids': list(STATIC_HASHED_COLLECTION_IDS_V7)},
+        )
+        conn.execute(text(f'DELETE FROM {MIGRATION_TABLE} WHERE version = 7'))
+
+    with pytest.raises(SchemaNotCurrent, match='1..7'):
+        check_schema(engine)
+
+    status = migrate(engine)
+
+    assert status.current_version == status.latest_version == 7
+    assert event.get().to_dict() == {'uid': 'pg-v6-owner', 'state': 'created-under-v6'}
+    with engine.connect() as conn:
+        registered = dict(
+            conn.execute(
+                text(
+                    f'SELECT collection_id, table_name FROM {COLLECTION_TABLE} '
+                    'WHERE collection_id = ANY(:collection_ids)'
+                ),
+                {'collection_ids': list(STATIC_HASHED_COLLECTION_IDS_V7)},
+            ).fetchall()
+        )
+    assert registered == {
+        collection_id: collection_table_name(collection_id) for collection_id in STATIC_HASHED_COLLECTION_IDS_V7
+    }
 
 
 def test_canonical_source_replacement_reads_the_admitted_privacy_receipt_collection(db, monkeypatch):

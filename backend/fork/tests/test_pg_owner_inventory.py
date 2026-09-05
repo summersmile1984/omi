@@ -2,9 +2,10 @@
 
 import pytest
 
-from database import legal_holds, users
+from database import feedback, legal_holds, users
 from database.memory_collections import MemoryCollections
 from fork.tests.schema_firestore import SchemaFirestore
+from models.feedback import FeedbackSurface, FeedbackTargetKind
 
 
 def test_existing_pending_user_gets_persistent_reusable_onboarding_admission():
@@ -78,3 +79,18 @@ def test_memory_collection_owner_uses_the_migration_admitted_inventory():
         'short_term_lifecycle_transitions',
         'users',
     }
+
+
+def test_feedback_owners_use_the_migration_admitted_inventory(monkeypatch):
+    db = SchemaFirestore()
+    monkeypatch.setattr(feedback, 'get_firestore_client', lambda: db)
+
+    assert feedback.record_feedback_event(
+        'legacy',
+        FeedbackSurface.chat_text,
+        FeedbackTargetKind.chat_message,
+        'message-id',
+        -1,
+    )
+    assert feedback.get_report('2026-09-05') is None
+    assert db.observed == {'feedback_events', 'feedback_reports'}

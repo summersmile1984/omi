@@ -1,5 +1,5 @@
 > Current startup CLI: `python -m fork.migrate migrate|check` from `backend/`.
-> Schema v6 registers canonical-memory paths, including replacement privacy receipts; v5 registers backend onboarding admission; v4 registers legal-hold and deletion-gate authorities; v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
+> Schema v7 registers the feedback ledger and daily reports; v6 registers canonical-memory paths, including replacement privacy receipts; v5 registers backend onboarding admission; v4 registers legal-hold and deletion-gate authorities; v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
 > and `frame_requests` without changing v1/v2 mappings. The historical source
 > import/cutover CLI below is not yet shipped on unified main; do not execute its
 > example until the source-freeze/authority tooling is restored and verified.
@@ -304,6 +304,10 @@ replacement privacy receipts. It preserves v1–v5 physical mappings and fails
 startup when a future typed memory path is not covered by a new explicit schema
 version. The live PostgreSQL transaction suite verifies both a v5→v6 upgrade
 and a real source-replacement transaction after migration.
+
+Schema v7 registers `feedback_events` and `feedback_reports` for the upstream
+rating ledger and daily report owner. It also creates the registered composite
+index for the negative-feedback daily scan, preserving all v1–v6 mappings.
 
 Completion requires no residual owned rows and no outstanding late VM cleanup.
 One serializable transaction replaces the private UID-keyed active marker with

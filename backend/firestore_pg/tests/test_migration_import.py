@@ -26,6 +26,7 @@ from firestore_pg.client import Client, UnsupportedFirestoreQuery, transactional
 from firestore_pg.importer import run_import, target_inventory  # noqa: E402
 from firestore_pg.migrations import (  # noqa: E402
     STATIC_HASHED_COLLECTION_IDS_V2,
+    STATIC_HASHED_COLLECTION_IDS_V7,
     check_schema,
     collection_table_name,
     migrate,
@@ -41,8 +42,8 @@ pytestmark = pytest.mark.skipif(
 def test_forward_migration_imports_full_paths_and_reconciles(tmp_path):
     first = migrate()
     second = migrate()
-    assert first.current_version == second.current_version == 2
-    assert check_schema().latest_version == 2
+    assert first.current_version == second.current_version == 7
+    assert check_schema().latest_version == 7
 
     production_controls = {
         'account_deletions',
@@ -52,6 +53,8 @@ def test_forward_migration_imports_full_paths_and_reconciles(tmp_path):
     }
     assert production_controls <= STATIC_HASHED_COLLECTION_IDS_V2
     assert production_controls <= set(first.collections)
+    assert STATIC_HASHED_COLLECTION_IDS_V7 == {'feedback_events', 'feedback_reports'}
+    assert STATIC_HASHED_COLLECTION_IDS_V7 <= set(first.collections)
     source = cloud_firestore.Client(project=os.environ.get('FIREBASE_PROJECT_ID', 'demo-omi-local'))
     root = source.document('pg_import_root/present')
     missing_parent = source.document('pg_import_root/missing')

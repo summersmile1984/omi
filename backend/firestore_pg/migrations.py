@@ -25,7 +25,7 @@ from database.memory_collections import MemoryCollections
 from .engine import KNOWN_COLLECTIONS, create_composite_indexes, get_engine
 from .sql import build_ddl, resolve_collection
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
 MIGRATION_LOCK_ID = 7_362_737_641_104_927_311
 MIGRATION_TABLE = 'firestore_pg_schema_migrations'
 COLLECTION_TABLE = 'firestore_pg_collections'
@@ -219,6 +219,12 @@ STATIC_HASHED_COLLECTION_IDS_V6 = frozenset(
     }
 )
 
+# The upstream feedback ledger writes both append-only rating events and its
+# materialized daily reports at top-level paths.  Version them together so a
+# self-hosted runtime cannot accept a rating and then fail the report owner on
+# an unregistered collection.
+STATIC_HASHED_COLLECTION_IDS_V7 = frozenset({'feedback_events', 'feedback_reports'})
+
 
 class SchemaNotCurrent(RuntimeError):
     """The database has not been admitted by the explicit migration owner."""
@@ -254,6 +260,7 @@ def _assert_known_inventory_versioned() -> None:
         | STATIC_HASHED_COLLECTION_IDS_V4
         | STATIC_HASHED_COLLECTION_IDS_V5
         | STATIC_HASHED_COLLECTION_IDS_V6
+        | STATIC_HASHED_COLLECTION_IDS_V7
     )
     declared = _declared_known_collections()
     added = declared - versioned
@@ -280,6 +287,7 @@ def known_collections() -> tuple[str, ...]:
             | STATIC_HASHED_COLLECTION_IDS_V4
             | STATIC_HASHED_COLLECTION_IDS_V5
             | STATIC_HASHED_COLLECTION_IDS_V6
+            | STATIC_HASHED_COLLECTION_IDS_V7
         )
     )
 
@@ -446,6 +454,14 @@ def migrate(engine: Optional[Engine] = None) -> SchemaStatus:
             conn.execute(
                 text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (6, :name)'),
                 {'name': 'canonical_memory_collection_inventory'},
+            )
+        if 7 not in applied:
+            for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V7):
+                _register_collection(conn, collection_id)
+            create_composite_indexes(conn, collection_table_name)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (7, :name)'),
+                {'name': 'feedback_ledger_and_daily_reports'},
             )
     return check_schema(engine)
 
