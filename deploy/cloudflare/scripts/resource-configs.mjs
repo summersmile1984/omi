@@ -109,6 +109,8 @@ function publicConfig(role, config, input, projected, names, origins) {
   config.vars ??= {};
   if (['api-core', 'api-ai'].includes(role))
     config.vars.BRAND_RUNTIME_JSON = JSON.stringify(projected.brand_runtime);
+  if (role === 'api-core')
+    config.vars.FIRMWARE_BRAND_POLICY_JSON = JSON.stringify(projected.firmware_policy);
   if (role === 'api-core') config.vars.BRAND_SUPPORT_EMAIL = projected.support_email;
   if (role === 'api-core') config.vars.PUBLIC_SHARE_BASE_URL = origins.share;
   if (['edge', 'auth'].includes(role)) {

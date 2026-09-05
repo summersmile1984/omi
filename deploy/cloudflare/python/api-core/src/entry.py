@@ -24,7 +24,7 @@ from language_policy import (
     MODULATE_SUPPORTED_LANGUAGES,
     PRIMARY_LANGUAGE_OPTIONS,
 )
-from firmware_policy import DEVICE_PREFIXES, FIRMWARE_TAG_PATTERN
+from firmware_policy import FirmwarePolicy, FirmwarePolicyError, from_env as firmware_policy_from_env
 from location_routes import (
     get_location_context_consent,
     router as location_router,
@@ -1338,18 +1338,14 @@ def _firmware_metadata(markdown: str) -> dict[str, object]:
     return result
 
 
-def _firmware_response(prefix: str, release: dict[str, object]) -> dict[str, object]:
+def _firmware_response(policy: FirmwarePolicy, release: dict[str, object]) -> dict[str, object]:
     metadata = _firmware_metadata(str(release.get("body") or ""))
     assets = release.get("assets") if isinstance(release.get("assets"), list) else []
-    suffix = ".bin" if prefix == "OmiGlass" else ".zip"
     asset = next(
         (
             item
             for item in assets
-            if isinstance(item, dict)
-            and isinstance(item.get("name"), str)
-            and item["name"].endswith(suffix)
-            and (suffix == ".bin" or "ota" in item["name"].lower())
+            if isinstance(item, dict) and isinstance(item.get("name"), str) and policy.has_ota_asset(item["name"])
         ),
         None,
     )
@@ -1381,7 +1377,7 @@ def _parse_firmware_version(version: object) -> tuple[int, ...] | None:
     return parsed + (0,) * (3 - len(parsed))
 
 
-def _firmware_candidates(releases: list[dict[str, object]], prefix: str) -> list[dict[str, object]]:
+def _firmware_candidates(releases: list[dict[str, object]], policy: FirmwarePolicy) -> list[dict[str, object]]:
     return [
         release
         for release in releases
@@ -1389,14 +1385,13 @@ def _firmware_candidates(releases: list[dict[str, object]], prefix: str) -> list
         and not release.get("draft")
         and not release.get("prerelease")
         and isinstance(release.get("tag_name"), str)
-        and FIRMWARE_TAG_PATTERN.fullmatch(str(release["tag_name"]))
-        and str(release["tag_name"]).lower().startswith(prefix.lower() + "_v")
+        and policy.has_release_tag(release["tag_name"])
         and _parse_firmware_version(_firmware_metadata(str(release.get("body") or "")).get("release_firmware_version"))
     ]
 
 
-async def _github_releases(env: object) -> list[dict[str, object]] | None:
-    url = getattr(env, "FIRMWARE_RELEASES_URL", "https://api.github.com/repos/BasedHardware/omi/releases")
+async def _github_releases(env: object, policy: FirmwarePolicy) -> list[dict[str, object]] | None:
+    url = policy.github_releases_url
     headers = {
         "accept": "application/vnd.github+json",
         "user-agent": "omi-cloudflare-worker/0.1",
@@ -1424,23 +1419,32 @@ async def _github_releases(env: object) -> list[dict[str, object]] | None:
 
 
 def _firmware_upstream_error() -> JSONResponse:
-    return JSONResponse({"error": "firmware upstream unavailable"}, status_code=502)
+    return JSONResponse({"error": "firmware release source unavailable"}, status_code=502)
+
+
+def _firmware_policy(request: Request) -> FirmwarePolicy | JSONResponse:
+    try:
+        return firmware_policy_from_env(request.scope["env"])
+    except FirmwarePolicyError:
+        return JSONResponse({"error": "firmware policy unavailable"}, status_code=503)
 
 
 @app.get("/v2/firmware/stable")
 async def firmware_stable(device_model: str, request: Request):
-    prefix = DEVICE_PREFIXES.get(device_model)
-    if not prefix:
+    policy = _firmware_policy(request)
+    if isinstance(policy, JSONResponse):
+        return policy
+    if not policy.supports_model(device_model):
         return JSONResponse({"error": "device not found"}, status_code=404)
-    releases = await _github_releases(request.scope["env"])
+    releases = await _github_releases(request.scope["env"], policy)
     if releases is None:
         return _firmware_upstream_error()
-    candidates = _firmware_candidates(releases, prefix)
+    candidates = _firmware_candidates(releases, policy)
     candidates.sort(key=lambda release: str(release.get("published_at") or ""), reverse=True)
     if not candidates:
         return JSONResponse({"error": "no stable firmware found"}, status_code=404)
     try:
-        return _firmware_response(prefix, candidates[0])
+        return _firmware_response(policy, candidates[0])
     except ValueError:
         return JSONResponse({"error": "firmware asset missing"}, status_code=502)
 
@@ -1454,17 +1458,19 @@ async def firmware_latest(
     request: Request,
 ):
     del hardware_revision, manufacturer_name
-    prefix = DEVICE_PREFIXES.get(device_model)
-    if not prefix:
+    policy = _firmware_policy(request)
+    if isinstance(policy, JSONResponse):
+        return policy
+    if not policy.supports_model(device_model):
         return JSONResponse({"error": "device not found"}, status_code=404)
     current = _parse_firmware_version(firmware_revision)
     if current is None:
         return JSONResponse({"error": "could not determine current firmware version"}, status_code=400)
-    releases = await _github_releases(request.scope["env"])
+    releases = await _github_releases(request.scope["env"], policy)
     if releases is None:
         return _firmware_upstream_error()
     candidates = []
-    for release in _firmware_candidates(releases, prefix):
+    for release in _firmware_candidates(releases, policy):
         metadata = _firmware_metadata(str(release.get("body") or ""))
         release_version = _parse_firmware_version(metadata.get("release_firmware_version"))
         if release_version is None or release_version <= current:
@@ -1477,25 +1483,27 @@ async def firmware_latest(
     if not candidates:
         return JSONResponse({"error": "no suitable firmware update found"}, status_code=404)
     try:
-        return _firmware_response(prefix, candidates[0])
+        return _firmware_response(policy, candidates[0])
     except ValueError:
         return JSONResponse({"error": "firmware asset missing"}, status_code=502)
 
 
 @app.get("/v2/firmware/version")
 async def firmware_version(device_model: str, version: str, request: Request):
-    prefix = DEVICE_PREFIXES.get(device_model)
-    if not prefix:
+    policy = _firmware_policy(request)
+    if isinstance(policy, JSONResponse):
+        return policy
+    if not policy.supports_model(device_model):
         return JSONResponse({"error": "device not found"}, status_code=404)
     target = _parse_firmware_version(version)
     if target is None:
         return JSONResponse({"error": "could not parse requested firmware version"}, status_code=400)
-    releases = await _github_releases(request.scope["env"])
+    releases = await _github_releases(request.scope["env"], policy)
     if releases is None:
         return _firmware_upstream_error()
     matches = [
         release
-        for release in _firmware_candidates(releases, prefix)
+        for release in _firmware_candidates(releases, policy)
         if _parse_firmware_version(_firmware_metadata(str(release.get("body") or "")).get("release_firmware_version"))
         == target
     ]
@@ -1503,7 +1511,7 @@ async def firmware_version(device_model: str, version: str, request: Request):
     if not matches:
         return JSONResponse({"error": "requested firmware version not found"}, status_code=404)
     try:
-        return _firmware_response(prefix, matches[0])
+        return _firmware_response(policy, matches[0])
     except ValueError:
         return JSONResponse({"error": "firmware asset missing"}, status_code=502)
 
@@ -2044,9 +2052,7 @@ async def post_asset(requested_key: str, request: Request):
     storage_key = str(row.get("storage_key") or "")
     content_type = str(row.get("content_type") or "application/octet-stream")
     try:
-        multipart = _r2_method(env.ASSETS, "resumeMultipartUpload", "resume_multipart_upload")(
-            storage_key, upload_id
-        )
+        multipart = _r2_method(env.ASSETS, "resumeMultipartUpload", "resume_multipart_upload")(storage_key, upload_id)
         completed = await _r2_method(multipart, "complete")(normalized_parts)
         etag = str(_r2_attribute(completed, "httpEtag", "etag") or "")
         stored = await env.ASSETS.get(storage_key)

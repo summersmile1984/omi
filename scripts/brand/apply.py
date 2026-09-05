@@ -16,12 +16,15 @@ from pathlib import Path
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from generators import mobile as _mobile  # noqa: E402
+from generators import firmware as _firmware, mobile as _mobile  # noqa: E402
 from manifest import ManifestError, load_manifest  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CATEGORIES = ("flutter", "desktop", "windows", "backend", "firmware", "web", "docs", "ci")
-GENERATORS: dict[str, Callable[[dict], dict[str, str]]] = {"flutter": _mobile.render}
+GENERATORS: dict[str, Callable[[dict], dict[str, str]]] = {
+    "flutter": _mobile.render,
+    "firmware": _firmware.render,
+}
 # A category joins this set only when its platform identity contract is complete.
 # Flutter currently generates a title, not native app identity (audit E1).
 COMPLETE_CATEGORIES: frozenset[str] = frozenset()

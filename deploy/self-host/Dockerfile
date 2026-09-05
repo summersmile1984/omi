@@ -22,6 +22,9 @@ COPY ${BRAND_MANIFEST} /opt/profile-build/selected-brand.yaml
 RUN cd /opt/profile-build && python scripts/profiles/render.py \
       --target self_hosted --manifest /opt/profile-build/selected-brand.yaml \
       --stage "${DEPLOYMENT_STAGE}" --emit-json > /app/fork/deployment_profiles.generated.json \
+    && python scripts/brand/apply.py --manifest /opt/profile-build/selected-brand.yaml \
+      --only firmware --output-root /opt/profile-build \
+    && cp /opt/profile-build/backend/fork/firmware_brand.generated.json /app/fork/firmware_brand.generated.json \
     && rm -rf /opt/profile-build /tmp/fork-requirements.txt
 USER omi
 CMD ["uvicorn", "fork.main:app", "--host", "0.0.0.0", "--port", "8080", "--loop", "uvloop"]

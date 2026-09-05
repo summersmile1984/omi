@@ -116,6 +116,15 @@ function resourceFixture(brand = 'alpha', stage = 'beta', index = 1) {
         display_name: `${brand} fixture`,
         ai_persona_name: 'Mira',
       },
+      firmware_policy: {
+        schema_version: 1,
+        brand_id: brand,
+        device_model: `${brand} CV1`,
+        device_model_aliases: ['nrf5340'],
+        release_tag_prefix: `${brand}_CV1_v`,
+        release_asset_prefix: `${brand}_CV1_OTA_v`,
+        github_releases_url: `https://api.github.com/repos/${brand}/firmware/releases`,
+      },
       profile,
     },
     sourceCommit,
@@ -213,6 +222,9 @@ describe('one brand/stage Cloudflare resource authority', () => {
           display_name: 'Atlas 中文',
           ai_persona_name: 'Mira',
         });
+      expect(JSON.parse(plan.configs['api-core'].config.vars.FIRMWARE_BRAND_POLICY_JSON)).toEqual(
+        fixture.projected.firmware_policy,
+      );
       expect(plan.configs.auth.config.vars.AUTH_JWT_ISSUER).toBe(
         fixture.projected.profile.auth_base_url,
       );
@@ -255,6 +267,15 @@ describe('one brand/stage Cloudflare resource authority', () => {
     const fixture = resourceFixture();
     fixture.projected.product_name = 'Other product';
     expect(() => render(fixture)).toThrow('Web product identity differ');
+  });
+
+  it('rejects a firmware policy that does not belong to the rendered brand', () => {
+    const fixture = resourceFixture();
+    fixture.projected.firmware_policy = {
+      ...fixture.projected.firmware_policy,
+      brand_id: 'foreign',
+    };
+    expect(() => render(fixture)).toThrow(/firmware policy/);
   });
 
   it('requires a plain support address in the same manifest projection', () => {

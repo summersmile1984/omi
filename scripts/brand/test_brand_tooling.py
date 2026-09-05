@@ -9,6 +9,7 @@ scripts/fork/test_check_upstream_touch.py uses for the zero-touch guard.
 from __future__ import annotations
 
 import json
+import importlib.util
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,12 @@ REPO_ROOT = BRAND_SCRIPTS.parents[1]
 sys.path.insert(0, str(BRAND_SCRIPTS))
 from schema_validate import validate  # noqa: E402
 from yaml_lite import YamlError, load_yaml  # noqa: E402
-from generators import mobile  # noqa: E402
+from generators import firmware, mobile  # noqa: E402
+
+_stage_spec = importlib.util.spec_from_file_location("firmware_stage", REPO_ROOT / "omi/firmware/fork/stage.py")
+assert _stage_spec and _stage_spec.loader
+firmware_stage = importlib.util.module_from_spec(_stage_spec)
+_stage_spec.loader.exec_module(firmware_stage)
 
 MINIMAL_SCHEMA = {
     "type": "object",
@@ -165,6 +171,74 @@ class MobileGeneratorTests(unittest.TestCase):
         first = mobile.render(manifest)
         second = mobile.render(manifest)
         self.assertEqual(first, second)
+
+
+class FirmwareGeneratorTests(unittest.TestCase):
+    def manifest(self) -> dict:
+        manifest = load_yaml(REPO_ROOT / "brand/omi-upstream/manifest.yaml")
+        manifest["brand"]["id"] = "weft-fixture"
+        manifest["device"].update(
+            ble_name="Weft",
+            ble_name_devkit="Weft DevKit",
+            dis_manufacturer="Weft Hardware",
+            dis_model_cv1="Weft CV1",
+            firmware_release_prefix="Weft_CV1_v",
+            nfc_pair_url="https://pair.weft.invalid/p?id=%s",
+            mcuboot_signing_key="env:WEFT_MCUBOOT_KEY",
+        )
+        manifest["distribution"]["github_releases_repo"] = "weft/firmware"
+        return manifest
+
+    def test_generated_policy_has_one_public_release_identity(self):
+        config = firmware.generated_config(self.manifest())
+        self.assertEqual(config["brand_id"], "weft-fixture")
+        self.assertEqual(config["release"], firmware.public_policy(self.manifest()))
+        self.assertEqual(config["release"]["release_tag_prefix"], "Weft_CV1_v")
+        self.assertEqual(config["release"]["release_asset_prefix"], "Weft_CV1_OTA_v")
+        self.assertEqual(
+            config["release"]["github_releases_url"], "https://api.github.com/repos/weft/firmware/releases"
+        )
+        self.assertNotIn("mcuboot_signing_key", config["release"])
+
+    def test_rejects_nfc_url_that_cannot_fit_the_actual_cv1_buffer(self):
+        manifest = self.manifest()
+        manifest["device"]["nfc_pair_url"] = "https://pair.weft.invalid/" + "x" * 60 + "?id=%s"
+        with self.assertRaisesRegex(firmware.FirmwareRenderError, "NFC URI buffer"):
+            firmware.generated_config(manifest)
+
+    def test_staging_rebrands_a_copy_without_touching_upstream_firmware(self):
+        config = firmware.generated_config(self.manifest())
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "firmware-stage"
+            source_conf = (REPO_ROOT / "omi/firmware/omi/omi.conf").read_bytes()
+            source_nfc = (REPO_ROOT / "omi/firmware/omi/src/lib/core/nfc.c").read_bytes()
+            metadata = firmware_stage.stage(config, output)
+            conf = (output / "firmware/omi.conf").read_text()
+            nfc = (output / "firmware/src/lib/core/nfc.c").read_text()
+            self.assertIn('CONFIG_BT_DEVICE_NAME="Weft"', conf)
+            self.assertIn('CONFIG_BT_DIS_MODEL="Weft CV1"', conf)
+            self.assertIn('CONFIG_BT_DIS_MANUF="Weft Hardware"', conf)
+            self.assertIn('"https://pair.weft.invalid/p?id=%s"', nfc)
+            self.assertNotIn("friend.based.com", nfc)
+            self.assertEqual((REPO_ROOT / "omi/firmware/omi/omi.conf").read_bytes(), source_conf)
+            self.assertEqual((REPO_ROOT / "omi/firmware/omi/src/lib/core/nfc.c").read_bytes(), source_nfc)
+            self.assertEqual(metadata["release_policy"], config["release"])
+            self.assertEqual(
+                metadata["signing"],
+                {
+                    "key_reference": "env:WEFT_MCUBOOT_KEY",
+                    "key_resolved": False,
+                    "release_qualified": False,
+                },
+            )
+
+    def test_stage_rejects_preexisting_output_instead_of_overwriting_it(self):
+        config = firmware.generated_config(self.manifest())
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "firmware-stage"
+            output.mkdir()
+            with self.assertRaisesRegex(firmware_stage.StageError, "already exists"):
+                firmware_stage.stage(config, output)
 
 
 class RepoFixture:

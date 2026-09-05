@@ -4,6 +4,7 @@ import { readWorkerTemplates } from "../scripts/resource-configs.mjs";
 import {
   STORAGE_BINDINGS,
   validateBrandRuntime,
+  validateFirmwarePolicy,
   validateSupportEmail,
 } from "../scripts/resource-input.mjs";
 
@@ -14,6 +15,7 @@ export function localConfigs({
   root,
   brandId,
   brandRuntime,
+  firmwarePolicy,
   supportEmail,
   shareOrigin,
   webOrigin,
@@ -30,6 +32,7 @@ export function localConfigs({
   )
     throw new Error("invalid local brand or namespace");
   validateBrandRuntime(brandRuntime, brandId);
+  validateFirmwarePolicy(firmwarePolicy, brandId);
   validateSupportEmail(supportEmail);
   for (const value of [port, asrPort])
     if (!Number.isInteger(value) || value < 1024 || value > 65535)
@@ -134,6 +137,7 @@ export function localConfigs({
     if (role === "api-core") {
       config.vars.BRAND_SUPPORT_EMAIL = supportEmail;
       config.vars.PUBLIC_SHARE_BASE_URL = shareOrigin;
+      config.vars.FIRMWARE_BRAND_POLICY_JSON = JSON.stringify(firmwarePolicy);
     }
     delete config.vars.ORIGIN_BACKEND_URL;
     for (const key of Object.keys(config.vars))

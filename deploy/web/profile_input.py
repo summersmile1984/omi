@@ -12,6 +12,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts/profiles'))
 from render import ProfileError, load_manifest, resolve  # noqa: E402
 
+sys.path.insert(0, str(ROOT / 'scripts/brand'))
+from generators.firmware import public_policy  # noqa: E402
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -37,6 +40,7 @@ def main() -> int:
                     'display_name': manifest['brand']['display_name'],
                     'ai_persona_name': manifest['brand']['ai_persona_name'],
                 },
+                'firmware_policy': public_policy(manifest),
                 'profile': resolved['profiles'][f'{args.target}.{args.stage}'],
             }
         )

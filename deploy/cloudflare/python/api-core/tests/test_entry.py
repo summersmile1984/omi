@@ -13,14 +13,24 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import entry  # noqa: E402
+from firmware_policy import from_json as firmware_policy_from_json  # noqa: E402
 from entry import (  # noqa: E402
-    DEVICE_PREFIXES,
     _asset_key,
     _etag_matches,
     _firmware_metadata,
     _firmware_response,
     _parse_asset_range,
 )
+
+FIRMWARE_POLICY = {
+    "schema_version": 1,
+    "brand_id": "omi-upstream",
+    "device_model": "Omi CV 1",
+    "device_model_aliases": ["nrf5340"],
+    "release_tag_prefix": "Omi_CV1_v",
+    "release_asset_prefix": "Omi_CV1_OTA_v",
+    "github_releases_url": "https://api.github.com/repos/BasedHardware/omi/releases",
+}
 
 
 def test_root_is_served_by_api_core():
@@ -613,9 +623,11 @@ KEY_VALUE_END -->"""
         "body": body,
         "assets": [{"name": "Omi_CV1_OTA_v3.0.21.zip", "browser_download_url": "https://example.test/fw.zip"}],
     }
-    assert DEVICE_PREFIXES["Omi CV 1"] == "Omi_CV1"
     assert _firmware_metadata(body)["ota_update_steps"] == ["erase", "flash"]
-    assert _firmware_response("Omi_CV1", release)["zip_url"] == "https://example.test/fw.zip"
+    assert (
+        _firmware_response(firmware_policy_from_json(json.dumps(FIRMWARE_POLICY)), release)["zip_url"]
+        == "https://example.test/fw.zip"
+    )
 
 
 def test_api_keys_returns_only_configured_client_keys():
@@ -669,7 +681,11 @@ def test_firmware_route_uses_worker_fetch(monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(entry, "worker_fetch", fake_fetch)
-    request = type("Request", (), {"scope": {"env": type("Env", (), {})()}})()
+    request = type(
+        "Request",
+        (),
+        {"scope": {"env": type("Env", (), {"FIRMWARE_BRAND_POLICY_JSON": json.dumps(FIRMWARE_POLICY)})()}},
+    )()
 
     result = asyncio.run(entry.firmware_stable("Omi CV 1", request))
 
@@ -699,13 +715,54 @@ def test_firmware_latest_and_version_routes_share_release_adapter(monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(entry, "worker_fetch", fake_fetch)
-    request = type("Request", (), {"scope": {"env": type("Env", (), {})()}})()
+    request = type(
+        "Request",
+        (),
+        {"scope": {"env": type("Env", (), {"FIRMWARE_BRAND_POLICY_JSON": json.dumps(FIRMWARE_POLICY)})()}},
+    )()
 
     latest = asyncio.run(entry.firmware_latest("Omi CV 1", "3.0.6", "", "", request))
     exact = asyncio.run(entry.firmware_version("Omi CV 1", "v3.0.21", request))
 
     assert latest["version"] == "3.0.21"
     assert exact["zip_url"] == "https://example.test/fw.zip"
+
+
+def test_firmware_routes_use_a_non_omi_policy_and_reject_a_missing_policy(monkeypatch):
+    policy = {
+        **FIRMWARE_POLICY,
+        "brand_id": "weft",
+        "device_model": "Weft CV1",
+        "release_tag_prefix": "Weft_CV1_v",
+        "release_asset_prefix": "Weft_CV1_OTA_v",
+        "github_releases_url": "https://api.github.com/repos/weft/firmware/releases",
+    }
+    release = {
+        "tag_name": "Weft_CV1_v3.1.0",
+        "published_at": "2026-09-05T00:00:00Z",
+        "body": "<!-- KEY_VALUE_START\nrelease_firmware_version: 3.1.0\nKEY_VALUE_END -->",
+        "assets": [{"name": "Weft_CV1_OTA_v3.1.0.zip", "browser_download_url": "https://example.test/weft.zip"}],
+    }
+
+    class FakeResponse:
+        status = 200
+
+        async def json(self):
+            return [release]
+
+    async def fake_fetch(url, **_options):
+        assert url.startswith(policy["github_releases_url"])
+        return FakeResponse()
+
+    monkeypatch.setattr(entry, "worker_fetch", fake_fetch)
+    request = type(
+        "Request", (), {"scope": {"env": type("Env", (), {"FIRMWARE_BRAND_POLICY_JSON": json.dumps(policy)})()}}
+    )()
+    response = asyncio.run(entry.firmware_stable("Weft CV1", request))
+    assert response["zip_url"] == "https://example.test/weft.zip"
+    assert asyncio.run(entry.firmware_stable("Omi CV 1", request)).status_code == 404
+    missing = type("Request", (), {"scope": {"env": type("Env", (), {})()}})()
+    assert asyncio.run(entry.firmware_stable("Weft CV1", missing)).status_code == 503
 
 
 def test_transcription_preferences_are_uid_scoped_and_round_trip_through_d1():
@@ -971,11 +1028,7 @@ def test_fcm_token_delete_is_uid_and_device_scoped_and_idempotent():
     database = FakeDb()
     env = SimpleNamespace(APP_DB=database, INTERNAL_ASSERTION_SECRET=secret)
 
-    asyncio.run(
-        entry.save_fcm_token(
-            FakeRequest(env, headers, {"fcm_token": "fcm-token-value", "time_zone": "UTC"})
-        )
-    )
+    asyncio.run(entry.save_fcm_token(FakeRequest(env, headers, {"fcm_token": "fcm-token-value", "time_zone": "UTC"})))
     assert database.fcm_token_row is not None
 
     assert asyncio.run(entry.delete_fcm_token(FakeRequest(env, headers, {"fcm_token": "fcm-token-value"}))) == {

@@ -8,9 +8,13 @@ also supplied, it must match `brand.id`.
 
 ## Current coverage
 
-Only the Flutter runtime title generator exists. Native package identities,
-assets, desktop, backend, firmware, Web, docs and CI generation remain work from
-[the white-label action plan](../dev/unified-main/audit-2026-09-04/03-whitelabel-action-plan.md).
+The Flutter runtime title generator and the CV1 firmware identity generator
+exist. The firmware generator writes the fork-owned
+`backend/fork/firmware_brand.generated.json`: it holds BLE/DIS/NFC build input,
+the signing-key **reference**, and a smaller public OTA lookup policy. Native
+package identities, assets, desktop, broader backend/Web/docs/CI generation and
+artifact packaging remain work from [the white-label action
+plan](../dev/unified-main/audit-2026-09-04/03-whitelabel-action-plan.md).
 `omi-upstream` is a regression identity, not a deployable template for a new brand.
 
 ```bash
@@ -18,6 +22,31 @@ python3 scripts/brand/apply.py --brand omi-upstream --check-clean --json
 python3 scripts/brand/apply.py --manifest /private/manifest.yaml --output-root /tmp/brand-build
 python3 scripts/brand/check.py --manifest /private/manifest.yaml --output-root /tmp/brand-build --json
 ```
+
+## CV1 firmware and OTA policy
+
+Generate a private build input and stage an isolated CV1 source tree as follows:
+
+```bash
+python3 scripts/brand/apply.py --manifest /private/manifest.yaml --only firmware --output-root /tmp/brand-build
+python3 omi/firmware/fork/stage.py --config /tmp/brand-build/backend/fork/firmware_brand.generated.json --output /tmp/brand-firmware
+```
+
+The stage contains a copied `omi.conf` and NFC source with the manifest's BLE,
+DIS and pairing URL values. It also writes `firmware-release-policy.json` and
+an attestation that identifies the signing-key reference without reading the
+key. The command rejects pre-existing output, unsafe Kconfig values, malformed
+release prefixes, a pairing URL without exactly one device-ID placeholder, and
+URLs that exceed the CV1's 64-byte NFC URI buffer.
+
+The Server OS Dockerfile renders the same policy into the derived image. Its
+fork patch accepts only that image's device model/tag/asset prefix and fetches
+the configured operator manifest; it has no GitHub fallback. The Cloudflare
+resource plan projects only the public policy to `api-core` as
+`FIRMWARE_BRAND_POLICY_JSON`; the Worker returns 503 if it is absent or invalid
+and rejects device models, tags and assets from another brand. The signing key,
+NCS/MCUboot build, remote publish and hardware OTA remain release operations,
+so the firmware generator is partial and never makes `--release` ready.
 
 Generators return relative paths and UTF-8 text in memory. The writer owns disk
 changes. `--check-clean` compares exact bytes without writing, including missing,

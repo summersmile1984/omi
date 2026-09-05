@@ -128,6 +128,56 @@ export function validateSupportEmail(value) {
     );
   return value;
 }
+export function validateFirmwarePolicy(value, brand) {
+  exactKeys(
+    value,
+    [
+      "schema_version",
+      "brand_id",
+      "device_model",
+      "device_model_aliases",
+      "release_tag_prefix",
+      "release_asset_prefix",
+      "github_releases_url",
+    ],
+    "firmware policy",
+  );
+  if (
+    value.schema_version !== 1 ||
+    value.brand_id !== brand ||
+    typeof value.device_model !== "string" ||
+    !value.device_model.trim() ||
+    !Array.isArray(value.device_model_aliases) ||
+    !value.device_model_aliases.length ||
+    value.device_model_aliases.length > 8 ||
+    !value.device_model_aliases.every(
+      (item) => typeof item === "string" && item.trim(),
+    ) ||
+    new Set(value.device_model_aliases).size !== value.device_model_aliases.length ||
+    value.device_model_aliases.includes(value.device_model) ||
+    typeof value.release_tag_prefix !== "string" ||
+    !/^[A-Za-z0-9_]+_v$/.test(value.release_tag_prefix) ||
+    value.release_asset_prefix !== value.release_tag_prefix.slice(0, -1) + "OTA_v" ||
+    typeof value.github_releases_url !== "string"
+  )
+    throw new Error("firmware policy does not match the rendered brand identity");
+  let url;
+  try {
+    url = new URL(value.github_releases_url);
+  } catch {
+    throw new Error("firmware release source must be an explicit HTTPS URL");
+  }
+  if (
+    url.protocol !== "https:" ||
+    !url.hostname ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  )
+    throw new Error("firmware release source must be an explicit HTTPS URL");
+  return value;
+}
 export function validateResourceInput(input, projected) {
   exactKeys(
     input,
@@ -149,6 +199,7 @@ export function validateResourceInput(input, projected) {
   const { brand_id: brand, profile } = projected;
   validateBrandRuntime(projected.brand_runtime, brand);
   validateSupportEmail(projected.support_email);
+  validateFirmwarePolicy(projected.firmware_policy, brand);
   if (projected.product_name !== projected.brand_runtime.display_name)
     throw new Error("brand runtime and Web product identity differ");
   if (

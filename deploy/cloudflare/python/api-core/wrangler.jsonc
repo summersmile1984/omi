@@ -65,6 +65,7 @@
     "BRAND_SUPPORT_EMAIL": "help@omi.me",
     "PUBLIC_SHARE_BASE_URL": "https://h.omi.me",
     "BRAND_RUNTIME_JSON": "{\"brand_id\":\"omi-upstream\",\"display_name\":\"Omi\",\"ai_persona_name\":\"Omi\"}",
+    "FIRMWARE_BRAND_POLICY_JSON": "{\"schema_version\":1,\"brand_id\":\"omi-upstream\",\"device_model\":\"Omi CV 1\",\"device_model_aliases\":[\"nrf5340\"],\"release_tag_prefix\":\"Omi_CV1_v\",\"release_asset_prefix\":\"Omi_CV1_OTA_v\",\"github_releases_url\":\"https://api.github.com/repos/BasedHardware/omi/releases\"}",
     // Secrets provisioned with `wrangler secret put`: ADMIN_KEY,
     // DESKTOP_PREVIEW_PUBLISH_KEY, RELEASE_SECRET, BETA_PROMOTION_TOKEN,
     // GITHUB_TOKEN, METRICS_SECRET (only when a reviewed scrape authority is

@@ -167,11 +167,21 @@ export async function startLocalTarget({
       display_name: "Local Atlas",
       ai_persona_name: "Mira",
     };
+    const firmwarePolicy = {
+      schema_version: 1,
+      brand_id: brandId,
+      device_model: "Local CV1",
+      device_model_aliases: ["nrf5340"],
+      release_tag_prefix: "Local_CV1_v",
+      release_asset_prefix: "Local_CV1_OTA_v",
+      github_releases_url: "https://api.github.com/repos/local/firmware/releases",
+    };
     const supportEmail = "support@atlas.example.invalid";
     const { origin, configs } = localConfigs({
       root,
       brandId,
       brandRuntime,
+      firmwarePolicy,
       supportEmail,
       namespace,
       port,
@@ -327,6 +337,7 @@ export async function startLocalTarget({
     privateJson(resolve(output, "metadata.json"), metadata);
     privateJson(resolve(output, "fixture.json"), {
       brand_runtime: brandRuntime,
+      firmware_policy: firmwarePolicy,
       support_email: supportEmail,
       public_share_origin: shareOrigin ?? origin,
       schema_version: 1,

@@ -34,6 +34,15 @@ const inputs = {
     display_name: "Atlas",
     ai_persona_name: "Mira",
   },
+  firmwarePolicy: {
+    schema_version: 1,
+    brand_id: "fixture",
+    device_model: "Atlas CV1",
+    device_model_aliases: ["nrf5340"],
+    release_tag_prefix: "Atlas_CV1_v",
+    release_asset_prefix: "Atlas_CV1_OTA_v",
+    github_releases_url: "https://api.github.com/repos/atlas/firmware/releases",
+  },
   supportEmail: "support@atlas.example.invalid",
   shareOrigin: "http://127.0.0.1:34002",
   webOrigin: "http://127.0.0.1:34002",
@@ -73,6 +82,9 @@ describe("disposable actual Cloudflare target", () => {
     expect(configs["api-core"].vars.PUBLIC_SHARE_BASE_URL).toBe(
       inputs.shareOrigin,
     );
+    expect(JSON.parse(configs["api-core"].vars.FIRMWARE_BRAND_POLICY_JSON)).toEqual(
+      inputs.firmwarePolicy,
+    );
     expect(configs.auth.vars.ALLOWED_ORIGINS).toBe(inputs.webOrigin);
     expect(() => localConfigs({ ...inputs, supportEmail: undefined })).toThrow(
       /support contact/,
@@ -89,6 +101,9 @@ describe("disposable actual Cloudflare target", () => {
       );
     expect(() => localConfigs({ ...inputs, brandRuntime: undefined })).toThrow(
       /brand runtime/,
+    );
+    expect(() => localConfigs({ ...inputs, firmwarePolicy: undefined })).toThrow(
+      /firmware policy/,
     );
     expect(() =>
       localConfigs({
