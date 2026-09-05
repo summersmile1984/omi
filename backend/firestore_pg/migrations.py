@@ -20,11 +20,12 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from database.firestore_index_registry import INDEX_REQUIREMENTS
+from database.memory_collections import MemoryCollections
 
 from .engine import KNOWN_COLLECTIONS, create_composite_indexes, get_engine
 from .sql import build_ddl, resolve_collection
 
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 MIGRATION_LOCK_ID = 7_362_737_641_104_927_311
 MIGRATION_TABLE = 'firestore_pg_schema_migrations'
 COLLECTION_TABLE = 'firestore_pg_collections'
@@ -197,6 +198,27 @@ STATIC_HASHED_COLLECTION_IDS_V4 = frozenset({'legal_holds', 'legal_hold_deletion
 # The authenticated onboarding owner also resolves a dynamic document path.
 STATIC_HASHED_COLLECTION_IDS_V5 = frozenset({'onboarding_admission'})
 
+# Canonical memory owners resolve per-user collection paths through
+# ``MemoryCollections``.  These IDs were not present in the earlier literal
+# inventory, so v6 freezes their existing hashed mappings before runtime
+# replacement transactions can touch them.
+STATIC_HASHED_COLLECTION_IDS_V6 = frozenset(
+    {
+        'daily_memory_sweep_daily_summary_staged',
+        'daily_memory_sweep_model_invocations',
+        'daily_memory_sweep_onboarding_sources',
+        'daily_memory_sweep_onboarding_staged',
+        'daily_memory_sweep_receipts',
+        'daily_memory_sweep_sources',
+        'jit_proactivity_candidate_turns',
+        'jit_proactivity_daily_budgets',
+        'jit_proactivity_events',
+        'jit_trigger_feedback',
+        'memory_deletion_receipts',
+        'memory_ledger_reopens',
+    }
+)
+
 
 class SchemaNotCurrent(RuntimeError):
     """The database has not been admitted by the explicit migration owner."""
@@ -216,6 +238,11 @@ _verified_tables_lock = threading.Lock()
 def _declared_known_collections() -> set[str]:
     names = set(KNOWN_COLLECTIONS)
     names.update(req.collection_group for req in INDEX_REQUIREMENTS)
+    names.update(
+        segment
+        for path in MemoryCollections(uid='inventory').all_collection_paths()
+        for segment in path.split('/')[::2]
+    )
     return names
 
 
@@ -226,6 +253,7 @@ def _assert_known_inventory_versioned() -> None:
         | STATIC_HASHED_COLLECTION_IDS_V3
         | STATIC_HASHED_COLLECTION_IDS_V4
         | STATIC_HASHED_COLLECTION_IDS_V5
+        | STATIC_HASHED_COLLECTION_IDS_V6
     )
     declared = _declared_known_collections()
     added = declared - versioned
@@ -251,6 +279,7 @@ def known_collections() -> tuple[str, ...]:
             | STATIC_HASHED_COLLECTION_IDS_V3
             | STATIC_HASHED_COLLECTION_IDS_V4
             | STATIC_HASHED_COLLECTION_IDS_V5
+            | STATIC_HASHED_COLLECTION_IDS_V6
         )
     )
 
@@ -410,6 +439,13 @@ def migrate(engine: Optional[Engine] = None) -> SchemaStatus:
             conn.execute(
                 text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (5, :name)'),
                 {'name': 'backend_onboarding_admission_authority'},
+            )
+        if 6 not in applied:
+            for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V6):
+                _register_collection(conn, collection_id)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (6, :name)'),
+                {'name': 'canonical_memory_collection_inventory'},
             )
     return check_schema(engine)
 

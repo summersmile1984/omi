@@ -132,9 +132,23 @@ def test_worker_bootstrap_does_not_import_asgi_or_model_modules():
             bootstrap.bootstrap.cache_clear()
 
 
-def test_migration_v5_admits_current_inventory_and_preserves_mapping():
+def test_migration_v6_admits_current_inventory_and_preserves_mapping():
     assert set(migrations.known_collections()) == migrations._declared_known_collections()
-    assert migrations.LATEST_SCHEMA_VERSION == 5
+    assert migrations.LATEST_SCHEMA_VERSION == 6
+    assert migrations.STATIC_HASHED_COLLECTION_IDS_V6 == {
+        'daily_memory_sweep_daily_summary_staged',
+        'daily_memory_sweep_model_invocations',
+        'daily_memory_sweep_onboarding_sources',
+        'daily_memory_sweep_onboarding_staged',
+        'daily_memory_sweep_receipts',
+        'daily_memory_sweep_sources',
+        'jit_proactivity_candidate_turns',
+        'jit_proactivity_daily_budgets',
+        'jit_proactivity_events',
+        'jit_trigger_feedback',
+        'memory_deletion_receipts',
+        'memory_ledger_reopens',
+    }
     assert migrations.STATIC_HASHED_COLLECTION_IDS_V5 == {'onboarding_admission'}
     assert migrations.STATIC_HASHED_COLLECTION_IDS_V4 == {'legal_holds', 'legal_hold_deletion_gates'}
     assert migrations.STATIC_HASHED_COLLECTION_IDS_V3 == {
@@ -156,6 +170,17 @@ def test_new_collection_without_schema_version_is_rejected():
         },
     ):
         with pytest.raises(migrations.SchemaNotCurrent, match='new statically-known collections'):
+            migrations.known_collections()
+
+
+def test_new_typed_memory_collection_without_schema_version_is_rejected():
+    original_paths = migrations.MemoryCollections.all_collection_paths
+
+    def with_future_path(collections):
+        return [*original_paths(collections), f'{collections.user_root}/future_memory_owner']
+
+    with mock.patch.object(migrations.MemoryCollections, 'all_collection_paths', with_future_path):
+        with pytest.raises(migrations.SchemaNotCurrent, match='future_memory_owner'):
             migrations.known_collections()
 
 
