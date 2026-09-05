@@ -32,7 +32,7 @@ python3 scripts/fork/check-upstream-touch.py \
 树对当前 `upstream/main` 的 `merge-tree` 已无冲突；这不会倒改上面的
 `origin/main` 历史快照，直到候选通过 review 后常规合入。
 
-## 未消化的分歧(37 个,按子系统分组;第 38 个是 `AuthService.swift`,单独处理见下方)
+## 未消化的分歧(33 个,按子系统分组;第 34 个是 `AuthService.swift`,单独处理见下方)
 
 状态列:`待处置`(已经有一个可以直接照做的处置方案,不管背后那次改动的源头提交是否已经追溯到)· `待诊断`(处置方案本身还没想清楚——通常是因为不确定具体改了什么、影响面多大,需要有人接手前先查清楚才能定处置方案)。两者都不代表"原因"列一定写了具体的源头提交:"原因"列的 commit 是 `check-upstream-touch.py` 报告里离 HEAD 最近的一次改动,不一定是最初引入分歧的那次;标了 `合并提交` 的还没往前追溯到真正的源头提交,但这不影响处置方案是否已经明确。
 
@@ -56,7 +56,6 @@ python3 scripts/fork/check-upstream-touch.py \
 | `backend/tests/unit/test_prerecorded_stt_config.py` | `9b8ba655bf` | 上游测试恢复原样;fork 行为的断言挪到 `backend/tests/unit/fork/` | 待处置 |
 | `backend/tests/unit/test_stt_provider_policy.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
 | `backend/tests/unit/test_agent_vm_firebase_project_split.py` | `9b8ba655bf` | 同上 | 待处置 |
-| `backend/tests/unit/test_language_catalog.py` | `7b08862efe` style(backend): apply pinned formatting——**只是格式化漂移**,跟 `web/admin` 那 3 个 prettier 提交是同一类问题 | 直接恢复上游字节,钉住格式化工具版本(见 `06-upstream-sync.md` 旧 §1 关于 web/admin 的处置) | 待处置(比其它几条简单——不涉及逻辑,纯还原) |
 
 ### B. Backend 云中立基建(self-host 部署核心,4 个)
 M1(自托管部署)的直接产物,`c6fc05dd70` 已经把 `storage_minio.py` 这类**新增**文件迁出了上游包,但下面这几个**上游自己的文件**还留着改动——说明那次"迁移"做了一半。
@@ -99,7 +98,6 @@ B2(移动端身份注入,`dev/unified-main/04-brand-layer.md` B2 行)正式依�
 |---|---|---|---|
 | `app/lib/pages/onboarding/auth.dart` | `a5ed639dda` chore(auth): secure self-hosted token bridges | 待判断能否收窄成一个读取 fork 配置的小缝 | 待诊断 |
 | `app/lib/providers/auth_provider.dart` | 合并提交,源头需要追溯 | 同上 | 待诊断 |
-| `app/lib/pages/onboarding/primary_language/primary_language_widget.dart` | `974af498a2` style(app): format primary language lookup——**只是格式化漂移** | 直接恢复上游字节,钉住格式化工具版本 | 待处置(纯还原,不涉及逻辑) |
 
 ### G. 其它(2 个)
 | 文件 | 原因 | 处置方案 | 状态 |
@@ -122,6 +120,8 @@ B2(移动端身份注入,`dev/unified-main/04-brand-layer.md` B2 行)正式依�
 | `backend/testing/desktop_beta_admission/run.sh` | temporary FastAPI dependency exception | upstream now carries the dependency and adds Redis; upstream byte restored and exception removed | candidate `codex/unified-delivery` |
 | `backend/utils/llm/clients.py` | obsolete `get_default_config` re-export and older gateway fallback logic | local LLM patch registry supplies the self-host behavior; upstream byte restored | candidate `codex/unified-delivery` |
 | `Makefile` | fork-only shadow-diff and promotion targets | targets moved to `Makefile.fork`; upstream byte restored | candidate `codex/unified-delivery` |
+| `backend/tests/unit/test_language_catalog.py` | historical pinned-formatter drift | upstream byte restored; existing language-catalog test passes 7/7 | candidate `codex/unified-delivery` |
+| `app/lib/pages/onboarding/primary_language/primary_language_widget.dart` | historical Dart formatter drift | upstream byte restored; existing provider language test passes 14/14 with Flutter 3.44.5 | candidate `codex/unified-delivery` |
 
 ## 用法
 
