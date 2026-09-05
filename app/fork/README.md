@@ -38,8 +38,10 @@ white-label acceptance result.
   authenticated request replayer. `.txt` prevents the upstream analyzer from
   type-checking an overlay against the wrong, unmodified source owners.
 
-The local artifact uses existing basic local notifications, with neutral color,
-and never initializes Firebase/FCM, Intercom or remote crash/analytics sinks.
+The local artifact materializes its fork-owned basic local-notification service
+with a neutral color and never initializes Firebase/FCM, Intercom or remote
+crash/analytics sinks. Upstream retired this service, so the stage cannot depend
+on an upstream source file for its no-FCM path.
 Remote push and OAuth are explicitly disabled. Existing Android background
 readers receive only the derived short-lived JWT mirror; refreshing from a
 background-only native engine beyond JWT expiry is **not** qualified here.

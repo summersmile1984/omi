@@ -128,6 +128,9 @@ def stage(manifest_path: Path, target: str, output: Path, dart: Path) -> dict:
         "auth": "lib/pages/onboarding/auth.dart",
         "env": "lib/env/env.dart",
         "crashlytics_manager": "lib/utils/debugging/crashlytics_manager.dart",
+        # Upstream retired its non-FCM implementation. The stage owns this
+        # replacement because its deployment contract disables Firebase/FCM.
+        "notification_service_basic": "lib/services/notifications/notification_service_basic.dart",
     }.items():
         shutil.copy2(FORK / f"overlays/{source}.dart.txt", app / destination)
     edits = []
@@ -372,7 +375,6 @@ def stage(manifest_path: Path, target: str, output: Path, dart: Path) -> dict:
         "notification_service_fcm.dart",
         "notification_service_basic.dart",
     )
-    once(app / "lib/services/notifications/notification_service_basic.dart", "0xFF9D50DD", "0xFFFFFFFF", 2)
     once(app / "lib/utils/logger.dart", "import 'package:firebase_crashlytics/firebase_crashlytics.dart';", "")
     # Retired startup routing has no production caller; don't retain a second
     # profile validator that accepts the official production/mobile-beta plane.

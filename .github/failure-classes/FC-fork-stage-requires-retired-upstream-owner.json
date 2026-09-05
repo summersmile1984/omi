@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "FC-fork-stage-requires-retired-upstream-owner",
+  "violated_contract": "A fork deployment stage must own every replacement required by its selected target; deleting an upstream implementation must not make a target that deliberately replaces that subsystem impossible to stage.",
+  "canonical_prevention": "Keep target-specific replacements in fork-owned overlay inputs, keep source-owner hashes only for upstream inputs that still exist, and stage the real application for every target so its replacement import and compile boundary are exercised.",
+  "canonical_prevention_artifact": [
+    "app/fork/prepare.py",
+    "app/fork/test_stage.py",
+    "app/fork/test.sh"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "app/fork/**"
+  ],
+  "status": "open"
+}

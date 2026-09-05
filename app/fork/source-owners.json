@@ -1,7 +1,7 @@
 {
   "base": "556dfc2f8c7bf6c30323af19797ff105a70c4b02",
   "files": {
-    "lib/services/auth_service.dart": "5cdc74ff23f219059d8ab2b2b7f4c4713697d004c89bbb3be981cf94f22ce5f0",
+    "lib/services/auth_service.dart": "f53b8323c2340fc04232d135de2244eace72f926b1497aa7295adc849435bf73",
     "lib/providers/auth_provider.dart": "7befd0c828db50b930df2789b1c375d666fde0b139540c9d4bd5ff22acac83c2",
     "lib/pages/onboarding/auth.dart": "d6616b85290da69f7ab7e9e43d1e305a16ac3ed811a195a5063076344880e5ea",
     "lib/env/env.dart": "5d88a7388d9609849981c0d4532b4e474e88c1351ba3c7640313acad93d9513a",
@@ -13,7 +13,6 @@
     "lib/pages/onboarding/wrapper.dart": "226e092d0846de0bcac99da283961c3376592dc5a9689bbf1bd5ea982e099d0a",
     "lib/pages/settings/change_name_widget.dart": "d40060142844837861ec9119184a6a89ff54b5c51c9247d4dead3b037cc36ab4",
     "lib/services/notifications/notification_service.dart": "b27e5ac07a9b5130c79bc7c4b3a7bc36e20634abdbd8ba3d7e712b0b4f9d3db9",
-    "lib/services/notifications/notification_service_basic.dart": "99779dc45f76379e00a28e7dd609b2e9fe516db55b469ff1d3876bb0964c169b",
     "lib/startup_routing.dart": "8c671d3b96fd8eb0259eab18d336877cb2b28a8aa0bf4cd74122c73204a182ee",
     "android/app/build.gradle": "571c529aab2eef3becb398f1db5e25ad363f8c5abb4dd15271aaecb4a042185b",
     "android/app/src/main/AndroidManifest.xml": "e92a6c4d463befcf8c650e7957d90c22f489763453176dd8042a5c348a24c67c",

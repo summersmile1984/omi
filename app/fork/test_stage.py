@@ -44,6 +44,14 @@ class StageTests(unittest.TestCase):
                 self.assertIn("_invalidateSession = NativeIdentity.owner.invalidate", auth)
                 self.assertNotIn("FirebaseAuth", auth)
                 self.assertNotIn("/auth-issue", (output / "app/lib/providers/auth_provider.dart").read_text())
+                notification_service = (output / "app/lib/services/notifications/notification_service.dart").read_text()
+                basic_notifications = (
+                    output / "app/lib/services/notifications/notification_service_basic.dart"
+                ).read_text()
+                self.assertIn("notification_service_basic.dart", notification_service)
+                self.assertNotIn("notification_service_fcm.dart", notification_service)
+                self.assertNotIn("0xFF9D50DD", basic_notifications)
+                self.assertIn("0xFFFFFFFF", basic_notifications)
                 gradle = (output / "app/android/app/build.gradle").read_text()
                 self.assertNotIn('applicationId "com.friend', gradle)
                 self.assertIn(result["package_id"], gradle)
