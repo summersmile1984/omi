@@ -11,6 +11,7 @@ import uuid
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from memory_mutation_errors import memory_mutation_error
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from account_routes import usage_source_statement
@@ -393,8 +394,8 @@ async def update_developer_memory(request: Request, memory_id: str):
         )
         await env.APP_DB.batch([mutation, projection])
         row = await first_active_memory(env, principal.uid, memory_id)
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error, key="detail")
     if row is None:
         return JSONResponse({"detail": "Memory not found"}, status_code=404)
     await _publish_projection(env, principal.uid, "memory", memory_id)

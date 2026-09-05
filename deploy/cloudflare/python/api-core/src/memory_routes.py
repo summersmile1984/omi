@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from internal_auth import decode_context
+from memory_mutation_errors import memory_mutation_error
 from account_routes import usage_source_statement
 from memory_review_routes import build_review_queue_statements
 from vector_search import embed_query, hydrate_candidate_ids, query_vector_ids
@@ -1200,8 +1201,8 @@ async def update_memory_content(request: Request, memory_id: str):
             "UPDATE cf_memories SET content = ?, edited = 1, updated_at = ? "
             "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
         ).bind(update.value, int(time.time()), uid, memory_id).run()
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error)
     return {"status": "ok"}
 
 
@@ -1227,8 +1228,8 @@ async def update_memory_visibility(request: Request, memory_id: str):
             "UPDATE cf_memories SET visibility = ?, updated_at = ? "
             "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
         ).bind(raw_value, int(time.time()), uid, memory_id).run()
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error)
     return {"status": "ok"}
 
 
@@ -1250,8 +1251,8 @@ async def review_memory(request: Request, memory_id: str):
             "UPDATE cf_memories SET reviewed = 1, user_review = ?, updated_at = ? "
             "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
         ).bind(int(value), int(time.time()), uid, memory_id).run()
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error)
     return {"status": "ok"}
 
 
@@ -1294,8 +1295,8 @@ async def update_memory_read_status(request: Request, memory_id: str):
         if not isinstance(updated, dict):
             return JSONResponse({"error": "memory not found"}, status_code=404)
         return _response(updated)
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error)
 
 
 @router.patch("/v3/memories/{memory_id}/baseline")
@@ -1320,6 +1321,6 @@ async def update_memory_baseline(request: Request, memory_id: str):
             "UPDATE cf_memories SET is_baseline = ?, updated_at = ? "
             "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
         ).bind(int(value), int(time.time()), uid, memory_id).run()
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error)
     return {"status": "ok"}

@@ -76,6 +76,11 @@ The first staging slice contains:
   the public firmware stable/latest/version APIs. It also exposes staging-only
   D1-backed action-item and canonical memory CRUD surfaces, plus account usage,
   chat quota, subscription snapshot, and configured price-catalog reads.
+  Migration 0161 enforces memory locks inside D1 writes across native, MCP,
+  developer and conflict-review mutations. Locked writes return 402 and roll
+  back their transaction; privacy deletion remains available. This does not
+  qualify the remaining memory ledger history/revert routes. See the
+  [verification record](../../dev/unified-main/implementation-2026-09-05/eddy-memory-mutation-lock-2026-09-06.md).
 - `api-core`: a public firmware stable-release API backed by the GitHub Releases
   API; it keeps firmware metadata outside the Worker filesystem.
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.

@@ -4,6 +4,8 @@
 signups, opaque session restore and JWT exchange, protected admission,
 onboarding persistence, calendar capture-gap query/auth/disconnected admission, public invalid-email-link
 neutral HTML, CSAT configuration/validation/create-only ratings,
+manual-memory creation, content/visibility/review/read/baseline persistence,
+cross-account mutation denial and deletion,
 task creation/completion, cross-account denial, refresh
 and logout revocation. It imports no backend handlers and seeds no business
 records. The task request contract comes from the actual FastAPI
@@ -74,7 +76,7 @@ or its 64 MiB per-direction bound. It never synthesizes transcripts. Real socket
 tests run in the existing `product.sh` lane alongside HTTP-framing and process
 ownership tests.
 
-`--self-test` executes ten common core cases, including when
+`--self-test` executes thirteen common core cases, including when
 real models are enabled. Enabling this runtime is not evidence that recording,
 finalization, canonical-memory retrieval or the complete CI-1 qualifier passed.
 See the [real-model execution record](../../dev/unified-main/implementation-2026-09-05/server-real-model-product.md).

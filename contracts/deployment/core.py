@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One HTTP product contract against either real, disposable deployment target.
 
-This is the identity/onboarding/calendar/email/CSAT/tasks slice of CI-1, not a release qualifier.
+This is the identity/onboarding/calendar/email/CSAT/memory/tasks slice of CI-1, not a release qualifier.
 Target runners own disposable state, provider fixtures and teardown. This client
 never seeds a database, imports a backend handler or supplies an auth bypass.
 """
@@ -287,6 +287,48 @@ class ProductContract:
             require(other_rating == {'id': 'macos_' + other.uid, 'created': True}, 'CSAT ownership crossed accounts')
 
         self.case('csat.create-once-and-isolate', csat_rating)
+
+        def memory_mutations():
+            created, _ = self.request(
+                'api',
+                'POST',
+                '/v3/memories',
+                200,
+                bearer=owner.jwt,
+                body={'content': 'Synthetic manual memory', 'category': 'manual'},
+            )
+            require(isinstance(created.get('id'), str) and bool(created['id']), 'memory omitted id')
+            path = '/v3/memories/' + quote(created['id'], safe='')
+            mutations = (
+                ('PATCH', path, {'value': 'Edited synthetic manual memory'}),
+                ('PATCH', path + '/visibility', {'value': 'public'}),
+                ('POST', path + '/review?value=true', None),
+                ('PATCH', path + '/read', {'is_read': True, 'is_dismissed': True}),
+                ('PATCH', path + '/baseline?value=true', None),
+            )
+            for method, route, body in mutations:
+                self.request('api', method, route, 404, bearer=other.jwt, body=body)
+                self.request('api', method, route, 200, bearer=owner.jwt, body=body)
+            rows, _ = self.request('api', 'GET', '/v3/memories', 200, bearer=owner.jwt)
+            stored = next((row for row in rows if row.get('id') == created['id']), None)
+            require(stored is not None, 'edited memory missing from owner list')
+            for field, value in {
+                'content': 'Edited synthetic manual memory',
+                'visibility': 'public',
+                'reviewed': True,
+                'user_review': True,
+                'is_read': True,
+                'is_dismissed': True,
+                'is_baseline': True,
+            }.items():
+                require(stored.get(field) == value, f'memory {field} was not persisted')
+            self.request('api', 'DELETE', path, 404, bearer=other.jwt)
+            self.request('api', 'DELETE', path, 200, bearer=owner.jwt)
+            rows, _ = self.request('api', 'GET', '/v3/memories', 200, bearer=owner.jwt)
+            require(not any(row.get('id') == created['id'] for row in rows), 'deleted memory remains visible')
+            self.request('api', 'PATCH', path, 404, bearer=owner.jwt, body={'value': 'Must stay deleted'})
+
+        self.case('memories.edit-state-isolate-and-delete', memory_mutations)
         task = {}
 
         def create():
@@ -371,7 +413,7 @@ class ProductContract:
     def report(self):
         report = {
             'schema_version': 1,
-            'scope': 'identity-onboarding-calendar-email-csat-tasks',
+            'scope': 'identity-onboarding-calendar-email-csat-memory-tasks',
             'target': self.metadata['target'],
             'brand_id': self.metadata['brand_id'],
             'cases': self.cases,

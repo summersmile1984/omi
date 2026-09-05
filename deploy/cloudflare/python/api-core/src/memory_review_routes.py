@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from memory_mutation_errors import memory_mutation_error
 from pydantic import BaseModel, Field, ValidationError
 
 from internal_auth import decode_context
@@ -526,8 +527,8 @@ async def _resolve_memory(request: Request, uid: str, item: dict[str, object], r
     )
     try:
         await env.APP_DB.batch(statements)
-    except Exception:
-        return JSONResponse({"error": "memory review resolution unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error, unavailable="memory review resolution unavailable")
     resolved_raw = await _raw_item(env, uid, str(item["review_id"]))
     resolved = _decode_queue_row(resolved_raw) if resolved_raw else {**item, "status": status}
     return {

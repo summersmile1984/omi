@@ -21,6 +21,7 @@ import uuid
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from memory_mutation_errors import memory_mutation_error
 from pydantic import BaseModel, Field, ValidationError
 
 from account_routes import usage_source_statement
@@ -762,8 +763,8 @@ async def edit_memory(request: Request, memory_id: str):
             operation="upsert",
         )
         await env.APP_DB.batch([update, projection])
-    except Exception:
-        return _error("memories unavailable", 503)
+    except Exception as error:
+        return memory_mutation_error(error, key="detail")
     await publish_vector_projection(env, uid=principal.uid, source_kind="memory", source_id=memory_id)
     return {"status": "ok"}
 
@@ -993,9 +994,9 @@ async def search_x_posts(request: Request):
         return _error("X post search unavailable", 503)
     score_by_id = dict(candidates)
     return {
-        "posts": [
-            _x_post_output(row, score=float(score_by_id.get(str(row.get("id") or ""), 0.0))) for row in rows
-        ][: int(limit)]
+        "posts": [_x_post_output(row, score=float(score_by_id.get(str(row.get("id") or ""), 0.0))) for row in rows][
+            : int(limit)
+        ]
     }
 
 

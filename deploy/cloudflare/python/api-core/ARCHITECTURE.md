@@ -88,8 +88,17 @@ read/dismiss state and the baseline flag, and retains deletions as tombstones.
 Batch creation preserves the released 100-memory contract, drops per-file
 onboarding imports, and atomically writes size-bounded JSON chunks plus usage
 sources without per-memory D1 queries.
-State mutations reject locked memories with the legacy paid-plan boundary. It
-has no Firestore fallback or dual write. Production account promotion remains
+Migration 0161 makes the current D1 row the lock authority for interactive
+content, visibility, review and desktop-state writes, including MCP, developer
+and conflict resolution. The trigger runs inside the write transaction, so a
+lock acquired after a route's read still denies with the legacy 402 boundary.
+A multi-row resolution or vector-outbox batch rolls back on denial; the shared
+error translator preserves dependency failures as 503. Privacy tombstoning
+and account erasure remain available for locked rows. Full-migration ASGI
+regressions cover every writer and the late-lock window, while the shared HTTP
+suite exercises normal manual-memory mutation and deletion on both targets.
+This does not supply ledger lineage, history/revert, or complete index revision
+authority. It has no Firestore fallback or dual write. Production account promotion remains
 forbidden until the account-cutover importer, manifest verification, and
 destination binding described by `INV-CUTOVER-1` exist.
 

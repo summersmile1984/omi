@@ -142,6 +142,12 @@ Owner: `api-core`. Upstream authority: `backend/routers/memories.py`.
 
 Ledger history/revert require canonical memory lineage, revision/privacy authority and outbox; flat D1 projection is insufficient.
 
+Migration 0161 now enforces the existing row lock at the shared D1 mutation
+boundary for native, MCP, developer and review writers, including locks acquired
+after a pre-read. This closes a prerequisite write-admission defect; these two
+ledger routes remain blocked until append-only lineage, exact retry identity,
+current-tail privacy and index revision semantics are implemented and exercised.
+
 | Method | Path |
 |---|---|
 | GET | `/v3/memories/ledger-history` |
