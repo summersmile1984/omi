@@ -32,7 +32,7 @@ python3 scripts/fork/check-upstream-touch.py \
 树对当前 `upstream/main` 的 `merge-tree` 已无冲突；这不会倒改上面的
 `origin/main` 历史快照，直到候选通过 review 后常规合入。
 
-## 未消化的分歧(23 个,按子系统分组;第 24 个是 `AuthService.swift`,单独处理见下方)
+## 未消化的分歧(21 个,按子系统分组;第 22 个是 `AuthService.swift`,单独处理见下方)
 
 状态列:`待处置`(已经有一个可以直接照做的处置方案,不管背后那次改动的源头提交是否已经追溯到)· `待诊断`(处置方案本身还没想清楚——通常是因为不确定具体改了什么、影响面多大,需要有人接手前先查清楚才能定处置方案)。两者都不代表"原因"列一定写了具体的源头提交:"原因"列的 commit 是 `check-upstream-touch.py` 报告里离 HEAD 最近的一次改动,不一定是最初引入分歧的那次;标了 `合并提交` 的还没往前追溯到真正的源头提交,但这不影响处置方案是否已经明确。
 
@@ -65,12 +65,10 @@ python3 scripts/fork/check-upstream-touch.py \
 | `backend/pusher/pylock.toml` / `requirements.txt` | 合并提交,大概率是 fork 加了 provider SDK 依赖后锁文件跟着变 | 需要判断这些依赖能不能只加在 fork 自己的 extra/optional-dependency 分组 | 待诊断 |
 | `backend/pylock.{toml,macos.toml,macos-x86_64.toml,runtime.toml,windows.toml}` / `requirements.txt` | 同上 | 同上 | 待诊断 |
 
-### D. Backend routers(3 个)+ 相关测试(1 个)
+### D. Backend routers(1 个)+ 相关测试(1 个)
 | 文件 | 原因 | 处置方案 | 状态 |
 |---|---|---|---|
-| `backend/routers/desktop_tts_updates.py` | 合并提交,源头需要追溯 | 待诊断具体改了什么 | 待诊断 |
 | `backend/routers/listen/receiver.py` | 合并提交,源头需要追溯 | 同上 | 待诊断 |
-| `backend/routers/tts.py` | `024e2d3527` chore(backend): satisfy cloud adapter type checks——听起来是类型检查相关的小改动 | 待诊断能否收窄成一个补丁点 | 待诊断 |
 | `backend/tests/unit/test_verify_pusher_source_closure.py` | `c6fc05dd70` | 同上 | 待处置 |
 
 ### E. CI 工作流(1 个)
@@ -106,6 +104,7 @@ python3 scripts/fork/check-upstream-touch.py \
 | `backend/utils/cloud_tasks.py` | Redis queue dispatch and worker authentication branches | fork queue registry now replaces all producer and public FastAPI authentication seams with route-scoped Redis handlers; upstream byte restored and finalizer route/retry tests pass | candidate `codex/unified-delivery` |
 | `backend/utils/other/endpoints.py` | Better Auth token branch | fork auth registry owns token/HTTP/WebSocket consumer replacements; upstream byte restored and auth consumer tests pass | candidate `codex/unified-delivery` |
 | `backend/database/__init__.py` / `backend/database/_client.py` / `backend/tests/unit/test_agent_vm_firebase_project_split.py` | PostgreSQL Firestore shim injection and customer-client branch | self-host admission installs the facade before any upstream database import; upstream bytes restored and a subprocess admission/import proof passes | candidate `codex/unified-delivery` |
+| `backend/routers/tts.py` / `backend/routers/desktop_tts_updates.py` | self-host MiMo TTS route branches | local `speech_transport` replaces both real route endpoints with the admitted Kokoro owner; upstream bytes restored and 21 route/HTTP/WS tests pass | candidate `codex/unified-delivery` |
 
 ## 用法
 
