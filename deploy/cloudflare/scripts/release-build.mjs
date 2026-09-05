@@ -7,7 +7,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import {
   assertInstalledRuntime,
   PYTHON_TOOLS,
@@ -187,12 +187,33 @@ export function prepareRelease({
   assertInstalledRuntime(cf);
   mkdirSync(resolve(output, "logs"), { recursive: true });
   writeJson(output, "inputs/inventory.json", input);
-  if (manifest)
+  const checks = qualifyLocal(root, output);
+  if (manifest) {
     cpSync(resolve(manifest), resolve(output, "inputs/manifest.json"));
+    const projectedAssets = JSON.parse(
+      runLocal(root, resolve(root, "backend/.venv/bin/python"), [
+        "deploy/web/profile_input.py",
+        "--target",
+        "cloudflare",
+        "--stage",
+        stage,
+        "--manifest",
+        resolve(output, "inputs/manifest.json"),
+      ]),
+    );
+    projectedAssets.asset_input.root = dirname(resolve(manifest));
+    runLocal(
+      root,
+      process.execPath,
+      ["deploy/web/brand-assets.mjs", "--snapshot", resolve(output, "inputs")],
+      {
+        input: JSON.stringify(projectedAssets),
+      },
+    );
+  }
   const selection = manifest
     ? ["--manifest", resolve(output, "inputs/manifest.json")]
     : ["--brand", brand];
-  const checks = qualifyLocal(root, output);
   for (const target of ["self_hosted", "cloudflare"])
     runLocal(
       root,

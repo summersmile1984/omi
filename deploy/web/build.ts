@@ -4,8 +4,14 @@ import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { compileWorker, refreshBundleIntegrity } from './compile-worker';
 import { injectPublicEnvironment, publicEnvironment } from './public-environment';
-import { applyMcpOverlay, emptyOutput, stageSources } from './source-stage';
+import {
+  applyBrandMetadata,
+  applyMcpOverlay,
+  emptyOutput,
+  stageSources,
+} from './source-stage';
 import { applyRealtimeOverlay } from '../../web/app/fork/realtime-overlay';
+import { generateWebAssets } from './brand-assets.mjs';
 
 const root = resolve(import.meta.dir, '../..');
 const webRoot = resolve(root, 'web/app');
@@ -75,6 +81,11 @@ export async function buildWeb(options: {
   const output = await emptyOutput(options.output, webRoot);
   const source = resolve(output, 'source');
   const applied = await stageSources(webRoot, source, overlays);
+  const brandAssets = generateWebAssets(
+    input.brand_id,
+    input.asset_input,
+    resolve(source, 'public'),
+  );
   await applyMcpOverlay(source, webRoot);
   await applyRealtimeOverlay(source);
   // Upstream tests remain on the untouched upstream lane. This check compiles
@@ -106,6 +117,7 @@ export async function buildWeb(options: {
   run([resolve(webRoot, 'node_modules/.bin/moonshine'), 'build'], source, environment);
   run(['bun', 'run', 'build:assets'], source, environment);
   const generated = resolve(source, '.moonshine');
+  await applyBrandMetadata(generated, webRoot, input);
   const client = resolve(generated, 'public/client.js');
   await writeFile(
     client,
@@ -151,7 +163,10 @@ export async function buildWeb(options: {
   } else {
     await cp(resolve(generated, 'start.js'), resolve(artifact, 'start.js'));
   }
-  const git = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], { cwd: root, stdout: 'pipe' });
+  const git = Bun.spawnSync(['git', 'rev-parse', 'HEAD'], {
+    cwd: root,
+    stdout: 'pipe',
+  });
   const sourceStatus = Bun.spawnSync(['git', 'status', '--porcelain'], {
     cwd: root,
     stdout: 'pipe',
@@ -165,11 +180,15 @@ export async function buildWeb(options: {
     brand: input.brand_id,
     profile: JSON.parse(environment.NEXT_PUBLIC_OMI_PROFILE_JSON),
     overlays: applied,
+    brand_assets: brandAssets,
     transforms: [
       'SettingsPage.mcpServerUrl -> profile MCP origin',
       'HomePage/useGeminiLive -> direct-model capability',
       'public Chat/Tasks share routes -> controlled preview and authenticated acceptance',
       'allowlisted public environment',
+      ...(brandAssets.mode === 'manifest'
+        ? ['generated server presentation metadata -> manifest product name and tagline']
+        : []),
     ],
     routes: manifest.routes.map((route: { path: string }) => route.path),
     artifact,

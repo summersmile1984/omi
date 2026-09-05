@@ -12,7 +12,16 @@ import {
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { publicEnvironment, injectPublicEnvironment } from './public-environment';
-import { confinedPath, emptyOutput, rewriteMcpUrl, stageSources } from './source-stage';
+import {
+  confinedPath,
+  emptyOutput,
+  rewriteBrandMetadata,
+  rewriteMcpUrl,
+  stageSources,
+} from './source-stage';
+import { generateWebAssets, snapshotWebAssets } from './brand-assets.mjs';
+import { writeFixtureAssets } from '../../scripts/brand/raster/fixture.mjs';
+import { PNG } from '../../scripts/brand/raster/png.mjs';
 
 const profile = {
   name: 'cloudflare.local',
@@ -30,6 +39,115 @@ const profile = {
 };
 
 describe('the shared Web build boundary', () => {
+  test('executes branded generated metadata without rewriting API origins or user app descriptions', () => {
+    const ts = createRequire(resolve(import.meta.dir, '../../web/app/package.json'))(
+      'typescript',
+    );
+    const source = `const api = 'https://api.omi.me';
+      const title = pathname === '/login' ? 'Sign In to Omi' : 'Omi - Your AI Companion';
+      const description = 'Omi - Your AI companion that turns thoughts into action.';
+      return { api, title, description, app: app.description + ' Available on Omi, the AI-powered wearable platform.' };`;
+    const rewritten = rewriteBrandMetadata(source, 'Harbor "<&', '懂你的随身AI伴侣', ts);
+    const render = new Function('pathname', 'app', rewritten);
+    expect(render('/login', { description: 'My Omi notes' })).toEqual({
+      api: 'https://api.omi.me',
+      title: 'Sign In to Harbor "<&',
+      description: 'Harbor "<& - 懂你的随身AI伴侣',
+      app: 'My Omi notes Available on Harbor "<&, the AI-powered wearable platform.',
+    });
+    expect(render('/home', { description: '' }).title).toBe(
+      'Harbor "<& - 懂你的随身AI伴侣',
+    );
+    const legacy = new Function(
+      'pathname',
+      'app',
+      rewriteBrandMetadata(source, 'Harbor', '', ts),
+    );
+    expect(legacy('/home', { description: '' }).description).toBe('Harbor');
+    expect(() =>
+      rewriteBrandMetadata(
+        source.replace('Sign In to Omi', 'New login title'),
+        'Harbor',
+        'Companion',
+        ts,
+      ),
+    ).toThrow('metadata owner changed');
+  });
+  test('replaces public brand images through the shared raster owner and preserves private-manifest snapshots', async () => {
+    const temp = await mkdtemp(resolve(tmpdir(), 'web-brand-contract-'));
+    try {
+      writeFixtureAssets(temp);
+      const refs = {
+        icon_master: 'assets/harbor-icon_master.png',
+        logo_light: 'assets/harbor-logo_light.png',
+      };
+      const input = { root: temp, refs };
+      const publicDirectory = resolve(temp, 'public');
+      await mkdir(publicDirectory);
+      await writeFile(resolve(publicDirectory, 'logo.png'), 'upstream logo');
+      const original = await readFile(resolve(temp, refs.logo_light));
+      const assets = generateWebAssets('harbor', input, publicDirectory);
+      expect(assets.mode).toBe('manifest');
+      expect(Object.keys(assets.outputs).sort()).toEqual(['favicon.png', 'logo.png']);
+      const logoBytes = await readFile(resolve(publicDirectory, 'logo.png'));
+      const logo = PNG.sync.read(logoBytes);
+      expect([logo.width, logo.height]).toEqual([512, 512]);
+      expect([
+        ...logo.data.subarray((256 * 512 + 256) * 4, (256 * 512 + 256) * 4 + 4),
+      ]).toEqual([255, 255, 255, 255]);
+      expect(logo.data[3]).toBe(0);
+      expect(
+        PNG.sync.read(await readFile(resolve(publicDirectory, 'favicon.png'))).width,
+      ).toBe(64);
+      expect(assets.outputs['logo.png'].sha256).toBe(
+        new Bun.CryptoHasher('sha256').update(logoBytes).digest('hex'),
+      );
+      expect(await readFile(resolve(temp, refs.logo_light))).toEqual(original);
+      const frozen = resolve(temp, 'inputs');
+      snapshotWebAssets('harbor', input, frozen);
+      await writeFile(resolve(temp, refs.logo_light), 'changed source');
+      const second = generateWebAssets(
+        'harbor',
+        { root: frozen, refs },
+        resolve(temp, 'second'),
+      );
+      expect(second).toEqual(assets);
+      expect(await readFile(resolve(frozen, refs.logo_light))).toEqual(original);
+      expect(() => generateWebAssets('harbor', input, publicDirectory)).toThrow(
+        'static PNG',
+      );
+      expect(await readFile(resolve(publicDirectory, 'logo.png'))).toEqual(logoBytes);
+      expect(generateWebAssets('omi-upstream', undefined, publicDirectory).mode).toBe(
+        'upstream',
+      );
+      expect(await readFile(resolve(publicDirectory, 'logo.png'))).toEqual(logoBytes);
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  test('projects the real Eddy manifest asset directory without adding local paths to public environment', () => {
+    const result = Bun.spawnSync(
+      [
+        resolve(import.meta.dir, '../../backend/.venv/bin/python'),
+        resolve(import.meta.dir, 'profile_input.py'),
+        '--brand',
+        'eddy',
+        '--target',
+        'cloudflare',
+        '--stage',
+        'production',
+      ],
+      { stdout: 'pipe', stderr: 'pipe' },
+    );
+    expect(result.exitCode).toBe(0);
+    const input = JSON.parse(result.stdout.toString());
+    expect(input.asset_input.root).toBe(resolve(import.meta.dir, '../../brand/eddy'));
+    expect(input.asset_input.refs.logo_light).toBe('assets/logo-light.png');
+    expect(JSON.stringify(publicEnvironment(input))).not.toContain(
+      input.asset_input.root,
+    );
+  });
   test('projects one validated profile without leaking secrets or dropping API mount paths', () => {
     const values = publicEnvironment({
       product_name: 'Fixture',

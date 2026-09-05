@@ -162,6 +162,78 @@ export async function applyMcpOverlay(stage: string, webRoot: string) {
   await writeFile(path, rewriteMcpUrl(await readFile(path, 'utf8'), typescript));
 }
 
+export function rewriteBrandMetadata(
+  source: string,
+  productName: string,
+  tagline: string,
+  ts: any,
+): string {
+  if (!productName?.trim() || typeof tagline !== 'string')
+    throw new Error('Web metadata needs a product name and optional tagline');
+  const description = tagline.trim() ? `${productName} - ${tagline}` : productName;
+  const required = new Map([
+    ['Sign In to Omi', `Sign In to ${productName}`],
+    ['Omi - Your AI Companion', description],
+    ['Omi - Your AI companion that turns thoughts into action.', description],
+  ]);
+  const presentation = new Map([
+    ...required,
+    ...[
+      'Explore and install AI-powered apps for Omi. Enhance your experience with productivity tools, conversation insights, and more.',
+      'Omi App Store - Discover AI-Powered Apps',
+      'Omi App Store',
+      ' Apps - Omi App Store',
+      ' apps for your Omi.',
+      ' Available on Omi, the AI-powered wearable platform.',
+    ].map((text) => [text, text.replaceAll('Omi', productName)] as const),
+  ]);
+  const file = ts.createSourceFile(
+    'server.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const edits: { start: number; end: number; value: string }[] = [];
+  const counts = new Map<string, number>();
+  const visit = (node: any) => {
+    if (ts.isStringLiteral(node) && presentation.has(node.text)) {
+      counts.set(node.text, (counts.get(node.text) ?? 0) + 1);
+      edits.push({
+        start: node.getStart(file),
+        end: node.end,
+        value: JSON.stringify(presentation.get(node.text)),
+      });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  for (const text of required.keys())
+    if (counts.get(text) !== 1) throw new Error('Generated Web metadata owner changed');
+  for (const edit of edits.sort((a, b) => b.start - a.start))
+    source = source.slice(0, edit.start) + edit.value + source.slice(edit.end);
+  return source;
+}
+
+export async function applyBrandMetadata(
+  generated: string,
+  webRoot: string,
+  input: { brand_id: string; product_name: string; tagline: string },
+) {
+  if (input.brand_id === 'omi-upstream') return;
+  const path = join(generated, 'server.ts');
+  const ts = createRequire(join(webRoot, 'package.json'))('typescript');
+  await writeFile(
+    path,
+    rewriteBrandMetadata(
+      await readFile(path, 'utf8'),
+      input.product_name,
+      input.tagline,
+      ts,
+    ),
+  );
+}
+
 export async function emptyOutput(path: string, sourceRoot: string) {
   const output = resolve(path);
   const source = await realpath(sourceRoot);

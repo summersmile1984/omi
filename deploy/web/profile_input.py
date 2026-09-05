@@ -34,7 +34,14 @@ def main() -> int:
             {
                 'brand_id': manifest['brand']['id'],
                 'product_name': manifest['brand']['display_name'],
+                'tagline': manifest['brand'].get('tagline', ''),
                 'support_email': manifest['brand']['support_email'],
+                'asset_input': {
+                    'root': str(
+                        (args.manifest.parent if args.manifest else ROOT / 'brand' / manifest['brand']['id']).resolve()
+                    ),
+                    'refs': manifest['assets'],
+                },
                 'brand_runtime': {
                     'brand_id': manifest['brand']['id'],
                     'display_name': manifest['brand']['display_name'],

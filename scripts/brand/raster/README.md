@@ -1,7 +1,7 @@
 # Shared brand raster boundary
 
 This fork-owned package validates and resizes the raster inputs from the single
-brand manifest. Electron, macOS and Flutter platform generators import
+brand manifest. Electron, macOS, Flutter and the shared Web target generators import
 `png.mjs`; they do not read another brand file or carry another image decoder.
 
 Inputs must be relative, in-tree, bounded, static 8-bit PNG files. The master

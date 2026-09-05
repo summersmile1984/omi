@@ -5,6 +5,29 @@ OS (Bun 1.3.14) or Cloudflare Workers + Assets. Both use one source stage, the
 same validated brand/profile resolver and CLIENT-1 source overlays. It never
 writes to `web/app`, upstream tests or tracked lockfiles.
 
+Brand images come from the same manifest. The shared raster reader validates
+`assets.icon_master` and `assets.logo_light` as bounded PNGs relative to the
+manifest directory; all inputs are decoded before replacing staged public files.
+`brand-assets.mjs` produces `/favicon.png` (64px) and `/logo.png` (512px) in the
+temporary source stage, for both targets. It records input and output hashes in
+`build-manifest.json.brand_assets`. The `omi-upstream` regression identity keeps
+upstream files. Other brands fail on missing/invalid assets; they cannot silently
+ship the upstream mark. This covers these public image paths, not every inlined
+logo, product string or browser surface. Local asset paths never enter the public
+environment projection. Install the existing `scripts/brand/raster` npm lock;
+`ci.sh` does so in the current local/CI lane.
+
+After upstream generates its server, the source stage also replaces its fixed
+presentation metadata literals with the manifest name/tagline. Login, default
+page and marketplace headings/descriptions retain upstream HTML escaping;
+runtime app names/descriptions and API URLs are not rewritten. The primary
+metadata literals must still have their known unique owner, so upstream changes
+require reviewing this build adapter instead of silently shipping Omi titles.
+
+Cloudflare prepare also snapshots the consumed PNGs beside an explicit private
+manifest before building either target, preserving its relative asset references.
+The resulting input tree is part of the immutable candidate file hashes.
+
 ## Build and run
 
 First run `make setup-backend` and `cd web/app && bun install --frozen-lockfile`.

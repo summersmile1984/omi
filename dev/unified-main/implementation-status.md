@@ -27,6 +27,13 @@ Web→Edge sharing and static-file integrity. ASR/model IO remains controlled.
 Visual inspection found the Web `logo.png` still uses the upstream mark; Web
 manifest asset application and full remote qualification remain unfinished.
 
+The subsequent [Web brand package](implementation-2026-09-05/eddy-web-brand.md)
+applies manifest PNGs and generated page metadata to both targets. Actual Bun and
+workerd HTTP responses now have Eddy login titles/tagline and identical Eddy logo
+bytes; browser login/signup switching and frozen CF share 5 pass. The upstream
+public-logo/default-title omissions are resolved. Full remote qualification and
+other inline brand surfaces remain unproved.
+
 Earlier integrated audit: candidate branch `codex/unified-delivery`; the implementation source
 tip reviewed is `0d4f71b4ab` (the following audit record is documentation
 only). It is a reviewable local candidate: nothing in it has been pushed, merged, or

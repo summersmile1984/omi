@@ -9,5 +9,6 @@ if [ "$(bun --version)" != "1.3.14" ]; then
   exit 1
 fi
 (cd web/app && bun install --frozen-lockfile)
+npm ci --prefix scripts/brand/raster --ignore-scripts --no-audit --no-fund
 web/app/node_modules/.bin/tsc --project deploy/web/tsconfig.json
 bun test deploy/web/build.test.ts
