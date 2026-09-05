@@ -3,7 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import json
 from contextlib import ExitStack, closing
-from http.client import HTTPConnection
+from http.client import HTTPConnection, IncompleteRead
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import socket
@@ -19,6 +19,57 @@ from loopback import handler as proxy_handler
 
 
 class FixtureHTTP(unittest.TestCase):
+    def test_sse_progress_arrives_before_upstream_completion(self):
+        observed = threading.Event()
+        first = b'think: Searching memories\n\n'
+        last = b'done: synthetic-terminal\n\n'
+
+        class Events(BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.1'
+
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Transfer-Encoding', 'chunked')
+                self.end_headers()
+                self.wfile.write(f'{len(first):x}\r\n'.encode() + first + b'\r\n')
+                self.wfile.flush()
+                if self.path == '/truncated':
+                    self.close_connection = True
+                    return
+                if not observed.wait(5):
+                    self.close_connection = True
+                    return
+                self.wfile.write(f'{len(last):x}\r\n'.encode() + last + b'\r\n0\r\n\r\n')
+                self.wfile.flush()
+
+        with ExitStack() as stack:
+            upstream = ThreadingHTTPServer(('127.0.0.1', 0), Events)
+            proxy = ThreadingHTTPServer(('127.0.0.1', 0), proxy_handler('127.0.0.1', upstream.server_port))
+            for server in (upstream, proxy):
+                thread = threading.Thread(target=lambda server=server: server.serve_forever(poll_interval=0.01))
+                thread.start()
+                stack.callback(server.server_close)
+                stack.callback(thread.join, 5)
+                stack.callback(server.shutdown)
+            with closing(HTTPConnection('127.0.0.1', proxy.server_port, timeout=3)) as client:
+                client.request('GET', '/v2/messages')
+                response = client.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader('Content-Type'), 'text/event-stream')
+                self.assertEqual(response.read(len(first)), first)
+                observed.set()
+                self.assertEqual(response.read(), last)
+            with closing(HTTPConnection('127.0.0.1', proxy.server_port, timeout=3)) as client:
+                client.request('GET', '/truncated')
+                response = client.getresponse()
+                self.assertEqual(response.read(len(first)), first)
+                with self.assertRaises(IncompleteRead):
+                    response.read()
+
     def test_websocket_preserves_buffered_frames_audio_and_upstream_auth_denial(self):
         # RFC 6455 frames over real sockets. The first client/server frame shares
         # one write with its HTTP headers, exposing HTTP-parser read-ahead loss.

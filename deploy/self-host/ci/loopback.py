@@ -2,7 +2,7 @@
 """Expose fixture HTTP/WebSocket ports while application containers stay internal."""
 
 from contextlib import closing, suppress
-from http.client import HTTPConnection
+from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import re
 import socket
@@ -13,6 +13,8 @@ BODY_LIMIT = 1024 * 1024
 LINE_LIMIT = 8192
 TUNNEL_BYTE_LIMIT = 64 * 1024 * 1024
 TUNNEL_SECONDS = 900
+RESPONSE_BYTE_LIMIT = 64 * 1024 * 1024
+RESPONSE_SECONDS = 900
 
 HOP_HEADERS = {
     'connection',
@@ -151,6 +153,7 @@ def handler(host, port):
                 headers.update(Connection='Upgrade', Upgrade='websocket')
             with closing(HTTPConnection(host, port, timeout=30)) as connection:
                 connection.request(self.command, self.path, request_body, headers)
+                upstream_socket = connection.sock
                 result = connection.getresponse()
                 if result.status == 101:
                     if (
@@ -176,17 +179,45 @@ def handler(host, port):
                     finally:
                         result.close()
                     return
-                body = result.read(1024 * 1024 + 1)
-                if len(body) > 1024 * 1024:
-                    self.send_error(502)
-                    return
+                # Flush SSE events as they arrive. Buffering to EOF both hides
+                # progress and times out while the real local model is working.
+                # A missing final chunk makes an interrupted stream observable.
+                self.protocol_version = 'HTTP/1.1'
+                self.close_connection = True
                 self.send_response(result.status)
                 for key, value in result.getheaders():
                     if key.lower() not in HOP_HEADERS | {'content-length'}:
                         self.send_header(key, value)
-                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Connection', 'close')
+                if result.status in (204, 304):
+                    self.end_headers()
+                    return
+                self.send_header('Transfer-Encoding', 'chunked')
                 self.end_headers()
-                self.wfile.write(body)
+                self.wfile.flush()
+                deadline, total = time.monotonic() + RESPONSE_SECONDS, 0
+                try:
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError('fixture response deadline exceeded')
+                        upstream_socket.settimeout(remaining)
+                        chunk = result.read1(65536)
+                        if not chunk:
+                            if result.length not in (None, 0):
+                                raise HTTPException('incomplete upstream body')
+                            break
+                        total += len(chunk)
+                        if total > RESPONSE_BYTE_LIMIT:
+                            raise ValueError('fixture response byte limit exceeded')
+                        self.wfile.write(f'{len(chunk):x}\r\n'.encode() + chunk + b'\r\n')
+                        self.wfile.flush()
+                except (OSError, HTTPException, ValueError):
+                    # Headers have been sent; closing without the final chunk
+                    # signals an incomplete body rather than fabricating success.
+                    return
+                self.wfile.write(b'0\r\n\r\n')
+                self.wfile.flush()
 
         do_GET = do_POST = do_PATCH = do_DELETE = dispatch
 
