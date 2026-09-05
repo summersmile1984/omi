@@ -115,6 +115,21 @@ D1 names must already match explicit inventory UUIDs. Asynchronous metadata
 creation may require later observation; a failed/unknown result never triggers
 an automatic duplicate mutation.
 
+Eddy's first provisioning attempt on 2026-09-05 created all 18 data resources,
+then stopped after the first metadata-index creation: the live API reported
+`indexType: "Number"`, although its [documented response](https://developers.cloudflare.com/api/resources/vectorize/subresources/indexes/subresources/metadata_index/methods/list/)
+uses `"number"`. The adapter now accepts the explicit lowercase/title-case
+values for the three supported types and still rejects a different or unknown
+type. The original journal remains reconciliation evidence. Continue with its
+observed D1 identities, a newly prepared candidate and a fresh journal; do not
+replay the failed transaction or recreate an already observed index.
+The next creation exposed asynchronous propagation: the creation process exited
+0, its immediate GET was empty, and a later read confirmed the index. Following
+one creation the adapter now polls authoritative absence at most ten times,
+two seconds apart. It never repeats the mutation; transport, permission and
+type errors stop immediately, and exhausted observation leaves reconciliation
+required. These behavioral cases run in the existing full Vitest release lane.
+
 Apply observes resources, exact 100% prior Worker versions, account subdomain or
 active zone/custom-domain ownership, required policies and secret references. It
 executes the fixed product/schema qualification runners, validates the remote D1

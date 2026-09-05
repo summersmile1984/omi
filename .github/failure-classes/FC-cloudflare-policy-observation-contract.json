@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "FC-cloudflare-policy-observation-contract",
+  "violated_contract": "Cloudflare policy provisioning must interpret the observed API type and distinguish successful asynchronous creation from read visibility, without issuing a second creation when confirmation is delayed. Eddy's first production resource provisioning rejected the live Vectorize Number enum despite a successful creation; its next attempt rejected an immediately absent read that later became present.",
+  "canonical_prevention": "Keep policy decoding and bounded post-creation observation in the Wrangler release adapter. Accept only the explicit documented/live enum values, reject wrong or unknown types, and poll authoritative absence after exactly one mutation. Permission, transport and type errors stop immediately; exhausted observation leaves an unknown journal event requiring reconciliation. Exercise API responses and the actual transaction owner, including delayed success, denied observation and forbidden replay.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/scripts/release-wrangler.mjs",
+    "deploy/cloudflare/scripts/release-transaction.mjs",
+    "deploy/cloudflare/tests/release-adapter.test.mjs",
+    "deploy/cloudflare/tests/release-transaction.test.mjs"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/scripts/release-*.mjs"
+  ],
+  "status": "open"
+}

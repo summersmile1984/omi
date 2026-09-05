@@ -139,7 +139,7 @@ export async function provisionResources({
       `policy:${policy.kind}:${policy.name}:${policy.id}`,
       () => adapter.addPolicy(policy),
       async () => {
-        const result = await adapter.observePolicy(policy);
+        const result = await adapter.waitForPolicy(policy);
         if (result.status !== "present")
           throw new Error(
             "policy is not ready; observe before retrying an asynchronous mutation",

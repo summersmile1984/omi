@@ -62,25 +62,127 @@ function fixture(options = {}) {
 }
 const ok = (result) => Response.json({ success: true, result });
 describe("locked Wrangler release adapter", () => {
+  it("waits for asynchronous metadata visibility without repeating creation", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(ok({ metadataIndexes: [] }))
+      .mockResolvedValueOnce(ok({ metadataIndexes: [] }))
+      .mockResolvedValueOnce(
+        ok({
+          metadataIndexes: [
+            { propertyName: "created_at", indexType: "Number" },
+          ],
+        })
+      );
+    const spawn = vi.fn(),
+      sleep = vi.fn(async () => {});
+    const adapter = fixture({ fetchImpl, spawn });
+    await expect(
+      adapter.waitForPolicy(
+        {
+          kind: "vectorize",
+          name: "fixture-index",
+          id: "created_at",
+          type: "number",
+        },
+        { attempts: 3, retryDelayMs: 1, sleep }
+      )
+    ).resolves.toEqual({ status: "present" });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+  it("bounds missing-policy observations and stops immediately on a permission failure", async () => {
+    const policy = {
+      kind: "vectorize",
+      name: "fixture-index",
+      id: "created_at",
+      type: "number",
+    };
+    const fetchImpl = vi.fn(() => ok({ metadataIndexes: [] }));
+    const sleep = vi.fn(async () => {}),
+      adapter = fixture({ fetchImpl });
+    await expect(
+      adapter.waitForPolicy(policy, { attempts: 2, retryDelayMs: 1, sleep })
+    ).rejects.toThrow("deadline");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    fetchImpl
+      .mockClear()
+      .mockImplementation(() =>
+        Response.json({ success: false }, { status: 403 })
+      );
+    sleep.mockClear();
+    await expect(
+      adapter.waitForPolicy(policy, { attempts: 2, retryDelayMs: 1, sleep })
+    ).rejects.toThrow("HTTP 403");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+  });
+  it.each(["number", "Number"])(
+    "observes the documented and production Vectorize numeric type %s",
+    async (indexType) => {
+      const adapter = fixture({
+        fetchImpl: vi.fn(() =>
+          ok({ metadataIndexes: [{ propertyName: "created_at", indexType }] })
+        ),
+      });
+      await expect(
+        adapter.observePolicy({
+          kind: "vectorize",
+          name: "fixture-index",
+          id: "created_at",
+          type: "number",
+        })
+      ).resolves.toEqual({ status: "present" });
+    }
+  );
+  it.each(["String", "Boolean", "NUMBER", "", null, undefined])(
+    "rejects a wrong or unknown Vectorize metadata type %s",
+    async (indexType) => {
+      const adapter = fixture({
+        fetchImpl: vi.fn(() =>
+          ok({ metadataIndexes: [{ propertyName: "created_at", indexType }] })
+        ),
+      });
+      await expect(
+        adapter.observePolicy({
+          kind: "vectorize",
+          name: "fixture-index",
+          id: "created_at",
+          type: "number",
+        })
+      ).rejects.toThrow("Vectorize metadata owner differs");
+    }
+  );
+  it("reports an uncreated Vectorize metadata property as absent", async () => {
+    const adapter = fixture({
+      fetchImpl: vi.fn(() => ok({ metadataIndexes: [] })),
+    });
+    await expect(
+      adapter.observePolicy({
+        kind: "vectorize",
+        name: "fixture-index",
+        id: "created_at",
+        type: "number",
+      })
+    ).resolves.toEqual({ status: "absent" });
+  });
   it("publishes the frozen config, not source, with private secrets and exact transaction annotations", () => {
     let secretPath;
     const spawn = vi.fn((command, args, options) => {
       expect(command).toBe(process.execPath);
       expect(args[0]).toBe(
-        resolve(
-          root,
-          "deploy/cloudflare/node_modules/wrangler/bin/wrangler.js",
-        ),
+        resolve(root, "deploy/cloudflare/node_modules/wrangler/bin/wrangler.js")
       );
       expect(args.slice(1, 3)).toEqual(["deploy", "--config"]);
       expect(args).toContain("--no-bundle");
       expect(args).toContain("--strict");
       expect(
-        args.slice(args.indexOf("--tag"), args.indexOf("--tag") + 2),
+        args.slice(args.indexOf("--tag"), args.indexOf("--tag") + 2)
       ).toEqual(["--tag", "transaction:auth"]);
       secretPath = args.at(-1);
       expect(
-        JSON.parse(readFileSync(secretPath, "utf8")).BETTER_AUTH_SECRET,
+        JSON.parse(readFileSync(secretPath, "utf8")).BETTER_AUTH_SECRET
       ).toContain("synthetic-secret-value");
       expect(options.stdio).toEqual(["ignore", "pipe", "pipe"]);
       expect(options.env.CLOUDFLARE_ACCOUNT_ID).toBe(account);
@@ -94,7 +196,7 @@ describe("locked Wrangler release adapter", () => {
     const result = adapter.deploy(
       "auth",
       "transaction:auth",
-      "candidate=fixture;artifact=fixture",
+      "candidate=fixture;artifact=fixture"
     );
     expect(result).toEqual({ exit: 1, signal: null });
     expect(existsSync(secretPath)).toBe(false);
@@ -119,7 +221,7 @@ describe("locked Wrangler release adapter", () => {
         setInterval(() => {}, 1000);
       `,
         ],
-        { ...options, timeout: 250 },
+        { ...options, timeout: 250 }
       );
       return actual;
     });
@@ -136,7 +238,7 @@ describe("locked Wrangler release adapter", () => {
 
   it("rejects valid-looking evidence from a timed-out real qualification process", () => {
     const directory = mkdtempSync(
-      resolve(tmpdir(), "cf-release-qualification-timeout-"),
+      resolve(tmpdir(), "cf-release-qualification-timeout-")
     );
     directories.push(directory);
     const candidate = { candidate_digest: "b".repeat(64) };
@@ -152,8 +254,8 @@ describe("locked Wrangler release adapter", () => {
       writeFileSync(
         filename,
         `console.log(${JSON.stringify(
-          JSON.stringify(proof),
-        )}); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);\n`,
+          JSON.stringify(proof)
+        )}); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);\n`
       );
     }
     let actual;
@@ -163,7 +265,7 @@ describe("locked Wrangler release adapter", () => {
       return actual;
     });
     expect(() =>
-      runReleaseQualifiers(directory, candidate, {}, { spawn }),
+      runReleaseQualifiers(directory, candidate, {}, { spawn })
     ).toThrow("stale/incomplete evidence");
     expect(actual.error.code).toBe("ETIMEDOUT");
     expect(spawn).toHaveBeenCalledOnce();
@@ -193,14 +295,14 @@ describe("locked Wrangler release adapter", () => {
       "--yes",
     ]);
     expect(() =>
-      adapter.rollback("fixture-auth", "../unknown", "transaction"),
+      adapter.rollback("fixture-auth", "../unknown", "transaction")
     ).toThrow("invalid");
   });
   it("observes exact active versions and annotations through the real API URL contract", async () => {
     const fetchImpl = vi.fn(async (url, options) => {
       expect(options.redirect).toBe("error");
       expect(options.headers.Authorization).toBe(
-        "Bearer synthetic-api-credential",
+        "Bearer synthetic-api-credential"
       );
       return url.endsWith("/deployments")
         ? ok({
@@ -231,7 +333,7 @@ describe("locked Wrangler release adapter", () => {
       fetchImpl: async () =>
         Response.json(
           { success: false, errors: [{ code: 10007 }] },
-          { status: 404 },
+          { status: 404 }
         ),
     });
     expect(await absent.observeWorker("fixture-auth")).toEqual({
@@ -245,11 +347,11 @@ describe("locked Wrangler release adapter", () => {
               success: false,
               errors: [{ code: 10000, message: "synthetic-secret-value" }],
             },
-            { status },
+            { status }
           ),
       });
       await expect(adapter.observeWorker("fixture-auth")).rejects.toThrow(
-        `HTTP ${status}`,
+        `HTTP ${status}`
       );
     }
     await expect(
@@ -257,7 +359,7 @@ describe("locked Wrangler release adapter", () => {
         fetchImpl: async () => {
           throw new Error("synthetic-secret-value");
         },
-      }).observeWorker("fixture-auth"),
+      }).observeWorker("fixture-auth")
     ).rejects.toThrow("outcome is unknown");
   });
   it("rejects split or malformed versions rather than interpreting them as a first release", () => {
@@ -274,14 +376,14 @@ describe("locked Wrangler release adapter", () => {
   it("creates via an exact response ID, verifies vector dimensions, and never infers absence from truncated lists", async () => {
     const fetchImpl = vi.fn(async (url, options) => {
       expect(url).toBe(
-        `https://api.cloudflare.com/client/v4/accounts/${account}/d1/database`,
+        `https://api.cloudflare.com/client/v4/accounts/${account}/d1/database`
       );
       expect(options.method).toBe("POST");
       expect(JSON.parse(options.body)).toEqual({ name: "fixture-auth" });
       return ok({ uuid: version, name: "fixture-auth" });
     });
     expect(
-      await fixture({ fetchImpl }).create({ kind: "d1", name: "fixture-auth" }),
+      await fixture({ fetchImpl }).create({ kind: "d1", name: "fixture-auth" })
     ).toEqual({ created_id: version });
     await expect(
       fixture({
@@ -289,9 +391,9 @@ describe("locked Wrangler release adapter", () => {
           ok(
             Array.from({ length: 1000 }, (_, index) => ({
               name: `other-${index}`,
-            })),
+            }))
           ),
-      }).observeResource({ kind: "d1", name: "missing" }),
+      }).observeResource({ kind: "d1", name: "missing" })
     ).rejects.toThrow("pagination is ambiguous");
     await expect(
       fixture({
@@ -304,7 +406,7 @@ describe("locked Wrangler release adapter", () => {
         name: "vectors",
         dimensions: 1024,
         metric: "cosine",
-      }),
+      })
     ).rejects.toThrow("dimensions");
   });
   it("retains Vectorize metadata and one-day R2 lifecycle policies with concrete locked command arguments", () => {
@@ -362,15 +464,15 @@ describe("locked Wrangler release adapter", () => {
       ]);
     });
     expect(
-      await fixture({ fetchImpl }).migrationLedger({ database_id: version }),
+      await fixture({ fetchImpl }).migrationLedger({ database_id: version })
     ).toEqual(["0001.sql"]);
     expect(
-      fetchImpl.mock.calls.every(([, options]) => options.method === "POST"),
+      fetchImpl.mock.calls.every(([, options]) => options.method === "POST")
     ).toBe(true);
     await expect(
       fixture({ fetchImpl: async () => ok([{ results: [] }]) }).migrationLedger(
-        { database_id: version },
-      ),
+        { database_id: version }
+      )
     ).rejects.toThrow("incomplete");
   });
   it.each(["html", "not-ready", "503"])(
@@ -381,12 +483,12 @@ describe("locked Wrangler release adapter", () => {
           ? new Response("<html>ok</html>")
           : Response.json(
               { status: kind === "503" ? "ready" : "ok" },
-              { status: kind === "503" ? 503 : 200 },
+              { status: kind === "503" ? 503 : 200 }
             );
       await expect(
-        fixture({ fetchImpl }).readiness({ attempts: 1 }),
+        fixture({ fetchImpl }).readiness({ attempts: 1 })
       ).rejects.toThrow("readiness");
-    },
+    }
   );
   it("checks both profile-owned public readiness URLs", async () => {
     const fetchImpl = vi.fn(async () => Response.json({ status: "ready" }));
@@ -411,12 +513,12 @@ describe("locked Wrangler release adapter", () => {
   });
   it("does not accept an operator-written approved file in place of missing product/schema runners", () => {
     const directory = mkdtempSync(
-      resolve(tmpdir(), "cf-release-qualification-"),
+      resolve(tmpdir(), "cf-release-qualification-")
     );
     directories.push(directory);
     writeFileSync(
       resolve(directory, "approved.json"),
-      JSON.stringify({ approved: true }),
+      JSON.stringify({ approved: true })
     );
     expect(pendingQualifiers(directory)).toEqual([
       "CF-4",
@@ -425,7 +527,7 @@ describe("locked Wrangler release adapter", () => {
     ]);
     const spawn = vi.fn();
     expect(() => runReleaseQualifiers(directory, {}, {}, { spawn })).toThrow(
-      "pending",
+      "pending"
     );
     expect(spawn).not.toHaveBeenCalled();
   });

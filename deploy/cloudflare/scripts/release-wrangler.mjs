@@ -12,7 +12,7 @@ export function runReleaseProcess(
   command,
   args,
   options,
-  { spawn = spawnSync } = {},
+  { spawn = spawnSync } = {}
 ) {
   if (process.platform === "win32")
     throw new Error("release execution requires POSIX process-group ownership");
@@ -64,7 +64,7 @@ export class WranglerReleaseAdapter {
     assertInstalledRuntime(resolve(root, "deploy/cloudflare"));
     this.bin = resolve(
       root,
-      "deploy/cloudflare/node_modules/wrangler/bin/wrangler.js",
+      "deploy/cloudflare/node_modules/wrangler/bin/wrangler.js"
     );
     this.account = candidate.account_id;
     if (!/^[0-9a-f]{32}$/i.test(this.account))
@@ -89,7 +89,7 @@ export class WranglerReleaseAdapter {
         },
         stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       },
-      { spawn: this.spawn },
+      { spawn: this.spawn }
     );
     // CLI output can contain vars, provider errors or credentials. It never
     // enters the release journal. A failed process has an unknown remote result.
@@ -113,7 +113,7 @@ export class WranglerReleaseAdapter {
             "Content-Type": "application/json",
           },
           ...(body ? { body: JSON.stringify(body) } : {}),
-        },
+        }
       );
       json = await response.json();
     } catch {
@@ -127,7 +127,7 @@ export class WranglerReleaseAdapter {
       return null;
     if (!response.ok || json.success !== true)
       throw new Error(
-        `Cloudflare observation failed (HTTP ${response.status})`,
+        `Cloudflare observation failed (HTTP ${response.status})`
       );
     return json;
   }
@@ -171,7 +171,7 @@ export class WranglerReleaseAdapter {
   }
   async observeResource(resource) {
     const matches = (await this.list(resource.kind)).filter(
-      (entry) => (entry.name ?? entry.queue_name) === resource.name,
+      (entry) => (entry.name ?? entry.queue_name) === resource.name
     );
     if (matches.length > 1)
       throw new Error("resource name has multiple remote owners");
@@ -185,7 +185,7 @@ export class WranglerReleaseAdapter {
         row.config?.metric !== resource.metric)
     )
       throw new Error(
-        "Vectorize dimensions or metric differ from the resource plan",
+        "Vectorize dimensions or metric differ from the resource plan"
       );
     return {
       status: "present",
@@ -233,7 +233,7 @@ export class WranglerReleaseAdapter {
             .name,
           id: "created_at",
           type: "number",
-        }),
+        })
       ),
       ...[
         ["expire-staged-transcriptions", "cf-transcriptions/"],
@@ -251,14 +251,24 @@ export class WranglerReleaseAdapter {
     if (policy.kind === "vectorize") {
       const result = (
         await this.api(
-          `vectorize/v2/indexes/${policy.name}/metadata_index/list`,
+          `vectorize/v2/indexes/${policy.name}/metadata_index/list`
         )
       ).result;
       const rows = result?.metadataIndexes;
       if (!Array.isArray(rows))
         throw new Error("Vectorize metadata observation is incomplete");
       const entry = rows.find((row) => row.propertyName === policy.id);
-      if (entry && entry.indexType !== policy.type)
+      // The API documents lowercase values but production also returns the
+      // title-case enum (observed during Eddy provisioning on 2026-09-05).
+      const observedType = new Map([
+        ["number", "number"],
+        ["Number", "number"],
+        ["string", "string"],
+        ["String", "string"],
+        ["boolean", "boolean"],
+        ["Boolean", "boolean"],
+      ]).get(entry?.indexType);
+      if (entry && (!observedType || observedType !== policy.type))
         throw new Error("Vectorize metadata owner differs");
       return entry ? { status: "present" } : { status: "absent" };
     }
@@ -299,7 +309,35 @@ export class WranglerReleaseAdapter {
             policy.prefix,
             "--expire-days",
             "1",
-          ],
+          ]
+    );
+  }
+  async waitForPolicy(
+    policy,
+    {
+      attempts = 10,
+      retryDelayMs = 2000,
+      sleep = (ms) => new Promise((done) => setTimeout(done, ms)),
+    } = {}
+  ) {
+    if (
+      !Number.isInteger(attempts) ||
+      attempts < 1 ||
+      attempts > 30 ||
+      !Number.isInteger(retryDelayMs) ||
+      retryDelayMs < 0 ||
+      retryDelayMs > 5000
+    )
+      throw new Error("invalid policy observation bounds");
+    // Creation is asynchronous. Only an authoritative absence is polled;
+    // transport/permission/type failures remain unknown and stop immediately.
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const observed = await this.observePolicy(policy);
+      if (observed.status === "present") return observed;
+      if (attempt + 1 < attempts) await sleep(retryDelayMs);
+    }
+    throw new Error(
+      "created policy did not become observable within the deadline"
     );
   }
   async preconditions() {
@@ -310,12 +348,12 @@ export class WranglerReleaseAdapter {
           this.env[reference].length < 32
         )
           throw new Error(
-            `required secret reference is unavailable: ${reference}`,
+            `required secret reference is unavailable: ${reference}`
           );
     for (const policy of this.policies())
       if ((await this.observePolicy(policy)).status !== "present")
         throw new Error(
-          "resource policy must be provisioned and observed before publishing",
+          "resource policy must be provisioned and observed before publishing"
         );
     const input = this.candidate.inventory;
     if (input.routing.mode === "workers_dev") {
@@ -329,7 +367,7 @@ export class WranglerReleaseAdapter {
       const zones = [];
       for (let page = 1; ; page++) {
         const observed = await this.api(
-          `/zones?account.id=${this.account}&status=active&per_page=50&page=${page}`,
+          `/zones?account.id=${this.account}&status=active&per_page=50&page=${page}`
         );
         if (
           !Array.isArray(observed.result) ||
@@ -342,29 +380,29 @@ export class WranglerReleaseAdapter {
           throw new Error("zone ownership exceeds bounded observation");
       }
       for (const { config } of Object.values(
-        this.candidate.resource_plan.configs,
+        this.candidate.resource_plan.configs
       ))
         for (const route of config.routes ?? []) {
           const matches = response.result.filter(
-            (row) => row.hostname === route.pattern,
+            (row) => row.hostname === route.pattern
           );
           if (
             matches.length > 1 ||
             matches.some((row) => row.service !== config.name)
           )
             throw new Error(
-              "custom domain belongs to a different Worker owner",
+              "custom domain belongs to a different Worker owner"
             );
           if (
             !zones.some(
               (zone) =>
                 zone.account?.id === this.account &&
                 (route.pattern === zone.name ||
-                  route.pattern.endsWith(`.${zone.name}`)),
+                  route.pattern.endsWith(`.${zone.name}`))
             )
           )
             throw new Error(
-              "custom domain has no observed active zone in the release account",
+              "custom domain has no observed active zone in the release account"
             );
         }
     }
@@ -373,12 +411,12 @@ export class WranglerReleaseAdapter {
   async observeWorker(name) {
     const response = await this.api(
       `workers/scripts/${encodeURIComponent(name)}/deployments`,
-      { absentWorker: true },
+      { absentWorker: true }
     );
     if (response === null) return { status: "absent" };
     const version = activeVersion(response.result?.deployments?.[0]);
     const detail = await this.api(
-      `workers/scripts/${encodeURIComponent(name)}/versions/${version}`,
+      `workers/scripts/${encodeURIComponent(name)}/versions/${version}`
     );
     return {
       status: "present",
@@ -405,11 +443,11 @@ export class WranglerReleaseAdapter {
       return result[0].results;
     };
     const tables = await query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='d1_migrations'",
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='d1_migrations'"
     );
     return tables.length
       ? (await query("SELECT name FROM d1_migrations ORDER BY id")).map(
-          (row) => row.name,
+          (row) => row.name
         )
       : [];
   }
@@ -434,7 +472,7 @@ export class WranglerReleaseAdapter {
         this.env[reference].length < 32
       )
         throw new Error(
-          `required secret reference is unavailable: ${reference}`,
+          `required secret reference is unavailable: ${reference}`
         );
       values[binding] = this.env[reference];
     }

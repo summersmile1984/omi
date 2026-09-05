@@ -48,7 +48,7 @@ function fixture({ first = false } = {}) {
       first
         ? { status: "absent" }
         : { status: "present", version: old, tag: null, message: null },
-    ]),
+    ])
   );
   const history = [],
     saved = [];
@@ -106,6 +106,36 @@ function fixture({ first = false } = {}) {
   };
 }
 describe("Cloudflare release transaction ownership", () => {
+  it.each([true, false])(
+    "creates a policy once and records its bounded observation outcome (ready=%s)",
+    async (ready) => {
+      const f = fixture();
+      const policy = {
+        kind: "vectorize",
+        name: "fixture-index",
+        id: "created_at",
+        type: "number",
+      };
+      f.journal = createJournal(f.candidate, "provision");
+      f.adapter.policies = () => [policy];
+      f.adapter.observePolicy = vi.fn(async () => ({ status: "absent" }));
+      f.adapter.addPolicy = vi.fn(() => ({ exit: 0, signal: null }));
+      f.adapter.waitForPolicy = vi.fn(async () => {
+        expect(f.saved.at(-1).events[0].state).toBe("in_flight");
+        if (!ready) throw new Error("observation deadline");
+        return { status: "present" };
+      });
+      if (ready) await provisionResources(f);
+      else
+        await expect(provisionResources(f)).rejects.toThrow("reconciliation");
+      expect(f.adapter.addPolicy).toHaveBeenCalledExactlyOnceWith(policy);
+      expect(f.adapter.waitForPolicy).toHaveBeenCalledExactlyOnceWith(policy);
+      expect(f.journal.events[0].state).toBe(ready ? "confirmed" : "unknown");
+      expect(f.journal.release_ready).toBe(false);
+      await expect(provisionResources(f)).rejects.toThrow("cannot replay");
+      expect(f.adapter.addPolicy).toHaveBeenCalledOnce();
+    }
+  );
   it("qualifies before writes, journals intent, applies SQL before dependencies, and confirms versions after health", async () => {
     const f = fixture();
     await applyRelease(f);
@@ -113,9 +143,9 @@ describe("Cloudflare release transaction ownership", () => {
     expect(
       f.saved.some((entry) =>
         entry.events.some(
-          (event) => event.id === "deploy:auth" && event.state === "in_flight",
-        ),
-      ),
+          (event) => event.id === "deploy:auth" && event.state === "in_flight"
+        )
+      )
     ).toBe(true);
     expect(f.journal.state).toBe("completed");
     expect(f.journal.release_ready).toBe(true);
@@ -130,7 +160,7 @@ describe("Cloudflare release transaction ownership", () => {
       ["old.sql", "old.sql"],
     ])
       expect(() => assertMigrationPrefix(authority, ledger)).toThrow(
-        "exact prefix",
+        "exact prefix"
       );
   });
   it.each(["qualification", "source", "journal"])(
@@ -149,7 +179,7 @@ describe("Cloudflare release transaction ownership", () => {
         });
       await expect(applyRelease(f)).rejects.toThrow();
       expect(f.history).toEqual([]);
-    },
+    }
   );
   it("records an owned version after a failed publish command but requires recovery for potentially incomplete triggers", async () => {
     const f = fixture(),
@@ -159,14 +189,14 @@ describe("Cloudflare release transaction ownership", () => {
       return { exit: 1, signal: null };
     });
     await expect(applyRelease(f)).rejects.toThrow(
-      "publish command did not complete",
+      "publish command did not complete"
     );
     expect(
-      f.journal.events.find((event) => event.id === "deploy:auth").process.exit,
+      f.journal.events.find((event) => event.id === "deploy:auth").process.exit
     ).toBe(1);
     expect(f.journal.state).toBe("recovery_required");
     expect(
-      (await recoveryPlan(f.candidate, f.journal, f.adapter)).actions[0].action,
+      (await recoveryPlan(f.candidate, f.journal, f.adapter)).actions[0].action
     ).toBe("restore_version");
     expect(f.adapter.deploy).toHaveBeenCalledTimes(1);
   });
@@ -179,7 +209,7 @@ describe("Cloudflare release transaction ownership", () => {
         {
           timeout: 100,
           encoding: "utf8",
-        },
+        }
       );
       return { exit: result.status, signal: result.signal };
     });
@@ -198,7 +228,7 @@ describe("Cloudflare release transaction ownership", () => {
     await expect(applyRelease(f)).rejects.toThrow("reconciliation");
     expect(f.adapter.deploy).toHaveBeenCalledTimes(1);
     expect(
-      (await recoveryPlan(f.candidate, f.journal, f.adapter)).actions[0].action,
+      (await recoveryPlan(f.candidate, f.journal, f.adapter)).actions[0].action
     ).toBe("manual_reconciliation");
     await expect(restoreRelease(f)).rejects.toThrow("unproven owners");
     expect(f.adapter.rollback).not.toHaveBeenCalled();
@@ -222,7 +252,7 @@ describe("Cloudflare release transaction ownership", () => {
     await expect(applyRelease(f)).rejects.toThrow();
     const plan = await recoveryPlan(f.candidate, f.journal, f.adapter);
     expect(
-      plan.actions.every((action) => action.action === "retain_first_release"),
+      plan.actions.every((action) => action.action === "retain_first_release")
     ).toBe(true);
     expect(plan.sql_rollback).toBe("never");
     await expect(restoreRelease(f)).rejects.toThrow("unproven owners");
@@ -233,7 +263,7 @@ describe("Cloudflare release transaction ownership", () => {
     f.journal.before["fixture-auth"].version = next;
     f.adapter.observeWorker.mockClear();
     await expect(
-      recoveryPlan(f.candidate, f.journal, f.adapter),
+      recoveryPlan(f.candidate, f.journal, f.adapter)
     ).rejects.toThrow("integrity");
     expect(f.adapter.observeWorker).not.toHaveBeenCalled();
   });
