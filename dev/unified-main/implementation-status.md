@@ -5,12 +5,14 @@ clients. The [2026-09-04 audit](audit-2026-09-04/01-self-host-action-plan.md)
 defines the acceptance criteria. A local implementation or unit-test pass is
 not a release, a signed client, or a completed product loop.
 
-Candidate branch: `codex/unified-delivery`, current local tip `3fa5ce41d4`.
-It is a reviewable local candidate: nothing in it has been pushed, merged, or
+Candidate branch: `codex/unified-delivery`; the latest implementation source
+tip reviewed is `0d4f71b4ab` (the following audit record is documentation
+only). It is a reviewable local candidate: nothing in it has been pushed, merged, or
 deployed to production.
 
-`upstream/main` at `c4880cd5f6` is an ancestor of this candidate. The branch is
-`0 263` relative to `upstream/main`; `scripts/fork/upstream_sync_plan.py --base
+`upstream/main` at `c4880cd5f6` is an ancestor of the reviewed implementation
+tip. At that audit, the branch was `0 264` relative to `upstream/main`;
+`scripts/fork/upstream_sync_plan.py --base
 HEAD --upstream upstream/main` reports no merge conflicts. On 2026-09-05,
 `python3 scripts/fork/check-upstream-touch.py --base upstream/main --head HEAD
 --upstream-ref upstream/main --json` passed with zero violations. Its only two
@@ -27,6 +29,10 @@ Fresh local target acceptance on 2026-09-05 passed
 `bash deploy/self-host/ci/product.sh` and
 `bash deploy/cloudflare/ci/product.sh`: the latter's isolated Worker/D1 trace
 records all 8 core, 6 recording, 11 chat, and 2 public-share cases as passing.
+The closure audit at this tip also reran the upstream-touch guard and the
+Flutter, macOS, and Electron stage suites; its exact scope, evidence, and the
+macOS disk-capacity limitation are recorded in
+[`closure-audit-0d4f71b4ab.md`](implementation-2026-09-05/closure-audit-0d4f71b4ab.md).
 
 | Package | Owner | Status / next evidence |
 | --- | --- | --- |
