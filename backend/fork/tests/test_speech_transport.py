@@ -106,9 +106,9 @@ def test_actual_ptt_wire_finalizes_real_socket_or_closes_failed(application, mon
     monkeypatch.setattr(chat, 'is_trial_paywalled', lambda *args: False)
     monkeypatch.setattr(chat, 'get_effective_limit', lambda *args: (10, 60))
     monkeypatch.setattr(chat, 'check_rate_limit', lambda *args: (True, 9, 0))
-    monkeypatch.setattr(chat, 'check_budget', lambda *args: (True, 0, 60000))
-    recorded = mock.Mock(return_value=True)
-    monkeypatch.setattr(chat, 'record_actual_duration', recorded)
+    monkeypatch.setattr(chat, 'try_reserve_session_budget', lambda *args: (True, 60000, 60000, 7140000))
+    settled = mock.Mock(return_value=True)
+    monkeypatch.setattr(chat, 'settle_reserved_duration', settled)
 
     def decode(*args):
         if failure:
@@ -128,9 +128,7 @@ def test_actual_ptt_wire_finalizes_real_socket_or_closes_failed(application, mon
         with pytest.raises(WebSocketDisconnect) as error:
             ws.receive_text()
         assert error.value.code == (1011 if failure else 1000)
-    assert recorded.call_count == (0 if failure else 1)
-    if not failure:
-        recorded.assert_called_once_with('existing-principal', 100)
+    settled.assert_called_once_with('existing-principal', 60000, 0 if failure else 100)
 
 
 @pytest.fixture
@@ -140,9 +138,9 @@ def ptt_runtime(monkeypatch):
     monkeypatch.setattr(chat, 'is_trial_paywalled', lambda *args: False)
     monkeypatch.setattr(chat, 'get_effective_limit', lambda *args: (10, 60))
     monkeypatch.setattr(chat, 'check_rate_limit', lambda *args: (True, 9, 0))
-    monkeypatch.setattr(chat, 'check_budget', lambda *args: (True, 0, 1000))
-    recorded = mock.Mock(return_value=True)
-    monkeypatch.setattr(chat, 'record_actual_duration', recorded)
+    monkeypatch.setattr(chat, 'try_reserve_session_budget', lambda *args: (True, 60000, 60000, 7140000))
+    settled = mock.Mock(return_value=True)
+    monkeypatch.setattr(chat, 'settle_reserved_duration', settled)
     decoded = mock.Mock(return_value='controlled transcription')
     monkeypatch.setattr(local_socket, 'decode_pcm', decoded)
     sockets = []
@@ -161,7 +159,7 @@ def ptt_runtime(monkeypatch):
             return result
 
     monkeypatch.setattr(local_socket, 'SenseVoiceSocket', TrackedSocket)
-    return SimpleNamespace(recorded=recorded, decoded=decoded, sockets=sockets, accepted=accepted)
+    return SimpleNamespace(settled=settled, decoded=decoded, sockets=sockets, accepted=accepted)
 
 
 class Session:
@@ -194,13 +192,13 @@ async def test_ptt_every_terminal_path_drains_and_charges_only_accepted_audio_on
         'disconnect': {'type': 'websocket.disconnect'},
         'disconnect_error': WebSocketDisconnect(1001),
         'idle': asyncio.TimeoutError(),
-        'limit': {'type': 'websocket.receive', 'bytes': pcm * 11},
+        'limit': {'type': 'websocket.receive', 'bytes': pcm * 600},
         'malformed': {'type': 'websocket.receive', 'bytes': b'odd'},
         'finalize': {'type': 'websocket.receive', 'text': 'finalize'},
     }[exit_path]
     ws = Session([{'type': 'websocket.receive', 'bytes': pcm}, terminal])
     await speech_transport.ptt(ws, 'existing-principal')
-    ptt_runtime.recorded.assert_called_once_with('existing-principal', 100)
+    ptt_runtime.settled.assert_called_once_with('existing-principal', 60000, 100)
     assert ptt_runtime.decoded.call_count == 1
     assert ptt_runtime.decoded.call_args.args[2] == pcm
     assert ptt_runtime.sockets[0]._pump_task.done()
@@ -238,7 +236,38 @@ async def test_ptt_failed_or_unaccepted_audio_never_charges_on_disconnect(ptt_ru
     else:
         frames[0]['bytes'] = b'odd'
     await speech_transport.ptt(Session(frames), 'existing-principal')
-    ptt_runtime.recorded.assert_not_called()
+    ptt_runtime.settled.assert_called_once_with('existing-principal', 60000, 0)
+
+
+@pytest.mark.asyncio
+async def test_ptt_reservation_failure_falls_back_to_actual_duration_accounting(ptt_runtime, monkeypatch):
+    from routers import chat
+
+    fallback = mock.Mock()
+    recorded = mock.Mock(return_value=True)
+    monkeypatch.setattr(chat, 'try_reserve_session_budget', mock.Mock(side_effect=RuntimeError('redis unavailable')))
+    monkeypatch.setattr(chat, 'record_actual_duration', recorded)
+    monkeypatch.setattr(speech_transport, 'record_fallback', fallback)
+
+    await speech_transport.ptt(
+        Session(
+            [
+                {'type': 'websocket.receive', 'bytes': b'\x00\x01' * 1600},
+                {'type': 'websocket.receive', 'text': 'finalize'},
+            ]
+        ),
+        'existing-principal',
+    )
+
+    ptt_runtime.settled.assert_not_called()
+    recorded.assert_called_once_with('existing-principal', 100)
+    fallback.assert_called_once_with(
+        component='ptt_cascade',
+        from_mode='atomic_budget_reservation',
+        to_mode='duration_settlement',
+        reason='other',
+        outcome='degraded',
+    )
 
 
 @pytest.mark.asyncio
@@ -270,7 +299,7 @@ async def test_cancelled_ptt_retains_healthy_tail_and_single_usage_owner(ptt_run
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    ptt_runtime.recorded.assert_called_once_with('existing-principal', 100)
+    ptt_runtime.settled.assert_called_once_with('existing-principal', 60000, 100)
     assert ptt_runtime.decoded.call_count == 1
     assert ptt_runtime.sockets[0]._pump_task.done()
 
@@ -328,6 +357,6 @@ async def test_ptt_idle_deadline_only_renews_for_accepted_audio(ptt_runtime, mon
     assert ws.closed == [(1008, 'speech_audio_idle_timeout')]
     assert clock[0] == (56 if with_audio else 31)
     if with_audio:
-        ptt_runtime.recorded.assert_called_once_with('existing-principal', 100)
+        ptt_runtime.settled.assert_called_once_with('existing-principal', 60000, 100)
     else:
-        ptt_runtime.recorded.assert_not_called()
+        ptt_runtime.settled.assert_called_once_with('existing-principal', 60000, 0)

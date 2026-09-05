@@ -11,6 +11,7 @@ from time import monotonic
 from fastapi import HTTPException
 from starlette.responses import Response
 from starlette.websockets import WebSocketDisconnect
+from utils.observability.fallback import record_fallback
 
 from . import speech
 from .speech import SpeechError
@@ -144,8 +145,7 @@ async def ptt(
         allowed, _, _ = await run_blocking(
             critical_executor, chat.check_rate_limit, uid, 'voice:transcribe_stream', limit, window
         )
-        has_budget, _, remaining_ms = await run_blocking(critical_executor, chat.check_budget, uid)
-        if not allowed or not has_budget:
+        if not allowed:
             await websocket.close(1008, 'speech_rate_limited')
             return
     except (ValueError, TranscriptionFailure):
@@ -154,6 +154,31 @@ async def ptt(
     except Exception:
         await websocket.close(1013, 'speech_admission_unavailable')
         return
+
+    budget_reserved_ms = 0
+    remaining_ms = speech.MAX_AUDIO_SECONDS * 1000
+    # Reserve at admission rather than probing the shared budget and recording
+    # after the socket closes. Parallel local PTT sessions must not each spend
+    # the same remaining duration. A failed reservation remains fail-open like
+    # the upstream duration limiter, while the local 60-second cap still holds.
+    try:
+        allowed, reserved_ms, _used_ms, _remaining_ms = await run_blocking(
+            critical_executor, chat.try_reserve_session_budget, uid, speech.MAX_AUDIO_SECONDS * 1000
+        )
+        if not allowed:
+            await websocket.close(1008, 'speech_rate_limited')
+            return
+        if reserved_ms > 0:
+            budget_reserved_ms = reserved_ms
+            remaining_ms = min(remaining_ms, reserved_ms)
+    except Exception:
+        record_fallback(
+            component='ptt_cascade',
+            from_mode='atomic_budget_reservation',
+            to_mode='duration_settlement',
+            reason='other',
+            outcome='degraded',
+        )
 
     segments = asyncio.Queue(maxsize=16)
     try:
@@ -166,22 +191,28 @@ async def ptt(
     send_failed = False
     settlement = None
 
-    async def drain_and_record():
+    async def drain_and_settle():
         # Accepted audio belongs to the provider even after the client leaves.
-        # A failed drain or rejected provider send never becomes billable usage.
-        await socket.drain_and_close()
-        if received > 0 and not send_failed:
-            await run_blocking(
-                critical_executor,
-                chat.record_actual_duration,
-                uid,
-                chat.compute_pcm_duration_ms(received, sample_rate, channels),
+        # A failed drain or rejected provider send refunds the reservation.
+        drained = False
+        try:
+            await socket.drain_and_close()
+            drained = True
+        finally:
+            actual_ms = (
+                chat.compute_pcm_duration_ms(received, sample_rate, channels)
+                if drained and received > 0 and not send_failed
+                else 0
             )
+            if budget_reserved_ms > 0:
+                await run_blocking(critical_executor, chat.settle_reserved_duration, uid, budget_reserved_ms, actual_ms)
+            elif actual_ms > 0:
+                await run_blocking(critical_executor, chat.record_actual_duration, uid, actual_ms)
 
     def settle_once():
         nonlocal settlement
         if settlement is None:
-            settlement = asyncio.create_task(drain_and_record())
+            settlement = asyncio.create_task(drain_and_settle())
         return settlement
 
     async def send_segments():
