@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Eddy</title>
+  <desc id="desc">An open circular current forms a lowercase e.</desc>
+  <path d="M 372 327 C 337 383 248 399 181 365 C 110 329 88 239 132 170 C 178 100 277 86 344 136 C 382 164 396 209 389 251 L 173 251"
+        fill="none" stroke="#FAFAF7" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
