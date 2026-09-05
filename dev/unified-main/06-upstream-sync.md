@@ -73,35 +73,30 @@ gh pr create --title "sync: upstream/main $(date +%F)" --body-file dev/unified-m
 - 阈值：冲突 > 5 → 本周内开一个"减注入点"任务；> 15 → 停止功能合入，先修拓扑。
 - 每季度：统计"fork 改动的上游文件数"（`git log --no-merges --name-only upstream/main..main` ∩ 上游树），目标单调下降；每回推上游一个可配置化 PR 都应让这个数字减少。
 
-## 6. 定时自动化（`fork-upstream-sync.yml`，草案）
+## 6. 定时自动化（`fork-upstream-sync.yml`）
 
-```yaml
-name: fork-upstream-sync
-on:
-  schedule: [{ cron: "0 2 * * 1" }]   # 每周一 02:00 UTC
-  workflow_dispatch:
-jobs:
-  open-sync-pr:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - run: |
-          git remote add upstream https://github.com/BasedHardware/omi.git
-          git fetch upstream main
-          n=$(git merge-tree --write-tree origin/main upstream/main | grep -c '^CONFLICT' || true)
-          echo "conflicts=$n" >> "$GITHUB_OUTPUT"
-        id: probe
-      - run: |
-          git switch -c sync/upstream-$(date +%F)
-          git merge --no-ff upstream/main || true       # 冲突留给人解；PR 里标注
-          git push -u origin HEAD
-          gh pr create --title "sync: upstream/main $(date +%F) (conflicts: ${{ steps.probe.outputs.conflicts }})" \
-                       --body "$(cat dev/unified-main/templates/sync-pr-body.md)"
-        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+```text
+每周一 02:00 UTC 或 workflow_dispatch
+  fetch upstream/main（不取 tag）
+  upstream_sync_plan.py --base origin/main --upstream upstream/main
+  有冲突：Actions summary 写精确文件表，失败，零分支/零 PR
+  无冲突：sync/upstream-<upstream-sha> 从 origin/main 常规 merge upstream/main
+            检查品牌生成物、fork 边界、空白错误
+            推送并开一个 main 的常规 merge PR
 ```
 
-冲突为 0 时该 PR 只需 CI 绿 + 一人批准即可合并；冲突 > 0 时由值周人接手分支解冲突。
+实际工作流位于 [`.github/workflows/fork-upstream-sync.yml`](../../.github/workflows/fork-upstream-sync.yml)。它先调用
+`scripts/fork/upstream_sync_plan.py`，该程序只运行 `git merge-tree`，不改
+checkout、索引或 refs，也不复用 `rerere`。冲突为 0 时，工作流从
+`origin/main` 建立内容寻址的 `sync/upstream-<sha>` 分支，创建常规 merge
+commit，检查 `omi-upstream` 品牌生成物与 fork 边界，再推送并开 PR。相同
+上游 SHA 已有分支时不重复创建。工作流在推送后对同一个 merge commit dispatch
+`fork-checks.yml`；Actions 用自身 `GITHUB_TOKEN` 推送时不会自动触发其它工作流，
+这个显式 dispatch 避免同步 PR 静默跳过 fork 契约门禁。
+
+有冲突时，工作流把精确文件列表写到 Actions summary 并失败；它不会推送
+半成品分支或创建无法检出的 PR。值周人从本节的手动流程建 worktree 解冲突。
+冲突为 0 的 PR 仍需 Fork Checks 绿和一人批准才能常规合并。
 
 
 ## 7. 同步 PR 的固定样板（2026-09-03 首次实战确认）

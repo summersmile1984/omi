@@ -68,7 +68,7 @@ main（fork of BasedHardware/omi）
 - [ ] `fork-build-matrix.yml` 在无密钥的 fork PR 上全绿；有密钥时对每个 品牌 × 客户端 产出可安装件。
 - [ ] `apply.py --brand omi-upstream --check-clean` 零 diff；`check.py --brand <brand>` 三个面为零。
 - [ ] 上游 `openapi-contract.yml` 在 `omi-upstream` 品牌下输出与上游字节一致。
-- [ ] 每周自动同步 PR 由 `fork-upstream-sync.yml` 生成，`sync-log.md` 有连续记录。
+- [ ] `fork-upstream-sync.yml` 已实现非变异冲突探测和无冲突时的常规 merge PR；首次远端运行与连续 `sync-log.md` 记录仍待完成。
 
 ## 使用方式
 
