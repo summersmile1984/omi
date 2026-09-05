@@ -15,7 +15,6 @@ from daily_summary_routes import (  # noqa: E402
     get_shared_daily_summary,
     list_daily_summaries,
     set_daily_summary_visibility,
-    test_daily_summary as generate_daily_summary,
 )
 
 
@@ -48,8 +47,8 @@ class FakeDb:
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
-        self.connection.executescript((migration_dir / "0032_conversations.sql").read_text())
-        self.connection.executescript((migration_dir / "0041_daily_summaries.sql").read_text())
+        for migration in sorted(migration_dir.glob("*.sql")):
+            self.connection.executescript(migration.read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -127,6 +126,7 @@ def test_shared_daily_summary_is_public_and_excludes_private_fields():
     assert "uid" not in result
     assert "locations" not in result
     assert "unresolved_questions" not in result
+    assert "memories_learned" not in result
     assert "created_at" not in result
 
 
@@ -187,28 +187,3 @@ def test_daily_summary_mutations_validate_owner_and_visibility():
     assert missing.status_code == 404
     deleted = asyncio.run(delete_daily_summary(FakeRequest(env, signed_headers(secret)), "summary-1"))
     assert deleted == {"status": "ok"}
-
-
-def test_daily_summary_test_generation_uses_d1_conversations_without_llm():
-    secret = "summary-secret"
-    db = FakeDb()
-    db.connection.execute(
-        "INSERT INTO cf_conversations "
-        "(uid, id, created_at, started_at, finished_at, structured_json) VALUES (?, ?, ?, ?, ?, ?)",
-        (
-            "summary-user",
-            "conversation-1",
-            1_756_512_000,
-            1_756_512_000,
-            1_756_512_120,
-            json.dumps({"action_items": [{"description": "ship"}]}),
-        ),
-    )
-    db.connection.commit()
-    env = type("Env", (), {"APP_DB": db, "INTERNAL_ASSERTION_SECRET": secret})()
-
-    result = asyncio.run(generate_daily_summary(FakeRequest(env, signed_headers(secret), body={"date": "2025-08-30"})))
-    assert result["status"] == "ok"
-    assert result["conversations_count"] == 1
-    stored = db.connection.execute("SELECT stats_json FROM cf_daily_summaries").fetchone()
-    assert json.loads(stored[0])["action_items_count"] == 1

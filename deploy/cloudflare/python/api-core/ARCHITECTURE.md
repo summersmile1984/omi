@@ -16,6 +16,25 @@ table, and deletion triggers plus the Jobs residual registry fence and purge it.
 The pinned `pytz` wheel supplies IANA data inside Python Workers without an OS
 timezone database. This route does not generate daily summaries.
 
+`daily_summary_routes.py` exposes the daily recap projection. Its create,
+regenerate and settings-test entries delegate to `daily_summary_generation.py`:
+quota admission, timezone resolution, one D1 lease per uid/date, bounded Workers
+AI inference, actual feature-usage recording, and conditional D1 publication.
+Create reuses stored records and arms its 30-second cooldown only after creating
+a recap; regenerate preserves id/creation/sharing and reserves a separate
+cooldown before calling the model. Deleting a recap revokes the pending lease.
+
+`daily_summary_content.py` reads only uid-scoped, unlocked conversation evidence
+and canonical task/memory rows. Model output cannot author task identities,
+memory references or statistics. Memory eligibility uses canonical lifecycle,
+generation and sensitivity rules, rejecting expired or user-rejected rows.
+One SQL publication guard compares all selected source fields plus the lease,
+closing the model-await window against privacy mutations. Account deletion
+fences and purges both tables; export omits the internal generation token.
+The same HTTP product contract runs real recording → Queue enrichment → recap
+→ export → queued deletion. Provider IO is controlled there. Notification
+scheduling and delivery are still a separate migration/qualification boundary.
+
 The goal and workstream modules share the validated evidence contract. Each
 workflow mutation writes its domain projection and idempotency receipt in one
 D1 batch; Edge authentication supplies the signed uid context before the

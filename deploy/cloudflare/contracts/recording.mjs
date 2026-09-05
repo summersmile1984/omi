@@ -369,6 +369,80 @@ try {
       exported.data.desktop_daily_usage[0].watching_seconds ===
         120, "concurrent desktop counter reports lost a running maximum");
   });
+  await caseOf("recording.daily-recap-from-persisted-recording", async () => {
+    const options = {
+      token: owner.token,
+      method: "POST",
+      body: { date: new Date().toISOString().slice(0, 10) },
+    };
+    const created = await request(
+      "api",
+      "/v1/users/daily-summaries",
+      200,
+      options,
+    );
+    require(created.data.headline === "Synthetic daily recap" &&
+      created.data.overview.includes(
+        "provider-controlled recording",
+      ), "recap did not use model with persisted recording context");
+    require(created.data.highlights.some((row) =>
+      row.conversation_ids.includes(id),
+    ), "recap citation omitted the recorded source");
+    require(created.data.action_items.some(
+      (row) =>
+        row.description === "Send the synthetic follow-up" &&
+        row.source_conversation_id === id,
+    ), "recap omitted the persisted task");
+    require(created.data.memories_learned.some(
+      (row) => row.memory_id && row.content.includes("prefers concise updates"),
+    ), "recap omitted a canonical learned memory");
+    require(created.data.stats.watching_minutes === 2 &&
+      created.data.stats.proactive_moments ===
+        3, "recap did not join device counters");
+    const exported = await request("api", "/v1/users/export", 200, {
+      token: owner.token,
+    });
+    const recap = exported.data.daily_summaries.find(
+      (row) => row.id === created.data.id,
+    );
+    require(recap?.headline === created.data.headline &&
+      !Object.hasOwn(
+        recap,
+        "generation_token",
+      ), "export omitted recap or exposed generation authority");
+    const reused = await request(
+      "api",
+      "/v1/users/daily-summaries",
+      200,
+      options,
+    );
+    require(JSON.stringify(reused.data) ===
+      JSON.stringify(created.data), "daily create was not idempotent");
+    await request("api", `/v1/users/daily-summaries/${created.data.id}`, 404, {
+      token: other.token,
+    });
+    const usage = await request("api", "/v1/users/me/llm-usage", 200, {
+      token: owner.token,
+    });
+    require(usage.data.summary.daily_summary?.call_count ===
+      1, "daily recap reuse spent a second model call");
+    const regenerated = await request(
+      "api",
+      `/v1/users/daily-summaries/${created.data.id}/regenerate`,
+      200,
+      { token: owner.token, method: "POST", body: {} },
+    );
+    require(regenerated.data.id === created.data.id &&
+      regenerated.data.created_at === created.data.created_at &&
+      regenerated.data
+        .regenerated_at, "regeneration replaced recap identity or creation timestamp");
+    await request(
+      "api",
+      `/v1/users/daily-summaries/${created.data.id}/regenerate`,
+      429,
+      { token: owner.token, method: "POST", body: {} },
+    );
+  });
   await caseOf(
     "recording.export-restored-recording-memory-task-and-profile",
     async () => {

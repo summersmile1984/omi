@@ -47,6 +47,34 @@ export class Provider extends WorkerEntrypoint<{
       };
     }
     const format = input.response_format as { json_schema?: { name?: string } };
+    if (format?.json_schema?.name === "omi_daily_summary") {
+      const messages = input.messages as { role: string; content: string }[];
+      const context = JSON.parse(
+        messages.find((message) => message.role === "user")!.content,
+      );
+      const source = context.conversations.find(
+        (row: { content: string }) => row.content,
+      );
+      return {
+        response: JSON.stringify({
+          headline: "Synthetic daily recap",
+          overview: "Recap of " + JSON.parse(source.content).overview,
+          day_emoji: "📝",
+          highlights: [
+            {
+              topic: "Recording",
+              emoji: "🎙️",
+              summary: "A recorded follow-up.",
+              conversation_numbers: [source.conversation_number],
+            },
+          ],
+          unresolved_questions: [],
+          decisions_made: [],
+          knowledge_nuggets: [],
+        }),
+        usage: { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 },
+      };
+    }
     if (format?.json_schema?.name === "omi_goal_advice") {
       const messages = input.messages as { role: string; content: string }[];
       return {

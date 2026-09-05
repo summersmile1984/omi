@@ -535,7 +535,7 @@
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/ai-profile/synthesize", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/analytics/chat_message", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/analytics/memory_summary", "protocol": "http", "target_runtime": "python-worker"},
-    {"follow_up": "dev/unified-main/09-cloudflare-route-migrations.md#cf4-desktop-daily-writes", "method": "POST", "migration_note": "Desktop per-device daily counters and user-local-day on-demand generation require D1 ownership, quota/cooldown and concurrency contracts.", "migration_state": "blocked", "owner": "api-core", "path": "/v1/users/daily-summaries", "protocol": "http", "target_runtime": "blocked"},
+    {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/daily-summaries", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/daily-summaries/{summary_id}/regenerate", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/daily-summary-settings/test", "protocol": "http", "target_runtime": "python-worker"},
     {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/desktop-usage/daily", "protocol": "http", "target_runtime": "python-worker"},

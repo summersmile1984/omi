@@ -1126,6 +1126,7 @@ PATCH /v1/users/notification-settings
 GET  /v1/users/daily-summary-settings
 PATCH /v1/users/daily-summary-settings
 GET  /v1/users/daily-summaries
+POST /v1/users/daily-summaries
 GET  /v1/users/daily-summaries/{summaryId}
 PATCH /v1/users/daily-summaries/{summaryId}/visibility
 DELETE /v1/users/daily-summaries/{summaryId}
@@ -1861,10 +1862,30 @@ recording contract covers concurrent delivery, export and queued erasure; this
 does not imply an Eddy production deployment.
 
 The daily-summary routes use an explicit D1 projection (indexed date/visibility
-plus bounded JSON fields). List/detail/delete/visibility now have a staging
-owner, while the test/regenerate route computes a deterministic summary from
-unlocked D1 conversations. Legacy LLM generation, push notification, and
-shared-summary Redis indexes remain outside this Worker boundary.
+plus bounded JSON fields). On-demand create and in-place regenerate now use the
+Workers AI synthesis binding, the upstream free-chat admission policy and the
+user's IANA local-day boundaries (latest registered device timezone, UTC when
+absent). Create reuses an existing date without inference. One D1 day lease
+serializes generation, with a 90-second model deadline and 120-second lease;
+empty or contentless days release it without a create cooldown. Successful
+creation arms the 30-second create cooldown; regenerate reserves its separate
+30-second cooldown before inference. Summary deletion revokes its writer.
+
+`daily_summary_content.py` bounds recent conversation material to 200 rows and
+24,000 rendered characters, reports truncation through shared fallback telemetry,
+and declines days without speech or useful summary content. Tasks, local usage
+stats and up to three eligible canonical memory references come from D1. Model
+output supplies only validated prose and mapped source citations; provider
+failure returns 503, while malformed JSON uses the upstream basic-recap fallback
+with telemetry. Persistence atomically checks the lease and selected source
+snapshots, so locks, memory rejection, source deletion or an expired writer
+cannot publish stale content. Export includes recaps but omits generation tokens;
+the existing account deletion owner purges both projection and control rows.
+
+The settings-test route shares this generation owner, but scheduled delivery,
+push notification and notification-token requirements remain an explicit
+unqualified upstream boundary. A successful manual recap is not proof that the
+notification pipeline or the complete Cloudflare target is deployed.
 
 The conversation routes use an explicit D1 projection (indexed metadata plus
 bounded JSON transcript/structured fields). The POST `/v1/cf/conversations`

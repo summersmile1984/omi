@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. There are 612 unique method/path/protocol slots: 577 have existing/new Worker owners, 35 are blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the newly discovered desktop/admin slots and daily-write implementations, the inventory has 619 unique method/path/protocol slots: 578 have Worker owners and 41 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -181,14 +181,14 @@ not a permanent removal of the user's live-model goal.
 
 Owner: `api-core`. Upstream authority: `backend/routers/users.py` and
 `backend/database/daily_summaries.py`. The 2026-09-05 Eddy production preparation
-found these actual registrations missing from the inventory. Daily usage now
-has a local-runtime-tested Cloudflare owner; on-demand recap generation remains
-blocked. Inventory classification is not production release qualification.
+found these actual registrations missing from the inventory. Both now have a
+local-runtime-tested Cloudflare owner. Inventory classification is not
+production release qualification.
 
 | Method | Path | Status |
 |---|---|---|
 | POST | `/v1/users/desktop-usage/daily` | Core/D1 staging-owned; public local-runtime contract passed |
-| POST | `/v1/users/daily-summaries` | Blocked; generation not implemented |
+| POST | `/v1/users/daily-summaries` | Core/D1/Workers AI staging-owned; public local-runtime contract passed |
 
 `desktop_daily_usage_routes.py` owns one D1 row per UID/device/day and atomically
 merges each counter by maximum. It validates strict counter bounds, the local
@@ -198,10 +198,19 @@ The row participates in export and the existing deletion fence/purge. The
 export, and actual Queue-driven account erasure; see
 [the evidence](implementation-2026-09-05/eddy-desktop-daily-usage.md).
 
-The on-demand summary requires the user's local-day boundaries, quota admission,
-existing-record reuse, generation ownership, cooldown only after actual spend,
-and distinct empty-day versus concurrent-generation responses. The existing CF
-UTC deterministic regenerate route does not implement this upstream contract.
+The on-demand summary now resolves IANA local days, admits quota before lookup,
+reuses existing dates, and claims one D1 day lease before reading/generating.
+Empty/contentless days do not arm create cooldown; concurrent creation is 409,
+successful creation arms 30 seconds, and regeneration reserves its own cooldown
+before inference. Workers AI supplies validated prose; D1 supplies tasks, usage,
+locations and eligible learned-memory identities. An atomic source/lease check
+fences late privacy mutations. Actual local HTTP/Queue/D1 proof includes recap,
+reuse, regeneration, export and account erasure. See
+[the recap evidence](implementation-2026-09-05/eddy-daily-recap.md).
+
+The upstream scheduled recap and settings-test notification delivery contract
+remain required: this package does not qualify push, device-token admission,
+local scheduled send time, chat-card delivery, or hosted model quality.
 
 <a id="cf4-feedback-reports"></a>
 ## CF-4: feedback reports

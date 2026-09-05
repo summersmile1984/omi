@@ -16,7 +16,11 @@ locked Wrangler/workerd, then executes:
   explicit finalization through actual Queue/Jobs/Core, derived memories/tasks,
   and denial after logout. It then restores the real account session, submits
   concurrent out-of-order daily desktop counters through the public route,
-  verifies their maxima through export, exports profile/recording/memory/tasks,
+  verifies their maxima through export, generates a recap from the actual
+  recording/task/memory records and counters, checks citations and account
+  isolation, reuses it without extra model spend, and regenerates it in place
+  with cooldown enforcement. Export includes the recap and excludes its internal
+  generation token. It exports profile/recording/memory/tasks,
   and checks cross-user isolation. The privacy
   path uploads and reads real R2 bytes with checksum rejection, deletes both
   a populated account and a just-registered account through public routes,

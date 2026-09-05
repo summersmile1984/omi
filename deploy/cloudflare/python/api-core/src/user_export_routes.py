@@ -16,6 +16,7 @@ router = APIRouter()
 _EXPORT_QUERIES = (
     ("conversations", "cf_conversations", "created_at DESC, id DESC"),
     ("desktop_daily_usage", "cf_desktop_daily_usage", "date DESC, client_device_id DESC"),
+    ("daily_summaries", "cf_daily_summaries", "date DESC, id DESC"),
     ("memories", "cf_memories", "created_at DESC, id DESC"),
     ("memory_import_runs", "cf_memory_import_runs", "updated_at DESC, run_id DESC"),
     ("memory_import_artifacts", "cf_memory_import_artifacts", "created_at DESC, artifact_id DESC"),
@@ -83,6 +84,12 @@ def _decode_json_columns(row: dict[str, object]) -> dict[str, object]:
 async def _rows(env: object, table: str, order_by: str, uid: str) -> list[dict[str, object]]:
     result = await env.APP_DB.prepare(f"SELECT * FROM {table} WHERE uid = ? ORDER BY {order_by}").bind(uid).all()
     values = result.get("results", []) if isinstance(result, dict) else []
+    if table == "cf_daily_summaries":
+        values = [
+            {key: value for key, value in row.items() if key != "generation_token"}
+            for row in values
+            if isinstance(row, dict)
+        ]
     return [_decode_json_columns(row) for row in values if isinstance(row, dict)]
 
 
@@ -168,6 +175,7 @@ async def export_user_data(request: Request):
         "task_data": task_data,
         "chat_messages": sections.pop("chat_messages", []),
         "desktop_daily_usage": sections.pop("desktop_daily_usage", []),
+        "daily_summaries": sections.pop("daily_summaries", []),
     }
     payload["exported_at"] = int(time.time())
     return JSONResponse(
