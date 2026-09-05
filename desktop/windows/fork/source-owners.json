@@ -1,7 +1,7 @@
 {
   "electron-builder.config.mjs": "f11d3a396aa6a1c49c54a4d9ac2feb5eaaf46120d6b98e2c0394960fd4c49727",
   "electron.vite.config.ts": "78b605f4110dd4d949e2e8700a6aa0b77276338f0295518330082480404f3d69",
-  "package.json": "2ade66d9a80af48f50f9df03a1db668b8533d043ed512c47f02398f240783174",
+  "package.json": "08b7790302642fb03f970dede358f8513e392967acf27812958df318b3913f19",
   "resources/icon-source.png": "933f85a482d1869e4778f81439b99a9dff5933e166208c880e4265f5a1a078f8",
   "resources/icon.ico": "f39462770d655195e60ecc1b343389ffd30122cdcc00478971e1975c026b06d5",
   "resources/icon.png": "8cf723d4efe87cc205558e75a1ef2124dff9d833a62a7788bd9545ca0b3f0194",
@@ -38,7 +38,7 @@
   "src/main/ipc/mainChat.ts": "e9a1bc2d57383fd090459416abe913b17326f6acdaffcb50c807e189608c10db",
   "src/main/ipc/mainChatPersonalization.ts": "0eb4f92fc317a87da4a7636f50cf8c93aac09c49f7dc45a1cd3a2539ca5f434c",
   "src/main/ipc/mcpExports.ts": "c17aa660cb7746c8c5eb8053432b5469b2c2a011fcd00e1cdd4466f1ba90308c",
-  "src/main/ipc/memoryCleanup.ts": "8fc3d2cd4e69149da6f7a96fb7ef65d55d13ff7c36ef16999be54850ca2a7a8a",
+  "src/main/ipc/memoryCleanup.ts": "ceb93a4d7df0a15979f72a0b584dbf6c74b96d2728414bbb8e7f22d586d51493",
   "src/main/ipc/memoryImport.ts": "195b3827d657f3c4be7d404c6f00ee39c02395f4928a4ea4ed7dad795e41605f",
   "src/main/ipc/omiListen.ts": "1cc5be089c3456c95551077991f8c41ea6bb777b87e316f366d4fb68fa80477a",
   "src/main/ipc/pimono.ts": "c1c568a17a97c7fa96de2b2eb59090b21ac40fba34384a6d3dec2c8039e42327",
@@ -54,7 +54,7 @@
   "src/main/tray.ts": "796293af8b5a2b8110b5db4669e0702420a74a56961ae76bcbf57d5e3ea02889",
   "src/main/trayState.ts": "783fe10ca5277bddff5b1d51cd57aece4a56239716ec0146b30e168043b99eb2",
   "src/main/updater.ts": "fed349e77ab6756998958685e2297710369d1ef36055f5aece6cbe0737711789",
-  "src/preload/index.ts": "cebaf5ad7854a6bcfb0744f09d3a6f5bc5c38e258d5fa45fa345da7ccc3351fb",
+  "src/preload/index.ts": "a625b8e004716eed35f4dc27d34d7cbacd32ffd66e250a7d05dd7230dcebe1d9",
   "src/renderer/capture.html": "6cb813b07aed40ac2d47c4555f89bfda19e6c74fca13b8eb9a65d40e342d83b5",
   "src/renderer/glow.html": "733f8748ad2a218d634ddbed562526d95c6f93461959e8e6afc380a41e330750",
   "src/renderer/index.html": "b30268cc0e7d843f0360c7ba629e2acba021f3c16736543b3eeef2744431c45a",
@@ -124,7 +124,7 @@
   "src/renderer/src/lib/geminiClient.ts": "848a4bd9f9c9953792bf12f3f87244e70f3b179150b84a3f12496a6749f4fed6",
   "src/renderer/src/lib/goalsCache.ts": "0e1212a2a56cc3488e5a64e215bda119dbc1d1e704e514f79ac68333f5d6ea8a",
   "src/renderer/src/lib/googleSync.ts": "6e823e45ab70f240ebf5474051b2dedaa8442ae622f11f6749d7ae471434b1df",
-  "src/renderer/src/lib/insightEngine.ts": "612ed2b3f16293920b7ab67a816b6ada8ba754edcb0cee179003cc69b8e53aba",
+  "src/renderer/src/lib/insightEngine.ts": "1be9fefdb76ade4430e5e53512068014d77418049c011796d3178a1b4a446cbb",
   "src/renderer/src/lib/localAgent.ts": "755f671f70184e32a9aadfa2599b56b351a6fc8abeb33c24fff97fc7255e9c0c",
   "src/renderer/src/lib/localAgentMemoryCache.ts": "72df977f9f9192bcbf0e774a70bd8cc5c917f08735f77f4d5c773a40992de2e2",
   "src/renderer/src/lib/mcpConnect.ts": "f88ea032b507fa689100d0682b90cdf2bff4a35850963333bb117da152ddc376",
@@ -155,8 +155,9 @@
   "src/renderer/src/pages/Onboarding.tsx": "fae72ad002b05439ebb9fd4076260202ea33fc5a263a71f6d302cf63b01d1a68",
   "src/renderer/src/pages/Settings.tsx": "cdf667183f7aa4a1fb02982212d45c825a9530d7ac243642ecea179250325021",
   "src/shared/byok.ts": "a0713a37df448f0318a2aa2a4cddc653124c739885490d6e467631e341f40f92",
-  "src/shared/types.ts": "6f35fe0d2bb159558a5e6329f4095dc6d5b21058bae37cc07298fb3decad7f9a",
+  "src/shared/types.ts": "4f365fffc025170e91d8c32b8b5708cfb142a4fff60a671b8425ba649058b62f",
   "tailwind.config.ts": "af4077772a1847f966d8799b879ef80466e111bee1936fc10d9c419e237cdbe9",
   "tsconfig.node.json": "eb01d98d1f9cd2793c9447499c88555a0b57e431a609f57d62e19dc0e2b509cb",
-  "tsconfig.web.json": "ffb0f7a7bcb7b6bf8647453bf60766b71b24813cbf97d2e254053ef68bd89906"
+  "tsconfig.web.json": "ffb0f7a7bcb7b6bf8647453bf60766b71b24813cbf97d2e254053ef68bd89906",
+  "src/renderer/src/components/settings/tabs/AdvancedTab.tsx": "8449c0a0d74eee39656f304dc748c1b1b4100a391afbea2a692a3d28d99802c1"
 }

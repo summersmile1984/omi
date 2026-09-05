@@ -42,6 +42,9 @@ class SourceStageContract(unittest.TestCase):
                 self.assertTrue(any('omi-capture:cmd' == row['source'] for row in coverage['preserved']))
                 self.assertEqual((stage / 'pnpm-lock.yaml').read_bytes(), (COMPONENT / 'pnpm-lock.yaml').read_bytes())
                 self.assertFalse((stage / 'src/renderer/src/lib/firebase.ts').exists())
+                advanced_tab = (stage / 'src/renderer/src/components/settings/tabs/AdvancedTab.tsx').read_text()
+                self.assertIn('from "../../../../../../fork/renderer/identity"', advanced_tab)
+                self.assertNotIn("from '../../../lib/firebase'", advanced_tab)
                 package = json.loads((stage / 'package.json').read_text())
                 for script in package['scripts'].values():
                     self.assertNotIn('--config electron-builder.config.mjs', script)
