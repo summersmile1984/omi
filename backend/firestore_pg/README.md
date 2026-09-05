@@ -1,5 +1,5 @@
 > Current startup CLI: `python -m fork.migrate migrate|check` from `backend/`.
-> Schema v7 registers the feedback ledger and daily reports; v6 registers canonical-memory paths, including replacement privacy receipts; v5 registers backend onboarding admission; v4 registers legal-hold and deletion-gate authorities; v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
+> Schema v8 registers retained `frame_vision_receipts` for complete account export, including users with no frames. Schema v7 registers the feedback ledger and daily reports; v6 registers canonical-memory paths, including replacement privacy receipts; v5 registers backend onboarding admission; v4 registers legal-hold and deletion-gate authorities; v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
 > and `frame_requests` without changing v1/v2 mappings. The historical source
 > import/cutover CLI below is not yet shipped on unified main; do not execute its
 > example until the source-freeze/authority tooling is restored and verified.

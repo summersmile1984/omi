@@ -82,6 +82,36 @@ def _reset(db, doc_id):
     db.collection("txn_semantics").document(doc_id).delete()
 
 
+def test_v7_upgrade_adds_receipt_reads_and_preserves_existing_user_data(db):
+    from firestore_pg import migrations
+
+    uid = f'pg-v7-upgrade-{uuid4().hex}'
+    user = db.collection('users').document(uid)
+    user.set({'state': 'retained-from-v7'})
+    engine = migrations.get_engine()
+    table = migrations.collection_table_name('frame_vision_receipts')
+    with engine.begin() as conn:
+        conn.execute(text(f'DROP TABLE {table}'))
+        conn.execute(
+            text(f'DELETE FROM {migrations.COLLECTION_TABLE} WHERE collection_id = :name'),
+            {'name': 'frame_vision_receipts'},
+        )
+        conn.execute(text(f'DELETE FROM {migrations.MIGRATION_TABLE} WHERE version = 8'))
+    with pytest.raises(migrations.SchemaNotCurrent, match='1..8'):
+        migrations.check_schema(engine)
+    assert migrations.migrate(engine).current_version == 8
+    assert migrations.migrate(engine).current_version == 8
+    assert user.get().to_dict() == {'state': 'retained-from-v7'}
+    receipts = user.collection('frame_vision_receipts')
+    assert list(receipts.stream()) == []
+    receipts.document('receipt').set({'description': 'retained vision evidence'})
+    rows = list(receipts.stream())
+    assert len(rows) == 1 and rows[0].to_dict() == {'description': 'retained vision evidence'}
+    assert list(db.collection('users').document(f'other-{uid}').collection('frame_vision_receipts').stream()) == []
+    receipts.document('receipt').delete()
+    user.delete()
+
+
 def test_read_write_commit_visibility(db):
     _reset(db, "d1")
     from google.cloud import firestore
@@ -286,12 +316,12 @@ def test_v5_upgrade_registers_memory_collections_without_rewriting_existing_rows
         )
         conn.execute(text(f'DELETE FROM {MIGRATION_TABLE} WHERE version = 6'))
 
-    with pytest.raises(SchemaNotCurrent, match='1..7'):
+    with pytest.raises(SchemaNotCurrent, match='1..8'):
         check_schema(engine)
 
     status = migrate(engine)
 
-    assert status.current_version == status.latest_version == 7
+    assert status.current_version == status.latest_version == 8
     assert legacy.get().to_dict() == {'state': 'created-under-v5'}
     with engine.connect() as conn:
         registered = dict(
@@ -333,12 +363,12 @@ def test_v6_upgrade_registers_feedback_collections_without_rewriting_existing_ro
         )
         conn.execute(text(f'DELETE FROM {MIGRATION_TABLE} WHERE version = 7'))
 
-    with pytest.raises(SchemaNotCurrent, match='1..7'):
+    with pytest.raises(SchemaNotCurrent, match='1..8'):
         check_schema(engine)
 
     status = migrate(engine)
 
-    assert status.current_version == status.latest_version == 7
+    assert status.current_version == status.latest_version == 8
     assert event.get().to_dict() == {'uid': 'pg-v6-owner', 'state': 'created-under-v6'}
     with engine.connect() as conn:
         registered = dict(

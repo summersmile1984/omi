@@ -30,7 +30,7 @@ projection delivery runs in `python -m fork.memory_maintenance_worker`: it pages
 the existing bounded registry and drains the existing leased PostgreSQL outbox
 into Typesense and Qdrant. It does not run TTL, consolidation, or model generation.
 Self-host API and worker processes
-require schema v6 (including onboarding admission, legal-hold, and canonical-memory receipt authorities), installed by `python -m fork.migrate migrate`.
+require schema v8 (including onboarding admission, legal-hold, canonical-memory and retained frame-vision receipt authorities), installed by `python -m fork.migrate migrate`.
 Auth serving and migration use the same stage-aware image entrypoint: `SELF_HOST_STAGE=local` selects development, while `beta` and `production` enforce production guards. Ambient `NODE_ENV` cannot relax those two stages.
 
 **Startup admission is separate from full product/cutover acceptance.** The

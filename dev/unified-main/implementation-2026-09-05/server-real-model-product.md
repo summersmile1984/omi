@@ -79,7 +79,7 @@ Docker 分配提高到 16 GiB 后，运行目录 `server-real-model-20260905-d`�
 SenseVoice 识别和 Qwen 推理，最终化任务以 `completed` / `success` 结束，
 `attempt_count=1`、`task_retry_count=0`、`fanout_status=completed`。
 
-API 读回 2 条记忆，其中一条包含录音中的 jasmine 偏好，并读回 3 个任务。
+API 读回 2 条记忆，其中一条包含录音中的 jasmine 偏好，并读回 1 个任务。
 该结果证明本轮录音、转写、持久化和派生处理通过，不代表以下步骤通过：
 
 - `/v2/messages` 返回 HTTP 200 流，但缺少成功结束帧。实际异常为
@@ -119,3 +119,9 @@ d 轮原有存储卷未重建，恢复后换用新应用镜像，实际会话换
 本次夹具测试 8 项、启动配置测试 7 项通过。新增检查直接运行在现有
 `deploy/self-host/ci/product.sh` 的镜像构建路径内，覆盖本记录中的实际故障；
 未新增独立检查或修改上游代码、词表算法及依赖锁。
+
+**计数更正（9 月 6 日）：** 早期探针对 `/v1/action-items` 的响应直接求
+`len()`，误把 `action_items`、`has_more`、`truncated` 三个 envelope 字段
+计成 3 个任务。重新读取实际 `action_items` 列表和完整导出，两者均为 1 条，
+ID 一致。原始日志保留用于审计，本记录和后续探针已修正。完整导出修复及
+实测边界见 [v8 导出验收](server-export-v8.md)。

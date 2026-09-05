@@ -1,11 +1,54 @@
 """Real dynamic-path owners must run using the migration-admitted inventory."""
 
 import pytest
+import json
+from types import SimpleNamespace
 
 from database import feedback, legal_holds, users
 from database.memory_collections import MemoryCollections
 from fork.tests.schema_firestore import SchemaFirestore
 from models.feedback import FeedbackSurface, FeedbackTargetKind
+
+
+@pytest.mark.parametrize('with_receipt', [False, True])
+def test_complete_export_reads_admitted_collections_including_legacy_users(monkeypatch, with_receipt):
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'synthetic-export-contract-key-32-bytes')
+    from services.users import data_export
+    from firestore_pg.migrations import SchemaNotCurrent
+
+    rows = {
+        ('users', 'owner', 'goals', 'goal'): {'title': 'Project'},
+        ('users', 'owner', 'goals', 'goal', 'events', 'event'): {'state': 'accepted'},
+        ('users', 'other', 'frame_vision_receipts', 'private'): {'description': 'other user'},
+    }
+    if with_receipt:
+        rows[('users', 'owner', 'frame_vision_receipts', 'receipt')] = {'description': 'retained evidence'}
+    db = SchemaFirestore(rows)
+    monkeypatch.setattr(data_export.database_client, 'db', db)
+    monkeypatch.setattr(data_export, 'get_user_profile', lambda uid: {})
+    monkeypatch.setattr(data_export, 'get_people', lambda uid: [])
+    monkeypatch.setattr(data_export, 'get_standalone_action_items', lambda uid, **kwargs: [])
+    monkeypatch.setattr(data_export.conversations_db, 'iter_all_conversations', lambda uid, **kwargs: iter([]))
+    monkeypatch.setattr(data_export.chat_db, 'iter_all_messages', lambda uid: iter([]))
+    monkeypatch.setattr(
+        data_export,
+        'MemoryService',
+        lambda: SimpleNamespace(iter_portability_export_memories=lambda uid, **kwargs: iter([])),
+    )
+
+    admitted = db.admitted
+    db.admitted = admitted - {'frame_vision_receipts'}
+    # The actual pre-v8 failure also affects a user without retained frames.
+    with pytest.raises(SchemaNotCurrent, match='frame_vision_receipts'):
+        data_export.iter_user_data_export('owner')
+    db.admitted = admitted
+    payload = json.loads(''.join(data_export.iter_user_data_export('owner')))
+    assert payload.get('frame_vision_receipts', []) == (
+        [{'id': 'receipt', 'description': 'retained evidence'}] if with_receipt else []
+    )
+    assert payload['task_data']['goal_events'] == [{'id': 'event', 'parent_id': 'goal', 'state': 'accepted'}]
+    assert 'frame_vision_receipts' in db.observed
+    assert 'other user' not in json.dumps(payload)
 
 
 def test_existing_pending_user_gets_persistent_reusable_onboarding_admission():

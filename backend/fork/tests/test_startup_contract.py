@@ -204,9 +204,10 @@ def test_memory_maintenance_bootstrap_uses_projection_patches_without_redis_or_a
     assert 'fastapi' not in imported
 
 
-def test_migration_v7_admits_current_inventory_and_preserves_mapping():
+def test_migration_v8_admits_current_inventory_and_preserves_mapping():
     assert set(migrations.known_collections()) == migrations._declared_known_collections()
-    assert migrations.LATEST_SCHEMA_VERSION == 7
+    assert migrations.LATEST_SCHEMA_VERSION == 8
+    assert migrations.STATIC_HASHED_COLLECTION_IDS_V8 == {'frame_vision_receipts'}
     assert migrations.STATIC_HASHED_COLLECTION_IDS_V7 == {'feedback_events', 'feedback_reports'}
     assert migrations.STATIC_HASHED_COLLECTION_IDS_V6 == {
         'daily_memory_sweep_daily_summary_staged',

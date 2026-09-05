@@ -118,6 +118,7 @@ KNOWN_COLLECTIONS = frozenset(
         'fair_use_state',
         'feedback_events',
         'feedback_reports',
+        'frame_vision_receipts',
         'fal_whisperx',
         'fcm_tokens',
         'files',

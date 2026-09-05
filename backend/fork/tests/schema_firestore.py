@@ -32,6 +32,16 @@ class Collection(StrictFirestoreCollection):
     def document(self, name):
         return Document(self._database, (*self._path, name))
 
+    def stream(self):
+        # Export queries empty collections too. Enforce schema before reading.
+        self._database.require(self._path)
+        for path in sorted(self._database.rows):
+            if path[:-1] == self._path:
+                ref = Document(self._database, path)
+                snapshot = ref.get()
+                snapshot.id, snapshot.reference = path[-1], ref
+                yield snapshot
+
 
 class Transaction(StrictFirestoreTransaction):
     def get(self, ref):
