@@ -2,8 +2,6 @@
   "base": "556dfc2f8c7bf6c30323af19797ff105a70c4b02",
   "files": {
     "lib/services/auth_service.dart": "f53b8323c2340fc04232d135de2244eace72f926b1497aa7295adc849435bf73",
-    "lib/providers/auth_provider.dart": "7befd0c828db50b930df2789b1c375d666fde0b139540c9d4bd5ff22acac83c2",
-    "lib/pages/onboarding/auth.dart": "d6616b85290da69f7ab7e9e43d1e305a16ac3ed811a195a5063076344880e5ea",
     "lib/env/env.dart": "5d88a7388d9609849981c0d4532b4e474e88c1351ba3c7640313acad93d9513a",
     "lib/main.dart": "c8cc63bc1bda9a6845a42f93ce8275fb9d2b4808820172ccd2139696e72d980b",
     "lib/utils/platform/platform_manager.dart": "d835b1a2e6b9873118adeac3ac1d5ca5cef2d303013e07db69e959572db1ce50",

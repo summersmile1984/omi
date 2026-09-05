@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from fixture import fixture
-from prepare import ROOT, stage
+from prepare import FORK, ROOT, stage
 
 
 class StageTests(unittest.TestCase):
@@ -85,6 +85,35 @@ class StageTests(unittest.TestCase):
             with patch.object(Path, "read_bytes", changed), self.assertRaisesRegex(ValueError, "source owner changed"):
                 stage(manifest, "self_hosted", directory / "stage", Path(os.environ["DART"]))
             self.assertFalse((directory / "stage").exists())
+
+    def test_complete_auth_overlays_do_not_admit_upstream_auth_sources_as_stage_owners(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            manifest = directory / "private.json"
+            manifest.write_text(json.dumps(fixture(directory)))
+            replaced = {
+                ROOT / "app/lib/providers/auth_provider.dart",
+                ROOT / "app/lib/pages/onboarding/auth.dart",
+            }
+            actual = Path.read_bytes
+
+            def changed(path):
+                data = actual(path)
+                return data + b"\n// unreviewed upstream auth source\n" if path in replaced else data
+
+            with patch.object(Path, "read_bytes", changed):
+                result = stage(manifest, "self_hosted", directory / "stage", Path(os.environ["DART"]))
+
+            self.assertNotIn("lib/providers/auth_provider.dart", result["source_owners"])
+            self.assertNotIn("lib/pages/onboarding/auth.dart", result["source_owners"])
+            self.assertEqual(
+                (directory / "stage/app/lib/providers/auth_provider.dart").read_text(),
+                (FORK / "overlays/auth_provider.dart.txt").read_text(),
+            )
+            self.assertEqual(
+                (directory / "stage/app/lib/pages/onboarding/auth.dart").read_text(),
+                (FORK / "overlays/auth.dart.txt").read_text(),
+            )
 
     def test_invalid_manifest_asset_fails_without_a_partial_mobile_stage(self):
         with tempfile.TemporaryDirectory() as temp:

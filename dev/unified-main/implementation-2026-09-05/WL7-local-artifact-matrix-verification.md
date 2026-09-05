@@ -18,10 +18,12 @@ release publisher was used.
 
 - `PATH=/private/tmp/memweft-flutter-3.44.5/bin:$PATH bash app/fork/test.sh`
   exited 0 with the pinned Flutter 3.44.5 / Dart 3.12.2 SDK. It passed 14
-  native identity tests, two asset tests, four stage tests, then passed 20
+  native identity tests, two asset tests, five stage tests, then passed 20
   staged tests and compiled a debug Flutter bundle for each target. This is a
   Dart bundle check; it does not claim an APK, iOS build, install, or device
-  exercise.
+  exercise. The stage owns complete `auth.dart` and `auth_provider.dart`
+  overlays, so their upstream bytes are now restored and neither is admitted as
+  a source owner; the stage test proves the overlays still replace either input.
 - `bash desktop/macos/fork/test.sh` passed two Node resource tests, 12 Swift
   tests, and 11 Python stage/matrix tests. The matrix guard accepts only a
   fresh path outside the repository, assigns each target a separate

@@ -32,7 +32,7 @@ python3 scripts/fork/check-upstream-touch.py \
 树对当前 `upstream/main` 的 `merge-tree` 已无冲突；这不会倒改上面的
 `origin/main` 历史快照，直到候选通过 review 后常规合入。
 
-## 未消化的分歧(31 个,按子系统分组;第 32 个是 `AuthService.swift`,单独处理见下方)
+## 未消化的分歧(29 个,按子系统分组;第 30 个是 `AuthService.swift`,单独处理见下方)
 
 状态列:`待处置`(已经有一个可以直接照做的处置方案,不管背后那次改动的源头提交是否已经追溯到)· `待诊断`(处置方案本身还没想清楚——通常是因为不确定具体改了什么、影响面多大,需要有人接手前先查清楚才能定处置方案)。两者都不代表"原因"列一定写了具体的源头提交:"原因"列的 commit 是 `check-upstream-touch.py` 报告里离 HEAD 最近的一次改动,不一定是最初引入分歧的那次;标了 `合并提交` 的还没往前追溯到真正的源头提交,但这不影响处置方案是否已经明确。
 
@@ -89,15 +89,7 @@ M1(自托管部署)的直接产物,`c6fc05dd70` 已经把 `storage_minio.py` 这
 | 文件 | 原因 | 处置方案 | 状态 |
 |---|---|---|---|
 
-### F. Mobile(Flutter,3 个)
-B2(移动端身份注入,`dev/unified-main/04-brand-layer.md` B2 行)正式依赖 S2(Flutter 客户端接线),S2 还没做——这几个大概率是 S2 该收口的范围。
-
-| 文件 | 原因 | 处置方案 | 状态 |
-|---|---|---|---|
-| `app/lib/pages/onboarding/auth.dart` | `a5ed639dda` chore(auth): secure self-hosted token bridges | 待判断能否收窄成一个读取 fork 配置的小缝 | 待诊断 |
-| `app/lib/providers/auth_provider.dart` | 合并提交,源头需要追溯 | 同上 | 待诊断 |
-
-### G. 其它(2 个)
+### F. 其它(2 个)
 | 文件 | 原因 | 处置方案 | 状态 |
 |---|---|---|---|
 | `docs/api-reference/app-client-openapi.json` | 合并提交;大概率是从后端路由自动生成的产物,fork 路由差异导致输出跟着变 | 如果确认是生成物,应该加进 T2 生成文件清单而不是当成"手改"违规追责;需要先确认生成脚本 | 待诊断 |
@@ -121,6 +113,7 @@ B2(移动端身份注入,`dev/unified-main/04-brand-layer.md` B2 行)正式依�
 | `backend/tests/unit/test_language_catalog.py` | historical pinned-formatter drift | upstream byte restored; existing language-catalog test passes 7/7 | candidate `codex/unified-delivery` |
 | `app/lib/pages/onboarding/primary_language/primary_language_widget.dart` | historical Dart formatter drift | upstream byte restored; existing provider language test passes 14/14 with Flutter 3.44.5 | candidate `codex/unified-delivery` |
 | `.github/workflows/gcp_backend_pusher_auto_deploy.yml` / `backend/tests/unit/test_pusher_auto_deploy_paths.py` | historical fork pusher trigger expansion | upstream bytes restored; fork-owned `fork-checks.yml` has unfiltered main push/PR triggers, while the restored upstream path test passes | candidate `codex/unified-delivery` |
+| `app/lib/pages/onboarding/auth.dart` / `app/lib/providers/auth_provider.dart` | historical Better Auth injection into upstream mobile callers | upstream bytes restored; complete fork overlays replace both before staged use, no longer treat either as a source owner, and the two-target Flutter stage/test/bundle matrix passes | candidate `codex/unified-delivery` |
 
 ## 用法
 
