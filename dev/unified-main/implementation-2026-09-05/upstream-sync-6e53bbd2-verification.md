@@ -5,13 +5,16 @@ Date: 2026-09-05
 ## Scope
 
 - Previous upstream merge: `520cc70ac06d63af818ba5170a27cea0db1cfefe` (`v0.12.291`).
-- Refreshed upstream base: `6e53bbd2ece5445449b6ff48fbed20c802106579`.
-- Local merge commit: `453b2e311eff4373c317539aae67bb2a55853ebf`.
+- First refreshed upstream base: `6e53bbd2ece5445449b6ff48fbed20c802106579`.
+- First local merge commit: `453b2e311eff4373c317539aae67bb2a55853ebf`.
+- Latest refreshed upstream base: `09ff17e4e5f649799c6e4f17d2af1e5ceb373eef`.
+- Latest local merge commit: `8b151ba2a00882676020fe5071f5d53c31e79369`.
 
-The refreshed upstream base added fourteen commits. They include the transcript
+The first refreshed upstream base added fourteen commits. They include the transcript
 reader-drag fix, the summary-content and empty-day recap corrections, and the
-free-tier connector-memory policy repairs. The local merge had no conflicts.
-No fork-owned or upstream-owned file was manually edited during the merge.
+free-tier connector-memory policy repairs. A final refresh added the chat-message
+pagination repair. Both local merges had no conflicts. No fork-owned or
+upstream-owned file was manually edited during either merge.
 
 ## Checks run
 
@@ -20,7 +23,7 @@ git merge-base --is-ancestor upstream/main HEAD
 => exit 0
 
 git rev-list --left-right --count upstream/main...HEAD
-=> 0 241
+=> 0 243
 
 python3 scripts/fork/upstream_sync_plan.py --base HEAD --upstream upstream/main
 => conflicts: []
@@ -40,6 +43,9 @@ PATH="/tmp/memweft-flutter-3.44.5/bin:$PATH" \
 BACKEND_UNIT_TEST_FILE_LIST=<12-file upstream and self-host selection> bash backend/test.sh
 => exit 0
 
+BACKEND_UNIT_TEST_FILE_LIST=<chat pagination test> bash backend/test.sh
+=> exit 0; 6 passed
+
 bash deploy/self-host/ci/product.sh
 => exit 0; fixture5; core8 passed
 
@@ -50,7 +56,7 @@ bash deploy/cloudflare/ci/product.sh
 The Flutter stage tested and built the `self_hosted` and `cloudflare` branded
 applications, and the changed upstream transcript widget test passed. The selected backend set includes the newly changed recap,
 free-tier-memory, conversation processing, self-host configuration, and startup
-contracts. The Server OS product runner built a fresh runtime image, applied
+contracts. The latest chat-message pagination regression test passed all six cases. The Server OS product runner built a fresh runtime image, applied
 normal migrations, then passed the eight shared identity/onboarding/Tasks HTTP
 cases. The Cloudflare runner compiled the isolated Worker set, applied local D1
 migrations, and passed its core, recording, chat, and public-share contracts.
