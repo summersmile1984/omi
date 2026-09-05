@@ -5,7 +5,16 @@ clients. The [2026-09-04 audit](audit-2026-09-04/01-self-host-action-plan.md)
 defines the acceptance criteria. A local implementation or unit-test pass is
 not a release, a signed client, or a completed product loop.
 
-Candidate branch: `codex/unified-delivery`; the latest implementation source
+**2026-09-05 Eddy update:** the requested brand/SVGs and Developer ID macOS package
+have been built, signed and opened in the real native UI. The actual Cloudflare
+account has all 18 Eddy data resources and five verified policies. Eight Workers
+remain absent and both D1 databases have no business schema; canonical `apply`
+refuses the still-missing CF-4/CI-1/prior-schema runners before mutation. See the
+[first production delivery evidence](implementation-2026-09-05/eddy-production-progress.md)
+for exact artifacts, failed attempts and qualification boundaries. No production
+application release or complete client business loop is claimed.
+
+Earlier integrated audit: candidate branch `codex/unified-delivery`; the implementation source
 tip reviewed is `0d4f71b4ab` (the following audit record is documentation
 only). It is a reviewable local candidate: nothing in it has been pushed, merged, or
 deployed to production.
