@@ -10,14 +10,18 @@ the current candidate tip, starting at `b9776fac12f6`
 (audit documents on `origin/main` `d238a85af9d9`). Nothing in this candidate
 has been pushed, merged, or deployed to production.
 
-`upstream/main` at `09ff17e4e5` is an ancestor of this candidate. Local merges
-`552cb91330` (`v0.12.291`), `453b2e311e`, and `8b151ba2a0` retain upstream bytes
-and leave local model routing at the fork patch seam. `scripts/fork/upstream_sync_plan.py
---base HEAD --upstream upstream/main` reports no remaining merge conflicts and
-`git rev-list --left-right --count upstream/main...HEAD` was `0 243` at the
-latest merge. The scheduled workflow continues to create a regular sync PR only
-for clean merge trees. This is local merge evidence, not a pushed upstream-sync
-PR or release qualification.
+`upstream/main` at `c4880cd5f6` is an ancestor of this candidate. Local merges
+`552cb91330` (`v0.12.291`), `453b2e311e`, `8b151ba2a0`, and `4bf718a1cd`
+retain upstream bytes and leave local model routing at the fork patch seam.
+`scripts/fork/upstream_sync_plan.py --base HEAD --upstream upstream/main` reports
+no remaining merge conflicts and `git rev-list --left-right --count
+upstream/main...HEAD` was `0 248` after the latest merge. The latest merge
+changed only upstream macOS changelog inputs and passes the merge-scoped
+zero-upstream-touch check. A whole-candidate check currently reports 36
+pre-existing upstream-touch violations, so the one-fork topology is not yet
+accepted; the incremental WL-7 commits themselves are clean. The scheduled
+workflow continues to create a regular sync PR only for clean merge trees. This
+is local merge evidence, not a pushed upstream-sync PR or release qualification.
 
 | Package | Owner | Status / next evidence |
 | --- | --- | --- |
@@ -48,7 +52,7 @@ when available; they cannot be inferred from fixture builds. Access-control,
 migration and release changes require explicit authorization before merging or
 remote deployment under repository rules.
 
-Recent evidence: [dual-target Web Tasks](implementation-2026-09-04/WEB-tasks-verification.md), [PG auth migration](implementation-2026-09-04/AUTH1-pg-migration-verification.md), [selected identity deletion](implementation-2026-09-04/AUTH-identity-deletion-verification.md), [import ordering](implementation-2026-09-04/AUTH-import-order-verification.md), [provider erasure](implementation-2026-09-04/SH2-providers-verification.md), [real model/runtime](implementation-2026-09-04/SH3-model-verification.md), [stage-owned startup](implementation-2026-09-04/SH4-startup-verification.md), [CF realtime](11-cf2-realtime-evidence.md), [CF Python runtime](12-cf-runtime-evidence.md), [CF resources](13-cf-resource-evidence.md), [CF frozen release](14-cf-release-evidence.md), [PG onboarding v5](implementation-2026-09-04/SH2-onboarding-schema-verification.md), [PG v6 canonical memory](implementation-2026-09-05/SH3-pg-v6-verification.md), [upstream v0.12.291 merge](implementation-2026-09-05/upstream-sync-v0.12.291-verification.md), [Flutter upstream compatibility](implementation-2026-09-05/flutter-upstream-sync-verification.md), [latest upstream sync](implementation-2026-09-05/upstream-sync-6e53bbd2-verification.md), [Docker context](implementation-2026-09-04/SH4-build-context-verification.md), [speech](implementation-2026-09-04/SH3-speech-verification.md), [PTT terminal usage](implementation-2026-09-04/SH3-ptt-usage-verification.md), [Android consumer](../../app/fork/VERIFICATION.md), [macOS consumer and limits](../../desktop/macos/fork/README.md), [Electron consumer and limits](../../desktop/windows/fork/VERIFICATION.md), [CF recording](implementation-2026-09-04/CF4-recording-product-verification.md), [PG nested usage](implementation-2026-09-04/PG-nested-usage-verification.md), [selected identity profiles](implementation-2026-09-04/AUTH-profile-verification.md), [integrated c465 checks](implementation-2026-09-04/CI1-integrated-c465-verification.md), [integrated 406 follow-up checks](implementation-2026-09-04/CI1-integrated-406-verification.md), [brand integration checks](implementation-2026-09-04/CI1-brand-integration-verification.md), [public share binding](implementation-2026-09-05/CF-public-share-binding-verification.md), [white-label local artifact matrix](implementation-2026-09-05/WL7-local-artifact-matrix-verification.md).
+Recent evidence: [dual-target Web Tasks](implementation-2026-09-04/WEB-tasks-verification.md), [PG auth migration](implementation-2026-09-04/AUTH1-pg-migration-verification.md), [selected identity deletion](implementation-2026-09-04/AUTH-identity-deletion-verification.md), [import ordering](implementation-2026-09-04/AUTH-import-order-verification.md), [provider erasure](implementation-2026-09-04/SH2-providers-verification.md), [real model/runtime](implementation-2026-09-04/SH3-model-verification.md), [stage-owned startup](implementation-2026-09-04/SH4-startup-verification.md), [CF realtime](11-cf2-realtime-evidence.md), [CF Python runtime](12-cf-runtime-evidence.md), [CF resources](13-cf-resource-evidence.md), [CF frozen release](14-cf-release-evidence.md), [PG onboarding v5](implementation-2026-09-04/SH2-onboarding-schema-verification.md), [PG v6 canonical memory](implementation-2026-09-05/SH3-pg-v6-verification.md), [upstream v0.12.291 merge](implementation-2026-09-05/upstream-sync-v0.12.291-verification.md), [Flutter upstream compatibility](implementation-2026-09-05/flutter-upstream-sync-verification.md), [latest upstream sync](implementation-2026-09-05/upstream-sync-6e53bbd2-verification.md), [upstream v0.12.292 merge](implementation-2026-09-05/upstream-sync-v0.12.292-verification.md), [Docker context](implementation-2026-09-04/SH4-build-context-verification.md), [speech](implementation-2026-09-04/SH3-speech-verification.md), [PTT terminal usage](implementation-2026-09-04/SH3-ptt-usage-verification.md), [Android consumer](../../app/fork/VERIFICATION.md), [macOS consumer and limits](../../desktop/macos/fork/README.md), [Electron consumer and limits](../../desktop/windows/fork/VERIFICATION.md), [CF recording](implementation-2026-09-04/CF4-recording-product-verification.md), [PG nested usage](implementation-2026-09-04/PG-nested-usage-verification.md), [selected identity profiles](implementation-2026-09-04/AUTH-profile-verification.md), [integrated c465 checks](implementation-2026-09-04/CI1-integrated-c465-verification.md), [integrated 406 follow-up checks](implementation-2026-09-04/CI1-integrated-406-verification.md), [brand integration checks](implementation-2026-09-04/CI1-brand-integration-verification.md), [public share binding](implementation-2026-09-05/CF-public-share-binding-verification.md), [white-label local artifact matrix](implementation-2026-09-05/WL7-local-artifact-matrix-verification.md).
 
 Evidence is per package and exact local candidate tree. The Android/speech
 combined check range is `96380cfcb8..f3e91e6dc4`; it is not a full cumulative
