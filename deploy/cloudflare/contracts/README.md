@@ -8,7 +8,7 @@ The entry builds seven real application Workers and an inference-only Worker,
 applies the actual Auth/App migrations into a new local state directory, starts
 locked Wrangler/workerd, then executes:
 
-- The same `contracts/deployment/core.py` identity/onboarding/Tasks HTTP suite
+- The same `contracts/deployment/core.py` identity/onboarding/CSAT/Tasks HTTP suite
   used by the Server OS runner.
 - `recording.mjs`, separate public `/v4/listen` (Upgrade Bearer) and
   `/v4/web/listen` (first-frame JWT) PCM recording flows: authenticated
@@ -23,7 +23,8 @@ locked Wrangler/workerd, then executes:
   generation token. It exports profile/recording/memory/tasks,
   verifies the download filename against the configured brand ID,
   and checks cross-user isolation. The privacy
-  path uploads and reads real R2 bytes with checksum rejection, deletes both
+  path also submits and exports a private CSAT rating, proves account isolation,
+  uploads and reads real R2 bytes with checksum rejection, deletes both
   a populated account and a just-registered account through public routes,
   waits for the actual Queue consumer and unchanged 60-second quiescence /
   30-second settling delays, then proves credential revocation and another

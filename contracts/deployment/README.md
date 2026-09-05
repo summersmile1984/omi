@@ -2,7 +2,8 @@
 
 `core.py` executes the same HTTP cases against either real target: two public
 signups, opaque session restore and JWT exchange, protected admission,
-onboarding persistence, task creation/completion, cross-account denial, refresh
+onboarding persistence, CSAT configuration/validation/create-only ratings,
+task creation/completion, cross-account denial, refresh
 and logout revocation. It imports no backend handlers and seeds no business
 records. The task request contract comes from the actual FastAPI
 `ActionItemCreateRequest`: an empty description returns **422**. Cloudflare's
@@ -72,7 +73,7 @@ or its 64 MiB per-direction bound. It never synthesizes transcripts. Real socket
 tests run in the existing `product.sh` lane alongside HTTP-framing and process
 ownership tests.
 
-`--self-test` still executes only the eight common core cases, including when
+`--self-test` executes ten common core cases, including when
 real models are enabled. Enabling this runtime is not evidence that recording,
 finalization, canonical-memory retrieval or the complete CI-1 qualifier passed.
 See the [real-model execution record](../../dev/unified-main/implementation-2026-09-05/server-real-model-product.md).
@@ -85,7 +86,13 @@ build. `SELF_HOST_CI_PORT` changes the loopback port group (default 34800).
 Private command logs, profile hash, source hashes and `core-results.json` remain
 under the printed trace directory. They contain only disposable fixture state.
 
-This is the identity/onboarding/tasks slice of **CI-1**. It deliberately does
+The CSAT cases execute the existing upstream `/v1/csat/config` and
+`/v1/csat/ratings` wire contract on both targets: missing state defaults, reserved
+platform input, 422/400 validation, 201 creation, 409 resubmission and account
+isolation. Cloudflare also checks rating export and actual account deletion in
+its recording/privacy suite. These are synthetic ratings in disposable accounts.
+
+This is the identity/onboarding/CSAT/tasks slice of **CI-1**. It deliberately does
 not implement `qualify-dual-target.mjs`, which owns the complete candidate and
 platform/brand product qualification. Recording finalization, conversation and
 memory retrieval, process restart, full error shapes, client UI, supported OSes

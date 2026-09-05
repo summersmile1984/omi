@@ -447,11 +447,18 @@ try {
     "recording.export-restored-recording-memory-task-and-profile",
     async () => {
       await request("api", "/v1/users/export", 401);
+      await request("api", "/v1/csat/ratings", 201, {
+        token: owner.token, method: "POST",
+        body: { platform: "macos", score: 2, comment: "Synthetic private feedback" },
+      });
       const exported = await request("api", "/v1/users/export", 200, {
         token: owner.token,
       });
       require(exported.headers.get("content-disposition") ===
         `attachment; filename="${metadata.brand_id}-export.json"`, "export filename ignored the configured brand");
+      require(exported.data.csat_ratings.length === 1 &&
+        exported.data.csat_ratings[0].comment === "Synthetic private feedback",
+        "export lost owned CSAT rating");
       require(exported.data.profile.uid === owner.uid &&
         exported.data.profile.email === owner.email &&
         exported.data.profile.name ===
@@ -470,6 +477,7 @@ try {
       const isolated = await request("api", "/v1/users/export", 200, {
         token: other.token,
       });
+      require(isolated.data.csat_ratings.length === 0, "CSAT export crossed account boundary");
       require(!JSON.stringify(isolated.data).includes(id) &&
         !JSON.stringify(isolated.data).includes(
           owner.email,

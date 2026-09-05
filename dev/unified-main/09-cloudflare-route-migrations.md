@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the newly discovered desktop/admin slots and daily-write implementations, the inventory has 619 unique method/path/protocol slots: 578 have Worker owners and 41 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write and CSAT implementations, the inventory has 619 unique method/path/protocol slots: 580 have Worker owners and 39 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -109,7 +109,10 @@ Join accepted Calendar event windows with eligible D1 conversation intervals thr
 
 Owner: `api-core`. Upstream authority: `backend/routers/csat.py`.
 
-Product config normalization and one create-only rating per user/platform require a D1 authority and deletion fence.
+Implemented in `csat_routes.py` and migration 0158: normalized product config,
+branded default copy, one atomic create-only rating per UID/platform, server-owned
+comment policy, export and the existing account-deletion fence/purge. Both routes
+are staging-owned; this is not production publication or full CF-4 qualification.
 
 | Method | Path |
 |---|---|

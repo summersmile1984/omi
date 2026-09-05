@@ -2315,6 +2315,8 @@ app.get("/v1/users/daily-summary-settings", proxyAuthenticatedCore);
 app.patch("/v1/users/daily-summary-settings", proxyAuthenticatedCore);
 app.get("/v1/users/daily-summaries", proxyAuthenticatedCore);
 app.post("/v1/users/desktop-usage/daily", proxyAuthenticatedCore);
+app.get("/v1/csat/config", proxyAuthenticatedCore);
+app.post("/v1/csat/ratings", proxyAuthenticatedCore);
 app.post("/v1/users/daily-summaries", proxyAuthenticatedCore);
 app.get("/v1/users/daily-summaries/:summaryId", proxyAuthenticatedCore);
 app.patch(

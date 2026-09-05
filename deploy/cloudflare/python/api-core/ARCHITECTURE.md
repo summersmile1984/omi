@@ -46,6 +46,16 @@ request reaches this Worker. Legacy workstream search/index refresh and
 candidate automation remain outside this package until their own authority and
 backfill contracts are migrated.
 
+`csat_routes.py` owns the product configuration singleton and one immutable
+rating per UID/platform. It matches the upstream CSAT validation, normalization
+and 201/409 receipt contract; default display copy uses the deployment brand.
+Migration 0158 installs the unique key, create-only protection and account
+deletion fences. Ratings participate in export and the existing Jobs residual
+purge; there is no second feedback writer. Shared Server/CF HTTP cases cover
+admission and resubmission, while the recording/privacy runner proves export
+and real queue-driven erasure. This does not qualify the separate admin feedback
+reporting or referral delivery families.
+
 `advice_routes.py` owns the isolated profile's proactive coaching rows in D1.
 Create/list/update/delete and mark-all-read share one uid-scoped authority;
 dismissed filtering and category pagination are computed from the same table.

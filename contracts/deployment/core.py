@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One HTTP product contract against either real, disposable deployment target.
 
-This is the identity/onboarding/tasks slice of CI-1, not a release qualifier.
+This is the identity/onboarding/CSAT/tasks slice of CI-1, not a release qualifier.
 Target runners own disposable state, provider fixtures and teardown. This client
 never seeds a database, imports a backend handler or supplies an auth bypass.
 """
@@ -204,6 +204,51 @@ class ProductContract:
             require(isolated['completed'] is False, 'onboarding crossed account boundary')
 
         self.case('onboarding.persist-and-isolate', onboarding)
+
+        def csat_config():
+            self.request('api', 'GET', '/v1/csat/config', 401)
+            config, _ = self.request('api', 'GET', '/v1/csat/config', 200, bearer=owner.jwt)
+            require(
+                set(config)
+                == {
+                    'enabled',
+                    'title',
+                    'body',
+                    'thank_you_text',
+                    'refer_cta_text',
+                    'question_threshold',
+                    'comment_max_score',
+                    'revision',
+                },
+                'CSAT config shape differs',
+            )
+            require(
+                config['enabled'] is True
+                and config['revision'] == 0
+                and config['question_threshold'] == config['comment_max_score'] == 3,
+                'CSAT defaults differ',
+            )
+            alternate, _ = self.request('api', 'GET', '/v1/csat/config?platform=future', 200, bearer=owner.jwt)
+            require(alternate == config, 'reserved platform changed product config')
+            for body, status in [
+                ({}, 422),
+                ({'platform': 'invalid', 'score': 3}, 400),
+                ({'platform': 'macos', 'score': 0}, 400),
+            ]:
+                self.request('api', 'POST', '/v1/csat/ratings', status, bearer=owner.jwt, body=body)
+
+        self.case('csat.config-and-wire-validation', csat_config)
+
+        def csat_rating():
+            body = {'platform': 'macos', 'score': 2, 'comment': 'Synthetic product rating', 'revision': 0}
+            first, _ = self.request('api', 'POST', '/v1/csat/ratings', 201, bearer=owner.jwt, body=body)
+            require(first == {'id': 'macos_' + owner.uid, 'created': True}, 'CSAT create receipt differs')
+            again, _ = self.request('api', 'POST', '/v1/csat/ratings', 409, bearer=owner.jwt, body={**body, 'score': 5})
+            require(again == {'id': first['id'], 'created': False}, 'CSAT repeat did not preserve first identity')
+            other_rating, _ = self.request('api', 'POST', '/v1/csat/ratings', 201, bearer=other.jwt, body=body)
+            require(other_rating == {'id': 'macos_' + other.uid, 'created': True}, 'CSAT ownership crossed accounts')
+
+        self.case('csat.create-once-and-isolate', csat_rating)
         task = {}
 
         def create():
@@ -288,7 +333,7 @@ class ProductContract:
     def report(self):
         report = {
             'schema_version': 1,
-            'scope': 'identity-onboarding-tasks',
+            'scope': 'identity-onboarding-csat-tasks',
             'target': self.metadata['target'],
             'brand_id': self.metadata['brand_id'],
             'cases': self.cases,
