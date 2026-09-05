@@ -5,7 +5,7 @@
   "AuthService.swift:clearTokens()": "2c7137068ca85bf0916fb343db787a1fb839c312d72a4e32b58ec9dd92fa90d6",
   "AuthService.swift:configure()": "21e7c9968e6c157af49b7d4408a77d013347f454e8b4ecb83a2208951a1c033f",
   "AuthService.swift:expireStoredTokenForAutomation()": "f40381b2a292191d826b231ef7617ea73d1c5c7989e995c75deaebc71a54b3e3",
-  "AuthService.swift:getIdToken(forceRefresh:)": "84365b7aa37cb2876b12814c2f468c5ca1cfc7e434206216a7d9e2daa28da05b",
+  "AuthService.swift:getIdToken(forceRefresh:)": "86b93d5534de12d1102308cd0c95b2538f605f104b8f6a754bf37628a85b670c",
   "AuthService.swift:handleOAuthCallback(url:)": "47aeff0c88e2db691cb4ff99d5ee64f8d40c73990ca173d60a67f78e12a43ef3",
   "AuthService.swift:performLightSessionInvalidation()": "e48316229edc7bc63636642cc03b442f4e4130c9dc3d711d1c928206d078d5a6",
   "AuthService.swift:retryRestoredSession()": "4d756505de609b9b083bc4d23d8dcde36e5987ee3de5bba809bc28671593663d",
