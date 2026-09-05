@@ -14,8 +14,10 @@ locked Wrangler/workerd, then executes:
   `/v4/web/listen` (first-frame JWT) PCM recording flows: authenticated
   capture, committed transcript reads, reconnect ownership, cross-user denial,
   explicit finalization through actual Queue/Jobs/Core, derived memories/tasks,
-  and denial after logout. It then restores the real account session, exports
-  profile/recording/memory/tasks, and checks cross-user isolation. The privacy
+  and denial after logout. It then restores the real account session, submits
+  concurrent out-of-order daily desktop counters through the public route,
+  verifies their maxima through export, exports profile/recording/memory/tasks,
+  and checks cross-user isolation. The privacy
   path uploads and reads real R2 bytes with checksum rejection, deletes both
   a populated account and a just-registered account through public routes,
   waits for the actual Queue consumer and unchanged 60-second quiescence /

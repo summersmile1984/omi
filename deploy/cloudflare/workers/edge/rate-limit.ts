@@ -17,6 +17,11 @@ export type EdgeRateLimitPolicy = {
 };
 
 export const EDGE_RATE_LIMIT_POLICIES = {
+  "users:desktop_usage_daily": {
+    name: "users:desktop_usage_daily",
+    maxRequests: 600,
+    windowSeconds: 3600,
+  },
   "agent:execute_tool": {
     name: "agent:execute_tool",
     maxRequests: 120,
@@ -398,6 +403,10 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ],
   ["GET /v1/goals/suggest", EDGE_RATE_LIMIT_POLICIES["goals:suggest"]],
   ["GET /v1/goals/advice", EDGE_RATE_LIMIT_POLICIES["goals:advice"]],
+  [
+    "POST /v1/users/desktop-usage/daily",
+    EDGE_RATE_LIMIT_POLICIES["users:desktop_usage_daily"],
+  ],
   [
     "POST /v1/goals/extract-progress",
     EDGE_RATE_LIMIT_POLICIES["goals:extract"],

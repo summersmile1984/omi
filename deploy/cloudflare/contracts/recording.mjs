@@ -333,6 +333,42 @@ try {
   owner.token = (
     await request("auth", "/api/auth/token", 200, { token: owner.session })
   ).data.token;
+  await caseOf("recording.desktop-daily-usage-concurrent-maxima", async () => {
+    const data = {
+      date: new Date().toISOString().slice(0, 10),
+      timezone: "UTC",
+      client_device_id: "contract-desktop",
+      watching_seconds: 120,
+      listening_seconds: 80,
+      proactive_cards_shown: 3,
+      proactive_cards_acted: 1,
+      ptt_turns: 2,
+    };
+    await request("api", "/v1/users/desktop-usage/daily", 401, {
+      method: "POST",
+      body: data,
+    });
+    await request("api", "/v1/users/desktop-usage/daily", 422, {
+      token: owner.token,
+      method: "POST",
+      body: { ...data, ptt_turns: true },
+    });
+    await Promise.all(
+      [120, 40, 60, 90].map((watching_seconds) =>
+        request("api", "/v1/users/desktop-usage/daily", 200, {
+          token: owner.token,
+          method: "POST",
+          body: { ...data, watching_seconds },
+        }),
+      ),
+    );
+    const exported = await request("api", "/v1/users/export", 200, {
+      token: owner.token,
+    });
+    require(exported.data.desktop_daily_usage.length === 1 &&
+      exported.data.desktop_daily_usage[0].watching_seconds ===
+        120, "concurrent desktop counter reports lost a running maximum");
+  });
   await caseOf(
     "recording.export-restored-recording-memory-task-and-profile",
     async () => {

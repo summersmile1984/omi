@@ -15,6 +15,7 @@ router = APIRouter()
 
 _EXPORT_QUERIES = (
     ("conversations", "cf_conversations", "created_at DESC, id DESC"),
+    ("desktop_daily_usage", "cf_desktop_daily_usage", "date DESC, client_device_id DESC"),
     ("memories", "cf_memories", "created_at DESC, id DESC"),
     ("memory_import_runs", "cf_memory_import_runs", "updated_at DESC, run_id DESC"),
     ("memory_import_artifacts", "cf_memory_import_artifacts", "created_at DESC, artifact_id DESC"),
@@ -166,6 +167,7 @@ async def export_user_data(request: Request):
         "action_items": sections.pop("action_items", []),
         "task_data": task_data,
         "chat_messages": sections.pop("chat_messages", []),
+        "desktop_daily_usage": sections.pop("desktop_daily_usage", []),
     }
     payload["exported_at"] = int(time.time())
     return JSONResponse(

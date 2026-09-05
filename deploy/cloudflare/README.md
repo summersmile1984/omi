@@ -1852,6 +1852,14 @@ state all returned `200`; resolving a missing event returned `404`. The two
 temporary states, event, notification, and usage rows were verified at zero
 after cleanup.
 
+`POST /v1/users/desktop-usage/daily` now reaches Python Core through the
+600/hour authenticated Edge policy. D1 owns one row per uid/date/device;
+concurrent retries merge each bounded running counter by maximum. Exact dates
+must be within two days of today in the supplied IANA timezone. Export includes
+these rows, and account deletion fences and purges them. The real local
+recording contract covers concurrent delivery, export and queued erasure; this
+does not imply an Eddy production deployment.
+
 The daily-summary routes use an explicit D1 projection (indexed date/visibility
 plus bounded JSON fields). List/detail/delete/visibility now have a staging
 owner, while the test/regenerate route computes a deterministic summary from

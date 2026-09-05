@@ -7,6 +7,15 @@ APIs through the Worker fetch bridge. The route modules must stay async and
 must not import Firestore, Redis, thread pools, local persistent files, or
 process-lifetime network clients.
 
+`desktop_daily_usage_routes.py` owns running counters keyed by uid/local date/
+client device. A single D1 upsert takes the maximum of each counter, preserving
+retries and out-of-order delivery without an in-memory lock. The request applies
+strict integer limits, exact date syntax, an IANA timezone and a two-day local
+window; Edge applies the existing 600/hour user policy. Export reads the same
+table, and deletion triggers plus the Jobs residual registry fence and purge it.
+The pinned `pytz` wheel supplies IANA data inside Python Workers without an OS
+timezone database. This route does not generate daily summaries.
+
 The goal and workstream modules share the validated evidence contract. Each
 workflow mutation writes its domain projection and idempotency receipt in one
 D1 batch; Edge authentication supplies the signed uid context before the

@@ -428,6 +428,7 @@ families:
       - connectors:synthesize
       - conversations:topic
       - users:ai_profile_synthesize
+      - users:desktop_usage_daily
       - goals:suggest
       - goals:advice
       - goals:extract
@@ -461,6 +462,7 @@ families:
       - POST /v1/conversations/search
       - POST /v3/memory-imports/batch
       - POST /v1/users/daily-summaries/:summaryId/regenerate
+      - POST /v1/users/desktop-usage/daily
       - GET /v3/memories/review-queue
       - GET /v3/memories/review-queue/:reviewId
       - POST /v3/memories/review-queue/:reviewId/resolve

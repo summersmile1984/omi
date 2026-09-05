@@ -41,6 +41,11 @@ version = "2.27.2"
 wheels = [{ url = "https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pydantic_core-2.27.2-cp313-cp313-pyodide_2025_0_wasm32.whl", hashes = { sha256 = "3695112ef99b222e48e0a2837b055ec818b43ff5e2e0802e99f5d6d2dd36af7b" } }]
 
 [[packages]]
+name = "pytz"
+version = "2024.1"
+wheels = [{ url = "https://files.pythonhosted.org/packages/9c/3d/a121f284241f08268b21359bd425f7d4825cffc5ac5cd0e1b3d82ffd2b10/pytz-2024.1-py2.py3-none-any.whl", upload-time = 2024-02-02T01:18:37Z, size = 505474, hashes = { sha256 = "328171f4e3623139da4983451950b28e95ac706e13f3f2630a879749e7a8b319" } }]
+
+[[packages]]
 name = "starlette"
 version = "0.49.3"
 wheels = [{ url = "https://files.pythonhosted.org/packages/a3/e0/021c772d6a662f43b63044ab481dc6ac7592447605b5b35a957785363122/starlette-0.49.3-py3-none-any.whl", upload-time = 2025-11-01T15:12:24Z, size = 74340, hashes = { sha256 = "b579b99715fdc2980cf88c8ec96d3bf1ce16f5a8051a7c2b84ef9b1cdecaea2f" } }]

@@ -181,17 +181,23 @@ not a permanent removal of the user's live-model goal.
 
 Owner: `api-core`. Upstream authority: `backend/routers/users.py` and
 `backend/database/daily_summaries.py`. The 2026-09-05 Eddy production preparation
-found these actual registrations missing from the inventory. They have no
-Cloudflare route owner and remain blocked; inventory classification is not an
-implementation or release qualification.
+found these actual registrations missing from the inventory. Daily usage now
+has a local-runtime-tested Cloudflare owner; on-demand recap generation remains
+blocked. Inventory classification is not production release qualification.
 
-| Method | Path |
-|---|---|
-| POST | `/v1/users/desktop-usage/daily` |
-| POST | `/v1/users/daily-summaries` |
+| Method | Path | Status |
+|---|---|---|
+| POST | `/v1/users/desktop-usage/daily` | Core/D1 staging-owned; public local-runtime contract passed |
+| POST | `/v1/users/daily-summaries` | Blocked; generation not implemented |
 
-The usage write requires a UID/device/day owner, monotonic per-device counters,
-bounded date window, IANA timezone validation and the existing rate-limit policy.
+`desktop_daily_usage_routes.py` owns one D1 row per UID/device/day and atomically
+merges each counter by maximum. It validates strict counter bounds, the local
+two-day date window, and IANA timezone, with the upstream 600/hour Edge policy.
+The row participates in export and the existing deletion fence/purge. The
+2026-09-05 public recording contract exercised concurrent out-of-order writes,
+export, and actual Queue-driven account erasure; see
+[the evidence](implementation-2026-09-05/eddy-desktop-daily-usage.md).
+
 The on-demand summary requires the user's local-day boundaries, quota admission,
 existing-record reuse, generation ownership, cooldown only after actual spend,
 and distinct empty-day versus concurrent-generation responses. The existing CF
