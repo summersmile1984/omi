@@ -166,9 +166,9 @@ fork-only `POST /v1/realtime/web-ticket` and its HMAC ticket, but retains this
 registered route. It now returns a bounded, authenticated 409 capability denial
 with `reason`, `provider`, `backend_route`, and `retryable` for the two real
 providers; invalid provider is 400. It cannot return an STT ticket as a live model
-credential. This correction exposes one existing false ownership claim: the
-612-route inventory is now 576 staging-owned + 36 blocked, with no registrations
-dropped.
+credential. That correction exposed one existing false ownership claim: at that
+point the 612-route inventory became 576 staging-owned + 36 blocked, with no
+registrations dropped. The current, expanded inventory totals appear above.
 
 Owner: CF AI/realtime adapter, jointly with CLIENT-1 live-model client owner.
 The missing contract is interactive live-model transport, model selection,
