@@ -4,12 +4,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { JobsEnv } from "../workers/jobs/env";
+import { cleanupMemoryVectors } from "../workers/jobs/memory-vector-publication";
 import {
   purgeAccountVectorProjections,
+  processVectorProjection,
   reconcileVectorProjections,
   VECTOR_EMBEDDING_DIMENSIONS,
   VECTOR_EMBEDDING_MODEL,
-  vectorId,
   vectorNamespace,
 } from "../workers/jobs/vector-projection";
 
@@ -25,18 +26,19 @@ function sqliteValue(value: unknown) {
 
 class SqliteD1 {
   readonly database = new DatabaseSync(":memory:");
+  now = 100;
 
-  constructor() {
+  constructor(beforeMigration?: string) {
     this.database.exec("PRAGMA foreign_keys = ON");
     // The reconciler tests use explicit epoch seconds (100/200/300). D1
     // triggers must observe that same controlled clock, not today's date.
-    this.database.function("unixepoch", () => 100);
+    this.database.function("unixepoch", () => this.now);
     const directory = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
       "../migrations/app",
     );
     for (const filename of readdirSync(directory)
-      .filter((value) => value.endsWith(".sql"))
+      .filter((value) => value.endsWith(".sql") && (!beforeMigration || value < beforeMigration))
       .sort()) {
       this.database.exec(readFileSync(path.join(directory, filename), "utf8"));
     }
@@ -98,22 +100,36 @@ class SqliteD1 {
 class FakeVectorize {
   readonly upserts: Array<Array<Record<string, unknown>>> = [];
   readonly deletes: string[][] = [];
+  readonly vectors = new Map<string, Record<string, unknown>>();
+  mutationId = "";
 
   async upsert(vectors: Array<Record<string, unknown>>) {
     this.upserts.push(vectors);
-    return { mutationId: crypto.randomUUID() };
+    for (const vector of vectors) this.vectors.set(String(vector.id), vector);
+    this.mutationId = crypto.randomUUID();
+    return { mutationId: this.mutationId };
   }
 
   async deleteByIds(ids: string[]) {
     this.deletes.push(ids);
-    return { mutationId: crypto.randomUUID() };
+    for (const id of ids) this.vectors.delete(id);
+    this.mutationId = crypto.randomUUID();
+    return { mutationId: this.mutationId };
+  }
+
+  async getByIds(ids: string[]) {
+    return ids.flatMap((id) => this.vectors.has(id) ? [this.vectors.get(id)!] : []);
+  }
+
+  async describe() {
+    return { processedUpToMutation: this.mutationId };
   }
 }
 
 const databases: SqliteD1[] = [];
 
-function environment(options: { failAi?: boolean } = {}) {
-  const database = new SqliteD1();
+function environment(options: { failAi?: boolean; beforeMigration?: string } = {}) {
+  const database = new SqliteD1(options.beforeMigration);
   databases.push(database);
   const memory = new FakeVectorize();
   const action = new FakeVectorize();
@@ -205,11 +221,222 @@ function seedSources(database: SqliteD1) {
     .run();
 }
 
+function memoryWork(database: SqliteD1) {
+  return database.database.prepare(
+    "SELECT * FROM cf_vector_projection_outbox WHERE source_kind = 'memory'",
+  ).get() as Parameters<typeof processVectorProjection>[1];
+}
+
 afterEach(() => {
   for (const database of databases.splice(0)) database.close();
 });
 
 describe("Vectorize rebuildable D1 projection", () => {
+  it("keeps the newest vector bytes when two publishers finish in reverse order", async () => {
+    const state = environment();
+    seedSources(state.database);
+    const row = () => state.database.database.prepare(
+      "SELECT * FROM cf_vector_projection_outbox WHERE source_kind = 'memory'",
+    ).get() as never;
+    let resume!: () => void;
+    let entered!: () => void;
+    const arrived = new Promise<void>((resolve) => { entered = resolve; });
+    const blocked = new Promise<void>((resolve) => { resume = resolve; });
+    const upsert = state.memory.upsert.bind(state.memory);
+    let first = true;
+    state.ai.run.mockImplementation(async (_model, input) => ({
+      data: (input.text as string[]).map((text) =>
+        Array(VECTOR_EMBEDDING_DIMENSIONS).fill(text.includes("green") ? 0.1 : 0.9)),
+    }));
+    state.memory.upsert = async (vectors) => {
+      if (first) { first = false; entered(); await blocked; }
+      return upsert(vectors);
+    };
+    const old = processVectorProjection(state.env, row());
+    await arrived;
+    state.database.database.prepare(
+      "UPDATE cf_memories SET content = 'Prefers oolong tea' WHERE id = 'memory-1'",
+    ).run();
+    expect(await processVectorProjection(state.env, row())).toBe(true);
+    resume();
+    await old;
+    const published = state.database.database.prepare(
+      "SELECT vector_id, source_version FROM cf_vector_projection_state WHERE projection_kind = 'memory'",
+    ).get()!;
+    const memory = state.database.database.prepare(
+      "SELECT item_revision FROM cf_memories WHERE id = 'memory-1'",
+    ).get()!;
+    expect(published.source_version).toBe(memory.item_revision);
+    expect(state.memory.vectors.get(String(published.vector_id))?.values).toEqual(
+      Array(VECTOR_EMBEDDING_DIMENSIONS).fill(0.9),
+    );
+  });
+
+  it("does not let a stale deletion retract a newer publication", async () => {
+    const state = environment();
+    seedSources(state.database);
+    await processVectorProjection(state.env, memoryWork(state.database));
+    state.database.database.prepare(
+      "UPDATE cf_memories SET deleted_at = 20 WHERE id = 'memory-1'",
+    ).run();
+    const deletion = memoryWork(state.database);
+    state.database.database.prepare(
+      "UPDATE cf_memories SET deleted_at = NULL, content = 'New preference' WHERE id = 'memory-1'",
+    ).run();
+    await processVectorProjection(state.env, memoryWork(state.database));
+    const current = state.database.database.prepare(
+      "SELECT vector_id FROM cf_vector_projection_state WHERE projection_kind = 'memory'",
+    ).get()!;
+    await processVectorProjection(state.env, deletion);
+    await cleanupMemoryVectors(state.env);
+    await cleanupMemoryVectors(state.env);
+    expect(state.database.database.prepare(
+      "SELECT vector_id FROM cf_vector_projection_state WHERE projection_kind = 'memory'",
+    ).get()).toEqual(current);
+    expect(state.memory.vectors.has(String(current.vector_id))).toBe(true);
+  });
+
+  it("keeps account deletion pending until a late writer and its vectors are drained", async () => {
+    const state = environment();
+    seedSources(state.database);
+    let resume!: () => void;
+    let entered!: () => void;
+    const arrived = new Promise<void>((resolve) => { entered = resolve; });
+    const blocked = new Promise<void>((resolve) => { resume = resolve; });
+    const upsert = state.memory.upsert.bind(state.memory);
+    state.memory.upsert = async (vectors) => {
+      entered();
+      await blocked;
+      return upsert(vectors);
+    };
+    const pending = processVectorProjection(state.env, memoryWork(state.database));
+    await arrived;
+    state.database.database.prepare(
+      "INSERT INTO cf_account_deletion_tombstones VALUES ('vector-user', 100, 10000)",
+    ).run();
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(1);
+    expect(state.memory.deletes).toHaveLength(0);
+    resume();
+    await pending;
+    expect(state.database.database.prepare(
+      "SELECT COUNT(*) AS count FROM cf_vector_projection_state WHERE projection_kind = 'memory'",
+    ).get()).toEqual({ count: 0 });
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(1);
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(0);
+    expect(state.memory.vectors.size).toBe(0);
+  });
+
+  it("waits for applied external deletion instead of accepting its mutation receipt as completion", async () => {
+    const state = environment();
+    seedSources(state.database);
+    await processVectorProjection(state.env, memoryWork(state.database));
+    const applyDelete = state.memory.deleteByIds.bind(state.memory);
+    const accepted: string[][] = [];
+    state.memory.deleteByIds = async (ids) => {
+      accepted.push(ids);
+      return { mutationId: "pending-deletion" };
+    };
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(1);
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(1);
+    expect(state.memory.vectors.size).toBe(1);
+    await applyDelete(accepted[0]);
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(0);
+    expect(state.memory.vectors.size).toBe(0);
+  });
+
+  it("owns an accepted write even when the provider response is lost", async () => {
+    const state = environment();
+    seedSources(state.database);
+    const upsert = state.memory.upsert.bind(state.memory);
+    state.memory.upsert = async (vectors) => {
+      await upsert(vectors);
+      throw new Error("response lost after acceptance");
+    };
+    expect(await processVectorProjection(state.env, memoryWork(state.database))).toBe(false);
+    expect(state.memory.vectors.size).toBe(1);
+    expect(await cleanupMemoryVectors(state.env, "vector-user")).toBe(1);
+    expect(state.memory.deletes).toHaveLength(0);
+    state.database.now = 1001;
+    expect(await cleanupMemoryVectors(state.env, "vector-user")).toBe(1);
+    expect(await cleanupMemoryVectors(state.env, "vector-user")).toBe(0);
+    expect(state.memory.vectors.size).toBe(0);
+  });
+
+  it("retains an abandoned claim until its writer bound and an observed delete barrier", async () => {
+    const state = environment();
+    state.database.database.prepare(
+      `INSERT INTO cf_memory_vector_artifacts
+       (vector_id, uid, source_id, attempt_id, sub_id, source_version, model, writer_until)
+       VALUES ('unknown-vector', 'vector-user', 'memory-1', 'lost-attempt', '0', 1, ?, 1000)`,
+    ).run(VECTOR_EMBEDDING_MODEL);
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(1);
+    expect(state.memory.deletes).toHaveLength(0);
+    state.database.now = 1001;
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(1);
+    expect(state.memory.deletes).toEqual([["unknown-vector"]]);
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(0);
+  });
+
+  it("allows fenced cleanup progress but denies extending or moving a writer", async () => {
+    const state = environment();
+    state.database.database.prepare(
+      `INSERT INTO cf_memory_vector_artifacts
+       (vector_id, uid, source_id, attempt_id, sub_id, source_version, model, writer_until)
+       VALUES ('owned-vector', 'vector-user', 'memory-1', 'attempt', '0', 1, ?, 1000)`,
+    ).run(VECTOR_EMBEDDING_MODEL);
+    state.database.database.prepare(
+      "INSERT INTO cf_account_deletion_tombstones VALUES ('vector-user', 100, 10000)",
+    ).run();
+    for (const mutation of ["uid = 'another-user'", "writer_until = 1001", "source_version = 2"]) {
+      expect(() => state.database.database.prepare(
+        `UPDATE cf_memory_vector_artifacts SET ${mutation}`,
+      ).run()).toThrow("account_deletion_in_progress");
+    }
+    state.database.database.prepare(
+      "UPDATE cf_memory_vector_artifacts SET writer_done = 1, retired = 1",
+    ).run();
+    expect(() => state.database.database.prepare(
+      "UPDATE cf_memory_vector_artifacts SET retired = 0",
+    ).run()).toThrow("account_deletion_in_progress");
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(1);
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(0);
+  });
+
+  it("adopts existing projection IDs during upgrade and preserves their old-writer drain window", async () => {
+    const state = environment({ beforeMigration: "0163_memory_vector_publication.sql" });
+    seedSources(state.database);
+    const legacyId = "a".repeat(64);
+    state.database.database.prepare(
+      `INSERT INTO cf_vector_projection_state
+       (uid, projection_kind, source_id, sub_id, vector_id, source_version, model, updated_at)
+       SELECT uid, 'memory', id, '000000', ?, item_revision, ?, 100
+       FROM cf_memories WHERE id = 'memory-1'`,
+    ).run(legacyId, VECTOR_EMBEDDING_MODEL);
+    await state.memory.upsert([{ id: legacyId, values: [0.1] }]);
+    state.database.database.exec(readFileSync(new URL(
+      "../migrations/app/0163_memory_vector_publication.sql", import.meta.url,
+    ), "utf8"));
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(1);
+    expect(state.memory.deletes).toHaveLength(0);
+    state.database.now = 1001;
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(1);
+    expect(state.memory.deletes).toEqual([[legacyId]]);
+    expect(await purgeAccountVectorProjections(state.env, "vector-user")).toBe(0);
+  });
+
+  it("retracts a blank legacy memory without leaving an impossible embedding retry", async () => {
+    const state = environment();
+    seedSources(state.database);
+    await processVectorProjection(state.env, memoryWork(state.database));
+    state.database.database.prepare(
+      "UPDATE cf_memories SET content = ' ' WHERE id = 'memory-1'",
+    ).run();
+    expect(await processVectorProjection(state.env, memoryWork(state.database))).toBe(true);
+    expect(memoryWork(state.database)).toBeUndefined();
+    expect(await cleanupMemoryVectors(state.env, "vector-user")).toBe(1);
+    expect(await cleanupMemoryVectors(state.env, "vector-user")).toBe(0);
+  });
+
   it("seeds missing rows, embeds them, and records only candidate mappings", async () => {
     const state = environment();
     seedSources(state.database);
@@ -319,7 +546,9 @@ describe("Vectorize rebuildable D1 projection", () => {
       .run();
     await reconcileVectorProjections(state.env, 200);
     expect(state.memory.upserts).toHaveLength(2);
-    expect(state.memory.upserts[1][0].id).toBe(originalId);
+    // Vectorize replaces bytes for an existing ID (official client API).
+    // Every publication must therefore use an immutable attempt-specific ID.
+    expect(state.memory.upserts[1][0].id).not.toBe(originalId);
 
     state.database.database
       .prepare(
@@ -466,16 +695,19 @@ describe("Vectorize rebuildable D1 projection", () => {
     const state = environment();
     seedSources(state.database);
     await reconcileVectorProjections(state.env, 100);
-    const expectedMemoryId = await vectorId(
-      "memory",
-      "vector-user",
-      "memory-1",
-      "000000",
-    );
+    const expectedMemoryId = state.memory.upserts[0][0].id;
 
     await expect(
       purgeAccountVectorProjections(state.env, "vector-user"),
-    ).resolves.toBe(5);
+    ).resolves.toBe(1);
+    // Memory deletion is asynchronous and keeps its journal until observed.
+    // Only then may the account owner drain the other four projection kinds.
+    await expect(
+      purgeAccountVectorProjections(state.env, "vector-user"),
+    ).resolves.toBe(4);
+    await expect(
+      purgeAccountVectorProjections(state.env, "vector-user"),
+    ).resolves.toBe(0);
 
     expect(state.memory.deletes.flat()).toContain(expectedMemoryId);
     expect(

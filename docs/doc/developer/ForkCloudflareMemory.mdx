@@ -29,15 +29,35 @@ is distinct from explicit rejection. Jobs uses the source revision when reading
 and acknowledging work. An edit while embedding is in flight leaves its later
 revision queued for another pass.
 
+Migration 0163 assigns each external memory-vector publication a unique attempt
+and immutable vector IDs. D1 records these IDs before calling Vectorize. The
+publication transaction compares the current source content and revision;
+an older task cannot overwrite the current mapping or vector bytes. Canonical
+revision changes revoke old serving mappings in the same transaction. Deletion
+work only retracts mappings through the revision it observed.
+
+The artifact journal survives lost provider responses and account deletion.
+A successful write receipt releases its writer; an uncertain write retains the
+full 15-minute Queue/cron invocation bound. Cleanup retires unreferenced IDs and
+waits for observed absence after a previously observed vector, or an exact
+processed deletion receipt. It does not infer completion from local timestamps
+or from acceptance of an asynchronous mutation. Account erasure remains pending
+until the journal is empty. Hosted cleanup latency still requires qualification.
+
 Full-migration ASGI/SQLite regressions cover admission races, same-second edits,
 transaction rollback, upgrade state and cascade deletion. The existing product
 lane runs real local Auth, Workers, D1, Queue and R2 through public HTTP/WebSocket
 recording, memory mutation, export, cascade deletion and account erasure.
-Its inference IO remains controlled.
+Its inference IO remains controlled, and that product lane does not exercise
+hosted Vectorize. The Worker suite separately drives the production projector
+through real SQLite transactions and controlled asynchronous Vectorize IO.
 
-The revision/outbox boundary does not yet qualify all external index races.
-Revision-scoped vector object identity, concurrent publication fencing and
-freshness-aware hydration with accurate diagnostics remain required. Ledger
+Freshness-aware hydration with accurate diagnostics and equivalent publication
+ownership for the other projection families remain required. Ledger
 history/revert also require append-only lineage and exact idempotency. These
 remain tracked in the fork CF-4 migration ledger and block full production
 product qualification; no default prompts or extraction policies are changed.
+
+Provider contracts: [Vectorize client API](https://developers.cloudflare.com/vectorize/reference/client-api/),
+[ordered asynchronous writes](https://blog.cloudflare.com/building-vectorize-a-distributed-vector-database-on-cloudflare-developer-platform/),
+and [Queue invocation limits](https://developers.cloudflare.com/queues/platform/limits/).

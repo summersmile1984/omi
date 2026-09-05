@@ -185,6 +185,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_user_transcription_preferences", column: "uid" },
   { table: "cf_vector_projection_outbox", column: "uid" },
   { table: "cf_vector_projection_state", column: "uid" },
+  { table: "cf_memory_vector_artifacts", column: "uid" },
   { table: "cf_worker_probe", column: "uid" },
   { table: "cf_workstream_artifacts", column: "uid" },
   { table: "cf_workstream_checkpoints", column: "uid" },

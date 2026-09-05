@@ -312,6 +312,10 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   into Vectorize unchanged.
   Memory migration 0162 couples each canonical revision to durable projection
   work in D1; Jobs consumes that revision instead of a wall-clock timestamp.
+  Migration 0163 journals every external memory-vector attempt before writing,
+  uses immutable vector IDs, and compares the canonical revision at publication.
+  Account erasure waits for in-flight writers and observed external cleanup;
+  accepting an asynchronous delete request does not clear its journal.
   The [memory write contract](../../docs/doc/developer/ForkCloudflareMemory.mdx)
   describes the implemented boundary and remaining external-index qualification.
 - `manifests/r2-namespaces.yaml` records every legacy `BUCKET_*` binding, object

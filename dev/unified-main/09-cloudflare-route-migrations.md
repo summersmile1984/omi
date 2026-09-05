@@ -151,10 +151,14 @@ current-tail privacy and index revision semantics are implemented and exercised.
 Migration 0162 now commits a monotonic memory `item_revision` and its vector
 outbox work atomically for every in-tree producer, including X intake and
 conversation-cascade deletion. Jobs acknowledges only the observed revision,
-so a same-second edit during embedding retains its new work. Remaining index
-work includes revision-scoped external vector identity, concurrent publication
-fencing and freshness-aware hydration/diagnostics; this is still a prerequisite
-to qualifying append-only ledger history and revert.
+so a same-second edit during embedding retains its new work. Migration 0163
+adds immutable external memory-vector IDs, canonical publication comparison,
+and an artifact journal that survives in-flight writes and asynchronous erasure.
+Production projector regressions now cover reverse completion, stale deletion,
+late account-deletion writers and uncertain provider responses. Hosted Vectorize
+cleanup behavior, freshness-aware hydration/diagnostics and equivalent ownership
+for other projection families still require qualification; this remains a
+prerequisite to qualifying append-only ledger history and revert.
 
 | Method | Path |
 |---|---|

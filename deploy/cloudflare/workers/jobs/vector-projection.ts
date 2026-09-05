@@ -1,4 +1,9 @@
 import type { JobsEnv } from "./env";
+import {
+  cleanupMemoryVectors,
+  publishMemoryVectors,
+  retractMemoryVectors,
+} from "./memory-vector-publication";
 
 export const VECTOR_EMBEDDING_MODEL = "@cf/baai/bge-m3";
 export const VECTOR_EMBEDDING_DIMENSIONS = 1_024;
@@ -271,7 +276,7 @@ async function sourceDocuments(
   uid: string,
   kind: VectorSourceKind,
   sourceId: string,
-): Promise<{ version: number; documents: ProjectionDocument[] } | null> {
+): Promise<{ version: number; documents: ProjectionDocument[]; memoryContent?: string } | null> {
   if (kind === "memory") {
     const row = await env.APP_DB.prepare(
       `SELECT content, item_revision, operation
@@ -288,9 +293,12 @@ async function sourceDocuments(
     ) {
       return null;
     }
+    const documents = chunkDocuments("memory", row.content);
+    if (!documents.length) return null;
     return {
       version,
-      documents: chunkDocuments("memory", row.content),
+      memoryContent: row.content,
+      documents,
     };
   }
   if (kind === "action_item") {
@@ -475,6 +483,10 @@ async function deleteProjection(
   env: JobsEnv,
   row: VectorProjectionOutboxRow,
 ): Promise<void> {
+  if (row.source_kind === "memory") {
+    await retractMemoryVectors(env, row.uid, row.source_id, row.desired_version, row.operation);
+    return;
+  }
   const state = await existingState(
     env,
     row.uid,
@@ -509,10 +521,23 @@ async function deleteProjection(
 async function upsertProjection(
   env: JobsEnv,
   row: VectorProjectionOutboxRow,
-  source: { version: number; documents: ProjectionDocument[] },
+  source: { version: number; documents: ProjectionDocument[]; memoryContent?: string },
 ): Promise<void> {
   const namespace = await vectorNamespace(row.uid);
   const embedded = await embedDocuments(env, source.documents);
+  if (row.source_kind === "memory") {
+    if (typeof source.memoryContent !== "string") throw new Error("memory source content missing");
+    await publishMemoryVectors(env, {
+      uid: row.uid,
+      sourceId: row.source_id,
+      revision: source.version,
+      content: source.memoryContent,
+      namespace,
+      model: env.WORKERS_AI_VECTOR_MODEL || VECTOR_EMBEDDING_MODEL,
+      vectors: embedded,
+    });
+    return;
+  }
   for (const vector of embedded) {
     vector.vectorId = await vectorId(
       vector.projectionKind,
@@ -934,6 +959,7 @@ export async function reconcileVectorProjections(
   for (const row of result.results || []) {
     if (await processVectorProjection(env, row)) completed += 1;
   }
+  await cleanupMemoryVectors(env);
   return completed;
 }
 
@@ -941,6 +967,11 @@ export async function purgeAccountVectorProjections(
   env: JobsEnv,
   uid: string,
 ): Promise<number> {
+  await env.APP_DB.prepare(
+    "DELETE FROM cf_vector_projection_state WHERE uid = ? AND projection_kind = 'memory'",
+  ).bind(uid).run();
+  const memoryPending = await cleanupMemoryVectors(env, uid);
+  if (memoryPending) return memoryPending;
   const result = await env.APP_DB.prepare(
     `SELECT projection_kind, sub_id, vector_id
      FROM cf_vector_projection_state

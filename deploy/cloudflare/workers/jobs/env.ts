@@ -59,6 +59,11 @@ export type VectorizeBinding = {
   deleteByIds(ids: string[]): Promise<unknown>;
 };
 
+export type MemoryVectorizeBinding = VectorizeBinding & {
+  getByIds(ids: string[]): Promise<Array<{ id: string }>>;
+  describe(): Promise<{ processedUpToMutation: unknown }>;
+};
+
 export type JobsEnv = {
   AUTH: Fetcher;
   API_CORE?: Fetcher;
@@ -74,7 +79,7 @@ export type JobsEnv = {
   AI: WorkersAiBinding;
   /** Optional until the account has Cloudflare Images transformations enabled. */
   IMAGES?: ImagesTransformBinding;
-  MEMORY_VECTORS: VectorizeBinding;
+  MEMORY_VECTORS: MemoryVectorizeBinding;
   ACTION_ITEM_VECTORS: VectorizeBinding;
   CONVERSATION_VECTORS: VectorizeBinding;
   TRANSCRIPT_CHUNK_VECTORS: VectorizeBinding;

@@ -653,7 +653,7 @@ describe("jobs scheduled cleanup", () => {
         prepare: (sql: string) => ({
           bind: (...args: unknown[]) => ({
             all: async () =>
-              sql.includes("cf_vector_projection")
+              sql.includes("cf_vector_projection") || sql.includes("cf_memory_vector_artifacts")
                 ? { results: [] }
                 : {
                     results: [...tasks].map(([storage_key, task]) => ({
