@@ -53,15 +53,18 @@ def prerecorded_selection(value='en'):
     return 'sensevoice', language(value), contract().stt_model
 
 
+LOCAL_STREAMING_SERVICE = 'sensevoice'
+
+
 def streaming_selection(
     value='en', multi_lang_enabled=True, *, surface=None, preferred_service=None, exclude=frozenset()
 ):
-    from utils.stt.streaming import STTService
-
     selected = contract()
-    if 'sensevoice' in exclude:
+    # This profile owns one live provider. Any failed provider recorded by the
+    # listener ends the session; it must never enter upstream's cloud fallback.
+    if exclude:
         return None, None, None
-    return STTService.sensevoice, language(value), selected.stt_model
+    return LOCAL_STREAMING_SERVICE, language(value), selected.stt_model
 
 
 class Runtime:

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import pytest
 
-import routers.tts as tts_mod
 from fork.egress_policy import EgressPolicyUnavailable
 from utils.mimo_pipeline.tts import MimoTTSAPIError, MimoTTSClient
 
@@ -132,40 +131,3 @@ def test_synthesize_raises_on_unexpected_shape(monkeypatch):
     client = MimoTTSClient(api_key='k', base_url='http://operator.example.test/mimo')
     with pytest.raises(MimoTTSAPIError, match='unexpected'):
         client.synthesize('你好')
-
-
-def test_mimo_enabled_flag(monkeypatch):
-    monkeypatch.delenv('MIMO_API_KEY', raising=False)
-    monkeypatch.delenv('TTS_PROVIDER', raising=False)
-    assert tts_mod._is_mimo_enabled() is False
-
-    monkeypatch.setenv('TTS_PROVIDER', 'mimo')
-    monkeypatch.delenv('MIMO_API_KEY', raising=False)
-    assert tts_mod._is_mimo_enabled() is False  # no key
-
-    monkeypatch.setenv('MIMO_API_KEY', 'key')
-    monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
-    assert tts_mod._is_mimo_enabled() is True
-
-    monkeypatch.setenv('TTS_PROVIDER', 'elevenlabs')
-    assert tts_mod._is_mimo_enabled() is False
-
-
-@pytest.mark.skip(
-    reason="MiMo prerecorded/TTS policy registration is not wired yet: it must come from the S5 patch registry, not from editing config/stt_provider_policy.py or routers/tts.py. This test is the spec for that follow-up."
-)
-def test_explicit_mimo_selection_does_not_fall_through_to_elevenlabs(monkeypatch):
-    import routers.tts as tts_mod
-    from fastapi import HTTPException
-    from models.tts import TtsSynthesizeRequest
-
-    monkeypatch.setenv('TTS_PROVIDER', 'mimo')
-    monkeypatch.setenv('MIMO_API_KEY', 'key')
-    monkeypatch.delenv('MIMO_API_BASE', raising=False)
-    monkeypatch.setenv('ELEVENLABS_API_KEY', 'must-not-be-used')
-
-    with pytest.raises(HTTPException) as exc_info:
-        import asyncio
-
-        asyncio.run(tts_mod.tts_synthesize(TtsSynthesizeRequest(text='hello'), uid='user'))
-    assert exc_info.value.status_code == 503

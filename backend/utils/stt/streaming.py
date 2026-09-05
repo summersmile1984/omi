@@ -15,11 +15,9 @@ from deepgram import DeepgramClient, DeepgramClientOptions, LiveTranscriptionEve
 from deepgram.clients.live.v1 import LiveOptions
 
 from config.stt_provider_policy import (
-    MIMO_PROVIDER,
     MODULATE_PROVIDER,
     PARAKEET_PROVIDER,
     SONIOX_PROVIDER,
-    SENSEVOICE_PROVIDER,
     STTServingSurface,
     deepgram_provider_for_runtime,
     default_models_for_surface,
@@ -61,8 +59,6 @@ class STTService(str, Enum):
     modulate = "modulate"
     parakeet = "parakeet"
     soniox = "soniox"
-    sensevoice = "sensevoice"
-    mimo = "mimo"
 
     @staticmethod
     def get_model_name(value: 'STTService') -> Optional[str]:
@@ -74,10 +70,6 @@ class STTService(str, Enum):
             return 'parakeet_streaming'
         if value == STTService.soniox:
             return 'soniox_streaming'
-        if value == STTService.sensevoice:
-            return 'sensevoice_streaming'
-        if value == STTService.mimo:
-            return 'mimo_streaming'
 
 
 class ParakeetConnectionError(RuntimeError):
@@ -542,10 +534,6 @@ def get_stt_service_for_language(
             model = model.strip()
             if provider_for_model_token(model) in exclude:
                 continue
-            if model == 'sensevoice' and provider_is_enabled(SENSEVOICE_PROVIDER, surface) and _sensevoice_available():
-                return (STTService.sensevoice, requested_language, 'sensevoice'), parakeet_fallback_reason
-            if model == 'mimo' and provider_is_enabled(MIMO_PROVIDER, surface) and _mimo_available():
-                return (STTService.mimo, requested_language, 'mimo'), parakeet_fallback_reason
             if (
                 model.startswith('dg-')
                 and provider_is_enabled(deepgram_provider_for_runtime(is_dg_self_hosted), surface)
@@ -704,20 +692,6 @@ def _deepgram_is_available() -> bool:
     runtime that has no account key of its own.
     """
     return _managed_deepgram_client() is not None or bool(get_byok_key('deepgram'))
-
-
-def _sensevoice_available() -> bool:
-    """True when a local SenseVoice model directory is configured."""
-    from utils.sensevoice.socket import SENSEVOICE_MODEL_DIR
-
-    return bool(SENSEVOICE_MODEL_DIR) and os.path.exists(os.path.join(SENSEVOICE_MODEL_DIR, "model.int8.onnx"))
-
-
-def _mimo_available() -> bool:
-    """True when MiMo streaming STT is configured (MIMO_API_KEY set)."""
-    from utils.mimo_pipeline.socket import mimo_available
-
-    return mimo_available()
 
 
 async def process_audio_dg(

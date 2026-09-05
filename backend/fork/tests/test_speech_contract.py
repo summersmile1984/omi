@@ -57,6 +57,7 @@ def test_selection_has_no_vendor_failover_and_rejects_unknown_language(monkeypat
     row = selected()
     monkeypatch.setattr(profile, 'current', lambda: row)
     assert speech.prerecorded_selection('zh-CN') == ('sensevoice', 'zh', row['speech']['stt_model'])
+    assert speech.streaming_selection('en') == ('sensevoice', 'en', row['speech']['stt_model'])
     assert speech.streaming_selection('en', exclude=frozenset({'sensevoice'})) == (None, None, None)
     with pytest.raises(Exception) as error:
         speech.streaming_selection('de')
@@ -253,17 +254,25 @@ def test_native_tts_invalid_result_never_becomes_successful_audio(samples):
 async def test_listen_receiver_socket_is_owned_by_the_fork_patch(monkeypatch):
     from fork.patches.speech import patches
     from routers.listen.receiver import ListenReceiver
-    from utils.sensevoice import socket as local_socket
-    from utils.stt.streaming import STTService
 
-    patch = next(
+    receiver_patch = next(
         patch
         for patch in patches()
         if patch.module == 'routers.listen.receiver' and patch.attribute == 'ListenReceiver'
     )
     created = object()
-    monkeypatch.setattr(local_socket, 'SenseVoiceSocket', lambda **kwargs: created)
-    receiver = type('Receiver', (), {'host': type('Host', (), {'stt_service': STTService.sensevoice})()})()
 
-    patched = patch.build(ListenReceiver)
-    assert await patched._create_stt_socket(receiver, lambda _segments: None, 16000) is created
+    class Original:
+        async def _create_stt_socket(self, callback, sample_rate, modulate_callback=None):
+            return 'upstream-socket'
+
+    monkeypatch.setattr('utils.sensevoice.socket.SenseVoiceSocket', lambda **kwargs: created)
+    patched = receiver_patch.build(Original)
+    receiver = patched()
+    receiver.host = type('Host', (), {'stt_service': 'sensevoice'})()
+    assert patched is not Original
+    assert await receiver._create_stt_socket(lambda _segments: None, 16000) is created
+    receiver.host.stt_service = 'upstream'
+    assert await receiver._create_stt_socket(lambda _segments: None, 16000) == 'upstream-socket'
+    assert await Original()._create_stt_socket(None, 16000) == 'upstream-socket'
+    assert ListenReceiver is not patched

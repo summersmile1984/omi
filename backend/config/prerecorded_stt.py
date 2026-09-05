@@ -15,7 +15,6 @@ from enum import Enum
 from config.stt_provider_policy import (
     DEEPGRAM_SELF_HOSTED_PROVIDER,
     MODULATE_PROVIDER,
-    MOSS_PROVIDER,
     PARAKEET_PROVIDER,
     STTServingSurface,
     default_models_for_surface,
@@ -44,7 +43,6 @@ class PrerecordedSTTService:
     DEEPGRAM = 'deepgram'
     MODULATE = 'modulate'
     PARAKEET = 'parakeet'
-    MOSS = 'moss'
 
 
 class PrerecordedSTTConfigurationError(RuntimeError):
@@ -85,9 +83,6 @@ PROVIDER_ENVIRONMENT_CONTRACTS: Mapping[str, ProviderEnvironmentContract] = {
         required_env=('HOSTED_PARAKEET_API_URL',),
         required_when_model_source_is_opaque=True,
     ),
-    # MOSS is selected only by an explicit literal token in the cloud-neutral
-    # runtime. Do not make an opaque upstream deployment require its credential.
-    PrerecordedSTTService.MOSS: ProviderEnvironmentContract(required_env=('MOSS_API_KEY',)),
 }
 
 
@@ -111,8 +106,6 @@ def provider_for_model_token(model: str) -> str | None:
         return PrerecordedSTTService.MODULATE
     if provider == PARAKEET_PROVIDER:
         return PrerecordedSTTService.PARAKEET
-    if provider == MOSS_PROVIDER:
-        return PrerecordedSTTService.MOSS
     if provider == DEEPGRAM_SELF_HOSTED_PROVIDER:
         return PrerecordedSTTService.DEEPGRAM
     return None
@@ -129,10 +122,6 @@ def providers_for_model_config(raw: str) -> tuple[str, ...]:
             and provider not in providers
         ):
             providers.append(provider)
-    # MOSS accepts the complete language surface and its adapter has no managed
-    # provider fallback. Its explicit route therefore owns its whole env contract.
-    if PrerecordedSTTService.MOSS in providers:
-        return tuple(providers)
     # Retired/unknown tokens and unsupported languages fall through to the
     # non-Deepgram defaults. Include both because language capability decides
     # which one serves the request.

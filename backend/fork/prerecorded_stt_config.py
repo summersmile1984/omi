@@ -19,23 +19,12 @@ from dataclasses import dataclass
 from typing import Mapping
 from urllib.parse import urlsplit
 
-from config.prerecorded_stt import PrerecordedSTTConfigurationError, PrerecordedSTTService
+from config.prerecorded_stt import PrerecordedSTTConfigurationError
 
 
-class ForkPrerecordedSTTService(PrerecordedSTTService):
-    """Upstream's provider constants plus the ones only this fork serves.
+class ForkPrerecordedSTTService:
+    """Provider identifiers accepted only by fork-owned optional adapters."""
 
-    The shim branch added these three names to upstream's class, which made
-    every upstream sync a conflict in a file the fork has no other reason to
-    touch. Subclassing keeps one import for callers -- upstream's DEEPGRAM and
-    MOSS still resolve -- while the fork-only names live in fork code.
-
-    Values are the wire/config strings operators already set in
-    ``STT_SERVICE_MODELS``, so they must not be renamed casually.
-    """
-
-    SENSEVOICE = 'sensevoice'
-    MIMO = 'mimo'
     MLX_MOSS_DIARIZE = 'mlx_moss_diarize'
 
 

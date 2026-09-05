@@ -28,19 +28,23 @@ def patches():
         return ServingSocket
 
     def listen_receiver(original):
-        create_original = original._create_stt_socket
+        class ServingListenReceiver(original):
+            async def _create_stt_socket(self, callback, sample_rate, modulate_callback=None):
+                if self.host.stt_service == speech.LOCAL_STREAMING_SERVICE:
+                    from utils.sensevoice.socket import SenseVoiceSocket
 
-        async def create(receiver, callback, sample_rate, *args, **kwargs):
-            from utils.stt.streaming import STTService
+                    return SenseVoiceSocket(sample_rate=sample_rate, transcript_callback=callback)
+                return await super()._create_stt_socket(callback, sample_rate, modulate_callback)
 
-            if receiver.host.stt_service == STTService.sensevoice:
-                from utils.sensevoice.socket import SenseVoiceSocket
+        return ServingListenReceiver
 
-                return SenseVoiceSocket(sample_rate=sample_rate, transcript_callback=callback)
-            return await create_original(receiver, callback, sample_rate, *args, **kwargs)
+    def listen_provider(original):
+        def provider(service):
+            if service == speech.LOCAL_STREAMING_SERVICE:
+                return speech.LOCAL_STREAMING_SERVICE
+            return original(service)
 
-        original._create_stt_socket = create
-        return original
+        return provider
 
     targets = [
         ('utils.stt.pre_recorded', 'get_prerecorded_service', lambda original: speech.prerecorded_selection),
@@ -52,7 +56,9 @@ def patches():
         ('routers.chat', 'get_stt_service_for_language', lambda original: speech.streaming_selection),
         ('routers.listen.runtime', 'get_stt_service_for_language', lambda original: speech.streaming_selection),
         ('routers.listen.receiver', 'get_stt_service_for_language', lambda original: speech.streaming_selection),
+        ('routers.listen.receiver', 'provider_for_service', listen_provider),
         ('routers.listen.receiver', 'ListenReceiver', listen_receiver),
+        ('routers.listen.runtime', 'ListenReceiver', listen_receiver),
         ('utils.sensevoice.socket', 'get_sensevoice_recognizer', lambda original: speech.recognizer),
         ('utils.sensevoice.prerecorded_provider', 'get_sensevoice_recognizer', lambda original: speech.recognizer),
         ('utils.sensevoice.socket', 'SenseVoiceSocket', socket),
