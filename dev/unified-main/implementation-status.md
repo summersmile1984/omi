@@ -5,23 +5,28 @@ clients. The [2026-09-04 audit](audit-2026-09-04/01-self-host-action-plan.md)
 defines the acceptance criteria. A local implementation or unit-test pass is
 not a release, a signed client, or a completed product loop.
 
-Candidate branch: `codex/unified-delivery`, implementation integrated through
-the current candidate tip, starting at `b9776fac12f6`
-(audit documents on `origin/main` `d238a85af9d9`). Nothing in this candidate
-has been pushed, merged, or deployed to production.
+Candidate branch: `codex/unified-delivery`, current local tip `3fa5ce41d4`.
+It is a reviewable local candidate: nothing in it has been pushed, merged, or
+deployed to production.
 
-`upstream/main` at `c4880cd5f6` is an ancestor of this candidate. Local merges
-`552cb91330` (`v0.12.291`), `453b2e311e`, `8b151ba2a0`, and `4bf718a1cd`
-retain upstream bytes and leave local model routing at the fork patch seam.
-`scripts/fork/upstream_sync_plan.py --base HEAD --upstream upstream/main` reports
-no remaining merge conflicts and `git rev-list --left-right --count
-upstream/main...HEAD` was `0 248` after the latest merge. The latest merge
-changed only upstream macOS changelog inputs and passes the merge-scoped
-zero-upstream-touch check. A whole-candidate check currently reports 20
-pre-existing upstream-touch violations, so the one-fork topology is not yet
-accepted; the incremental WL-7 commits themselves are clean. The scheduled
-workflow continues to create a regular sync PR only for clean merge trees. This
-is local merge evidence, not a pushed upstream-sync PR or release qualification.
+`upstream/main` at `c4880cd5f6` is an ancestor of this candidate. The branch is
+`0 263` relative to `upstream/main`; `scripts/fork/upstream_sync_plan.py --base
+HEAD --upstream upstream/main` reports no merge conflicts. On 2026-09-05,
+`python3 scripts/fork/check-upstream-touch.py --base upstream/main --head HEAD
+--upstream-ref upstream/main --json` passed with zero violations. Its only two
+upstream files are the approved `app/lib/flavors.dart` hook and the macOS update
+note, both within their allowlist budgets. The former server provider edits now
+live behind the fork registry, Server OS-only packages use
+`backend/requirements-fork.txt`, and macOS native authentication is staged from
+fork-owned sources.
+
+This closes the one-fork source-boundary work locally. It does not claim a
+remote Cloudflare qualification, a signed client release, or a production
+Server OS deployment; those remain release gates rather than source-tree work.
+Fresh local target acceptance on 2026-09-05 passed
+`bash deploy/self-host/ci/product.sh` and
+`bash deploy/cloudflare/ci/product.sh`: the latter's isolated Worker/D1 trace
+records all 8 core, 6 recording, 11 chat, and 2 public-share cases as passing.
 
 | Package | Owner | Status / next evidence |
 | --- | --- | --- |

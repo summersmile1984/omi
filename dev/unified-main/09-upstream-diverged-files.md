@@ -21,90 +21,41 @@ python3 scripts/fork/check-upstream-touch.py \
 
 **不要**用 `git diff upstream/main origin/main`(两个独立前进的分支互相比)——那样会把"上游这段时间自己改了什么"和"fork 真正改了什么"混在一起,规模会被严重高估(2026-09-04 实测：这样算出 523 个"不同"的文件,而下面这张真实、准确的表只有 40 个,其中 38 个是真违规——这两个数字本身都会随时间漂移,不必追求跟当次复现完全一致,重点是"混算"和"只算 fork 自己动过的"之间那个数量级差距)。也不要用不带 remote 前缀的裸 `main`——本地 `main` ref 可能是过期的旧指针,不代表 `origin/main`,这份清单最早的一版就因为这个踩了坑,把冲突数错报成 14(应为 2)。
 
-## 现状快照(2026-09-04,merge-base `fd01c27267`)
+## 现状快照（2026-09-05，候选 `3fa5ce41d4`）
 
-- 上游领先 270 个提交,fork 领先 134 个(`git rev-list --left-right --count upstream/main...origin/main`)。
-- `git merge-tree --write-tree origin/main upstream/main` 真实合并冲突:**2 个**——`backend/testing/desktop_beta_admission/run.sh`(T1 白名单内、预算内,见下方"未计入债务"）与 `backend/utils/llm/model_config.py`(债务,见下表)。冲突数会随上游下一次恰好碰到哪些文件而波动,**不是**本清单要跟踪的指标。
-- `check-upstream-touch.py` 累计核算:**40 个上游文件被 fork 动过**,其中 **2 个**在 `upstream-touch-allowlist.yaml` 里正确登记(在预算内,不算债务),**38 个**是本清单要跟踪的真实债务。
+候选 `codex/unified-delivery` 以 `upstream/main` 的 `c4880cd5f6` 为祖先，
+`git rev-list --left-right --count upstream/main...HEAD` 为 `0 263`。
 
-2026-09-05 的 `codex/unified-delivery` 候选把根 `Makefile` 的两个 fork
-开发目标移到 `Makefile.fork`，并恢复四个 LLM/测试上游文件的当前字节。候选
-树对当前 `upstream/main` 的 `merge-tree` 已无冲突；这不会倒改上面的
-`origin/main` 历史快照，直到候选通过 review 后常规合入。
+```bash
+python3 scripts/fork/check-upstream-touch.py \
+  --base upstream/main --head HEAD --upstream-ref upstream/main --json
+```
 
-## 未消化的分歧(19 个,按子系统分组;第 20 个是 `AuthService.swift`,单独处理见下方)
+结果是 **0 个 violations**。`allowed` 仅有两个预算内接缝：
 
-状态列:`待处置`(已经有一个可以直接照做的处置方案,不管背后那次改动的源头提交是否已经追溯到)· `待诊断`(处置方案本身还没想清楚——通常是因为不确定具体改了什么、影响面多大,需要有人接手前先查清楚才能定处置方案)。两者都不代表"原因"列一定写了具体的源头提交:"原因"列的 commit 是 `check-upstream-touch.py` 报告里离 HEAD 最近的一次改动,不一定是最初引入分歧的那次;标了 `合并提交` 的还没往前追溯到真正的源头提交,但这不影响处置方案是否已经明确。
+- `app/lib/flavors.dart`（+3/+3）
+- `desktop/macos/docs/desktop-updates.mdx`（+1/+1）
 
-### A. Backend STT/翻译 provider 扩展(cloud-neutral 系列,8 个)
-上游对应文件本该保持零改动,provider 实现应迁到 `backend/fork/`、用导入期补丁挂载(`06-upstream-sync.md` §1 当初就是这么写的,但从没真正执行)。
+`upstream_sync_plan.py --base HEAD --upstream upstream/main` 也报告无合并
+冲突。这是本地候选的同步和源码边界证据，不代表它已推送、合并或发布。
 
-| 文件 | 原因 | 处置方案 | 状态 |
-|---|---|---|---|
-| `backend/config/prerecorded_stt.py` | `9b8ba655bf` feat(cloud-neutral): align adapters with upstream contracts | 迁到 `backend/fork/stt/`,补丁注册表在导入时挂载 | 待处置 |
-| `backend/config/stt_provider_policy.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
-| `backend/utils/stt/pre_recorded.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
-| `backend/utils/stt/streaming.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
-| `backend/utils/llm/providers.py` | `76468f50be` Merge cloud-neutral shim onto upstream main | 同上 | 待处置 |
+## 已消化（2026-09-05 收敛）
 
-对应测试(同一批 provider 工作带出来的,**不能**直接改上游测试——上游测试要保持不动,fork 行为要在 fork 自己的测试目录里断言):
+| 原分歧 | 最终所有者 | 验证 |
+| --- | --- | --- |
+| `backend/config/prerecorded_stt.py`、`stt_provider_policy.py`、`utils/stt/{pre_recorded,streaming}.py`、其 upstream 测试 | 还原上游字节；`backend/fork/patches/speech.py` 在 self-host profile 下替换真实选择器、provider 与 `ListenReceiver` 类 | 67 个 upstream/fork speech、transport 与 seam 测试通过 |
+| `backend/utils/llm/providers.py` 与 cloud-neutral routing 测试 | 还原上游 provider 表；fork 的 `local_llm` 工厂和 registry 继续拥有自托管路由 | 38 个 local-LLM/model/seam 测试通过 |
+| `backend/{requirements.txt,pylock*.toml}`、Modal/Pusher Dockerfiles、Pusher source-closure 测试 | 还原上游运行时和辅助镜像；仅 `deploy/self-host/Dockerfile` 安装 hash-pinned `backend/requirements-fork.txt` | 38 个 self-host/Pusher 测试、配置自检和离线 Docker import 验证通过 |
+| `desktop/macos/Desktop/Sources/AuthService.swift` 及 DEBUG bearer-token 测试 | 还原上游 AuthService；fork staging overlay 继续替换原生 Better Auth owners，并将当前 `getIdToken` 摘要写入 `source-owners.json` | `desktop/macos/fork/test.sh` 通过：12 个身份测试、stage/asset 合同与双 target stage |
+| `docs/api-reference/app-client-openapi.json` | 还原上游生成快照；fork Kokoro transport 不改上游 app-client contract | `export_openapi.py --surface app-client --check` 和 43 个 OpenAPI 合同测试通过 |
+| 试验性 MiMo/MOSS selector 测试 | 不再向上游 selector 注册未获 profile 接纳的 provider；保留隔离的 operator adapter 及其显式端点/egress 测试 | 42 个 adapter/config 测试通过 |
 
-| 文件 | 原因 | 处置方案 | 状态 |
-|---|---|---|---|
-| `backend/tests/unit/test_prerecorded_stt_config.py` | `9b8ba655bf` | 上游测试恢复原样;fork 行为的断言挪到 `backend/tests/unit/fork/` | 待处置 |
-| `backend/tests/unit/test_stt_provider_policy.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
+## 不算债务：允许的 T1 接缝（2 个）
 
-### C. Backend 打包/依赖清单(10 个)
-锁文件与 Dockerfile 这类"生成物"本来就在 T2 永不可改清单里——这批全都需要一个不同的解法(独立 pusher 镜像/依赖树),而不是让 upstream-touch-allowlist 破例。
+这些上游文件由 allowlist 明确登记，并在当前候选的累计比较中没有超预算：
 
-| 文件 | 原因 | 处置方案 | 状态 |
-|---|---|---|---|
-| `backend/modal/Dockerfile` | `c6fc05dd70` | 需要 fork 自己的 Dockerfile 变体,而不是改上游那份 | 待诊断 |
-| `backend/pusher/Dockerfile` | `c6fc05dd70` | 同上 | 待诊断 |
-| `backend/pusher/pylock.toml` / `requirements.txt` | 合并提交,大概率是 fork 加了 provider SDK 依赖后锁文件跟着变 | 需要判断这些依赖能不能只加在 fork 自己的 extra/optional-dependency 分组 | 待诊断 |
-| `backend/pylock.{toml,macos.toml,macos-x86_64.toml,runtime.toml,windows.toml}` / `requirements.txt` | 同上 | 同上 | 待诊断 |
-
-### D. Backend 相关测试(1 个)
-| 文件 | 原因 | 处置方案 | 状态 |
-|---|---|---|---|
-| `backend/tests/unit/test_verify_pusher_source_closure.py` | `c6fc05dd70` | 同上 | 待处置 |
-
-### E. CI 工作流(1 个)
-| 文件 | 原因 | 处置方案 | 状态 |
-|---|---|---|---|
-
-### F. 其它(2 个)
-| 文件 | 原因 | 处置方案 | 状态 |
-|---|---|---|---|
-| `docs/api-reference/app-client-openapi.json` | 合并提交;大概率是从后端路由自动生成的产物,fork 路由差异导致输出跟着变 | 如果确认是生成物,应该加进 T2 生成文件清单而不是当成"手改"违规追责;需要先确认生成脚本 | 待诊断 |
-
-## 已知但还没被本清单收录的一条(需要单独一次审计)
-
-`desktop/macos/Desktop/Sources/AuthService.swift` 目前 `check-upstream-touch.py` 报的是 **over-budget**(累计新增 9 行,`upstream-touch-allowlist.yaml` 里登记的预算是 3 行),不是"未登记"。这条不是本清单的"未消化分歧"类别——它是一个**已登记但预算写小了、或者缝本身长歪了**的问题,即预算是在某一次 PR 里对着当时的 `origin/main`校验通过的,后续几次改动各自都没超预算,但累计相对 `$MB` 已经超了。需要单独回去看这 9 行现在具体是什么、要不要拆成多条独立登记,而不是简单地把预算数字改大——本文档只负责标出它,不负责裁决。
-
-## 不算债务:已经在白名单里、按预算走的 T1 缝(2 个)
-
-对照用,证明"上游文件改动"不是天然违规——只要走 `upstream-touch-allowlist.yaml` 登记 + 预算,就是纪律允许的:
-
-- `desktop/macos/docs/desktop-updates.mdx`(+1/1)
-
-## 已消化(归档)
-
-| `backend/utils/llm/model_config.py` | historical cloud-neutral route override | replaced by the fork-owned local-LLM patch registry; upstream byte restored | candidate `codex/unified-delivery` |
-| `backend/testing/desktop_beta_admission/run.sh` | temporary FastAPI dependency exception | upstream now carries the dependency and adds Redis; upstream byte restored and exception removed | candidate `codex/unified-delivery` |
-| `backend/utils/llm/clients.py` | obsolete `get_default_config` re-export and older gateway fallback logic | local LLM patch registry supplies the self-host behavior; upstream byte restored | candidate `codex/unified-delivery` |
-| `Makefile` | fork-only shadow-diff and promotion targets | targets moved to `Makefile.fork`; upstream byte restored | candidate `codex/unified-delivery` |
-| `backend/tests/unit/test_language_catalog.py` | historical pinned-formatter drift | upstream byte restored; existing language-catalog test passes 7/7 | candidate `codex/unified-delivery` |
-| `app/lib/pages/onboarding/primary_language/primary_language_widget.dart` | historical Dart formatter drift | upstream byte restored; existing provider language test passes 14/14 with Flutter 3.44.5 | candidate `codex/unified-delivery` |
-| `.github/workflows/gcp_backend_pusher_auto_deploy.yml` / `backend/tests/unit/test_pusher_auto_deploy_paths.py` | historical fork pusher trigger expansion | upstream bytes restored; fork-owned `fork-checks.yml` has unfiltered main push/PR triggers, while the restored upstream path test passes | candidate `codex/unified-delivery` |
-| `app/lib/pages/onboarding/auth.dart` / `app/lib/providers/auth_provider.dart` | historical Better Auth injection into upstream mobile callers | upstream bytes restored; complete fork overlays replace both before staged use, no longer treat either as a source owner, and the two-target Flutter stage/test/bundle matrix passes | candidate `codex/unified-delivery` |
-| `backend/utils/other/storage.py` | MinIO client selection in an upstream factory | fork-owned `storage.minio-client` patch already replaces the factory; upstream byte restored and MinIO contract tests pass | candidate `codex/unified-delivery` |
-| `backend/utils/cloud_tasks.py` | Redis queue dispatch and worker authentication branches | fork queue registry now replaces all producer and public FastAPI authentication seams with route-scoped Redis handlers; upstream byte restored and finalizer route/retry tests pass | candidate `codex/unified-delivery` |
-| `backend/utils/other/endpoints.py` | Better Auth token branch | fork auth registry owns token/HTTP/WebSocket consumer replacements; upstream byte restored and auth consumer tests pass | candidate `codex/unified-delivery` |
-| `backend/database/__init__.py` / `backend/database/_client.py` / `backend/tests/unit/test_agent_vm_firebase_project_split.py` | PostgreSQL Firestore shim injection and customer-client branch | self-host admission installs the facade before any upstream database import; upstream bytes restored and a subprocess admission/import proof passes | candidate `codex/unified-delivery` |
-| `backend/routers/tts.py` / `backend/routers/desktop_tts_updates.py` | self-host MiMo TTS route branches | local `speech_transport` replaces both real route endpoints with the admitted Kokoro owner; upstream bytes restored and 21 route/HTTP/WS tests pass | candidate `codex/unified-delivery` |
-| `backend/routers/listen/receiver.py` | local SenseVoice socket branch | fork speech registry replaces the actual `ListenReceiver` class method for the admitted SenseVoice service; upstream byte restored and 41 speech seam/protocol tests pass | candidate `codex/unified-delivery` |
-| `backend/utils/translation_core/providers.py` | DeepSeek-compatible plain-JSON fallback | self-host LLM factory uses the local structured-output model; upstream byte restored and 99 local-LLM/translation tests pass | candidate `codex/unified-delivery` |
+- `app/lib/flavors.dart`
+- `desktop/macos/docs/desktop-updates.mdx`
 
 ## 用法
 

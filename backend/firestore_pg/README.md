@@ -58,9 +58,9 @@ The shim is a plain package inside the repo (`firestore_pg/`); it needs
 
 ## Running
 
-Set `FIRESTORE_PG_DSN` to a SQLAlchemy PostgreSQL URL. When it is set,
-`database/__init__.py` calls `firestore_pg.compat.install()` before any
-`database.*` module imports the SDK, so business code resolves to the shim.
+Set `FIRESTORE_PG_DSN` to a SQLAlchemy PostgreSQL URL. The self-host
+`fork.bootstrap.bootstrap()` entrypoint calls `firestore_pg.compat.install()` before
+it imports any upstream database module, so business code resolves to the shim.
 
 ```bash
 export FIRESTORE_PG_DSN="postgresql+psycopg://omi:omi-dev-password@localhost:5434/omi"
@@ -69,7 +69,7 @@ export FIREBASE_AUTH_EMULATOR_HOST=localhost:9099
 export STORAGE_EMULATOR_HOST=localhost:9199
 export FIREBASE_PROJECT_ID=demo-omi-local
 export ENCRYPTION_SECRET='...'                        # 32-byte base64 dev secret
-uvicorn main:app --host 127.0.0.1 --port 8100
+uvicorn fork.main:app --host 127.0.0.1 --port 8100
 ```
 
 Schema is owned by the forward-only migration CLI; runtime clients never create
