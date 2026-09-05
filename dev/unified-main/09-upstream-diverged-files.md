@@ -27,6 +27,11 @@ python3 scripts/fork/check-upstream-touch.py \
 - `git merge-tree --write-tree origin/main upstream/main` 真实合并冲突:**2 个**——`backend/testing/desktop_beta_admission/run.sh`(T1 白名单内、预算内,见下方"未计入债务"）与 `backend/utils/llm/model_config.py`(债务,见下表)。冲突数会随上游下一次恰好碰到哪些文件而波动,**不是**本清单要跟踪的指标。
 - `check-upstream-touch.py` 累计核算:**40 个上游文件被 fork 动过**,其中 **2 个**在 `upstream-touch-allowlist.yaml` 里正确登记(在预算内,不算债务),**38 个**是本清单要跟踪的真实债务。
 
+2026-09-05 的 `codex/unified-delivery` 候选把根 `Makefile` 的两个 fork
+开发目标移到 `Makefile.fork`，并恢复四个 LLM/测试上游文件的当前字节。候选
+树对当前 `upstream/main` 的 `merge-tree` 已无冲突；这不会倒改上面的
+`origin/main` 历史快照，直到候选通过 review 后常规合入。
+
 ## 未消化的分歧(37 个,按子系统分组;第 38 个是 `AuthService.swift`,单独处理见下方)
 
 状态列:`待处置`(已经有一个可以直接照做的处置方案,不管背后那次改动的源头提交是否已经追溯到)· `待诊断`(处置方案本身还没想清楚——通常是因为不确定具体改了什么、影响面多大,需要有人接手前先查清楚才能定处置方案)。两者都不代表"原因"列一定写了具体的源头提交:"原因"列的 commit 是 `check-upstream-touch.py` 报告里离 HEAD 最近的一次改动,不一定是最初引入分歧的那次;标了 `合并提交` 的还没往前追溯到真正的源头提交,但这不影响处置方案是否已经明确。
@@ -40,7 +45,6 @@ python3 scripts/fork/check-upstream-touch.py \
 | `backend/config/stt_provider_policy.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
 | `backend/utils/stt/pre_recorded.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
 | `backend/utils/stt/streaming.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
-| `backend/utils/llm/model_config.py` | 合并提交;`17460648cd` feat(llm): configurable translation provider — MiMo/DeepSeek/Gemini 是可能的源头 | 同上 | 待处置 |
 | `backend/utils/llm/providers.py` | `76468f50be` Merge cloud-neutral shim onto upstream main | 同上 | 待处置 |
 | `backend/utils/translation_core/providers.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
 | `backend/utils/other/endpoints.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
@@ -100,7 +104,6 @@ B2(移动端身份注入,`dev/unified-main/04-brand-layer.md` B2 行)正式依�
 ### G. 其它(2 个)
 | 文件 | 原因 | 处置方案 | 状态 |
 |---|---|---|---|
-| `Makefile` | `9803b46575` dev: shadow-diff regression lane (`make dev-shadow-diff`) | 这是纯本地开发工具目标,应该挪到 fork 自己的 `dev/Makefile` 或独立脚本,`make` 用 `-f` 或 `include` 组合,不改上游根 `Makefile` | 待处置 |
 | `docs/api-reference/app-client-openapi.json` | 合并提交;大概率是从后端路由自动生成的产物,fork 路由差异导致输出跟着变 | 如果确认是生成物,应该加进 T2 生成文件清单而不是当成"手改"违规追责;需要先确认生成脚本 | 待诊断 |
 
 ## 已知但还没被本清单收录的一条(需要单独一次审计)
@@ -111,12 +114,14 @@ B2(移动端身份注入,`dev/unified-main/04-brand-layer.md` B2 行)正式依�
 
 对照用,证明"上游文件改动"不是天然违规——只要走 `upstream-touch-allowlist.yaml` 登记 + 预算,就是纪律允许的:
 
-- `backend/testing/desktop_beta_admission/run.sh`(+1/1,`forbidden_exceptions` 破例 + 白名单预算内——见 `00-upstream-touch-policy.md` §2.1)
 - `desktop/macos/docs/desktop-updates.mdx`(+1/1)
 
 ## 已消化(归档)
 
-目前还没有——所有 37+1 条都还在上面的"未消化"表里。第一条从这里挪走的时候,格式是:`文件 | 原因 | 用的哪种手法消化的 | 消化于哪次同步（日期 + 提交/PR）`。
+| `backend/utils/llm/model_config.py` | historical cloud-neutral route override | replaced by the fork-owned local-LLM patch registry; upstream byte restored | candidate `codex/unified-delivery` |
+| `backend/testing/desktop_beta_admission/run.sh` | temporary FastAPI dependency exception | upstream now carries the dependency and adds Redis; upstream byte restored and exception removed | candidate `codex/unified-delivery` |
+| `backend/utils/llm/clients.py` | obsolete `get_default_config` re-export and older gateway fallback logic | local LLM patch registry supplies the self-host behavior; upstream byte restored | candidate `codex/unified-delivery` |
+| `Makefile` | fork-only shadow-diff and promotion targets | targets moved to `Makefile.fork`; upstream byte restored | candidate `codex/unified-delivery` |
 
 ## 用法
 

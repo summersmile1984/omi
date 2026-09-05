@@ -183,7 +183,8 @@ it, and start the backend.
 
 ## Verification
 
-- **Shadow diff (regression lane)** — `dev/shadow-diff.sh` (or `make dev-shadow-diff`)
+- **Shadow diff (regression lane)** — `dev/shadow-diff.sh` (or
+  `make -f Makefile.fork dev-shadow-diff`)
   runs the same scenario sequence against the real SDK (emulator) and the shim
   (PG) and diffs normalized JSON; exits 1 on mismatch. 29 scenarios cover CRUD,
   merge, update, delete, `==`/comparison/`in` queries, order+limit, dotted-path
