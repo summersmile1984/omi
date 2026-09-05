@@ -161,3 +161,27 @@ api: { key_prefix: "mw_", header_prefix: "X-Mw-" }   # header 属于两端契约
 - 白名单条目的 reason 写的是"改读 Info.plist 键"，不是"改读生成的 Swift 文件"——这是刻意的：Swift 没有 Python 那种导入时符号替换能力（S5 的 patch registry 那套对 Swift 不适用），只能在**运行时读 bundle 自己的 Info.plist**，而 Info.plist 本身需要靠 B1 另一项"Info.plist 模板化"在构建时把值写进去。也就是说这两个子项**不是独立切片**——`AppBuild.swift` 的改动离了 Info.plist 模板化没有值可读，光做前者没意义。
 
 **建议的方向**（未验证，留给下一次做这块的人）：不要给两个常量各开一个 Info.plist 键，而是只暴露**一个**"反向域名前缀"键（呼应 `identifiers.macos_named_bundle_prefix` 那条设计，`app-config.sh` 已经用了同一个字段），`isNonProduction` 判定改成 `bundleIdentifier.hasPrefix(读出来的前缀) && !productionFamilyBundleIdentifiers.contains(...)`；`productionBundleIdentifier`/`betaProductionBundleIdentifier` 两个具体值本身可以继续是 Xcode `PRODUCT_BUNDLE_IDENTIFIER` build setting 决定的字面量（每个品牌用自己的 xcconfig，Xcode 原生机制，不需要 Swift 里再读一遍）——这样只有 `isNonProduction` 一处逻辑需要在 3 行预算内动，两个具体常量维持现状。这个方向需要先确认 Xcode 的 xcconfig 替换和 Info.plist 模板化（B1 的另一项）到底怎么接，再动手，不在本次改动范围内。
+
+## 10. B2 第一片实测笔记（`flavors.dart`）
+
+B2 这一行（§4 表格）打包了七件事：`flavorizr.yaml` 生成+重跑、`flavors.dart`、3 处 pbxproj 逃逸、`BatteryWidget-Info.plist`、entitlements 模板化、`Info.plist` 权限描述、`environment_profile.dart` 校验表。这次只落地了其中最小、风险最低的一块：`flavors.dart`'s `F.title`（`MaterialApp(title: F.title)`，纯 Dart，不涉及构建工具）。其余六项都还没动，原因分别是：
+
+- **`flavorizr.yaml`**：这份文件被 `flutter_flavorizr` 工具直接消费、再生成 Xcode/Android 工程改动，YAML 本身没有"引用另一个文件"的机制（不像 `app-config.sh` 能 `source` 一个 fork 生成的文件）。要让它品牌可配置，得让 `flavorizr.yaml` 本身变成生成物（`apply.py` 从 manifest 渲染,omi-upstream 品牌渲染出的值等于今天手写的值)——这是比 B1 的 3 行预算大得多的结构性决定，需要先设计清楚再动手,不能顺手做。
+- **3 处 pbxproj 逃逸 + entitlements(App Group/associated domains)**：真实构建工具产物，写错有直接搞坏 iOS 构建的风险；associated domains 还需要真实域名托管 AASA 文件才能验证,不是纯代码改动能独立完成的。
+- **`environment_profile.dart` 的 `authCallbackScheme`**：这个值必须跟 iOS `Info.plist` 的 `CFBundleURLSchemes` / Android `AndroidManifest.xml` 的 intent-filter 逐字节一致,OAuth 回调才能工作。只改 Dart 这一侧、不同步改原生注册,等于交付一个看起来做了、实际登录会失败的半成品——两边必须作为同一个改动一起落地,这次没有一起做,所以两边都没动。
+
+`scripts/brand/generators/mobile.py` 目前只注册了 `flutter` 类别下这一个生成物；上面六项谁先接手，都是往同一个 `apply.py --only flutter` 的类别下继续加生成器，不需要新起类别。
+
+另外顺手发现并修了一个 B0 遗留的小 bug：`brand/omi-upstream/manifest.yaml` 的 `brand.id` 字段写的是 `omi`,但 schema 自己的描述说这个字段"是目录名"——目录其实是 `omi-upstream`。B0 从没有生成器真正读过这个字段,所以一直没暴露;`mobile.py` 是第一个把 `brand.id` 写进生成文件内容(生成文件里的溯源注释)的生成器,顺带把这处不一致修了。
+
+## 11. `create-omi-beta-variant.sh` 不是一个能顺手做的 B1 独立子项
+
+早先的规划笔记把 `desktop/macos/scripts/create-omi-beta-variant.sh` 的参数化列为 B1 剩下几项里"独立、低风险"的一个——这个判断实测是错的,记录下来避免下一个人重新踩一遍。
+
+脚本里三处硬编码的品牌相关值：
+
+- `BETA_APP_NAME`/`BETA_BUNDLE_ID`——已经是 `--beta-app-name`/`--beta-bundle-id` 两个 CLI flag 的默认值,不是硬写死,本来就是可传参的,不需要额外工作。
+- `BETA_PYTHON_API_URL="https://api.omiapi.com/"`、`BETA_DESKTOP_API_URL="https://desktop-backend-dt5lrfkkoa-uc.a.run.app/"`——查证后发现这两个值分别跟 `desktop/macos/Desktop/Sources/DesktopBackendEnvironment.swift` 里的 `developmentPythonAPIURL`、`developmentRustBackendURL` **完全相同**：beta 渠道打的是 dev/staging 后端,不是生产。这两个常量已经在 `upstream-touch-allowlist.yaml` 里作为 S3 的范围登记过("四个后端 URL 常量改读 Sources/Generated 的 profile 表")——即将来源应该是**部署 profile**,不是品牌 manifest。在这里单独改一遍,会跟 S3 将来的做法产生两套不一致的实现,不是"顺手做完",是抢了 S3 的活、还做成了不一样的形状。
+- `SUFeedURL https://api.omi.me/v2/desktop/appcast.xml?identity=beta`——这个是真正的品牌字段,schema 里已经有对应的 `distribution.sparkle_feed_url`。但改这里之前要注意 `desktop/macos/scripts/smoke-signed-desktop-artifact.sh` 有一个 `--expected-feed-url` 契约测试断言这个值,参数化时默认值必须跟 omi-upstream 品牌渲染出来的值保持字节一致,否则会静默破坏这个冒烟测试的契约。
+
+结论：这个文件**不是**一个孤立的品牌注入点，它跟 S3(部署 profile)和一个既有冒烟测试契约都有交叉。真要做，应该等 S3 把 `DesktopBackendEnvironment.swift` 的 profile 化落地后，再把这个脚本接到同一套 profile 读取逻辑上，而不是单独给它加一套品牌参数。SUFeedURL 那一项可以独立于 S3 先做，但必须先跑一遍 `smoke-signed-desktop-artifact.sh` 确认默认值不变。

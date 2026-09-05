@@ -1,5 +1,6 @@
 import 'package:flutter/services.dart';
 
+import 'package:omi/flavors.brand.dart';
 import 'package:omi/utils/logger.dart';
 
 enum Environment {
@@ -23,9 +24,9 @@ class F {
   static String get title {
     switch (env) {
       case Environment.prod:
-        return 'Omi';
+        return kBrandDisplayName;
       case Environment.dev:
-        return 'Omi Dev';
+        return '$kBrandDisplayName Dev';
     }
   }
 }

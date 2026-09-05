@@ -9,6 +9,7 @@ scripts/fork/test_check_upstream_touch.py uses for the zero-touch guard.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ REPO_ROOT = BRAND_SCRIPTS.parents[1]
 sys.path.insert(0, str(BRAND_SCRIPTS))
 from schema_validate import validate  # noqa: E402
 from yaml_lite import YamlError, load_yaml  # noqa: E402
+from generators import mobile  # noqa: E402
 
 MINIMAL_SCHEMA = {
     "type": "object",
@@ -119,6 +121,56 @@ class SchemaValidateTests(unittest.TestCase):
         self.assertTrue(any("name" in e for e in errors))
 
 
+class MobileGeneratorTests(unittest.TestCase):
+    def tmp_repo_root(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return Path(tmp.name)
+
+    def test_render_writes_the_brand_display_name_as_a_dart_const(self):
+        root = self.tmp_repo_root()
+        manifest = {"brand": {"id": "acme", "display_name": "Acme"}}
+        written = mobile.render("acme", manifest, root)
+        self.assertEqual(written, [root / "app/lib/flavors.brand.dart"])
+        content = (root / "app/lib/flavors.brand.dart").read_text()
+        self.assertIn("const String kBrandDisplayName = 'Acme';", content)
+        self.assertIn("brand/acme/manifest.yaml", content)
+
+    def test_render_escapes_an_apostrophe_in_the_display_name(self):
+        root = self.tmp_repo_root()
+        manifest = {"brand": {"id": "acme", "display_name": "Acme's App"}}
+        mobile.render("acme", manifest, root)
+        content = (root / "app/lib/flavors.brand.dart").read_text()
+        self.assertIn("const String kBrandDisplayName = 'Acme\\'s App';", content)
+
+    def test_render_escapes_a_dollar_sign_so_dart_does_not_interpolate_it(self):
+        # Unescaped, $ starts Dart string interpolation -- 'Ac$me' fails to
+        # compile with "Undefined name 'me'." rather than producing a leak.
+        root = self.tmp_repo_root()
+        manifest = {"brand": {"id": "acme", "display_name": "Ac$me"}}
+        mobile.render("acme", manifest, root)
+        content = (root / "app/lib/flavors.brand.dart").read_text()
+        self.assertIn("const String kBrandDisplayName = 'Ac\\$me';", content)
+
+    def test_render_escapes_an_embedded_newline(self):
+        # An unescaped literal newline breaks out of the single-quoted Dart
+        # string entirely ("String starting with ' must end with '.").
+        root = self.tmp_repo_root()
+        manifest = {"brand": {"id": "acme", "display_name": "Acme\nCorp"}}
+        mobile.render("acme", manifest, root)
+        content = (root / "app/lib/flavors.brand.dart").read_text()
+        self.assertIn("const String kBrandDisplayName = 'Acme\\nCorp';", content)
+
+    def test_render_is_idempotent(self):
+        root = self.tmp_repo_root()
+        manifest = {"brand": {"id": "acme", "display_name": "Acme"}}
+        mobile.render("acme", manifest, root)
+        first = (root / "app/lib/flavors.brand.dart").read_text()
+        mobile.render("acme", manifest, root)
+        second = (root / "app/lib/flavors.brand.dart").read_text()
+        self.assertEqual(first, second)
+
+
 class RepoFixture:
     """A throwaway repo with the real brand/ + scripts/brand/ tooling copied in,
     plus a synthetic omi-upstream manifest small enough to assert against
@@ -146,9 +198,7 @@ class RepoFixture:
 
         for name in ("apply.py", "check.py", "schema_validate.py", "yaml_lite.py", "lexicon.yaml"):
             (root / "scripts/brand" / name).write_text((BRAND_SCRIPTS / name).read_text())
-        (root / "scripts/brand/generators").mkdir()
-        for generator_file in (BRAND_SCRIPTS / "generators").glob("*.py"):
-            (root / "scripts/brand/generators" / generator_file.name).write_text(generator_file.read_text())
+        shutil.copytree(BRAND_SCRIPTS / "generators", root / "scripts/brand/generators")
 
         (root / "brand/_allow.yaml").write_text(
             "schema_version: 1\nexemptions:\n"
