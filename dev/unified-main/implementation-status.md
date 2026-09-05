@@ -20,6 +20,13 @@ Eddy Worker absence/empty D1 authorities plus actual frozen SQL execution. Its
 deployed/retained-version limitations remain explicit. The remaining absent
 publish runners are CF-4 and CI-1; no Worker or business schema has been published.
 
+The [frozen-product runner](implementation-2026-09-05/eddy-frozen-product.md) now
+executes all eight candidate Worker payloads without recompiling them. Eddy's
+isolated core 8 / recording 6 / chat 11 / share 5 cases pass, including actual
+Web→Edge sharing and static-file integrity. ASR/model IO remains controlled.
+Visual inspection found the Web `logo.png` still uses the upstream mark; Web
+manifest asset application and full remote qualification remain unfinished.
+
 Earlier integrated audit: candidate branch `codex/unified-delivery`; the implementation source
 tip reviewed is `0d4f71b4ab` (the following audit record is documentation
 only). It is a reviewable local candidate: nothing in it has been pushed, merged, or

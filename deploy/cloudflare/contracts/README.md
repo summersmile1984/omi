@@ -46,6 +46,28 @@ node deploy/cloudflare/contracts/local-target.mjs \
   --output /tmp/new-owned-cf-target --brand-id local-fixture
 ```
 
+To exercise an already prepared release's exact application bytes, add
+`--candidate /absolute/new-candidate`. The runner reopens the immutable candidate
+and verifies its source and artifact hashes before copying all eight Workers,
+Python dependencies, Web assets and Auth/App SQL into its private output. It
+does not recompile those Workers. Their brand/persona/contact/firmware inputs
+come from the candidate. Only resource names, local secrets, origins and provider
+IO are projected; enabled migration, hybrid or anonymous-registration policies
+without a local contract are rejected instead of being disabled. Module, asset
+and SQL bytes are rechecked after startup and after the selected product suites.
+
+Frozen mode exposes Web on its own local port, using Wrangler's
+[cross-command service bindings](https://developers.cloudflare.com/workers/local-development/multi-workers/)
+to the owned Edge. `--run-share` also executes the actual frozen Web's anonymous
+task/chat proxy, checks reduced payloads, private caching and missing-link errors.
+It also fetches `/favicon.png` and `/logo.png` and compares their bytes to the
+frozen assets. That check proves delivery integrity, not that the selected brand
+has replaced those assets; visual/manifest identity is a separate assertion.
+Web SSR and assets run unchanged. Browser API/auth URLs remain baked into the
+production bundle, so local Web proof does not claim browser sign-in to deployed
+services. `fixture.json` records `artifact_mode`, the candidate digest and this
+boundary; all these local reports still set `release_qualified: false`.
+
 The parent output directory must exist; the final directory must be new, including
 no broken symlink. `metadata.json` contains `api_origin`, `auth_origin`, `target`,
 `brand_id`, and `trace_dir`. `--run-core`, `--run-recording`, `--run-chat` and `--run-share` select the executable

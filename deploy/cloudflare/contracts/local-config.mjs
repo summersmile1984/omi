@@ -23,6 +23,8 @@ export function localConfigs({
   port,
   asrPort,
   templates = readWorkerTemplates(root),
+  migrationsRoot = resolve(root, "migrations"),
+  preservePolicy = false,
 }) {
   if (
     typeof brandId !== "string" ||
@@ -91,6 +93,20 @@ export function localConfigs({
   for (const [role, template] of Object.entries(templates)) {
     const config = structuredClone(template.config),
       sourceDirectory = resolve(root, dirname(template.path));
+    if (preservePolicy) {
+      for (const [key, value] of Object.entries(config.vars ?? {}))
+        if (
+          ((key.endsWith("_STAGING_ENABLED") ||
+            [
+              "ACCOUNT_ACTIVATION_FENCE_ENABLED",
+              "ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED",
+              "MCP_ALLOW_UNAUTHENTICATED_DCR",
+            ].includes(key)) &&
+            value !== "false") ||
+          (key === "ORIGIN_BACKEND_URL" && value)
+        )
+          throw new Error(`frozen local policy adapter required for ${key}`);
+    }
     for (const unsupported of [
       "kv_namespaces",
       "hyperdrive",
@@ -114,6 +130,13 @@ export function localConfigs({
       delete config[key];
     config.name = workerName(config.name);
     config.main = resolve(sourceDirectory, config.main);
+    if (config.base_dir)
+      config.base_dir = resolve(sourceDirectory, config.base_dir);
+    if (config.assets)
+      config.assets.directory = resolve(
+        sourceDirectory,
+        config.assets.directory,
+      );
     config.workers_dev = false;
     config.preview_urls = false;
     for (const [key, value] of Object.entries(config.alias ?? {}))
@@ -146,7 +169,7 @@ export function localConfigs({
       const owner = STORAGE_BINDINGS.d1[db.binding];
       db.database_name = ownerName("d1", db.binding);
       db.database_id = databaseIds[owner];
-      db.migrations_dir = resolve(root, "migrations", owner);
+      db.migrations_dir = resolve(migrationsRoot, owner);
       delete db.remote;
     }
     for (const bucket of config.r2_buckets ?? []) {

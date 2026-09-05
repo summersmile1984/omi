@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -12,12 +13,15 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { localConfigs } from "../contracts/local-config.mjs";
+import { copyFrozenTarget } from "../contracts/frozen-local.mjs";
 import { LocalProcesses } from "../contracts/local-process.mjs";
 import {
   prepareLocalCache,
   startLocalTarget,
 } from "../contracts/local-target.mjs";
 import { readWorkerTemplates } from "../scripts/resource-configs.mjs";
+import { WORKERS } from "../scripts/resource-input.mjs";
+import { fileTree } from "../scripts/release-files.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const directories = [];
@@ -52,6 +56,142 @@ const inputs = {
 };
 
 describe("disposable actual Cloudflare target", () => {
+  it("runs copied eight-owner artifacts with frozen SQL and rejects later payload drift", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "cf-frozen-local-"));
+    directories.push(directory);
+    const source = resolve(directory, "candidate"),
+      output = resolve(directory, "local");
+    const templates = readWorkerTemplates(root);
+    templates.web = {
+      config: {
+        name: "fixture-web",
+        main: "worker.ts",
+        compatibility_date: "2026-08-27",
+        services: [{ binding: "EDGE", service: templates.edge.config.name }],
+        assets: { directory: "assets", binding: "ASSETS" },
+      },
+    };
+    const workers = {};
+    for (const role of WORKERS) {
+      const bundle = resolve(source, "workers", role);
+      mkdirSync(resolve(bundle, "modules"), { recursive: true });
+      const config = structuredClone(templates[role].config);
+      config.main = "modules/frozen.js";
+      config.base_dir = "modules";
+      config.no_bundle = config.find_additional_modules = true;
+      config.vars ??= {};
+      if (role.startsWith("api-"))
+        config.vars.BRAND_RUNTIME_JSON = JSON.stringify(inputs.brandRuntime);
+      if (role === "api-core") {
+        config.vars.BRAND_SUPPORT_EMAIL = inputs.supportEmail;
+        config.vars.FIRMWARE_BRAND_POLICY_JSON = JSON.stringify(
+          inputs.firmwarePolicy,
+        );
+      }
+      if (role === "web") {
+        mkdirSync(resolve(bundle, "assets"));
+        writeFileSync(resolve(bundle, "assets/brand.svg"), "frozen-asset");
+      }
+      writeFileSync(
+        resolve(bundle, "modules/frozen.js"),
+        `export default ${JSON.stringify(role)};`,
+      );
+      writeFileSync(resolve(bundle, "wrangler.json"), JSON.stringify(config));
+      workers[role] = {
+        artifact: `workers/${role}`,
+        config: `workers/${role}/wrangler.json`,
+        name: config.name,
+      };
+    }
+    for (const authority of ["auth", "app"]) {
+      mkdirSync(resolve(source, "sql", authority), { recursive: true });
+      writeFileSync(
+        resolve(source, "sql", authority, "0001.sql"),
+        "CREATE TABLE frozen (id TEXT);",
+      );
+    }
+    let verifyFailure;
+    const context = {
+      directory: source,
+      candidate: {
+        brand: "fixture",
+        workers,
+        artifact_files: {
+          workers: fileTree(resolve(source, "workers")),
+          sql: fileTree(resolve(source, "sql")),
+        },
+      },
+      verify() {
+        if (verifyFailure) throw new Error(verifyFailure);
+      },
+    };
+    const copied = copyFrozenTarget(context, output);
+    const projected = localConfigs({
+      ...inputs,
+      ...copied,
+      preservePolicy: false,
+    });
+    expect(copied.brandRuntime).toEqual(inputs.brandRuntime);
+    expect(Object.keys(projected.configs)).toHaveLength(9);
+    expect(projected.configs.web.assets.directory).toBe(
+      resolve(output, "workers/web/assets"),
+    );
+    expect(projected.configs.edge.main).toBe(
+      resolve(output, "workers/edge/modules/frozen.js"),
+    );
+    expect(projected.configs.edge.base_dir).toBe(
+      resolve(output, "workers/edge/modules"),
+    );
+    expect(projected.configs["api-core"].d1_databases[0].migrations_dir).toBe(
+      resolve(output, "sql/app"),
+    );
+    expect(projected.configs.web.services[0].service).toBe(
+      projected.configs.edge.name,
+    );
+    writeFileSync(
+      resolve(output, "workers/edge/wrangler.json"),
+      JSON.stringify(projected.configs.edge),
+    );
+    writeFileSync(resolve(output, "workers/edge/.dev.vars"), "LOCAL=value\n");
+    copied.verifyPayload();
+    writeFileSync(resolve(output, "workers/web/assets/brand.svg"), "changed");
+    expect(() => copied.verifyPayload()).toThrow(
+      "local frozen payload changed: web",
+    );
+    writeFileSync(
+      resolve(output, "workers/web/assets/brand.svg"),
+      "frozen-asset",
+    );
+    writeFileSync(resolve(output, "sql/app/0001.sql"), "SELECT 1;");
+    expect(() => copied.verifyPayload()).toThrow(
+      "local frozen SQL changed: app",
+    );
+    verifyFailure = "candidate source changed";
+    expect(() => copied.verifyPayload()).toThrow(verifyFailure);
+  });
+  it("refuses enabled migration or anonymous-client policies instead of weakening a frozen candidate", () => {
+    for (const key of [
+      "ACCOUNT_ACTIVATION_FENCE_ENABLED",
+      "ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED",
+      "MCP_ALLOW_UNAUTHENTICATED_DCR",
+      "CHAT_STAGING_ENABLED",
+      "ORIGIN_BACKEND_URL",
+    ]) {
+      const templates = readWorkerTemplates(root);
+      for (const entry of Object.values(templates)) {
+        delete entry.config.vars?.ORIGIN_BACKEND_URL;
+        if (entry.config.vars)
+          entry.config.vars.MCP_ALLOW_UNAUTHENTICATED_DCR = "false";
+        for (const name of Object.keys(entry.config.vars ?? {}))
+          if (name.endsWith("_ENABLED")) entry.config.vars[name] = "false";
+      }
+      localConfigs({ ...inputs, templates, preservePolicy: true });
+      templates.edge.config.vars[key] = "true";
+      expect(() =>
+        localConfigs({ ...inputs, templates, preservePolicy: true }),
+      ).toThrow(`policy adapter required for ${key}`);
+    }
+  });
   it("creates a private default cache and only reuses an explicitly existing ordinary cache", () => {
     const directory = mkdtempSync(resolve(tmpdir(), "cf-cache-"));
     directories.push(directory);
@@ -82,9 +222,9 @@ describe("disposable actual Cloudflare target", () => {
     expect(configs["api-core"].vars.PUBLIC_SHARE_BASE_URL).toBe(
       inputs.shareOrigin,
     );
-    expect(JSON.parse(configs["api-core"].vars.FIRMWARE_BRAND_POLICY_JSON)).toEqual(
-      inputs.firmwarePolicy,
-    );
+    expect(
+      JSON.parse(configs["api-core"].vars.FIRMWARE_BRAND_POLICY_JSON),
+    ).toEqual(inputs.firmwarePolicy);
     expect(configs.auth.vars.ALLOWED_ORIGINS).toBe(inputs.webOrigin);
     expect(() => localConfigs({ ...inputs, supportEmail: undefined })).toThrow(
       /support contact/,
@@ -102,9 +242,9 @@ describe("disposable actual Cloudflare target", () => {
     expect(() => localConfigs({ ...inputs, brandRuntime: undefined })).toThrow(
       /brand runtime/,
     );
-    expect(() => localConfigs({ ...inputs, firmwarePolicy: undefined })).toThrow(
-      /firmware policy/,
-    );
+    expect(() =>
+      localConfigs({ ...inputs, firmwarePolicy: undefined }),
+    ).toThrow(/firmware policy/);
     expect(() =>
       localConfigs({
         ...inputs,

@@ -14,6 +14,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { WebSocketServer } from "ws";
 import { localConfigs } from "./local-config.mjs";
+import { copyFrozenTarget } from "./frozen-local.mjs";
+import { qualificationContext } from "./qualification-context.mjs";
 import {
   assertInstalledRuntime,
   pythonWorkerInvocation,
@@ -70,6 +72,7 @@ export async function startLocalTarget({
   shareOrigin,
   signal,
   webOrigin,
+  candidateContext,
 }) {
   root = resolve(root);
   output = resolve(output);
@@ -159,24 +162,36 @@ export async function startLocalTarget({
       }
     })());
   try {
+    const candidateInput = candidateContext
+      ? copyFrozenTarget(candidateContext, output)
+      : undefined;
+    if (candidateInput) brandId = candidateInput.brandId;
     inferenceControl = await startInferenceControl();
     port ??= await freePort();
+    const webPort = candidateInput ? await freePort() : undefined;
+    if (candidateInput) {
+      if (webOrigin || shareOrigin)
+        throw new Error("frozen local target owns its Web and share origins");
+      webOrigin = shareOrigin = `http://127.0.0.1:${webPort}`;
+    }
     const namespace = `cf-${brandId}-${randomBytes(4).toString("hex")}`;
-    const brandRuntime = {
+    const brandRuntime = candidateInput?.brandRuntime ?? {
       brand_id: brandId,
       display_name: "Local Atlas",
       ai_persona_name: "Mira",
     };
-    const firmwarePolicy = {
+    const firmwarePolicy = candidateInput?.firmwarePolicy ?? {
       schema_version: 1,
       brand_id: brandId,
       device_model: "Local CV1",
       device_model_aliases: ["nrf5340"],
       release_tag_prefix: "Local_CV1_v",
       release_asset_prefix: "Local_CV1_OTA_v",
-      github_releases_url: "https://api.github.com/repos/local/firmware/releases",
+      github_releases_url:
+        "https://api.github.com/repos/local/firmware/releases",
     };
-    const supportEmail = "support@atlas.example.invalid";
+    const supportEmail =
+      candidateInput?.supportEmail ?? "support@atlas.example.invalid";
     const { origin, configs } = localConfigs({
       root,
       brandId,
@@ -188,6 +203,13 @@ export async function startLocalTarget({
       asrPort: asr.address().port,
       shareOrigin,
       webOrigin,
+      ...(candidateInput
+        ? {
+            templates: candidateInput.templates,
+            migrationsRoot: candidateInput.migrationsRoot,
+            preservePolicy: true,
+          }
+        : {}),
     });
     configs.provider.vars = {
       INFERENCE_CONTROL_ORIGIN: inferenceControl.origin,
@@ -225,28 +247,39 @@ export async function startLocalTarget({
         "--outdir",
         resolve(bundle, "modules"),
       ];
-      if (role.startsWith("api-")) {
-        symlinkSync(
-          resolve(root, "python", role, "python_modules"),
-          resolve(source, "python_modules"),
-          "dir",
-        );
-        await command(`${role}-compile`, process.execPath, [
-          resolve(root, "scripts/python-worker.mjs"),
-          role,
-          ...args,
-        ]);
-      } else
-        await command(`${role}-compile`, process.execPath, [wrangler, ...args]);
-      const compiled = freezeWorkerConfig(config, role, bundle);
-      frozen[role] = resolve(bundle, "wrangler.json");
-      privateJson(frozen[role], compiled);
+      if (candidateInput && role !== "provider") {
+        frozen[role] = resolve(bundle, "wrangler.json");
+        privateJson(frozen[role], config);
+      } else {
+        if (role.startsWith("api-")) {
+          symlinkSync(
+            resolve(root, "python", role, "python_modules"),
+            resolve(source, "python_modules"),
+            "dir",
+          );
+          await command(`${role}-compile`, process.execPath, [
+            resolve(root, "scripts/python-worker.mjs"),
+            role,
+            ...args,
+          ]);
+        } else
+          await command(`${role}-compile`, process.execPath, [
+            wrangler,
+            ...args,
+          ]);
+        const compiled = freezeWorkerConfig(config, role, bundle);
+        frozen[role] = resolve(bundle, "wrangler.json");
+        privateJson(frozen[role], compiled);
+      }
       artifacts[role] = {
         name: config.name,
-        config_sha256: digest(compiled),
+        config_sha256: digest(JSON.parse(readFileSync(frozen[role], "utf8"))),
         modules: fileTree(resolve(bundle, "modules")),
         ...(role.startsWith("api-")
           ? { python_modules: fileTree(resolve(bundle, "python_modules")) }
+          : {}),
+        ...(config.assets
+          ? { assets: fileTree(resolve(bundle, "assets")) }
           : {}),
         secret_names: Object.keys(secrets),
       };
@@ -286,7 +319,7 @@ export async function startLocalTarget({
       "--config",
       frozen.edge,
       ...Object.entries(frozen)
-        .filter(([role]) => role !== "edge")
+        .filter(([role]) => role !== "edge" && role !== "web")
         .flatMap(([, path]) => ["--config", path]),
     ];
     const { child: runtime, completion: runtimeDone } = processes.start(
@@ -327,11 +360,67 @@ export async function startLocalTarget({
       }
       await sleep(100);
     }
+    let webRuntimeDone;
+    if (candidateInput) {
+      const webLog = resolve(logs, "web-runtime.log");
+      const fd = openSync(webLog, "a", 0o600);
+      const web = processes.start(
+        process.execPath,
+        [
+          wrangler,
+          "dev",
+          "--local",
+          "--port",
+          String(webPort),
+          "--inspector-port",
+          String(await freePort()),
+          "--persist-to",
+          resolve(output, "web-state"),
+          "--config",
+          frozen.web,
+        ],
+        {
+          cwd: root,
+          env,
+          timeout: 3600000,
+          stdio: ["ignore", fd, fd],
+        },
+      );
+      closeSync(fd);
+      webRuntimeDone = web.completion;
+      const deadline = Date.now() + 120000;
+      while (true) {
+        if (
+          signal?.aborted ||
+          web.child.exitCode !== null ||
+          web.child.signalCode !== null
+        )
+          throw new Error("local frozen Web exited before readiness");
+        if (Date.now() > deadline)
+          throw new Error("local frozen Web readiness deadline exceeded");
+        if (
+          readFileSync(webLog, "utf8").includes(
+            `Ready on http://localhost:${webPort}`,
+          )
+        ) {
+          const response = await fetch(`${webOrigin}/login`, {
+            redirect: "error",
+            signal: AbortSignal.timeout(5000),
+          });
+          if (response.status !== 200)
+            throw new Error(`local frozen Web returned ${response.status}`);
+          break;
+        }
+        await sleep(100);
+      }
+      candidateInput.verifyPayload();
+    }
     const metadata = {
       api_origin: origin,
       auth_origin: origin,
       target: "cloudflare",
       brand_id: brandId,
+      ...(candidateInput ? { web_origin: webOrigin } : {}),
       trace_dir: resolve(output, "trace"),
     };
     privateJson(resolve(output, "metadata.json"), metadata);
@@ -344,8 +433,18 @@ export async function startLocalTarget({
       source_commit: git(resolve(root, "../.."), ["rev-parse", "HEAD"]),
       source_status: git(resolve(root, "../.."), ["status", "--porcelain"]),
       migration_files: {
-        auth: fileTree(resolve(root, "migrations/auth")),
-        app: fileTree(resolve(root, "migrations/app")),
+        auth: fileTree(
+          resolve(
+            candidateInput?.migrationsRoot ?? resolve(root, "migrations"),
+            "auth",
+          ),
+        ),
+        app: fileTree(
+          resolve(
+            candidateInput?.migrationsRoot ?? resolve(root, "migrations"),
+            "app",
+          ),
+        ),
       },
       tools: {
         python: PYTHON_TOOLS,
@@ -366,6 +465,14 @@ export async function startLocalTarget({
         ].map((path) => [path, digest(readFileSync(resolve(root, path)))]),
       ),
       artifacts,
+      ...(candidateContext
+        ? {
+            candidate_digest: candidateContext.candidate.candidate_digest,
+            artifact_mode: "frozen-copy",
+            web_boundary:
+              "frozen SSR, assets and EDGE share binding; browser API/auth origins remain production-baked and require deployed verification",
+          }
+        : { artifact_mode: "source-build" }),
       pyodide_cache: cache,
       inference_control_origin: inferenceControl.origin,
       command: [process.execPath, ...args],
@@ -379,7 +486,15 @@ export async function startLocalTarget({
       ],
       release_qualified: false,
     });
-    return { metadata, close, command, runtimeDone };
+    return {
+      metadata,
+      close,
+      command,
+      runtimeDone: webRuntimeDone
+        ? Promise.race([runtimeDone, webRuntimeDone])
+        : runtimeDone,
+      verifyPayload: candidateInput?.verifyPayload,
+    };
   } catch (error) {
     try {
       await close();
@@ -410,6 +525,7 @@ if (
         port: { type: "string" },
         "share-origin": { type: "string" },
         "web-origin": { type: "string" },
+        candidate: { type: "string" },
         "run-core": { type: "boolean", default: false },
         "run-recording": { type: "boolean", default: false },
         "run-chat": { type: "boolean", default: false },
@@ -417,6 +533,12 @@ if (
       },
     });
     if (!values.output) throw new Error("--output is required");
+    const candidateDirectory = values.candidate && resolve(values.candidate);
+    const candidate =
+      candidateDirectory &&
+      JSON.parse(
+        readFileSync(resolve(candidateDirectory, "candidate.json"), "utf8"),
+      );
     target = await startLocalTarget({
       output: values.output,
       brandId: values["brand-id"],
@@ -424,6 +546,13 @@ if (
       shareOrigin: values["share-origin"],
       signal: controller.signal,
       webOrigin: values["web-origin"],
+      candidateContext:
+        candidate &&
+        qualificationContext(resolve(componentRoot, "../.."), {
+          candidate_directory: candidateDirectory,
+          candidate,
+          observations: { release_phase: "candidate" },
+        }),
     });
     process.stdout.write(JSON.stringify(target.metadata) + "\n");
     if (values["run-core"]) {
@@ -471,6 +600,7 @@ if (
         }),
       ]);
     }
+    target.verifyPayload?.();
     process.exitCode = controller.signal.aborted ? 130 : 0;
   } catch (error) {
     console.error(error.message);
