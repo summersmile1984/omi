@@ -80,6 +80,7 @@ def make_env(secret: str):
             "APP_DB": FakeDb(),
             "INTERNAL_ASSERTION_SECRET": secret,
             "AUTH": FakeAuth(),
+            "BRAND_RUNTIME_JSON": json.dumps({"brand_id": "eddy", "display_name": "Eddy", "ai_persona_name": "Eddy"}),
         },
     )()
 
@@ -180,7 +181,7 @@ def test_export_is_authenticated_uid_scoped_and_preserves_user_visible_shape():
     response = asyncio.run(export_user_data(FakeRequest(env, signed_headers(secret))))
 
     assert response.status_code == 200
-    assert response.headers["content-disposition"] == 'attachment; filename="omi-export.json"'
+    assert response.headers["content-disposition"] == 'attachment; filename="eddy-export.json"'
     payload = _body(response)
     assert payload["profile"] == {"uid": "export-user", "name": "Export User", "email": "export@example.com"}
     assert len(payload["conversations"]) == 1
@@ -208,3 +209,12 @@ def test_export_rejects_missing_auth_and_converts_d1_failures_to_503():
     response = asyncio.run(export_user_data(FakeRequest(broken, signed_headers(secret))))
     assert response.status_code == 503
     assert _body(response) == {"error": "user export unavailable"}
+
+
+def test_export_stays_available_with_missing_legacy_brand_config(capsys):
+    env = make_env('export-secret')
+    env.BRAND_RUNTIME_JSON = None
+    response = asyncio.run(export_user_data(FakeRequest(env, signed_headers('export-secret'))))
+    assert response.status_code == 200
+    assert response.headers['content-disposition'] == 'attachment; filename="user-data-export.json"'
+    assert 'malformed_doc' in capsys.readouterr().out

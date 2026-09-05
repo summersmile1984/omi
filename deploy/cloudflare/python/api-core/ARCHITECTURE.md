@@ -35,6 +35,10 @@ The same HTTP product contract runs real recording → Queue enrichment → reca
 → export → queued deletion. Provider IO is controlled there. Notification
 scheduling and delivery are still a separate migration/qualification boundary.
 
+The export route also resolves its download filename from `brand_runtime`.
+Missing brand presentation metadata emits shared fallback telemetry and uses a
+neutral filename, keeping the owner's privacy operation available.
+
 The goal and workstream modules share the validated evidence contract. Each
 workflow mutation writes its domain projection and idempotency receipt in one
 D1 batch; Edge authentication supplies the signed uid context before the

@@ -1882,6 +1882,10 @@ snapshots, so locks, memory rejection, source deletion or an expired writer
 cannot publish stale content. Export includes recaps but omits generation tokens;
 the existing account deletion owner purges both projection and control rows.
 
+The export download filename uses the validated runtime brand ID, such as
+`eddy-export.json`. A legacy deployment missing presentation metadata can still
+export its owner's data as `user-data-export.json`, with a shared fallback event.
+
 The settings-test route shares this generation owner, but scheduled delivery,
 push notification and notification-token requirements remain an explicit
 unqualified upstream boundary. A successful manual recap is not proof that the

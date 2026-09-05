@@ -21,6 +21,7 @@ locked Wrangler/workerd, then executes:
   isolation, reuses it without extra model spend, and regenerates it in place
   with cooldown enforcement. Export includes the recap and excludes its internal
   generation token. It exports profile/recording/memory/tasks,
+  verifies the download filename against the configured brand ID,
   and checks cross-user isolation. The privacy
   path uploads and reads real R2 bytes with checksum rejection, deletes both
   a populated account and a just-registered account through public routes,

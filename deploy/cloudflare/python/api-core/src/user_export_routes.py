@@ -8,6 +8,7 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from brand_runtime import load_brand_runtime
 from fallback import record_fallback
 from internal_auth import create_request_context, decode_context
 
@@ -178,9 +179,15 @@ async def export_user_data(request: Request):
         "daily_summaries": sections.pop("daily_summaries", []),
     }
     payload["exported_at"] = int(time.time())
+    try:
+        filename = f"{load_brand_runtime(env).brand_id}-export.json"
+    except ValueError:
+        # A missing presentation config must not block an owner's data export.
+        record_fallback(from_mode="none", to_mode="system_default", reason="malformed_doc", outcome="degraded")
+        filename = "user-data-export.json"
     return JSONResponse(
         payload,
-        headers={"Content-Disposition": 'attachment; filename="omi-export.json"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

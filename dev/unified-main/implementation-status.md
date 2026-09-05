@@ -20,6 +20,17 @@ Eddy Worker absence/empty D1 authorities plus actual frozen SQL execution. Its
 deployed/retained-version limitations remain explicit. The remaining absent
 publish runners are CF-4 and CI-1; no Worker or business schema has been published.
 
+The [daily recap package](implementation-2026-09-05/eddy-daily-recap.md) now
+provides local-day Workers AI generation, reuse, regeneration, source-owned
+tasks/memory/stats, export and late-writer privacy fences. The real recording
+contract passes 13 cases including queued erasure of both recap tables. Daily
+usage and on-demand recap slots now have Worker owners; 41 actual upstream slots
+remain blocked. Scheduled notification delivery and hosted provider quality are
+still unqualified. The subsequent export filename fix reads the validated brand
+ID (Eddy downloads as `eddy-export.json`) while keeping legacy unconfigured
+exports available with a neutral filename. These source changes are not in the
+previous frozen candidate o and do not prove a production release.
+
 The [frozen-product runner](implementation-2026-09-05/eddy-frozen-product.md) now
 executes all eight candidate Worker payloads without recompiling them. Eddy's
 isolated core 8 / recording 6 / chat 11 / share 5 cases pass, including actual

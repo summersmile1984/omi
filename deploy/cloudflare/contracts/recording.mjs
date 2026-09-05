@@ -450,6 +450,8 @@ try {
       const exported = await request("api", "/v1/users/export", 200, {
         token: owner.token,
       });
+      require(exported.headers.get("content-disposition") ===
+        `attachment; filename="${metadata.brand_id}-export.json"`, "export filename ignored the configured brand");
       require(exported.data.profile.uid === owner.uid &&
         exported.data.profile.email === owner.email &&
         exported.data.profile.name ===
