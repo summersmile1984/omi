@@ -341,7 +341,7 @@ class Fixture:
             raise RuntimeError('runtime image source differs from this checkout; rebuild the standard Dockerfile')
         (self.output / 'runtime-source-hashes.json').write_text(json.dumps(expected, indent=2))
         self.command(['docker', 'build', '-f', 'auth-server/Dockerfile', '-t', self.auth_image, '.'], timeout=600)
-        shutil.copyfile(ROOT / 'deploy/self-host/requirements.txt', self.output / 'requirements.txt')
+        shutil.copyfile(ROOT / 'backend/requirements-fork.txt', self.output / 'requirements.txt')
         (self.output / '.dockerignore').write_text('*\n!Dockerfile\n!requirements.txt\n!profile.json\n')
         (self.output / 'Dockerfile').write_text(
             'ARG BASE\nFROM ${BASE}\nUSER root\nCOPY requirements.txt /tmp/fork-requirements.txt\n'

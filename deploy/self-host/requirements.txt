@@ -1,4 +1,0 @@
-# Linux amd64 / CPython 3.11 fork layer; versions and wheel digests are fixed.
-# Package metadata: https://pypi.org/pypi/sherpa-onnx/1.13.4/json
-sherpa-onnx==1.13.4 --hash=sha256:fbfc385b98d730080e1b12dc94c604be3867e4fb7bd6b15b830eb33cbf390111
-sherpa-onnx-core==1.13.4 --hash=sha256:367aa06cee90b3fd7959d4e071d6fc821710b859af399b4987e5c3119ee6ae2a

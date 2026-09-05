@@ -38,6 +38,7 @@ REQUIRED_SOURCE = (
     'backend/fork/queue_config.py',
     'backend/firestore_pg/migrations.py',
     'backend/Dockerfile',
+    'backend/requirements-fork.txt',
     'deploy/self-host/auth-runtime.mjs',
     'deploy/self-host/Dockerfile',
     'deploy/self-host/build-images.sh',

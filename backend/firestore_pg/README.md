@@ -54,7 +54,7 @@ not reimplement still resolve.
 ```
 
 The shim is a plain package inside the repo (`firestore_pg/`); it needs
-`sqlalchemy` and `psycopg[binary]` (already in the backend lock).
+`sqlalchemy` from upstream and the fork-owned `psycopg`/`psycopg-binary` wheels in `../requirements-fork.txt`.
 
 ## Running
 

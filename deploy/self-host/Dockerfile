@@ -10,7 +10,7 @@ LABEL com.omi.source.git-commit="${OMI_SOURCE_GIT_COMMIT}" \
       com.omi.source.git-tree="${OMI_SOURCE_GIT_TREE}"
 
 USER root
-COPY deploy/self-host/requirements.txt /tmp/fork-requirements.txt
+COPY backend/requirements-fork.txt /tmp/fork-requirements.txt
 RUN python -m pip install --no-cache-dir --no-deps --require-hashes -r /tmp/fork-requirements.txt
 COPY backend/fork/model_contract.py /opt/profile-build/backend/fork/model_contract.py
 COPY scripts/profiles /opt/profile-build/scripts/profiles

@@ -1,0 +1,13 @@
+# Fork-only runtime layer for the Linux amd64 / CPython 3.11 Server OS image.
+# The base image is built from upstream's untouched backend/pylock.runtime.toml.
+# Keep every direct and transitive wheel used below hash-pinned because Docker
+# deliberately installs this layer with --no-deps.
+# Package metadata: https://pypi.org/pypi/boto3/1.43.74/json
+boto3==1.43.74 --hash=sha256:d7f6a921efbda61ed787b403df8b64a95bc66e66299e9772fc40c235c28a5bde
+botocore==1.43.74 --hash=sha256:5793d9170b2b9f3194fb6f667feed8986eb81f767528d52ceaf45df2242d56e9
+jmespath==1.1.0 --hash=sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64
+psycopg==3.3.4 --hash=sha256:b6bbc25ccf05c8fad3b061d9db2ef0909a555171b84b07f29458a447253d679a
+psycopg-binary==3.3.4 --hash=sha256:ab8cca8ef8fb1ccf5b048ae5bd78ba55b9e4b5d472e3ce5ca39ff4d2a9c249e4
+s3transfer==0.19.2 --hash=sha256:d8168eccca828cbb2cd573675333f3bddd254313a9c42494b84c76b539e8ba25
+sherpa-onnx==1.13.4 --hash=sha256:fbfc385b98d730080e1b12dc94c604be3867e4fb7bd6b15b830eb33cbf390111
+sherpa-onnx-core==1.13.4 --hash=sha256:367aa06cee90b3fd7959d4e071d6fc821710b859af399b4987e5c3119ee6ae2a

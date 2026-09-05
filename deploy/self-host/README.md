@@ -11,8 +11,7 @@ verified; they do not enable those providers in the current Compose profile.
 
 Use `operations.sh self-check` for startup source closure and `operations.sh start`
 with a reviewed environment file. Startup always builds the unchanged upstream
-backend runtime (`BACKEND_RUNTIME_IMAGE`), then the fork-only Dockerfile layer
-with a generated profile and source commit/tree labels. Set `SELF_HOST_STAGE`
+backend runtime (`BACKEND_RUNTIME_IMAGE`), then the fork-only Dockerfile layer. That layer installs the hash-pinned `backend/requirements-fork.txt` only for the Server OS target, then writes the generated profile and source commit/tree labels. Set `SELF_HOST_STAGE`
 and `SELF_HOST_BRAND_MANIFEST` (a repository-relative public manifest); the
 manifest endpoints and `PUBLIC_*` environment values must agree. `SELF_HOST_STAGE`
 is `production`, `beta`, or `local`; Python derives its upstream env stage.

@@ -46,7 +46,7 @@ queue's selected credential through the internal adapter setting. This package
 also owns MinIO/storage and speaker provider patches. It does not claim the
 remaining model or push adapters are complete; refer to the dated audit.
 
-Run fork tests through `backend/test.sh` with an explicit file list; the fork
+Server OS images install `backend/requirements-fork.txt` over the unchanged upstream runtime lock. It owns the hash-pinned PostgreSQL, MinIO and local-speech wheels; Cloudflare does not consume it. Run fork tests through `backend/test.sh` with an explicit file list; the fork
 manifest runs startup and source-closure contracts in both local and CI lanes.
 Run live PostgreSQL tests only against a disposable target and record their
 results separately from the hermetic lane.
