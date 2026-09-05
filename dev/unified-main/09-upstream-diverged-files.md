@@ -32,7 +32,7 @@ python3 scripts/fork/check-upstream-touch.py \
 树对当前 `upstream/main` 的 `merge-tree` 已无冲突；这不会倒改上面的
 `origin/main` 历史快照，直到候选通过 review 后常规合入。
 
-## 未消化的分歧(20 个,按子系统分组;第 21 个是 `AuthService.swift`,单独处理见下方)
+## 未消化的分歧(19 个,按子系统分组;第 20 个是 `AuthService.swift`,单独处理见下方)
 
 状态列:`待处置`(已经有一个可以直接照做的处置方案,不管背后那次改动的源头提交是否已经追溯到)· `待诊断`(处置方案本身还没想清楚——通常是因为不确定具体改了什么、影响面多大,需要有人接手前先查清楚才能定处置方案)。两者都不代表"原因"列一定写了具体的源头提交:"原因"列的 commit 是 `check-upstream-touch.py` 报告里离 HEAD 最近的一次改动,不一定是最初引入分歧的那次;标了 `合并提交` 的还没往前追溯到真正的源头提交,但这不影响处置方案是否已经明确。
 
@@ -46,7 +46,6 @@ python3 scripts/fork/check-upstream-touch.py \
 | `backend/utils/stt/pre_recorded.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
 | `backend/utils/stt/streaming.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
 | `backend/utils/llm/providers.py` | `76468f50be` Merge cloud-neutral shim onto upstream main | 同上 | 待处置 |
-| `backend/utils/translation_core/providers.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
 
 对应测试(同一批 provider 工作带出来的,**不能**直接改上游测试——上游测试要保持不动,fork 行为要在 fork 自己的测试目录里断言):
 
@@ -105,6 +104,7 @@ python3 scripts/fork/check-upstream-touch.py \
 | `backend/database/__init__.py` / `backend/database/_client.py` / `backend/tests/unit/test_agent_vm_firebase_project_split.py` | PostgreSQL Firestore shim injection and customer-client branch | self-host admission installs the facade before any upstream database import; upstream bytes restored and a subprocess admission/import proof passes | candidate `codex/unified-delivery` |
 | `backend/routers/tts.py` / `backend/routers/desktop_tts_updates.py` | self-host MiMo TTS route branches | local `speech_transport` replaces both real route endpoints with the admitted Kokoro owner; upstream bytes restored and 21 route/HTTP/WS tests pass | candidate `codex/unified-delivery` |
 | `backend/routers/listen/receiver.py` | local SenseVoice socket branch | fork speech registry replaces the actual `ListenReceiver` class method for the admitted SenseVoice service; upstream byte restored and 41 speech seam/protocol tests pass | candidate `codex/unified-delivery` |
+| `backend/utils/translation_core/providers.py` | DeepSeek-compatible plain-JSON fallback | self-host LLM factory uses the local structured-output model; upstream byte restored and 99 local-LLM/translation tests pass | candidate `codex/unified-delivery` |
 
 ## 用法
 
