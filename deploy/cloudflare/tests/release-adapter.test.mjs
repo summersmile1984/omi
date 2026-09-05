@@ -261,11 +261,12 @@ describe("locked Wrangler release adapter", () => {
     let actual;
     const spawn = vi.fn((command, args, options) => {
       expect(options.timeout).toBe(QUALIFIER_PROCESS_TIMEOUT_MS);
+      expect(JSON.parse(options.input).candidate_directory).toBe(directory);
       actual = spawnSync(command, args, { ...options, timeout: 250 });
       return actual;
     });
     expect(() =>
-      runReleaseQualifiers(directory, candidate, {}, { spawn })
+      runReleaseQualifiers(directory, candidate, {}, { directory, spawn })
     ).toThrow("stale/incomplete evidence");
     expect(actual.error.code).toBe("ETIMEDOUT");
     expect(spawn).toHaveBeenCalledOnce();

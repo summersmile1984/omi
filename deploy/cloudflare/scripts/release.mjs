@@ -130,7 +130,7 @@ try {
       const persist = (journal) =>
         writeJson(journalDirectory, "journal.json", journal);
       const qualify = async (observations) =>
-        runReleaseQualifiers(root, candidate, observations);
+        runReleaseQualifiers(root, candidate, observations, { directory });
       const verify = () => verifyCandidate(directory, root);
       if (action === "recovery-plan") {
         console.log(

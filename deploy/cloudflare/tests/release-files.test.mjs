@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { digest } from "../scripts/resource-input.mjs";
+import { qualificationContext } from "../contracts/qualification-context.mjs";
 import {
   freezeWorkerConfig,
   verifyFrozenPayload,
@@ -36,7 +37,7 @@ function fixture() {
   mkdirSync(resolve(root, "deploy/cloudflare"), { recursive: true });
   writeFileSync(
     resolve(root, "deploy/cloudflare/source.mjs"),
-    "export const value=1;\n",
+    "export const value=1;\n"
   );
   git("add", ".");
   git(
@@ -46,7 +47,7 @@ function fixture() {
     "user.email=fixture@invalid",
     "commit",
     "-qm",
-    "fixture",
+    "fixture"
   );
   const directory = resolve(root, "candidate");
   mkdirSync(resolve(directory, "workers"), { recursive: true });
@@ -64,25 +65,52 @@ function fixture() {
   return { root, directory, candidate };
 }
 describe("immutable release inputs and output ownership", () => {
+  it("passes a frozen directory to qualification and rejects substituted input or later artifact mutation", () => {
+    const f = fixture();
+    const candidate = JSON.parse(
+      readFileSync(resolve(f.directory, "candidate.json"), "utf8")
+    );
+    const input = {
+      candidate_directory: f.directory,
+      candidate,
+      observations: { release_phase: "candidate" },
+    };
+    const context = qualificationContext(f.root, input);
+    expect(context.directory).toBe(f.directory);
+    expect(() =>
+      qualificationContext(f.root, {
+        ...input,
+        candidate: { ...candidate, brand: "substituted" },
+      })
+    ).toThrow("differs from the frozen candidate");
+    expect(() =>
+      qualificationContext(f.root, {
+        ...input,
+        candidate_directory: "relative",
+      })
+    ).toThrow("absolute candidate directory");
+    writeFileSync(resolve(f.directory, "workers/index.js"), "changed module");
+    expect(() => context.verify()).toThrow("artifact changed");
+  });
   it("checks exact source and artifacts, including additional source/artifact files", () => {
     const f = fixture();
     expect(verifyCandidate(f.directory, f.root).source.digest).toBe(
-      f.candidate.source.digest,
+      f.candidate.source.digest
     );
     writeFileSync(resolve(f.directory, "workers/extra.js"), "unreviewed");
     expect(() => verifyCandidate(f.directory, f.root)).toThrow(
-      "artifact changed",
+      "artifact changed"
     );
     rmSync(resolve(f.directory, "workers/extra.js"));
     writeFileSync(resolve(f.root, "deploy/cloudflare/extra.mjs"), "unreviewed");
     expect(() => verifyCandidate(f.directory, f.root)).toThrow(
-      "source changed",
+      "source changed"
     );
   });
   it("rejects edits to frozen SQL, profiles or readiness state rather than trusting an approval boolean", () => {
     const f = fixture(),
       candidate = JSON.parse(
-        readFileSync(resolve(f.directory, "candidate.json"), "utf8"),
+        readFileSync(resolve(f.directory, "candidate.json"), "utf8")
       );
     candidate.release_ready = true;
     const { candidate_digest, ...body } = candidate;
@@ -91,7 +119,7 @@ describe("immutable release inputs and output ownership", () => {
       candidate_digest: digest(body),
     });
     expect(() => verifyCandidate(f.directory, f.root)).toThrow(
-      "unqualified release state",
+      "unqualified release state"
     );
   });
   it("rejects broken and ancestor output links and never changes their targets", () => {
@@ -101,25 +129,25 @@ describe("immutable release inputs and output ownership", () => {
     writeFileSync(resolve(elsewhere, "protected.json"), "original");
     symlinkSync(elsewhere, resolve(f.directory, "linked"));
     expect(() => writeJson(f.directory, "linked/protected.json", {})).toThrow(
-      "symlinks",
+      "symlinks"
     );
     symlinkSync(
       resolve(elsewhere, "missing.json"),
-      resolve(f.directory, "broken.json"),
+      resolve(f.directory, "broken.json")
     );
     expect(() => writeJson(f.directory, "broken.json", {})).toThrow("symlinks");
     expect(readFileSync(resolve(elsewhere, "protected.json"), "utf8")).toBe(
-      "original",
+      "original"
     );
   });
   it("does not follow module links when checking a supposedly frozen artifact", () => {
     const f = fixture();
     symlinkSync(
       resolve(f.root, "deploy/cloudflare/source.mjs"),
-      resolve(f.directory, "workers/linked.js"),
+      resolve(f.directory, "workers/linked.js")
     );
     expect(() => verifyCandidate(f.directory, f.root)).toThrow(
-      "symbolic links",
+      "symbolic links"
     );
   });
   it("owns Python dependencies at project root and verifies exact uploaded module bytes", () => {
@@ -132,30 +160,30 @@ describe("immutable release inputs and output ownership", () => {
     writeFileSync(resolve(bundle, "modules/entry.py"), "import pkg\n");
     writeFileSync(
       resolve(bundle, "modules/python_modules/pkg/__init__.py"),
-      "value=1\n",
+      "value=1\n"
     );
     const config = freezeWorkerConfig(
       { main: "src/entry.py", d1_databases: [{ migrations_dir: "elsewhere" }] },
       "api-core",
-      bundle,
+      bundle
     );
     expect(config.main).toBe("modules/entry.py");
     expect(config.base_dir).toBe("modules");
     expect(config.no_bundle).toBe(true);
     expect(config.d1_databases[0].migrations_dir).toBeUndefined();
     expect(
-      readFileSync(resolve(bundle, "python_modules/pkg/__init__.py"), "utf8"),
+      readFileSync(resolve(bundle, "python_modules/pkg/__init__.py"), "utf8")
     ).toBe("value=1\n");
     mkdirSync(resolve(proof, "python_modules/pkg"), { recursive: true });
     writeFileSync(resolve(proof, "entry.py"), "import pkg\n");
     writeFileSync(
       resolve(proof, "python_modules/pkg/__init__.py"),
-      "value=1\n",
+      "value=1\n"
     );
     expect(verifyFrozenPayload(bundle, proof)).toBe(2);
     writeFileSync(
       resolve(proof, "python_modules/pkg/__init__.py"),
-      "value=2\n",
+      "value=2\n"
     );
     expect(() => verifyFrozenPayload(bundle, proof)).toThrow("module differs");
   });

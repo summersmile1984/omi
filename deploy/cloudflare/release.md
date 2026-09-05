@@ -63,18 +63,19 @@ or duplicate deployment registry.
 
 ## Admission still pending
 
-The current tree intentionally cannot publish. CF-4, CI-1 and prior-version/new
-schema qualification remain unimplemented product owners, rather than operator
-approval flags. The CLI reports the absent fixed runner paths before remote
-apply/restore. Their implementation belongs to these existing action packages:
+The current tree cannot publish while CF-4 and CI-1 remain unimplemented product
+owners. First-release schema qualification is implemented; retained-version/new
+schema compatibility still requires its executable harness. These are execution
+contracts rather than operator approval flags. The CLI reports absent fixed
+runner paths before remote apply/restore:
 
 | Owner | Required executable | Contract |
 | --- | --- | --- |
 | CF-4 | `deploy/cloudflare/contracts/qualify-product.mjs` | Actual enabled route/provider, identity, HTTP, WebSocket, MCP, share/object and persistence contracts, including error paths |
 | CI-1 | `contracts/deployment/qualify-dual-target.mjs` | Same candidate's Server OS/CF product conformance, including the known Tasks 422/400 divergence and platform/brand matrix ownership |
-| CF/schema owner | `deploy/cloudflare/contracts/qualify-prior-schema.mjs` | Every observed prior Worker with the candidate's new schema; exact prior SQL content lineage, first-release absence cases, and rollback compatibility |
+| CF/schema owner | `deploy/cloudflare/contracts/qualify-prior-schema.mjs` | First-release absence/empty authority, frozen SQL execution and deployed catalog/ledger checks implemented; an existing prior Worker or restore phase is refused until retained-version compatibility is implemented |
 
-Each receives `{candidate, observations}` on stdin and must execute its acceptance
+Each receives `{candidate_directory, candidate, observations}` on stdin and must execute its acceptance
 surface. Exit 0 plus JSON `{schema_version:1,candidate_digest,observation_digest,
 cases:[{id,result:"pass"}]}` is required. Cases must be nonempty and all pass.
 `observations.release_phase` is `candidate` before mutation, `deployed` after
@@ -88,6 +89,21 @@ proofs. Adding a runner requires the same repository tests/review gate as its
 product capability; a file that merely emits a passing object does not implement
 this contract. No `approved=true`, unsigned operator attestation, old staging
 deploy, readiness 200 or local stub test supplies that evidence.
+
+The directory comes from the release owner's validated candidate, not a proof
+file. Each runner reopens it through `qualification-context.mjs`, verifies its
+source/artifact bytes and rejects a different stdin candidate. The schema runner
+re-observes every Worker and the exact D1 identities. Candidate-phase acceptance
+requires genuine Worker absence plus empty business catalogs and migration
+ledgers. It executes the candidate's copied `sql/` files through the existing
+SQLite migration fixture, preserving its unmigrated principal/session/task checks
+and reentry check. SQL from the working checkout cannot substitute for frozen
+bytes. Deployed-phase acceptance also requires the candidate/artifact annotations,
+the complete migration ledger, exact executed schema catalog and a clean
+[`PRAGMA foreign_key_check`](https://developers.cloudflare.com/d1/sql-api/sql-statements/).
+It emits explicitly named `first-release.*` cases. An observed retained Worker,
+nonempty initial authority, schema drift or denied observation is a failure;
+this first-release proof makes no claim about rollback to a previous version.
 
 ## Future explicit remote operations
 

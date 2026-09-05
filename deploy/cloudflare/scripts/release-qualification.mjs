@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { digest } from "./resource-input.mjs";
 import { runReleaseProcess } from "./release-wrangler.mjs";
 
@@ -18,18 +18,20 @@ export const RELEASE_QUALIFIERS = Object.freeze([
 ]);
 export function pendingQualifiers(root) {
   return RELEASE_QUALIFIERS.filter(
-    (entry) => !existsSync(resolve(root, entry.path)),
+    (entry) => !existsSync(resolve(root, entry.path))
   ).map((entry) => entry.id);
 }
 export function runReleaseQualifiers(
   root,
   candidate,
   observations,
-  { spawn = spawnSync } = {},
+  { directory, spawn = spawnSync } = {}
 ) {
   const pending = pendingQualifiers(root);
   if (pending.length)
     throw new Error(`release qualification pending: ${pending.join(", ")}`);
+  if (typeof directory !== "string" || !isAbsolute(directory))
+    throw new Error("qualification requires the frozen candidate directory");
   const observationDigest = digest(observations);
   return RELEASE_QUALIFIERS.map((entry) => {
     const result = runReleaseProcess(
@@ -40,10 +42,14 @@ export function runReleaseQualifiers(
         cwd: root,
         encoding: "utf8",
         maxBuffer: 16 * 1024 * 1024,
-        input: JSON.stringify({ candidate, observations }),
+        input: JSON.stringify({
+          candidate_directory: directory,
+          candidate,
+          observations,
+        }),
         env: { ...process.env, CI: "true" },
       },
-      { spawn },
+      { spawn }
     );
     let proof;
     try {
@@ -62,11 +68,11 @@ export function runReleaseQualifiers(
         (item) =>
           typeof item.id !== "string" ||
           !/^[a-zA-Z0-9_.:-]{1,128}$/.test(item.id) ||
-          item.result !== "pass",
+          item.result !== "pass"
       )
     )
       throw new Error(
-        `${entry.id} failed or produced stale/incomplete evidence`,
+        `${entry.id} failed or produced stale/incomplete evidence`
       );
     return {
       id: entry.id,

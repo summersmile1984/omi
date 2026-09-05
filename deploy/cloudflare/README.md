@@ -19,10 +19,12 @@ inputs, qualification, remote apply, version ownership and recovery commands.
 
 A local candidate always has `release_ready=false`. CF-4 product coverage, CI-1
 cross-target contracts, prior Worker/new-schema compatibility and actual remote
-resource/domain/version observations remain required. The current source does
-not implement those three release qualification runners, so remote `apply` and
-`restore` reject before contacting Cloudflare. Operator-written approval JSON
-cannot bypass their absence.
+resource/domain/version observations remain required. The first-release schema
+runner now verifies fresh Worker absence, empty D1 authorities and frozen SQL;
+it refuses retained-version upgrades/restore until their executable compatibility
+harness exists. CF-4 and CI-1 are still missing, so remote `apply` and `restore`
+reject before contacting Cloudflare. Operator-written approval JSON cannot bypass
+their absence. See [Eddy's observed first-release schema evidence](../../dev/unified-main/implementation-2026-09-05/eddy-first-release-schema.md).
 
 Credentials come from the existing CF3 secret-name map. The publisher never
 generates new application credentials or infers a resource owner from an error.

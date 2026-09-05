@@ -107,5 +107,12 @@ dry-run test also compares stderr with a clean in-memory `node:sqlite` process
 on the same Node executable: only its exact experimental warning is accepted,
 and additional application diagnostics remain failures.
 
-These reports always set `release_qualified: false`. They do not implement or
-replace CF5's pending complete-product, dual-target or prior-schema qualifiers.
+These product reports always set `release_qualified: false`. They do not replace
+CF5's pending complete-product/dual-target qualifiers or its schema acceptance.
+`qualify-prior-schema.mjs` is the separate fixed first-release schema runner. It
+consumes the validated frozen candidate directory plus fresh remote observations,
+executes frozen SQL/legacy fixtures, and verifies actual empty/deployed D1 catalogs.
+It refuses existing prior Workers and restore phases until an executable retained
+version compatibility harness exists. Its HTTP/process boundary and SQL behavior
+tests run in the existing full Cloudflare Vitest local/CI lane; a controlled API
+test is not a remote account proof.

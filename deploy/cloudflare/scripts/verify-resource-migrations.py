@@ -15,14 +15,14 @@ import sqlite3
 import sys
 
 
-def verify(root: Path, plan: dict) -> list[dict]:
+def verify(root: Path, plan: dict, *, sql_root: Path | None = None, include_schema: bool = False) -> list[dict]:
     authorities = plan.get('migrations', [])
     if sorted(entry.get('authority', '') for entry in authorities) != ['app', 'auth']:
         raise ValueError('exactly one Auth and App migration authority is required')
     results = []
     for authority in authorities:
         name = authority['authority']
-        directory = root / 'migrations' / name
+        directory = (sql_root if sql_root is not None else root / 'migrations') / name
         if authority.get('directory') != f'migrations/{name}':
             raise ValueError('migration directory does not belong to its authority')
         expected = sorted(path.name for path in directory.glob('*.sql'))
@@ -80,7 +80,17 @@ def verify(root: Path, plan: dict) -> list[dict]:
             raise ValueError('last migration changed the existing principal/task')
         if apply(files, sources) != 0:
             raise ValueError('same migration plan was not idempotent')
-        results.append({'authority': name, 'sql_files': len(files), 'legacy_row_preserved': True, 'reentry_applied': 0})
+        result = {'authority': name, 'sql_files': len(files), 'legacy_row_preserved': True, 'reentry_applied': 0}
+        if include_schema:
+            result['schema_catalog'] = [
+                dict(zip(('type', 'name', 'tbl_name', 'sql'), row))
+                for row in db.execute(
+                    "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' ORDER BY type,name"
+                )
+            ]
+            if db.execute('PRAGMA foreign_key_check').fetchall():
+                raise ValueError('frozen SQL fixture contains invalid foreign keys')
+        results.append(result)
         db.close()
     return results
 
@@ -88,9 +98,11 @@ def verify(root: Path, plan: dict) -> list[dict]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
+    parser.add_argument('--sql-root', type=Path, help='Explicit frozen SQL directory containing auth/ and app/')
+    parser.add_argument('--include-schema', action='store_true', help='Return the schema actually executed by SQLite')
     args = parser.parse_args()
     try:
-        result = verify(args.root, json.load(sys.stdin))
+        result = verify(args.root, json.load(sys.stdin), sql_root=args.sql_root, include_schema=args.include_schema)
         print(json.dumps({'sql_fixture': result, 'older_worker_compatibility_proven': False}))
     except (OSError, ValueError, sqlite3.Error) as error:
         print(f'FAIL: {error}', file=sys.stderr)
