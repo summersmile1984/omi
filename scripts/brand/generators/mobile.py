@@ -43,8 +43,7 @@ def _dart_string_literal(value: str) -> str:
     return f"'{escaped}'"
 
 
-def render(manifest: dict, repo_root: Path) -> list[Path]:
-    brand_id = manifest["brand"]["id"]
+def render(brand_id: str, manifest: dict, repo_root: Path) -> list[Path]:
     display_name = manifest["brand"]["display_name"]
 
     content = (

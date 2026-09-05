@@ -153,7 +153,16 @@ api: { key_prefix: "mw_", header_prefix: "X-Mw-" }   # header 属于两端契约
 4. 开源许可页含 MIT 原文与 Based Hardware Contributors 版权行、Nordic 5-Clause、Opus BSD-3、Parakeet CC-BY-4.0、OFL 字体许可。
 5. 一次 `upstream/main` 合并后重跑 `apply.py` + `check.py` 仍为零（可持续性）。
 
-## 9. B2 第一片实测笔记（`flavors.dart`）
+## 9. B1 剩余部分的实测笔记（`AppBuild.swift`，2026-09-04）
+
+`app-config.sh` 那部分（生成 shell 文件被 source）跑通后，原以为 `AppBuild.swift` 能照搬同一套路（生成 Swift 文件读值）。实测发现不行：
+
+- T1 白名单给 `AppBuild.swift` 的预算是 **3 行（整个文件）**，而文件里有**两个**需要品牌化的常量（`productionBundleIdentifier`、`betaProductionBundleIdentifier`，`desktop/macos/Desktop/Sources/AppBuild.swift:6,11`）。把其中任意一个从 `static let X = "字面量"`（1 行）改成读 Info.plist 的计算属性，本身就要 3 行（`static var X: String { Bundle.main.object(forInfoDictionaryKey: ...) as? String ?? "字面量" }`），两个常量根本塞不进共享的 3 行预算。
+- 白名单条目的 reason 写的是"改读 Info.plist 键"，不是"改读生成的 Swift 文件"——这是刻意的：Swift 没有 Python 那种导入时符号替换能力（S5 的 patch registry 那套对 Swift 不适用），只能在**运行时读 bundle 自己的 Info.plist**，而 Info.plist 本身需要靠 B1 另一项"Info.plist 模板化"在构建时把值写进去。也就是说这两个子项**不是独立切片**——`AppBuild.swift` 的改动离了 Info.plist 模板化没有值可读，光做前者没意义。
+
+**建议的方向**（未验证，留给下一次做这块的人）：不要给两个常量各开一个 Info.plist 键，而是只暴露**一个**"反向域名前缀"键（呼应 `identifiers.macos_named_bundle_prefix` 那条设计，`app-config.sh` 已经用了同一个字段），`isNonProduction` 判定改成 `bundleIdentifier.hasPrefix(读出来的前缀) && !productionFamilyBundleIdentifiers.contains(...)`；`productionBundleIdentifier`/`betaProductionBundleIdentifier` 两个具体值本身可以继续是 Xcode `PRODUCT_BUNDLE_IDENTIFIER` build setting 决定的字面量（每个品牌用自己的 xcconfig，Xcode 原生机制，不需要 Swift 里再读一遍）——这样只有 `isNonProduction` 一处逻辑需要在 3 行预算内动，两个具体常量维持现状。这个方向需要先确认 Xcode 的 xcconfig 替换和 Info.plist 模板化（B1 的另一项）到底怎么接，再动手，不在本次改动范围内。
+
+## 10. B2 第一片实测笔记（`flavors.dart`）
 
 B2 这一行（§4 表格）打包了七件事：`flavorizr.yaml` 生成+重跑、`flavors.dart`、3 处 pbxproj 逃逸、`BatteryWidget-Info.plist`、entitlements 模板化、`Info.plist` 权限描述、`environment_profile.dart` 校验表。这次只落地了其中最小、风险最低的一块：`flavors.dart`'s `F.title`（`MaterialApp(title: F.title)`，纯 Dart，不涉及构建工具）。其余六项都还没动，原因分别是：
 
@@ -165,7 +174,7 @@ B2 这一行（§4 表格）打包了七件事：`flavorizr.yaml` 生成+重跑�
 
 另外顺手发现并修了一个 B0 遗留的小 bug：`brand/omi-upstream/manifest.yaml` 的 `brand.id` 字段写的是 `omi`,但 schema 自己的描述说这个字段"是目录名"——目录其实是 `omi-upstream`。B0 从没有生成器真正读过这个字段,所以一直没暴露;`mobile.py` 是第一个把 `brand.id` 写进生成文件内容(生成文件里的溯源注释)的生成器,顺带把这处不一致修了。
 
-## 10. `create-omi-beta-variant.sh` 不是一个能顺手做的 B1 独立子项
+## 11. `create-omi-beta-variant.sh` 不是一个能顺手做的 B1 独立子项
 
 早先的规划笔记把 `desktop/macos/scripts/create-omi-beta-variant.sh` 的参数化列为 B1 剩下几项里"独立、低风险"的一个——这个判断实测是错的,记录下来避免下一个人重新踩一遍。
 

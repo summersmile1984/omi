@@ -27,13 +27,14 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from schema_validate import validate  # noqa: E402
 from yaml_lite import load_yaml  # noqa: E402
+from generators import desktop as _desktop  # noqa: E402
 from generators import mobile as _mobile  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "brand/_schema/manifest.schema.json"
 BRAND_ROOT = REPO_ROOT / "brand"
 
-# One entry per B1-B7 PR. A generator is `(manifest: dict, repo_root: Path) -> list[Path]`,
+# One entry per B1-B7 PR. A generator is `(brand_id: str, manifest: dict, repo_root: Path) -> list[Path]`,
 # returning every path it wrote so --check-clean can verify idempotency without
 # re-deriving what "this category's output" means.
 CATEGORIES: tuple[str, ...] = (
@@ -47,8 +48,9 @@ CATEGORIES: tuple[str, ...] = (
     "ci",
 )
 
-GENERATORS: dict[str, Callable[[dict, Path], list[Path]]] = {
+GENERATORS: dict[str, Callable[[str, dict, Path], list[Path]]] = {
     "flutter": _mobile.render,
+    "desktop": _desktop.render,
 }
 
 
@@ -72,7 +74,7 @@ def load_manifest(brand_id: str) -> dict:
     return manifest
 
 
-def render(manifest: dict, only: list[str] | None) -> list[Path]:
+def render(brand_id: str, manifest: dict, only: list[str] | None) -> list[Path]:
     categories = only or list(CATEGORIES)
     unknown = [c for c in categories if c not in CATEGORIES]
     if unknown:
@@ -87,7 +89,7 @@ def render(manifest: dict, only: list[str] | None) -> list[Path]:
         if generator is None:
             skipped.append(category)
             continue
-        written.extend(generator(manifest, REPO_ROOT))
+        written.extend(generator(brand_id, manifest, REPO_ROOT))
 
     if skipped:
         print(
@@ -118,7 +120,7 @@ def main() -> int:
             before = subprocess.run(
                 ["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
             ).stdout
-        written = render(manifest, args.only)
+        written = render(args.brand, manifest, args.only)
         if args.check_clean:
             after = subprocess.run(
                 ["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True, check=True

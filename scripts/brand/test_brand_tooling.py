@@ -130,7 +130,7 @@ class MobileGeneratorTests(unittest.TestCase):
     def test_render_writes_the_brand_display_name_as_a_dart_const(self):
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme"}}
-        written = mobile.render(manifest, root)
+        written = mobile.render("acme", manifest, root)
         self.assertEqual(written, [root / "app/lib/flavors.brand.dart"])
         content = (root / "app/lib/flavors.brand.dart").read_text()
         self.assertIn("const String kBrandDisplayName = 'Acme';", content)
@@ -139,7 +139,7 @@ class MobileGeneratorTests(unittest.TestCase):
     def test_render_escapes_an_apostrophe_in_the_display_name(self):
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme's App"}}
-        mobile.render(manifest, root)
+        mobile.render("acme", manifest, root)
         content = (root / "app/lib/flavors.brand.dart").read_text()
         self.assertIn("const String kBrandDisplayName = 'Acme\\'s App';", content)
 
@@ -148,7 +148,7 @@ class MobileGeneratorTests(unittest.TestCase):
         # compile with "Undefined name 'me'." rather than producing a leak.
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Ac$me"}}
-        mobile.render(manifest, root)
+        mobile.render("acme", manifest, root)
         content = (root / "app/lib/flavors.brand.dart").read_text()
         self.assertIn("const String kBrandDisplayName = 'Ac\\$me';", content)
 
@@ -157,16 +157,16 @@ class MobileGeneratorTests(unittest.TestCase):
         # string entirely ("String starting with ' must end with '.").
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme\nCorp"}}
-        mobile.render(manifest, root)
+        mobile.render("acme", manifest, root)
         content = (root / "app/lib/flavors.brand.dart").read_text()
         self.assertIn("const String kBrandDisplayName = 'Acme\\nCorp';", content)
 
     def test_render_is_idempotent(self):
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme"}}
-        mobile.render(manifest, root)
+        mobile.render("acme", manifest, root)
         first = (root / "app/lib/flavors.brand.dart").read_text()
-        mobile.render(manifest, root)
+        mobile.render("acme", manifest, root)
         second = (root / "app/lib/flavors.brand.dart").read_text()
         self.assertEqual(first, second)
 
@@ -228,6 +228,39 @@ class RepoFixture:
             capture_output=True,
             text=True,
         )
+
+
+class DesktopGeneratorTests(unittest.TestCase):
+    def render(self, prefix: str, tmp: Path):
+        sys.path.insert(0, str(BRAND_SCRIPTS))
+        from generators import desktop
+
+        manifest = {"brand": {"id": "test-brand"}, "identifiers": {"macos_named_bundle_prefix": prefix}}
+        written = desktop.render("test-brand", manifest, tmp)
+        return written, (tmp / desktop.APP_CONFIG_BRAND_PATH).read_text()
+
+    def test_renders_both_prefix_forms_from_one_manifest_field(self):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(tmp)]))
+        written, content = self.render("com.acme.", tmp)
+        self.assertEqual(len(written), 1)
+        self.assertIn('OMI_NAMED_BUNDLE_ID_PREFIX="com.acme."', content)
+        self.assertIn('OMI_NAMED_BUNDLE_SLUG_PREFIX="acme"', content)
+
+    def test_matches_the_real_omi_upstream_manifest(self):
+        # The actual value app-config.sh's fallback must keep matching.
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(tmp)]))
+        _, content = self.render("com.omi.", tmp)
+        self.assertIn('OMI_NAMED_BUNDLE_ID_PREFIX="com.omi."', content)
+        self.assertIn('OMI_NAMED_BUNDLE_SLUG_PREFIX="omi"', content)
+
+    def test_rejects_a_prefix_with_no_segments(self):
+        sys.path.insert(0, str(BRAND_SCRIPTS))
+        from generators import desktop
+
+        with self.assertRaises(ValueError):
+            desktop._named_bundle_slug_prefix(".")
 
 
 class BrandToolingTests(unittest.TestCase):
