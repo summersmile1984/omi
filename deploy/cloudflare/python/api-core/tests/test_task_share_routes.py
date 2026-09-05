@@ -73,6 +73,8 @@ class FakeRequest:
             env.BRAND_RUNTIME_JSON = json.dumps(
                 {"brand_id": "omi-upstream", "display_name": "Omi", "ai_persona_name": "Omi"}
             )
+        if not hasattr(env, "PUBLIC_SHARE_BASE_URL"):
+            env.PUBLIC_SHARE_BASE_URL = "https://h.omi.me"
         self.scope = {"env": env}
         self.headers = headers or {}
         self.body = body
@@ -192,6 +194,32 @@ def test_task_share_rejects_locked_missing_self_and_expired_paths():
     db.connection.commit()
     expired = asyncio.run(get_shared_action_items(FakeRequest(env), shared["token"]))
     assert expired.status_code == 404
+
+
+def test_task_share_uses_the_profile_origin_and_rejects_invalid_origins_before_storage():
+    secret = "share-secret"
+    db = FakeDb()
+    env = type(
+        "Env",
+        (),
+        {
+            "APP_DB": db,
+            "INTERNAL_ASSERTION_SECRET": secret,
+            "PUBLIC_SHARE_BASE_URL": "https://share.atlas.example.invalid",
+        },
+    )()
+    insert_item(db, "sender", "task", "Private")
+    sender = signed_headers(secret, "sender", "Alice")
+    shared = asyncio.run(share_action_items(FakeRequest(env, sender, {"task_ids": ["task"]})))
+    assert shared["url"] == f"https://share.atlas.example.invalid/tasks/{shared['token']}"
+
+    before = db.connection.execute("SELECT COUNT(*) FROM cf_task_shares").fetchone()[0]
+    for invalid in [None, True, "", "https://share.example.invalid/path", "https://user@share.example.invalid"]:
+        env.PUBLIC_SHARE_BASE_URL = invalid
+        response = asyncio.run(share_action_items(FakeRequest(env, sender, {"task_ids": ["task"]})))
+        assert response.status_code == 503
+        assert json.loads(response.body) == {"error": "public share identity is not configured"}
+        assert db.connection.execute("SELECT COUNT(*) FROM cf_task_shares").fetchone()[0] == before
 
 
 def test_brand_default_sender_survives_preview_and_acceptance_without_rewriting_task_text():

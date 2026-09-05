@@ -2652,6 +2652,18 @@ account-deletion fences; Jobs includes it in purge/residual checks. Explicit
 Silence/disconnect auto-finalization, continuous-capture rotation, every missing
 route and remote provider qualification remain separate unfinished CF-4 work.
 
+Chat and task sharing now mint `/chat/:token` and `/tasks/:token` capabilities
+from `PUBLIC_SHARE_BASE_URL`, projected from the same validated profile used by
+all clients. The share custom domain belongs to the existing Web Worker; Edge
+and Auth trust its exact origin alongside the Web origin. The fork Web build
+adds the two pages and a strict public proxy that validates and reduces previews
+before returning `private, no-store` responses. Task acceptance reuses the
+existing Better Auth session/JWT and authenticated API proxy. Missing brand/share
+configuration fails before D1 mutation. Unit and local product contracts cover
+owner isolation, expired/locked/invalid capabilities, self and duplicate
+acceptance, malformed responses and a real recipient copy. This local evidence
+does not qualify remote routes or authorize a deployment.
+
 `bash deploy/cloudflare/ci/product.sh` builds an isolated actual seven-Worker target,
 applies all normal migrations, runs the shared identity/onboarding/Tasks suite and
 a separate recording/Queue contract, then stops its process tree. Both fork

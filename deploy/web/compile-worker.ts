@@ -25,12 +25,14 @@ export async function compileWorker(
     resolve(out, 'worker.ts'),
     `import './server.ts';
 import { fetchApp } from './worker-runtime.ts';
+import { isShareProxyRequest, proxyPublicGet } from '../src/lib/fork/public-proxy.ts';
 export default {
   async fetch(request, env) {
     if (request.method === 'GET' || request.method === 'HEAD') {
       const asset = await env.ASSETS.fetch(request);
       if (asset.status !== 404) return asset;
     }
+    if (isShareProxyRequest(request)) return proxyPublicGet(request, env.EDGE);
     return fetchApp(request);
   }
 };\n`,

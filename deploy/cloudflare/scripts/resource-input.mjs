@@ -260,7 +260,7 @@ export function validateResourceInput(input, projected) {
     auth: "auth",
     web: "web",
     mcp: "edge",
-    share: "edge",
+    share: "web",
     objects: "edge",
   })) {
     const url = new URL(profile[`${key}_base_url`]);

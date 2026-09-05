@@ -67,7 +67,9 @@ export async function startLocalTarget({
   brandId = "contract",
   port,
   root = componentRoot,
+  shareOrigin,
   signal,
+  webOrigin,
 }) {
   root = resolve(root);
   output = resolve(output);
@@ -174,6 +176,8 @@ export async function startLocalTarget({
       namespace,
       port,
       asrPort: asr.address().port,
+      shareOrigin,
+      webOrigin,
     });
     configs.provider.vars = {
       INFERENCE_CONTROL_ORIGIN: inferenceControl.origin,
@@ -324,6 +328,7 @@ export async function startLocalTarget({
     privateJson(resolve(output, "fixture.json"), {
       brand_runtime: brandRuntime,
       support_email: supportEmail,
+      public_share_origin: shareOrigin ?? origin,
       schema_version: 1,
       source_commit: git(resolve(root, "../.."), ["rev-parse", "HEAD"]),
       source_status: git(resolve(root, "../.."), ["status", "--porcelain"]),
@@ -392,9 +397,12 @@ if (
         output: { type: "string" },
         "brand-id": { type: "string", default: "contract" },
         port: { type: "string" },
+        "share-origin": { type: "string" },
+        "web-origin": { type: "string" },
         "run-core": { type: "boolean", default: false },
         "run-recording": { type: "boolean", default: false },
         "run-chat": { type: "boolean", default: false },
+        "run-share": { type: "boolean", default: false },
       },
     });
     if (!values.output) throw new Error("--output is required");
@@ -402,7 +410,9 @@ if (
       output: values.output,
       brandId: values["brand-id"],
       port: values.port === undefined ? undefined : Number(values.port),
+      shareOrigin: values["share-origin"],
       signal: controller.signal,
+      webOrigin: values["web-origin"],
     });
     process.stdout.write(JSON.stringify(target.metadata) + "\n");
     if (values["run-core"]) {
@@ -426,10 +436,18 @@ if (
         resolve(values.output, "metadata.json"),
       ]);
     }
+    if (values["run-share"]) {
+      await target.command("share", process.execPath, [
+        resolve(componentRoot, "contracts/share.mjs"),
+        "--metadata",
+        resolve(values.output, "metadata.json"),
+      ]);
+    }
     if (
       !values["run-core"] &&
       !values["run-recording"] &&
       !values["run-chat"] &&
+      !values["run-share"] &&
       !controller.signal.aborted
     ) {
       await Promise.race([

@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from conversation_routes import _first_conversation
-from brand_runtime import load_brand_runtime
+from brand_runtime import load_brand_runtime, load_share_origin
 from internal_auth import decode_context
 from vector_search import (
     embed_query,
@@ -46,7 +46,6 @@ MAX_REMINDER_ID_LENGTH = 512
 MAX_SHARE_TOKEN_LENGTH = 128
 MAX_SHARE_TASKS = 20
 TASK_SHARE_TTL_SECONDS = 60 * 60 * 24 * 30
-TASK_SHARE_BASE_URL = "https://h.omi.me/tasks"
 
 
 class TaskStatus(str, Enum):
@@ -692,8 +691,9 @@ async def share_action_items(request: Request):
     env = request.scope["env"]
     try:
         brand = load_brand_runtime(request.scope["env"])
+        share_origin = load_share_origin(request.scope["env"])
     except ValueError:
-        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
+        return JSONResponse({"error": "public share identity is not configured"}, status_code=503)
     placeholders = ", ".join("?" for _ in payload.task_ids)
     try:
         result = (
@@ -732,7 +732,7 @@ async def share_action_items(request: Request):
         await env.APP_DB.batch(statements)
     except Exception:
         return JSONResponse({"error": "task sharing unavailable"}, status_code=503)
-    return {"url": f"{TASK_SHARE_BASE_URL}/{token}", "token": token}
+    return {"url": f"{share_origin}/tasks/{token}", "token": token}
 
 
 @router.get("/v1/action-items/shared/{token}")

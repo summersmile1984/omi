@@ -30,6 +30,14 @@ locked Wrangler/workerd, then executes:
   signup-issued token and `/api/proxy` base mapping are injected into the client;
   its requests, responses and SSE parser are unchanged. This is a text-chat
   contract, not a browser UI, tools/attachments or full chat qualification.
+- `share.mjs`, real Auth/API/D1 creation and consumption of task and selected-chat
+  capability links. It proves the configured public Web origin, anonymous
+  bounded previews, cross-user owner denial, self-accept denial, one successful
+  recipient copy, duplicate acceptance, malformed input and invalid tokens.
+  Python behavior tests cover expired and newly locked source records; the Web
+  overlay tests cover expired/empty/malformed previews and every acceptance
+  error state. Remote custom domains and Server OS browser execution remain
+  separate evidence.
 
 For an interactive isolated fixture:
 
@@ -40,7 +48,7 @@ node deploy/cloudflare/contracts/local-target.mjs \
 
 The parent output directory must exist; the final directory must be new, including
 no broken symlink. `metadata.json` contains `api_origin`, `auth_origin`, `target`,
-`brand_id`, and `trace_dir`. `--run-core`, `--run-recording` and `--run-chat` select the executable
+`brand_id`, and `trace_dir`. `--run-core`, `--run-recording`, `--run-chat` and `--run-share` select the executable
 suites and stop the target afterward. Otherwise SIGINT/SIGTERM stops it. Startup,
 commands and teardown share one process-group owner: cancellation prevents later
 stages, kills descendants, and never adopts an already-running endpoint. Each

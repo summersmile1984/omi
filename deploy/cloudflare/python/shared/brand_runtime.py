@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import json
 import re
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -42,3 +43,31 @@ def load_support_email(env: object) -> str:
     ):
         raise ValueError('brand support contact is not configured')
     return value
+
+
+def load_share_origin(env: object) -> str:
+    """Read the public Web origin used to mint share capabilities."""
+    value = getattr(env, 'PUBLIC_SHARE_BASE_URL', None)
+    if not isinstance(value, str):
+        raise ValueError('public share origin is not configured')
+    parsed = urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError('public share origin is not configured') from error
+    if (
+        parsed.scheme not in {'http', 'https'}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {'', '/'}
+    ):
+        raise ValueError('public share origin is not configured')
+    authority = parsed.hostname
+    if ':' in authority and not authority.startswith('['):
+        authority = f'[{authority}]'
+    if port is not None:
+        authority = f'{authority}:{port}'
+    return f'{parsed.scheme}://{authority}'

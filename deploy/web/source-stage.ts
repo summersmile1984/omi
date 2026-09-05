@@ -14,6 +14,7 @@ import { createRequire } from 'node:module';
 export interface OverlayManifest {
   schema_version: 1;
   files: Record<string, string>;
+  additions?: Record<string, string>;
 }
 
 export function confinedPath(root: string, path: string): string {
@@ -56,11 +57,31 @@ export async function stageSources(
     },
   });
   await symlink(join(webRoot, 'node_modules'), join(stage, 'node_modules'), 'dir');
-  const applied: { source: string; replacement: string; sha256: string }[] = [];
-  for (const [source, replacement] of Object.entries(manifest.files)) {
+  const additions = manifest.additions ?? {};
+  if (!additions || Array.isArray(additions))
+    throw new Error('Web additions require an exact source-path mapping');
+  const entries = [
+    ...Object.entries(manifest.files).map(
+      ([source, replacement]) => [source, replacement, 'replace'] as const,
+    ),
+    ...Object.entries(additions).map(
+      ([source, replacement]) => [source, replacement, 'add'] as const,
+    ),
+  ];
+  if (new Set(entries.map(([source]) => source)).size !== entries.length)
+    throw new Error('A Web source path cannot be replaced and added');
+  const applied: {
+    source: string;
+    replacement: string;
+    sha256: string;
+    mode: 'replace' | 'add';
+  }[] = [];
+  for (const [source, replacement, mode] of entries) {
     const sourcePath = confinedPath(webRoot, source);
     const replacementPath = confinedPath(webRoot, replacement);
-    for (const path of [sourcePath, replacementPath]) {
+    for (const path of mode === 'replace'
+      ? [sourcePath, replacementPath]
+      : [replacementPath]) {
       const resolved = await realpath(path);
       if (
         !resolved.startsWith(`${resolve(webRoot)}${sep}`) ||
@@ -69,12 +90,22 @@ export async function stageSources(
         throw new Error(`Overlay references a file outside the source tree: ${path}`);
       }
     }
+    if (mode === 'add') {
+      try {
+        await lstat(sourcePath);
+        throw new Error(`Web addition would replace an existing source: ${source}`);
+      } catch (error: any) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      await mkdir(dirname(confinedPath(stage, source)), { recursive: true });
+    }
     const bytes = await readFile(replacementPath);
     await writeFile(confinedPath(stage, source), bytes);
     applied.push({
       source,
       replacement,
       sha256: new Bun.CryptoHasher('sha256').update(bytes).digest('hex'),
+      mode,
     });
   }
   return applied;

@@ -15,6 +15,8 @@ export function localConfigs({
   brandId,
   brandRuntime,
   supportEmail,
+  shareOrigin,
+  webOrigin,
   namespace,
   port,
   asrPort,
@@ -33,6 +35,27 @@ export function localConfigs({
     if (!Number.isInteger(value) || value < 1024 || value > 65535)
       throw new Error("invalid loopback port");
   const origin = `http://127.0.0.1:${port}`;
+  shareOrigin ??= origin;
+  webOrigin ??= origin;
+  for (const [label, value] of [
+    ["share", shareOrigin],
+    ["Web", webOrigin],
+  ]) {
+    if (typeof value !== "string")
+      throw new Error(`local ${label} origin must be explicit loopback HTTP`);
+    const url = new URL(value);
+    if (
+      url.protocol !== "http:" ||
+      !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+      !url.port ||
+      url.pathname !== "/" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    )
+      throw new Error(`local ${label} origin must be explicit loopback HTTP`);
+  }
   const workerNames = Object.fromEntries(
     Object.entries(templates).map(([role, entry]) => [
       entry.config.name,
@@ -98,7 +121,7 @@ export function localConfigs({
       BETTER_AUTH_URL: origin,
       AUTH_JWT_ISSUER: origin,
       AUTH_JWT_AUDIENCE: origin,
-      ALLOWED_ORIGINS: origin,
+      ALLOWED_ORIGINS: [...new Set([webOrigin, shareOrigin])].join(","),
       MCP_RESOURCE_URL: `${origin}/v1/mcp/sse`,
       MCP_AUTHORIZATION_SERVER_URL: `${origin}/api/auth`,
       NATIVE_AUTH_PUBLIC_BASE_URL: origin,
@@ -108,7 +131,10 @@ export function localConfigs({
     };
     if (["api-core", "api-ai"].includes(role))
       config.vars.BRAND_RUNTIME_JSON = JSON.stringify(brandRuntime);
-    if (role === "api-core") config.vars.BRAND_SUPPORT_EMAIL = supportEmail;
+    if (role === "api-core") {
+      config.vars.BRAND_SUPPORT_EMAIL = supportEmail;
+      config.vars.PUBLIC_SHARE_BASE_URL = shareOrigin;
+    }
     delete config.vars.ORIGIN_BACKEND_URL;
     for (const key of Object.keys(config.vars))
       if (key.endsWith("_STAGING_ENABLED")) config.vars[key] = "false";

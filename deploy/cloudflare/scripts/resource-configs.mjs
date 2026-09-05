@@ -1,17 +1,17 @@
-import { readFileSync, readdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import YAML from "yaml";
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import YAML from 'yaml';
 import {
   canonical,
   digest,
   STORAGE_BINDINGS,
   validateResourceInput,
   WORKERS,
-} from "./resource-input.mjs";
+} from './resource-input.mjs';
 
 // Templates are JSONC; strings containing URLs or ",}" must stay byte-exact.
 export function parseJsonc(text) {
-  let clean = "",
+  let clean = '',
     quoted = false,
     escaped = false;
   for (let i = 0; i < text.length; i++) {
@@ -19,49 +19,45 @@ export function parseJsonc(text) {
     if (quoted) {
       clean += char;
       if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
+      else if (char === '\\') escaped = true;
       else if (char === '"') quoted = false;
     } else if (char === '"') {
       quoted = true;
       clean += char;
-    } else if (char === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-      clean += "\n";
-    } else if (char === "/" && text[i + 1] === "*") {
-      const end = text.indexOf("*/", i + 2);
-      if (end < 0) throw new Error("unterminated JSONC comment");
-      clean += " ";
+    } else if (char === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+      clean += '\n';
+    } else if (char === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      if (end < 0) throw new Error('unterminated JSONC comment');
+      clean += ' ';
       i = end + 1;
-    } else if (char === "," && /^[\s]*[}\]]/.test(text.slice(i + 1))) continue;
+    } else if (char === ',' && /^[\s]*[}\]]/.test(text.slice(i + 1))) continue;
     else clean += char;
   }
   // A comment between a final comma and closing brace is handled after comments
   // are removed, by a second string-aware pass rather than a string regex.
-  let result = "";
+  let result = '';
   quoted = false;
   escaped = false;
   for (let i = 0; i < clean.length; i++) {
     const char = clean[i];
-    if (!quoted && char === "," && /^\s*[}\]]/.test(clean.slice(i + 1)))
-      continue;
+    if (!quoted && char === ',' && /^\s*[}\]]/.test(clean.slice(i + 1))) continue;
     result += char;
     if (quoted && escaped) escaped = false;
-    else if (quoted && char === "\\") escaped = true;
+    else if (quoted && char === '\\') escaped = true;
     else if (char === '"') quoted = !quoted;
   }
   return JSON.parse(result);
 }
 export function readWorkerTemplates(root) {
   return Object.fromEntries(
-    WORKERS.filter((role) => role !== "web").map((role) => {
+    WORKERS.filter((role) => role !== 'web').map((role) => {
       const path = `${
-        role.startsWith("api-") ? "python" : "workers"
+        role.startsWith('api-') ? 'python' : 'workers'
       }/${role}/wrangler.jsonc`;
-      const source = readFileSync(resolve(root, path), "utf8");
-      return [
-        role,
-        { path, source_hash: digest(source), config: parseJsonc(source) },
-      ];
+      const source = readFileSync(resolve(root, path), 'utf8');
+      return [role, { path, source_hash: digest(source), config: parseJsonc(source) }];
     }),
   );
 }
@@ -72,8 +68,7 @@ function dependencyOrder(dependencies) {
   function visit(role) {
     if (active.has(role)) throw new Error(`Worker binding cycle at ${role}`);
     if (done.has(role)) return;
-    if (!WORKERS.includes(role))
-      throw new Error(`unknown Worker dependency: ${role}`);
+    if (!WORKERS.includes(role)) throw new Error(`unknown Worker dependency: ${role}`);
     active.add(role);
     for (const other of dependencies[role]) visit(other);
     active.delete(role);
@@ -88,19 +83,18 @@ function publicConfig(role, config, input, projected, names, origins) {
   config.account_id = input.account_id;
   config.preview_urls = false;
   config.workers_dev =
-    ["auth", "edge", "web"].includes(role) &&
-    input.routing.mode === "workers_dev";
+    ['auth', 'edge', 'web'].includes(role) && input.routing.mode === 'workers_dev';
   delete config.routes;
-  if (input.routing.mode === "custom_domains") {
+  if (input.routing.mode === 'custom_domains') {
     const hosts = [
       ...new Set(
         Object.entries({
-          auth: "auth",
-          api: "edge",
-          web: "web",
-          mcp: "edge",
-          share: "edge",
-          objects: "edge",
+          auth: 'auth',
+          api: 'edge',
+          web: 'web',
+          mcp: 'edge',
+          share: 'web',
+          objects: 'edge',
         })
           .filter(([, owner]) => role === owner)
           .map(([key]) => new URL(origins[key]).hostname),
@@ -113,50 +107,49 @@ function publicConfig(role, config, input, projected, names, origins) {
       }));
   }
   config.vars ??= {};
-  if (["api-core", "api-ai"].includes(role))
+  if (['api-core', 'api-ai'].includes(role))
     config.vars.BRAND_RUNTIME_JSON = JSON.stringify(projected.brand_runtime);
-  if (role === "api-core")
-    config.vars.BRAND_SUPPORT_EMAIL = projected.support_email;
-  if (["edge", "auth"].includes(role)) {
-    config.vars.ALLOWED_ORIGINS = origins.web;
+  if (role === 'api-core') config.vars.BRAND_SUPPORT_EMAIL = projected.support_email;
+  if (role === 'api-core') config.vars.PUBLIC_SHARE_BASE_URL = origins.share;
+  if (['edge', 'auth'].includes(role)) {
+    config.vars.ALLOWED_ORIGINS = [...new Set([origins.web, origins.share])].join(',');
     config.vars.MCP_RESOURCE_URL = `${origins.mcp}/v1/mcp/sse`;
   }
-  if (role === "auth") {
+  if (role === 'auth') {
     config.vars.BETTER_AUTH_URL = origins.auth;
     config.vars.AUTH_JWT_ISSUER = origins.auth;
     config.vars.AUTH_JWT_AUDIENCE = origins.auth;
     config.vars.NATIVE_AUTH_PUBLIC_BASE_URL = origins.api;
-    if (input.allocation === "new") {
-      config.vars.MCP_ALLOW_UNAUTHENTICATED_DCR = "false";
-      config.vars.LEGACY_AUTH_EXACT_STAGING_ENABLED = "false";
+    if (input.allocation === 'new') {
+      config.vars.MCP_ALLOW_UNAUTHENTICATED_DCR = 'false';
+      config.vars.LEGACY_AUTH_EXACT_STAGING_ENABLED = 'false';
     }
   }
-  if (role === "edge")
+  if (role === 'edge')
     config.vars.MCP_AUTHORIZATION_SERVER_URL = `${origins.auth}/api/auth`;
-  if (["api-core", "jobs"].includes(role)) {
+  if (['api-core', 'jobs'].includes(role)) {
     config.vars.PUBLIC_API_BASE_URL = origins.api;
     config.vars.ACCOUNT_CUTOVER_MANIFEST_ID = input.migration_lineage;
   }
-  if (input.allocation === "new") {
-    if (["edge", "realtime"].includes(role))
+  if (input.allocation === 'new') {
+    if (['edge', 'realtime'].includes(role))
       config.vars.ACCOUNT_ACTIVATION_FENCE_ENABLED = String(
         projected.profile.capabilities.account_activation_fence,
       );
-    if (role === "api-core")
-      config.vars.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED = "false";
+    if (role === 'api-core') config.vars.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED = 'false';
     const freshOff = {
       jobs: [
-        "MCP_APP_LEGACY_EXACT_STAGING_ENABLED",
-        "LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED",
+        'MCP_APP_LEGACY_EXACT_STAGING_ENABLED',
+        'LEGACY_EXTERNAL_APP_OAUTH_STAGING_ENABLED',
       ],
       edge: [
-        "AUTH_EXACT_NATIVE_STAGING_ENABLED",
-        "AUTH_EXACT_OAUTH_STAGING_ENABLED",
-        "MCP_APP_EXACT_LEGACY_STAGING_ENABLED",
-        "LEGACY_CHAT_FILES_STAGING_ENABLED",
+        'AUTH_EXACT_NATIVE_STAGING_ENABLED',
+        'AUTH_EXACT_OAUTH_STAGING_ENABLED',
+        'MCP_APP_EXACT_LEGACY_STAGING_ENABLED',
+        'LEGACY_CHAT_FILES_STAGING_ENABLED',
       ],
     };
-    for (const key of freshOff[role] ?? []) config.vars[key] = "false";
+    for (const key of freshOff[role] ?? []) config.vars[key] = 'false';
   }
 }
 export function renderResourcePlan({
@@ -169,30 +162,30 @@ export function renderResourcePlan({
 }) {
   const { names, origins } = validateResourceInput(input, projected);
   if (!/^[0-9a-f]{40}$/.test(sourceCommit))
-    throw new Error("an exact source commit is required");
+    throw new Error('an exact source commit is required');
   if (
     !web?.manifest ||
     web.manifest.brand !== input.brand ||
     web.manifest.target !== input.target ||
     web.manifest.stage !== input.stage ||
     web.manifest.source_commit !== sourceCommit ||
-    web.manifest.entry !== "wrangler.json" ||
+    web.manifest.entry !== 'wrangler.json' ||
     !web.manifest.routes?.length
   )
-    throw new Error("current matching Moonshine Web artifact is required");
+    throw new Error('current matching Moonshine Web artifact is required');
   const publicKeys = [
-    "name",
-    "target",
-    "stage",
-    "identity_provider",
-    "api_base_url",
-    "auth_base_url",
-    "web_base_url",
-    "mcp_base_url",
-    "share_base_url",
-    "objects_base_url",
-    "auth_callback_scheme",
-    "capabilities",
+    'name',
+    'target',
+    'stage',
+    'identity_provider',
+    'api_base_url',
+    'auth_base_url',
+    'web_base_url',
+    'mcp_base_url',
+    'share_base_url',
+    'objects_base_url',
+    'auth_callback_scheme',
+    'capabilities',
   ];
   if (
     publicKeys.some(
@@ -201,17 +194,14 @@ export function renderResourcePlan({
         JSON.stringify(canonical(web.manifest.profile?.[key])),
     )
   )
-    throw new Error("Web artifact and backend resource profile differ");
+    throw new Error('Web artifact and backend resource profile differ');
   if (!web.config?.main || !web.config?.assets?.directory)
-    throw new Error("Web artifact has no Worker/assets closure");
+    throw new Error('Web artifact has no Worker/assets closure');
   const sourceOwners = new Map(
-    Object.entries(templates).map(([role, template]) => [
-      template.config.name,
-      role,
-    ]),
+    Object.entries(templates).map(([role, template]) => [template.config.name, role]),
   );
   if (sourceOwners.size !== 7)
-    throw new Error("Worker templates contain duplicate names");
+    throw new Error('Worker templates contain duplicate names');
   const sourceResources = new Map(),
     resources = new Map(),
     dependencies = Object.fromEntries(WORKERS.map((role) => [role, []]));
@@ -220,11 +210,8 @@ export function renderResourcePlan({
       name = names[key];
     if (!name || !oldName) throw new Error(`unowned resource binding: ${key}`);
     const sourceKey = `${kind}:${oldName}`;
-    if (
-      sourceResources.has(sourceKey) &&
-      sourceResources.get(sourceKey) !== key
-    )
-      throw new Error("one template resource has conflicting logical owners");
+    if (sourceResources.has(sourceKey) && sourceResources.get(sourceKey) !== key)
+      throw new Error('one template resource has conflicting logical owners');
     sourceResources.set(sourceKey, key);
     if (resources.has(key) && resources.get(key).source_name !== oldName)
       throw new Error(`binding ${key} drifts between Workers`);
@@ -240,23 +227,18 @@ export function renderResourcePlan({
   };
   for (const role of WORKERS)
     register(
-      "worker",
+      'worker',
       role,
-      role === "web" ? web.config.name : templates[role].config.name,
+      role === 'web' ? web.config.name : templates[role].config.name,
       role,
     );
   // Discover queue producer and DLQ identities before rewriting any consumer.
   for (const [role, template] of Object.entries(templates)) {
     for (const producer of template.config.queues?.producers ?? [])
-      register(
-        "queue",
-        STORAGE_BINDINGS.queue[producer.binding],
-        producer.queue,
-        role,
-      );
+      register('queue', STORAGE_BINDINGS.queue[producer.binding], producer.queue, role);
     for (const consumer of template.config.queues?.consumers ?? [])
       if (consumer.dead_letter_queue)
-        register("queue", "jobs-dlq", consumer.dead_letter_queue, role);
+        register('queue', 'jobs-dlq', consumer.dead_letter_queue, role);
   }
   const configs = {};
   const data = (kind, binding, oldName, owner) =>
@@ -268,44 +250,50 @@ export function renderResourcePlan({
     return names[`worker:${role}`];
   };
   for (const role of WORKERS) {
-    const config = structuredClone(
-      role === "web" ? web.config : templates[role].config,
-    );
+    const config = structuredClone(role === 'web' ? web.config : templates[role].config);
+    if (role === 'web') {
+      config.services ??= [];
+      if (config.services.some((service) => service.binding === 'EDGE'))
+        throw new Error('Web artifact already claims the EDGE service binding');
+      config.services.push({
+        binding: 'EDGE',
+        service: templates.edge.config.name,
+      });
+    }
     const classifiedFields = new Set([
-      "$schema",
-      "name",
-      "main",
-      "compatibility_date",
-      "compatibility_flags",
-      "workers_dev",
-      "preview_urls",
-      "limits",
-      "alias",
-      "vars",
-      "services",
-      "ai",
-      "images",
-      "vectorize",
-      "queues",
-      "d1_databases",
-      "r2_buckets",
-      "durable_objects",
-      "migrations",
-      "assets",
-      "triggers",
+      '$schema',
+      'name',
+      'main',
+      'compatibility_date',
+      'compatibility_flags',
+      'workers_dev',
+      'preview_urls',
+      'limits',
+      'alias',
+      'vars',
+      'services',
+      'ai',
+      'images',
+      'vectorize',
+      'queues',
+      'd1_databases',
+      'r2_buckets',
+      'durable_objects',
+      'migrations',
+      'assets',
+      'triggers',
     ]);
     for (const key of Object.keys(config))
       if (!classifiedFields.has(key))
         throw new Error(`unclassified ${key} binding/configuration in ${role}`);
-    for (const item of config.services ?? [])
-      item.service = worker(item.service, role);
+    for (const item of config.services ?? []) item.service = worker(item.service, role);
     for (const item of config.durable_objects?.bindings ?? []) {
       if (item.script_name) item.script_name = worker(item.script_name, role);
       else {
         const key = `durable-object:${role}/${item.class_name}`;
         resources.set(key, {
           key,
-          kind: "durable-object",
+          kind: 'durable-object',
           name: `${names[`worker:${role}`]}::${item.class_name}`,
           owners: [role],
           worker: names[`worker:${role}`],
@@ -315,18 +303,18 @@ export function renderResourcePlan({
     }
     for (const item of config.d1_databases ?? []) {
       const db = STORAGE_BINDINGS.d1[item.binding];
-      item.database_name = data("d1", item.binding, item.database_name, role);
+      item.database_name = data('d1', item.binding, item.database_name, role);
       item.database_id = input.d1_ids[db];
       item.migrations_dir = `migrations/${db}`;
     }
     for (const item of config.r2_buckets ?? [])
-      item.bucket_name = data("r2", item.binding, item.bucket_name, role);
+      item.bucket_name = data('r2', item.binding, item.bucket_name, role);
     for (const item of config.vectorize ?? [])
-      item.index_name = data("vectorize", item.binding, item.index_name, role);
+      item.index_name = data('vectorize', item.binding, item.index_name, role);
     for (const item of config.queues?.producers ?? [])
-      item.queue = data("queue", item.binding, item.queue, role);
+      item.queue = data('queue', item.binding, item.queue, role);
     for (const item of config.queues?.consumers ?? []) {
-      for (const key of ["queue", "dead_letter_queue"])
+      for (const key of ['queue', 'dead_letter_queue'])
         if (item[key]) {
           const owned = sourceResources.get(`queue:${item[key]}`);
           if (!owned) throw new Error(`unowned queue consumer in ${role}`);
@@ -335,12 +323,11 @@ export function renderResourcePlan({
     }
     publicConfig(role, config, input, projected, names, origins);
     configs[role] = {
-      source_config:
-        role === "web" ? "web-artifact/wrangler.json" : templates[role].path,
+      source_config: role === 'web' ? 'web-artifact/wrangler.json' : templates[role].path,
       config,
     };
   }
-  dependencies.web.push("auth", "edge");
+  dependencies.web.push('auth');
   for (const role of WORKERS)
     dependencies[role] = [...new Set(dependencies[role])].sort();
   const allocated = [...resources.values()];
@@ -348,11 +335,9 @@ export function renderResourcePlan({
     if (!resources.has(key))
       throw new Error(`resource catalog entry has no consumer: ${key}`);
   const vectorNamespaces = YAML.parse(
-    readFileSync(resolve(root, "manifests/vector-namespaces.yaml"), "utf8"),
+    readFileSync(resolve(root, 'manifests/vector-namespaces.yaml'), 'utf8'),
   ).namespaces;
-  for (const resource of allocated.filter(
-    (item) => item.kind === "vectorize",
-  )) {
+  for (const resource of allocated.filter((item) => item.kind === 'vectorize')) {
     const specs = vectorNamespaces.filter(
       (entry) => entry.target_index === resource.source_name,
     );
@@ -360,26 +345,24 @@ export function renderResourcePlan({
       specs.length !== 1 ||
       specs[0].target_dimensions > projected.profile.capabilities.embedding_dims
     )
-      throw new Error(
-        "Vectorize resource/model dimensions have no unique owner",
-      );
+      throw new Error('Vectorize resource/model dimensions have no unique owner');
     Object.assign(resource, {
       dimensions: specs[0].target_dimensions,
-      metric: "cosine",
+      metric: 'cosine',
       model: specs[0].target_model,
     });
   }
   // Source names describe migration inputs, never an implicit allocation target.
   for (const resource of allocated) delete resource.source_name;
-  const migrations = ["auth", "app"].map((db) => ({
+  const migrations = ['auth', 'app'].map((db) => ({
     authority: db,
-    worker: names[`worker:${db === "auth" ? "auth" : "api-core"}`],
-    binding: db === "auth" ? "AUTH_DB" : "APP_DB",
+    worker: names[`worker:${db === 'auth' ? 'auth' : 'api-core'}`],
+    binding: db === 'auth' ? 'AUTH_DB' : 'APP_DB',
     database_name: names[`d1:${db}`],
     database_id: input.d1_ids[db],
     directory: `migrations/${db}`,
     files: readdirSync(resolve(root, `migrations/${db}`))
-      .filter((file) => file.endsWith(".sql"))
+      .filter((file) => file.endsWith('.sql'))
       .sort()
       .map((name) => ({
         name,
@@ -404,7 +387,7 @@ export function renderResourcePlan({
     rollback_order: [...order].reverse().map((role) => names[`worker:${role}`]),
     migrations,
     platform_bindings: Object.entries(configs).flatMap(([role, { config }]) =>
-      ["ai", "images"]
+      ['ai', 'images']
         .filter((kind) => config[kind])
         .map((kind) => ({
           worker: config.name,
@@ -416,17 +399,14 @@ export function renderResourcePlan({
     secrets: input.secret_refs,
     configs,
     source_hashes: Object.fromEntries(
-      Object.entries(templates).map(([role, template]) => [
-        role,
-        template.source_hash,
-      ]),
+      Object.entries(templates).map(([role, template]) => [role, template.source_hash]),
     ),
     dependency_locks: Object.fromEntries(
       [
-        "package-lock.json",
-        "python/api-core/pylock.toml",
-        "python/api-ai/pylock.toml",
-        "../../web/app/bun.lock",
+        'package-lock.json',
+        'python/api-core/pylock.toml',
+        'python/api-ai/pylock.toml',
+        '../../web/app/bun.lock',
       ].map((path) => [path, digest(readFileSync(resolve(root, path)))]),
     ),
     web: {
@@ -437,10 +417,10 @@ export function renderResourcePlan({
     release_ready: false,
     remote_state_verified: false,
     pending_qualification: [
-      "CF-5 remote resource identity and release transaction",
-      "CI-1 full dual-target product contracts",
-      "CF-4 API/MCP/share/object mount paths",
-      "Optional provider credentials and provider flows",
+      'CF-5 remote resource identity and release transaction',
+      'CI-1 full dual-target product contracts',
+      'CF-4 API/MCP/share/object mount paths',
+      'Optional provider credentials and provider flows',
     ],
   };
   return { ...plan, plan_digest: digest(plan) };

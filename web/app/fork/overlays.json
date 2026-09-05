@@ -4,6 +4,11 @@
     "src/lib/firebase.ts": "fork/overlays/firebase.ts",
     "src/components/auth/AuthProvider.tsx": "fork/overlays/AuthProvider.tsx",
     "src/app/login/LoginClient.tsx": "fork/overlays/LoginClient.tsx",
-    "src/components/auth/LoginPanel.tsx": "fork/overlays/LoginPanel.tsx"
+    "src/components/auth/LoginPanel.tsx": "fork/overlays/LoginPanel.tsx",
+    "src/app/api/proxy/public/[...path]/route.ts": "fork/overlays/public-proxy-route.ts"
+  },
+  "additions": {
+    "src/app/(public)/chat/[token]/page.tsx": "fork/routes/chat-share-page.tsx",
+    "src/app/(public)/tasks/[token]/page.tsx": "fork/routes/task-share-page.tsx"
   }
 }

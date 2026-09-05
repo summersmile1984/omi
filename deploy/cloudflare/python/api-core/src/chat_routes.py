@@ -11,7 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from brand_runtime import BrandRuntime, load_brand_runtime
+from brand_runtime import BrandRuntime, load_brand_runtime, load_share_origin
 from chat_target import APP_SCOPE, resolve_chat_target
 from feedback_routes import chat_feedback_statements
 from internal_auth import decode_context
@@ -24,7 +24,6 @@ MAX_MESSAGE_BYTES = 1_000_000
 MAX_SHARE_TOKEN_LENGTH = 128
 MAX_SHARE_MESSAGES = 100
 CHAT_SHARE_TTL_SECONDS = 60 * 60 * 24 * 30
-CHAT_SHARE_BASE_URL = "https://h.omi.me/chat"
 
 
 class ShareChatMessagesRequest(BaseModel):
@@ -340,8 +339,9 @@ async def share_chat_messages(request: Request):
     env = request.scope["env"]
     try:
         brand = load_brand_runtime(request.scope["env"])
+        share_origin = load_share_origin(request.scope["env"])
     except ValueError:
-        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
+        return JSONResponse({"error": "public share identity is not configured"}, status_code=503)
     uid = str(context["uid"])
     placeholders = ", ".join("?" for _ in payload.message_ids)
     try:
@@ -382,7 +382,7 @@ async def share_chat_messages(request: Request):
         await env.APP_DB.batch(statements)
     except Exception:
         return JSONResponse({"error": "chat sharing unavailable"}, status_code=503)
-    return {"url": f"{CHAT_SHARE_BASE_URL}/{token}", "token": token}
+    return {"url": f"{share_origin}/chat/{token}", "token": token}
 
 
 @router.get("/v2/messages/shared/{token}")
