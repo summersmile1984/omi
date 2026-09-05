@@ -93,6 +93,17 @@ class FakeDb:
         return results
 
 
+class FullSchemaDb(FakeDb):
+    """Cascade behavior includes the canonical memory projection triggers."""
+
+    def __init__(self):
+        self.connection = sqlite3.connect(":memory:")
+        self.connection.row_factory = sqlite3.Row
+        directory = Path(__file__).parents[3] / "migrations/app"
+        for migration in sorted(directory.glob("*.sql")):
+            self.connection.executescript(migration.read_text())
+
+
 class FakeBucket:
     def __init__(self):
         self.keys: set[str] = set()
@@ -499,7 +510,7 @@ def test_conversation_delete_is_uid_scoped_updates_folder_counts_and_fts():
 
 def test_cascade_delete_retracts_derived_data_and_enqueues_audio_purge():
     secret = "conversation-secret"
-    db = FakeDb()
+    db = FullSchemaDb()
     insert_conversation(db, uid="conversation-user", conversation_id="cascade-me", created_at=200)
     insert_conversation(db, uid="conversation-user", conversation_id="keep-me", created_at=201)
     db.connection.execute(
@@ -536,9 +547,7 @@ def test_cascade_delete_retracts_derived_data_and_enqueues_audio_purge():
     # Derived action items are removed like the legacy cascade; others stay.
     remaining_items = [
         row["id"]
-        for row in db.connection.execute(
-            "SELECT id FROM cf_action_items WHERE uid = 'conversation-user'"
-        ).fetchall()
+        for row in db.connection.execute("SELECT id FROM cf_action_items WHERE uid = 'conversation-user'").fetchall()
     ]
     assert remaining_items == ["item-2"]
     # Vector retraction is queued for the conversation and every derived row.
@@ -551,6 +560,7 @@ def test_cascade_delete_retracts_derived_data_and_enqueues_audio_purge():
     assert outbox == {
         ("conversation", "cascade-me"): "delete",
         ("memory", "memory-1"): "delete",
+        ("memory", "memory-2"): "upsert",
         ("action_item", "item-1"): "delete",
     }
     # Exactly one idempotent audio purge job plus the vector publications.
@@ -560,9 +570,7 @@ def test_cascade_delete_retracts_derived_data_and_enqueues_audio_purge():
     assert purges[0]["payload"] == {"conversationId": "cascade-me"}
     assert purges[0]["jobId"].startswith("conv-audio-purge-")
     projected = {
-        (m["payload"]["sourceKind"], m["payload"]["sourceId"])
-        for m in queue.messages
-        if m["kind"] == "vector_project"
+        (m["payload"]["sourceKind"], m["payload"]["sourceId"]) for m in queue.messages if m["kind"] == "vector_project"
     }
     assert projected == {
         ("conversation", "cascade-me"),
@@ -1998,9 +2006,7 @@ def test_playback_falls_back_to_imported_conversation_recording():
         },
     )()
 
-    probe = asyncio.run(
-        conversation_has_recording(FakeRequest(env, signed_headers(secret)), "imported-conv")
-    )
+    probe = asyncio.run(conversation_has_recording(FakeRequest(env, signed_headers(secret)), "imported-conv"))
     assert probe == {"has_recording": True}
 
     response = asyncio.run(

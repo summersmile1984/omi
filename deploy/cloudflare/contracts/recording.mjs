@@ -565,6 +565,54 @@ try {
       });
     },
   );
+  await caseOf("recording.cascade-delete-retracts-derived-memory-and-tasks", async () => {
+    const cascadeId = randomUUID();
+    const capture = await connect(other.token, cascadeId);
+    capture.socket.send(new Uint8Array(16000));
+    await capture.until((frames) => frames.some(Array.isArray));
+    capture.socket.close();
+    await new Promise((resolve) => capture.socket.once("close", resolve));
+    await request("api", `/v1/conversations/${cascadeId}/finalize`, 200, {
+      token: other.token,
+      method: "POST",
+      body: {},
+    });
+    let completed = false;
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      const stored = await request("api", `/v1/conversations/${cascadeId}`, 200, {
+        token: other.token,
+      });
+      if (stored.data.status === "completed") {
+        completed = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    require(completed, "cascade fixture did not finalize through the queue");
+    const memories = await request("api", "/v3/memories", 200, { token: other.token });
+    const tasks = await request("api", "/v1/action-items", 200, { token: other.token });
+    const memoryIds = memories.data
+      .filter((row) => row.conversation_id === cascadeId).map((row) => row.id);
+    const taskIds = tasks.data.action_items
+      .filter((row) => row.conversation_id === cascadeId).map((row) => row.id);
+    require(memoryIds.length > 0 && taskIds.length > 0,
+      "cascade fixture has no persisted derived data");
+    await request("api", `/v1/conversations/${cascadeId}?cascade=true`, 404, {
+      token: owner.token, method: "DELETE",
+    });
+    await request("api", `/v1/conversations/${cascadeId}?cascade=true`, 200, {
+      token: other.token, method: "DELETE",
+    });
+    await request("api", `/v1/conversations/${cascadeId}`, 404, { token: other.token });
+    const remainingMemories = await request("api", "/v3/memories", 200, { token: other.token });
+    const remainingTasks = await request("api", "/v1/action-items", 200, { token: other.token });
+    require(!remainingMemories.data.some((row) => memoryIds.includes(row.id)),
+      "cascade retained derived memory");
+    require(!remainingTasks.data.action_items.some((row) => taskIds.includes(row.id)),
+      "cascade retained derived task");
+    await request("api", `/v1/conversations/${id}`, 200, { token: owner.token });
+  });
   const unused = await signup();
   const inspectPrivacy = await localPrivacyObserver(metadata);
   const beforeDeletion = inspectPrivacy(owner.uid);

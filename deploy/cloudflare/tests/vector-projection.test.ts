@@ -28,6 +28,9 @@ class SqliteD1 {
 
   constructor() {
     this.database.exec("PRAGMA foreign_keys = ON");
+    // The reconciler tests use explicit epoch seconds (100/200/300). D1
+    // triggers must observe that same controlled clock, not today's date.
+    this.database.function("unixepoch", () => 100);
     const directory = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
       "../migrations/app",
@@ -278,7 +281,9 @@ describe("Vectorize rebuildable D1 projection", () => {
     // the naive capture timestamp.
     expect(state.screenActivity.upserts[0][0]).toMatchObject({
       namespace,
-      metadata: { created_at: Math.floor(Date.parse("2026-01-02T03:04:05.000Z") / 1000) },
+      metadata: {
+        created_at: Math.floor(Date.parse("2026-01-02T03:04:05.000Z") / 1000),
+      },
     });
 
     // Closing the workstream and blanking the OCR text retracts both.
@@ -327,6 +332,88 @@ describe("Vectorize rebuildable D1 projection", () => {
       state.database.database
         .prepare(
           "SELECT COUNT(*) AS count FROM cf_vector_projection_state WHERE projection_kind = 'memory'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("preserves a newer same-second revision while an embedding is in flight", async () => {
+    const state = environment();
+    seedSources(state.database);
+    let changed = false;
+    state.ai.run.mockImplementation(async (_model, input) => {
+      const texts = input.text as string[];
+      if (!changed && texts.includes("Prefers green tea")) {
+        changed = true;
+        state.database.database
+          .prepare(
+            "UPDATE cf_memories SET content = 'Prefers oolong tea' WHERE id = 'memory-1'",
+          )
+          .run();
+      }
+      return {
+        data: texts.map(() => Array(VECTOR_EMBEDDING_DIMENSIONS).fill(0.01)),
+      };
+    });
+    await reconcileVectorProjections(state.env, 100);
+    const current = state.database.database
+      .prepare(
+        "SELECT item_revision, updated_at FROM cf_memories WHERE id = 'memory-1'",
+      )
+      .get()!;
+    expect(current.updated_at).toBe(10);
+    expect(
+      state.database.database
+        .prepare(
+          "SELECT desired_version FROM cf_vector_projection_outbox WHERE source_kind = 'memory'",
+        )
+        .get(),
+    ).toEqual({ desired_version: current.item_revision });
+    await reconcileVectorProjections(state.env, 200);
+    expect(
+      state.ai.run.mock.calls.some(([, input]) =>
+        (input.text as string[]).includes("Prefers oolong tea"),
+      ),
+    ).toBe(true);
+    expect(
+      state.database.database
+        .prepare(
+          "SELECT DISTINCT source_version FROM cf_vector_projection_state WHERE projection_kind = 'memory'",
+        )
+        .all(),
+    ).toEqual([{ source_version: current.item_revision }]);
+    expect(
+      state.database.database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM cf_vector_projection_outbox WHERE source_kind = 'memory'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+  });
+
+  it("indexes an eligible unreviewed memory and removes it when its canonical source becomes restricted", async () => {
+    const state = environment();
+    seedSources(state.database);
+    state.database.database
+      .prepare(
+        "UPDATE cf_memories SET reviewed = 0, user_review = NULL WHERE id = 'memory-1'",
+      )
+      .run();
+    await reconcileVectorProjections(state.env, 100);
+    expect(state.memory.upserts).toHaveLength(1);
+    state.database.database
+      .prepare(
+        `UPDATE cf_memories SET sensitivity_labels_json = '["credential"]' WHERE id = 'memory-1'`,
+      )
+      .run();
+    await reconcileVectorProjections(state.env, 200);
+    expect(state.memory.deletes.flat()).toContain(
+      state.memory.upserts[0][0].id,
+    );
+    expect(
+      state.database.database
+        .prepare(
+          "SELECT COUNT(*) AS count FROM cf_vector_projection_outbox WHERE source_kind = 'memory'",
         )
         .get(),
     ).toEqual({ count: 0 });

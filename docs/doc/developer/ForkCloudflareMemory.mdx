@@ -1,0 +1,43 @@
+---
+title: 'Cloudflare memory writes'
+description: 'Canonical write admission and durable projection work in the fork Cloudflare target'
+---
+
+The isolated Cloudflare target owns memory rows in App D1 `cf_memories`.
+Migration 0161 enforces the current row's paid-plan lock inside interactive
+updates. A lock acquired after an API pre-read still returns 402 and rolls back
+the transaction. Database failures return 503. Privacy tombstones and account
+erasure remain available for locked rows.
+
+Migration 0162 commits each mutation's monotonic `item_revision` and vector
+projection outbox together. Wall-clock `updated_at` remains a presentation
+timestamp; two edits in the same second receive distinct revisions. Existing
+rows are rebased above prior stored and pending timestamp versions. Creation
+also advances beyond a pending deletion when an identity is recreated. Records
+behind an account-deletion fence are left to that erasure owner.
+
+Native memory routes, MCP, developer API, X extraction and conversation cascade
+deletion share this database authority. A failure to persist projection work
+rolls back the memory mutation; a downstream model or Vectorize failure leaves
+durable retry work after the business write has committed. Existing notification
+calls wake Jobs after commit; scheduled reconciliation also drains the outbox.
+
+The `cf_memory_projection_sources` view centralizes index eligibility: active,
+processed source, current account generation, no expired capture, paid-plan lock,
+archive tier, rejection or restricted sensitivity label. A missing user review
+is distinct from explicit rejection. Jobs uses the source revision when reading
+and acknowledging work. An edit while embedding is in flight leaves its later
+revision queued for another pass.
+
+Full-migration ASGI/SQLite regressions cover admission races, same-second edits,
+transaction rollback, upgrade state and cascade deletion. The existing product
+lane runs real local Auth, Workers, D1, Queue and R2 through public HTTP/WebSocket
+recording, memory mutation, export, cascade deletion and account erasure.
+Its inference IO remains controlled.
+
+The revision/outbox boundary does not yet qualify all external index races.
+Revision-scoped vector object identity, concurrent publication fencing and
+freshness-aware hydration with accurate diagnostics remain required. Ledger
+history/revert also require append-only lineage and exact idempotency. These
+remain tracked in the fork CF-4 migration ledger and block full production
+product qualification; no default prompts or extraction policies are changed.

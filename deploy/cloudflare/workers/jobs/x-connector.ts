@@ -772,16 +772,6 @@ async function storeExtractedMemories(
           "ON CONFLICT(uid, source_kind, source_id) DO UPDATE SET occurred_at = excluded.occurred_at, " +
           "memories_created = 1, updated_at = excluded.updated_at",
       ).bind(uid, idsJson),
-      env.APP_DB.prepare(
-        "INSERT INTO cf_vector_projection_outbox " +
-          "(uid, source_kind, source_id, desired_version, operation, attempts, next_attempt_at, last_error, " +
-          "created_at, updated_at) SELECT uid, 'memory', id, updated_at, 'upsert', 0, ?, NULL, ?, ? " +
-          "FROM cf_memories WHERE uid = ? AND id IN (SELECT CAST(value AS TEXT) FROM json_each(?)) " +
-          "ON CONFLICT(uid, source_kind, source_id) DO UPDATE SET desired_version = excluded.desired_version, " +
-          "operation = 'upsert', attempts = 0, next_attempt_at = excluded.next_attempt_at, last_error = NULL, " +
-          "updated_at = excluded.updated_at " +
-          "WHERE excluded.desired_version >= cf_vector_projection_outbox.desired_version",
-      ).bind(now, now, now, uid, idsJson),
     );
   }
   statements.push(

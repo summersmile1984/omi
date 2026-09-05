@@ -310,6 +310,10 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   model/dimensions, authoritative hydration source, and the versioned Vectorize
   re-embedding target. Existing 3072-dimensional projections cannot be copied
   into Vectorize unchanged.
+  Memory migration 0162 couples each canonical revision to durable projection
+  work in D1; Jobs consumes that revision instead of a wall-clock timestamp.
+  The [memory write contract](../../docs/doc/developer/ForkCloudflareMemory.mdx)
+  describes the implemented boundary and remaining external-index qualification.
 - `manifests/r2-namespaces.yaml` records every legacy `BUCKET_*` binding, object
   prefix, lifecycle, data classification, and isolated R2 bucket target. It
   forbids dual-write cutovers and requires residual scans before deletion.

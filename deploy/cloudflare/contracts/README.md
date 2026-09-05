@@ -15,7 +15,10 @@ locked Wrangler/workerd, then executes:
   `/v4/web/listen` (first-frame JWT) PCM recording flows: authenticated
   capture, committed transcript reads, reconnect ownership, cross-user denial,
   explicit finalization through actual Queue/Jobs/Core, derived memories/tasks,
-  and denial after logout. It then restores the real account session, submits
+  and denial after logout. A separate account's recording proves that cascade
+  deletion retracts its derived memories/tasks while the owner's recording
+  remains; the populated owner's whole-account erasure stays a separate case.
+  The suite restores the real account session and submits
   concurrent out-of-order daily desktop counters through the public route,
   verifies their maxima through export, generates a recap from the actual
   recording/task/memory records and counters, checks citations and account

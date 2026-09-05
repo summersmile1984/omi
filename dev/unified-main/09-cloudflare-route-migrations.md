@@ -148,6 +148,14 @@ after a pre-read. This closes a prerequisite write-admission defect; these two
 ledger routes remain blocked until append-only lineage, exact retry identity,
 current-tail privacy and index revision semantics are implemented and exercised.
 
+Migration 0162 now commits a monotonic memory `item_revision` and its vector
+outbox work atomically for every in-tree producer, including X intake and
+conversation-cascade deletion. Jobs acknowledges only the observed revision,
+so a same-second edit during embedding retains its new work. Remaining index
+work includes revision-scoped external vector identity, concurrent publication
+fencing and freshness-aware hydration/diagnostics; this is still a prerequisite
+to qualifying append-only ledger history and revert.
+
 | Method | Path |
 |---|---|
 | GET | `/v3/memories/ledger-history` |

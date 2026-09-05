@@ -673,15 +673,7 @@ async def create_memory(request: Request):
             memories_created=1,
             updated_at=now,
         )
-        projection = vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="memory",
-            source_id=memory_id,
-            desired_version=now,
-            operation="upsert",
-        )
-        await env.APP_DB.batch([statement, usage, projection])
+        await env.APP_DB.batch([statement, usage])
     except Exception:
         return _error("memories unavailable", 503)
     await publish_vector_projection(env, uid=principal.uid, source_kind="memory", source_id=memory_id)
@@ -714,15 +706,7 @@ async def delete_memory(request: Request, memory_id: str):
             "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
             "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
         ).bind(now, now, principal.uid, memory_id)
-        projection = vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="memory",
-            source_id=memory_id,
-            desired_version=now,
-            operation="delete",
-        )
-        await env.APP_DB.batch([update, projection])
+        await env.APP_DB.batch([update])
     except Exception:
         return _error("memories unavailable", 503)
     await publish_vector_projection(env, uid=principal.uid, source_kind="memory", source_id=memory_id)
@@ -754,15 +738,7 @@ async def edit_memory(request: Request, memory_id: str):
             "UPDATE cf_memories SET content = ?, edited = 1, updated_at = ? "
             "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
         ).bind(value.strip(), now, principal.uid, memory_id)
-        projection = vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="memory",
-            source_id=memory_id,
-            desired_version=now,
-            operation="upsert",
-        )
-        await env.APP_DB.batch([update, projection])
+        await env.APP_DB.batch([update])
     except Exception as error:
         return memory_mutation_error(error, key="detail")
     await publish_vector_projection(env, uid=principal.uid, source_kind="memory", source_id=memory_id)

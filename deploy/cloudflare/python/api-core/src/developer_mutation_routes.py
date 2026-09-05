@@ -277,14 +277,6 @@ async def create_developer_memory(request: Request):
                     memories_created=1,
                     updated_at=now,
                 ),
-                vector_outbox_statement(
-                    env,
-                    uid=principal.uid,
-                    source_kind="memory",
-                    source_id=memory_id,
-                    desired_version=now,
-                    operation="upsert",
-                ),
             ]
         )
     except Exception:
@@ -325,14 +317,6 @@ async def create_developer_memories_batch(request: Request):
                     occurred_at=now,
                     memories_created=1,
                     updated_at=now,
-                ),
-                vector_outbox_statement(
-                    env,
-                    uid=principal.uid,
-                    source_kind="memory",
-                    source_id=memory_id,
-                    desired_version=now,
-                    operation="upsert",
                 ),
             ]
         )
@@ -384,15 +368,7 @@ async def update_developer_memory(request: Request, memory_id: str):
             f"UPDATE cf_memories SET {assignments} "
             "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
         ).bind(*values.values(), principal.uid, memory_id)
-        projection = vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="memory",
-            source_id=memory_id,
-            desired_version=now,
-            operation="upsert",
-        )
-        await env.APP_DB.batch([mutation, projection])
+        await env.APP_DB.batch([mutation])
         row = await first_active_memory(env, principal.uid, memory_id)
     except Exception as error:
         return memory_mutation_error(error, key="detail")
@@ -425,15 +401,7 @@ async def delete_developer_memory(request: Request, memory_id: str):
             "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
             "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
         ).bind(now, now, principal.uid, memory_id)
-        projection = vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="memory",
-            source_id=memory_id,
-            desired_version=now,
-            operation="delete",
-        )
-        await env.APP_DB.batch([mutation, projection])
+        await env.APP_DB.batch([mutation])
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
     await _publish_projection(env, principal.uid, "memory", memory_id)

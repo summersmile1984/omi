@@ -274,19 +274,16 @@ async function sourceDocuments(
 ): Promise<{ version: number; documents: ProjectionDocument[] } | null> {
   if (kind === "memory") {
     const row = await env.APP_DB.prepare(
-      `SELECT content, updated_at, deleted_at, invalid_at, user_review, memory_tier
-       FROM cf_memories WHERE uid = ? AND id = ?`,
+      `SELECT content, item_revision, operation
+       FROM cf_memory_projection_sources WHERE uid = ? AND id = ?`,
     )
       .bind(uid, sourceId)
       .first<Record<string, unknown>>();
-    const version = safeInteger(row?.updated_at);
+    const version = safeInteger(row?.item_revision);
     if (
       !row ||
       version === null ||
-      row.deleted_at !== null ||
-      row.invalid_at !== null ||
-      Number(row.user_review) === 0 ||
-      row.memory_tier === "archive" ||
+      row.operation !== "upsert" ||
       typeof row.content !== "string"
     ) {
       return null;
@@ -498,8 +495,14 @@ async function deleteProjection(
     env.APP_DB.prepare(
       `DELETE FROM cf_vector_projection_outbox
        WHERE uid = ? AND source_kind = ? AND source_id = ?
-         AND desired_version = ? AND operation = 'delete'`,
-    ).bind(row.uid, row.source_kind, row.source_id, row.desired_version),
+         AND desired_version = ? AND operation = ?`,
+    ).bind(
+      row.uid,
+      row.source_kind,
+      row.source_id,
+      row.desired_version,
+      row.operation,
+    ),
   ]);
 }
 
@@ -727,15 +730,14 @@ async function seedMissingProjections(
   const queries = [
     env.APP_DB.prepare(
       `SELECT m.uid, 'memory' AS source_kind, m.id AS source_id,
-              m.updated_at AS desired_version, 'upsert' AS operation
-       FROM cf_memories m
+              m.item_revision AS desired_version, 'upsert' AS operation
+       FROM cf_memory_projection_sources m
        LEFT JOIN cf_vector_projection_state s
          ON s.uid = m.uid AND s.projection_kind = 'memory'
         AND s.source_id = m.id AND s.sub_id = '000000'
-       WHERE m.deleted_at IS NULL AND m.invalid_at IS NULL
-         AND m.memory_tier != 'archive' AND COALESCE(m.user_review, 1) != 0
+       WHERE m.operation = 'upsert'
          AND (
-           s.source_version IS NULL OR s.source_version < m.updated_at OR
+           s.source_version IS NULL OR s.source_version < m.item_revision OR
            s.model != ?
          )
          AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_intents d WHERE d.uid = m.uid)
@@ -743,7 +745,7 @@ async function seedMissingProjections(
            SELECT 1 FROM cf_account_deletion_tombstones t
            WHERE t.uid = m.uid AND t.expires_at > ?
          )
-       ORDER BY m.updated_at, m.uid, m.id LIMIT ?`,
+       ORDER BY m.item_revision, m.uid, m.id LIMIT ?`,
     ).bind(model, now, RECONCILE_SOURCE_BATCH_SIZE),
     env.APP_DB.prepare(
       `SELECT a.uid, 'action_item' AS source_kind, a.id AS source_id,
@@ -853,10 +855,9 @@ async function seedMissingProjections(
               s.source_id, MAX(s.source_version) AS desired_version,
               'delete' AS operation
        FROM cf_vector_projection_state s
-       LEFT JOIN cf_memories m
+       LEFT JOIN cf_memory_projection_sources m
          ON s.projection_kind = 'memory' AND m.uid = s.uid AND m.id = s.source_id
-           AND m.deleted_at IS NULL AND m.invalid_at IS NULL
-           AND m.memory_tier != 'archive' AND COALESCE(m.user_review, 1) != 0
+           AND m.operation = 'upsert'
        LEFT JOIN cf_action_items a
          ON s.projection_kind = 'action_item' AND a.uid = s.uid AND a.id = s.source_id AND a.deleted = 0
        LEFT JOIN cf_conversations c

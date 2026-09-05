@@ -21,9 +21,7 @@ VECTOR_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 PROJECTION_KINDS = frozenset(
     {"memory", "action_item", "conversation", "transcript_chunk", "x_post", "workstream", "screen_activity"}
 )
-SOURCE_KINDS = frozenset(
-    {"memory", "action_item", "conversation", "x_post", "workstream", "screen_activity"}
-)
+SOURCE_KINDS = frozenset({"memory", "action_item", "conversation", "x_post", "workstream", "screen_activity"})
 
 
 def vector_namespace(uid: str) -> str:
@@ -188,6 +186,8 @@ def vector_outbox_statement(
 ):
     if source_kind not in SOURCE_KINDS or operation not in {"upsert", "delete"}:
         raise ValueError("invalid vector projection request")
+    if source_kind == "memory":
+        raise ValueError("memory projection work belongs to the canonical D1 mutation")
     now = int(time.time())
     return env.APP_DB.prepare(
         "INSERT INTO cf_vector_projection_outbox "

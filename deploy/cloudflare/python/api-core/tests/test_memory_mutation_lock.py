@@ -183,19 +183,24 @@ def test_locked_mutation_preserves_memory_and_transactional_side_effects(
 ):
     database, request, create = target
     memory_id = create()
-    if lock_timing == 'before_read':
+    expected = {}
+
+    def lock():
         database.lock(memory_id)
+        expected.update(row=database.row(memory_id), side_effects=database.side_effects())
+
+    if lock_timing == 'before_read':
+        lock()
     else:
-        database.before_write = lambda: database.lock(memory_id)
-    original, side_effects = database.row(memory_id), database.side_effects()
+        database.before_write = lock
 
     response = request(method, path.format(id=memory_id), body=body)
 
     assert response.status_code == 402, response.text
     key = 'detail' if path.startswith('/v1/') else 'error'
     assert response.json() == {key: 'A paid plan is required to access this memory.'}
-    assert database.row(memory_id) == {**original, 'is_locked': 1}
-    assert database.side_effects() == side_effects
+    assert database.row(memory_id) == expected['row']
+    assert database.side_effects() == expected['side_effects']
 
 
 @pytest.mark.parametrize('method,path,body,field,value', WRITERS)
@@ -250,17 +255,136 @@ def test_review_resolution_rolls_back_all_memory_rows_and_receipt(target, decisi
     assert item['fact_id'] == candidate and previous in item['conflict_with']
     # Accept mutates the candidate first; denial on the second row must roll it back.
     locked_id = previous if decision == 'accept' else candidate
-    if lock_timing == 'before_read':
+    expected = {}
+
+    def lock():
         database.lock(locked_id)
+        expected.update(rows={key: database.row(key) for key in (previous, candidate)}, effects=database.side_effects())
+
+    if lock_timing == 'before_read':
+        lock()
     else:
-        database.before_write = lambda: database.lock(locked_id)
-    originals = {key: database.row(key) for key in (previous, candidate)}
-    effects = database.side_effects()
+        database.before_write = lock
     body = {'decision': decision}
     if decision == 'correct':
         body['correction'] = {'content': 'Lives in LA', 'arg_changes': {'location': 'LA'}}
     response = request('POST', f"/v3/memories/review-queue/{item['review_id']}/resolve", body=body)
     assert response.status_code == 402, response.text
-    for key, original in originals.items():
-        assert database.row(key) == {**original, 'is_locked': int(key == locked_id)}
+    for key, original in expected['rows'].items():
+        assert database.row(key) == original
+    assert database.side_effects() == expected['effects']
+
+
+def test_same_second_edits_advance_canonical_revision_and_projection_work(target, monkeypatch):
+    database, request, create = target
+    monkeypatch.setattr(memory.time, 'time', lambda: 1_700_000_000)
+    memory_id = create()
+    original = database.row(memory_id)
+    for index in (1, 2):
+        response = request('PATCH', f'/v3/memories/{memory_id}', body={'value': f'Revision {index}'})
+        assert response.status_code == 200, response.text
+        current = database.row(memory_id)
+        assert current['updated_at'] == original['updated_at']
+        assert current['item_revision'] == original['item_revision'] + index
+        outbox = database.side_effects()['cf_vector_projection_outbox']
+        assert len(outbox) == 1
+        assert outbox[0]['desired_version'] == current['item_revision']
+        assert outbox[0]['operation'] == 'upsert'
+
+
+def test_projection_failure_rolls_back_the_business_edit_and_revision(target):
+    database, request, create = target
+    memory_id = create()
+    original, effects = database.row(memory_id), database.side_effects()
+    database.connection.executescript('''
+        CREATE TRIGGER unavailable_projection BEFORE UPDATE ON cf_vector_projection_outbox
+        BEGIN SELECT RAISE(ABORT, 'private projection dependency failure'); END;
+    ''')
+    response = request('PATCH', f'/v3/memories/{memory_id}', body={'value': 'Must roll back'})
+    assert response.status_code == 503
+    assert response.json() == {'error': 'memories unavailable'}
+    assert database.row(memory_id) == original
     assert database.side_effects() == effects
+
+
+def test_lock_unlock_and_privacy_delete_coalesce_to_the_latest_revision(target):
+    database, request, create = target
+    memory_id = create()
+    before = database.row(memory_id)['item_revision']
+    database.lock(memory_id)
+    assert database.side_effects()['cf_vector_projection_outbox'][0]['operation'] == 'delete'
+    database.connection.execute('UPDATE cf_memories SET is_locked = 0 WHERE id = ?', (memory_id,))
+    assert database.side_effects()['cf_vector_projection_outbox'][0]['operation'] == 'upsert'
+    assert request('DELETE', f'/v3/memories/{memory_id}').status_code == 200
+    outbox = database.side_effects()['cf_vector_projection_outbox'][0]
+    assert outbox['operation'] == 'delete'
+    assert outbox['desired_version'] == before + 3
+    assert outbox['desired_version'] == database.row(memory_id)['item_revision']
+
+
+def test_recreated_identity_supersedes_its_pending_hard_delete(target):
+    database, request, create = target
+    memory_id = create()
+    database.connection.execute('DELETE FROM cf_memories WHERE id = ?', (memory_id,))
+    deletion = database.side_effects()['cf_vector_projection_outbox'][0]
+    assert deletion['operation'] == 'delete'
+    database.connection.execute(
+        "INSERT INTO cf_memories (uid, id, content, memory_tier, valid_at, created_at, updated_at) "
+        "VALUES ('owner', ?, 'Recreated source', 'long_term', 100, 100, 100)",
+        (memory_id,),
+    )
+    current = database.row(memory_id)
+    outbox = database.side_effects()['cf_vector_projection_outbox'][0]
+    assert current['item_revision'] > deletion['desired_version']
+    assert outbox['desired_version'] == current['item_revision']
+    assert outbox['operation'] == 'upsert'
+
+
+def test_upgrade_rebases_timestamp_projections_and_preserves_account_deletion_fences():
+    connection = sqlite3.connect(':memory:', isolation_level=None)
+    connection.row_factory = sqlite3.Row
+    directory = Path(__file__).parents[3] / 'migrations/app'
+    migration = directory / '0162_memory_projection_revision.sql'
+    try:
+        for path in sorted(directory.glob('*.sql')):
+            if path.name < migration.name:
+                connection.executescript(path.read_text())
+        for uid in ('owner', 'deleting'):
+            connection.execute(
+                "INSERT INTO cf_memories (uid, id, content, memory_tier, valid_at, created_at, updated_at) "
+                "VALUES (?, 'old-memory', 'Legacy memory', 'long_term', 100, 100, 100)",
+                (uid,),
+            )
+        connection.execute("UPDATE cf_memories SET is_locked = 1 WHERE uid = 'owner'")
+        connection.execute(
+            "INSERT INTO cf_vector_projection_state "
+            "(uid, projection_kind, source_id, sub_id, vector_id, source_version, model, updated_at) "
+            "VALUES ('owner', 'memory', 'old-memory', '000000', ?, 10040, 'prior-model', 100)",
+            ('a' * 64,),
+        )
+        connection.execute(
+            "INSERT INTO cf_vector_projection_outbox "
+            "(uid, source_kind, source_id, desired_version, operation, next_attempt_at, created_at, updated_at) "
+            "VALUES ('owner', 'memory', 'old-memory', 10090, 'upsert', 100, 100, 100)"
+        )
+        connection.execute(
+            "INSERT INTO cf_account_deletion_intents "
+            "(uid, job_id, status, phase, next_attempt_at, created_at, updated_at) "
+            "VALUES ('deleting', 'deletion-job', 'running', 'purging', 100, 100, 100)"
+        )
+        frozen = dict(connection.execute("SELECT * FROM cf_memories WHERE uid = 'deleting'").fetchone())
+
+        connection.executescript(migration.read_text())
+
+        row = connection.execute("SELECT * FROM cf_memories WHERE uid = 'owner'").fetchone()
+        pending = connection.execute("SELECT * FROM cf_vector_projection_outbox WHERE uid = 'owner'").fetchone()
+        assert row['item_revision'] > 10090
+        assert row['is_locked'] == 1
+        assert pending['desired_version'] == row['item_revision']
+        assert pending['operation'] == 'delete'
+        assert dict(connection.execute("SELECT * FROM cf_memories WHERE uid = 'deleting'").fetchone()) == frozen
+        assert connection.execute("SELECT * FROM cf_vector_projection_outbox WHERE uid = 'deleting'").fetchone() is None
+        connection.execute("DELETE FROM cf_memories WHERE uid = 'deleting'")
+        assert connection.execute("SELECT * FROM cf_vector_projection_outbox WHERE uid = 'deleting'").fetchone() is None
+    finally:
+        connection.close()

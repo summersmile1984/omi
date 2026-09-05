@@ -102,6 +102,21 @@ authority. It has no Firestore fallback or dual write. Production account promot
 forbidden until the account-cutover importer, manifest verification, and
 destination binding described by `INV-CUTOVER-1` exist.
 
+Migration 0162 advances `item_revision` and the memory vector outbox inside the
+same D1 write. Native, MCP, developer, X and conversation-cascade writers all
+use that authority; application callers no longer author timestamp versions.
+Creation, changes and hard deletion persist projection work, while the account
+erasure fence prevents recreating work during purge. Existing timestamp
+projections are rebased above their stored and pending versions. The
+`cf_memory_projection_sources` view supplies the same eligibility decision to
+the outbox and Jobs: lifecycle, lock, generation, expiry and restricted labels.
+Jobs reads and acknowledges the actual revision, preserving a later same-second
+edit while an earlier embedding is in flight. The native path relies on durable
+scheduled reconciliation; MCP/developer notifications remain post-commit hints.
+This revision/outbox boundary is implemented. Revision-scoped Vectorize object
+identity, concurrent external-write fencing, complete hydration diagnostics and
+ledger lineage remain required before full memory product qualification.
+
 The same module owns the staging-only `GET /memory/archive/search` read
 boundary. Archive rows live in the separate D1 `cf_memory_archive_items`
 projection, and the request must find both the operator global read gate and a
