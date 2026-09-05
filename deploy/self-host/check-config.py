@@ -23,6 +23,7 @@ COMPOSE = ROOT / 'deploy/self-host/compose.production.yml'
 REQUIRED_SOURCE = (
     'backend/fork/bootstrap.py',
     'backend/fork/main.py',
+    'backend/fork/brand_transport.py',
     'backend/fork/profile.py',
     'backend/fork/embedding.py',
     'backend/fork/model_contract.py',

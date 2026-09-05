@@ -2,7 +2,7 @@
 
 `python -m fork.migrate migrate` owns PostgreSQL schema changes.
 It requires an explicit `FIRESTORE_PG_DSN`; `check` performs read-only admission.
-Schema v6 adds canonical-memory collection admission; v5 adds backend onboarding admission; v4 adds legal-hold/deletion-gate
+Schema v8 admits retained frame-vision receipts for complete export; v7 adds feedback ledgers. Schema v6 adds canonical-memory collection admission; v5 adds backend onboarding admission; v4 adds legal-hold/deletion-gate
 authorities; v3 registers frame requests/keyframe jobs and chat-first dead letters.
 Earlier schema ledgers and physical table mappings remain immutable. Dynamic
 onboarding and legal-hold owners run against the shared strict admitted-schema
@@ -34,6 +34,12 @@ select an exact row with `OMI_DEPLOYMENT_PROFILE=self_hosted.production` (or
 settings fail before workload import. `bootstrap.py` projects this choice into
 the environment switches still consumed by upstream seams and checks the PG
 schema. Omi-cloud API mode applies no patches or self-host configuration.
+
+`brand_transport.py` brands successful account-export download metadata from the
+generated image identity (`eddy-export.json` for Eddy). It resolves the actual
+upstream export route at startup and leaves authentication, export spooling,
+response status and body delivery with their existing owners. Omi-cloud mode
+retains upstream download behavior; request headers cannot select a brand.
 
 Do not use `sitecustomize` for admission: Python can continue after its import
 fails. New process types must call the same explicit bootstrap before importing

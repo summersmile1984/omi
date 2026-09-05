@@ -11,6 +11,10 @@ if admission.target == 'self_hosted':
 
     install(app)
 
+    from .brand_transport import install as install_brand
+
+    install_brand(app)
+
     from .capability_transport import install as install_capabilities
 
     from .profile import current

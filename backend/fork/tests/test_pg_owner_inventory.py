@@ -10,6 +10,52 @@ from fork.tests.schema_firestore import SchemaFirestore
 from models.feedback import FeedbackSurface, FeedbackTargetKind
 
 
+@pytest.mark.parametrize('brand', ['eddy', 'x', '1'])
+def test_export_brand_follows_image_and_preserves_auth_body_and_upstream_mode(monkeypatch, brand):
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'synthetic-export-contract-key-32-bytes')
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+    from fork import brand_transport
+    from routers import users as router
+
+    body = '{"profile":{},"memories":[]}'
+    calls = []
+
+    def export(uid):
+        calls.append(uid)
+        return iter([body[:10], body[10:]])
+
+    def denied():
+        raise HTTPException(status_code=401, detail='unauthorized')
+
+    monkeypatch.setattr(router, 'iter_user_data_export', export)
+    monkeypatch.setattr(brand_transport, '_load_table', lambda: {'brand': brand})
+    monkeypatch.setattr(brand_transport, 'current', lambda: {'target': 'self_hosted'})
+    app = FastAPI()
+    app.include_router(router.router)
+    brand_transport.install(app)
+    app.dependency_overrides[router.auth.get_current_user_uid] = denied
+    with TestClient(app) as client:
+        rejected = client.get('/v1/users/export')
+        assert rejected.status_code == 401 and 'content-disposition' not in rejected.headers
+        assert calls == []
+        app.dependency_overrides[router.auth.get_current_user_uid] = lambda: 'owner'
+        response = client.get('/v1/users/export')
+        assert response.status_code == 200 and response.text == body
+        assert response.headers['content-disposition'] == f'attachment; filename="{brand}-export.json"'
+        assert calls == ['owner']
+
+    monkeypatch.setattr(brand_transport, 'current', lambda: {'target': 'omi_cloud'})
+    upstream = FastAPI()
+    upstream.include_router(router.router)
+    upstream.dependency_overrides[router.auth.get_current_user_uid] = lambda: 'legacy'
+    brand_transport.install(upstream)
+    with TestClient(upstream) as client:
+        response = client.get('/v1/users/export')
+        assert response.text == body
+        assert response.headers['content-disposition'] == 'attachment; filename="omi-export.json"'
+
+
 @pytest.mark.parametrize('with_receipt', [False, True])
 def test_complete_export_reads_admitted_collections_including_legacy_users(monkeypatch, with_receipt):
     monkeypatch.setenv('ENCRYPTION_SECRET', 'synthetic-export-contract-key-32-bytes')

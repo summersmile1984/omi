@@ -49,6 +49,7 @@ schema v8 通过现有迁移锁、注册表和版本账本显式创建该集合�
 核对数据完整性，不把 ID 差异误报为消息丢失。
 
 导出的下载文件名仍是 `omi-export.json`，Server 白牌边界尚需修复。
+该 v8 运行之后的文件名修复与实际 HTTP 证据见 [Server 白牌导出](server-export-brand.md)。
 真实模型聊天已完成传输和持久化，但回答没有检索到已有偏好。
 Firestore 导入对照套件需要额外 emulator，本次未重跑该套件；仅同步其中
 旧 schema 版本的断言。上述成果不构成 CF-4、完整 CI-1 或 Eddy 生产验收。
