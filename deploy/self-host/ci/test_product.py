@@ -19,6 +19,35 @@ from loopback import handler as proxy_handler
 
 
 class FixtureHTTP(unittest.TestCase):
+    def test_http10_complete_body_is_finalized_after_upstream_socket_closes(self):
+        body = b'complete response'
+
+        class ClosingResponse(BaseHTTPRequestHandler):
+            protocol_version = 'HTTP/1.0'
+
+            def log_message(self, *_args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        with ExitStack() as stack:
+            upstream = ThreadingHTTPServer(('127.0.0.1', 0), ClosingResponse)
+            proxy = ThreadingHTTPServer(('127.0.0.1', 0), proxy_handler('127.0.0.1', upstream.server_port))
+            for server in (upstream, proxy):
+                thread = threading.Thread(target=lambda server=server: server.serve_forever(poll_interval=0.01))
+                thread.start()
+                stack.callback(server.server_close)
+                stack.callback(thread.join, 5)
+                stack.callback(server.shutdown)
+            with closing(HTTPConnection('127.0.0.1', proxy.server_port, timeout=3)) as client:
+                client.request('GET', '/')
+                response = client.getresponse()
+                self.assertEqual(response.read(), body)
+
     def test_sse_progress_arrives_before_upstream_completion(self):
         observed = threading.Event()
         first = b'think: Searching memories\n\n'

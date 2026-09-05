@@ -197,7 +197,7 @@ def handler(host, port):
                 self.wfile.flush()
                 deadline, total = time.monotonic() + RESPONSE_SECONDS, 0
                 try:
-                    while True:
+                    while result.length != 0:
                         remaining = deadline - time.monotonic()
                         if remaining <= 0:
                             raise TimeoutError('fixture response deadline exceeded')
