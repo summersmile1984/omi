@@ -8,7 +8,7 @@ The entry builds seven real application Workers and an inference-only Worker,
 applies the actual Auth/App migrations into a new local state directory, starts
 locked Wrangler/workerd, then executes:
 
-- The same `contracts/deployment/core.py` identity/onboarding/calendar/CSAT/Tasks HTTP suite
+- The same `contracts/deployment/core.py` identity/onboarding/calendar/email/CSAT/Tasks HTTP suite
   used by the Server OS runner.
 - `recording.mjs`, separate public `/v4/listen` (Upgrade Bearer) and
   `/v4/web/listen` (first-frame JWT) PCM recording flows: authenticated
@@ -23,6 +23,11 @@ locked Wrangler/workerd, then executes:
   generation token. It exports profile/recording/memory/tasks,
   verifies the download filename against the configured brand ID,
   and checks cross-user isolation. The privacy
+  path also exercises scanner-safe GET and repeated one-click POST on the public
+  email unsubscribe route, using only the isolated fixture's private issuer key.
+  It creates/exports the opt-out, verifies another account's isolation, waits for
+  real queued erasure and then retries the retired token. No email is sent; token
+  query values and issuer keys never enter the contract trace. The privacy
   path also submits and exports a private CSAT rating, proves account isolation,
   uploads and reads real R2 bytes with checksum rejection, deletes both
   a populated account and a just-registered account through public routes,

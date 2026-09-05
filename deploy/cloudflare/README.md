@@ -96,6 +96,16 @@ for staging. It is not dual-written to the legacy Redis set; a production
 cutover must explicitly import the existing set before routing these mutations
 to Workers.
 
+The public `GET/POST /email/unsubscribe` pair is now owned by API Core for
+lifecycle consent. The signed query token supplies identity independently of
+app cookies or bearer tokens. GET is scanner-safe; POST accepts the RFC 8058 form
+without body-dependent admission. Auth owns account existence; one fenced App D1
+row owns suppression and participates in export/account deletion. Configure Core
+with the independent `LIFECYCLE_EMAIL_SIGNING_SECRET` reference described in
+[resources.md](resources.md). Invalid links and deleted accounts receive neutral
+HTML with no token echo; confirmation pages disable caching/referrers. Lifecycle
+mail sending and external delivery are not verified by these endpoints.
+
 `GET /v1/calendar/capture-gaps` is now owned by Jobs alongside the event picker.
 It reuses the encrypted Calendar grant and bounded refresh path, then joins at
 most 250 provider events with 500 uid-scoped D1 recording intervals using the

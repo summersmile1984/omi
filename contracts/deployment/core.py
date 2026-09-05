@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One HTTP product contract against either real, disposable deployment target.
 
-This is the identity/onboarding/calendar/CSAT/tasks slice of CI-1, not a release qualifier.
+This is the identity/onboarding/calendar/email/CSAT/tasks slice of CI-1, not a release qualifier.
 Target runners own disposable state, provider fixtures and teardown. This client
 never seeds a database, imports a backend handler or supplies an auth bypass.
 """
@@ -66,8 +66,8 @@ class ProductContract:
         self.opener = build_opener(NoRedirect())
         self.cases = []
 
-    def request(self, service, method, path, expected, *, bearer='', body=None):
-        headers = {'Accept': 'application/json', 'X-App-Platform': 'web'}
+    def request(self, service, method, path, expected, *, bearer='', body=None, as_text=False):
+        headers = {'Accept': 'text/html' if as_text else 'application/json', 'X-App-Platform': 'web'}
         if service == 'auth':
             headers['Origin'] = self.metadata['auth_origin']
         if bearer:
@@ -97,7 +97,11 @@ class ProductContract:
                     {
                         'service': service,
                         'method': method,
-                        'route': '/v1/action-items/:id/completed' if '/completed?' in path else path,
+                        'route': (
+                            '/email/unsubscribe'
+                            if path.startswith('/email/unsubscribe')
+                            else '/v1/action-items/:id/completed' if '/completed?' in path else path
+                        ),
                         'status': status,
                         'expected': expected,
                         'elapsed_ms': round((time.monotonic() - start) * 1000),
@@ -109,6 +113,8 @@ class ProductContract:
         require(len(raw) <= 1024 * 1024, 'response exceeded contract limit')
         if not raw:
             return None, response_headers
+        if as_text:
+            return raw.decode('utf-8'), response_headers
         try:
             payload = json.loads(raw)
         except (ValueError, UnicodeDecodeError) as error:
@@ -222,6 +228,20 @@ class ProductContract:
                 require(denied == {'detail': expected}, 'calendar capture admission differs')
 
         self.case('calendar.capture-gap-query-and-disconnected-admission', calendar_capture_admission)
+
+        def email_unsubscribe_admission():
+            responses = []
+            for method in ('GET', 'POST'):
+                for query in ('', '?token=invalid'):
+                    body, headers = self.request('api', method, '/email/unsubscribe' + query, 400, as_text=True)
+                    require(headers.get('content-type', '').startswith('text/html'), 'unsubscribe response is not HTML')
+                    require(
+                        'This unsubscribe link is invalid or has expired.' in body, 'unsubscribe neutral error differs'
+                    )
+                    responses.append(body)
+            require(len(set(responses)) == 1, 'invalid unsubscribe inputs reveal different identity information')
+
+        self.case('email.public-invalid-token-is-neutral', email_unsubscribe_admission)
 
         def csat_config():
             self.request('api', 'GET', '/v1/csat/config', 401)
@@ -351,7 +371,7 @@ class ProductContract:
     def report(self):
         report = {
             'schema_version': 1,
-            'scope': 'identity-onboarding-csat-tasks',
+            'scope': 'identity-onboarding-calendar-email-csat-tasks',
             'target': self.metadata['target'],
             'brand_id': self.metadata['brand_id'],
             'cases': self.cases,

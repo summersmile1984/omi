@@ -882,6 +882,8 @@ app.get("/v2/firmware/stable", proxyPublicFirmware);
 app.get("/v2/firmware/latest", proxyPublicFirmware);
 app.get("/v2/firmware/version", proxyPublicFirmware);
 app.get("/", proxyPublicCore);
+app.get("/email/unsubscribe", proxyPublicCore);
+app.post("/email/unsubscribe", proxyPublicCore);
 app.get("/appcast.xml", proxyPublicCore);
 app.get("/updates/latest", proxyPublicCore);
 app.get("/download", proxyPublicCore);

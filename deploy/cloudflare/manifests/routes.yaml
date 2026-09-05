@@ -1,6 +1,26 @@
 version: 1
 routes:
   - method: GET
+    path: /email/unsubscribe
+    owner: api-core
+    runtime: edge-worker
+    target_runtime: python-worker
+    auth_authority: public
+    dependencies: [d1-app, d1-auth, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: POST
+    path: /email/unsubscribe
+    owner: api-core
+    runtime: edge-worker
+    target_runtime: python-worker
+    auth_authority: public
+    dependencies: [d1-app, d1-auth, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: edge-route-to-legacy
+  - method: GET
     path: /
     owner: api-core
     runtime: python-worker

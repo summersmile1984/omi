@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { WebSocket } from "ws";
 import { localPrivacyObserver } from "./local-privacy.mjs";
@@ -34,6 +34,16 @@ const report = {
 const sessions = [],
   sockets = [],
   trace = [];
+let unsubscribeToken;
+function issueUnsubscribeToken(uid) {
+  // Only this disposable runner's private issuer key; never a session bypass
+  // or database seed. The public Python route verifies the real capability.
+  const vars = readFileSync(resolve(dirname(resolve(values.metadata)), "workers/api-core/.dev.vars"), "utf8");
+  const secret = vars.match(/^LIFECYCLE_EMAIL_SIGNING_SECRET=([a-f0-9]{64})$/m)?.[1];
+  if (!secret) throw new Error("local lifecycle issuer secret is missing");
+  return Buffer.from(uid).toString("base64url") + "." +
+    createHmac("sha256", secret).update(`${uid}:lifecycle`).digest("base64url");
+}
 const require = (value, message) => {
   if (!value) throw new Error(message);
 };
@@ -67,7 +77,7 @@ async function request(
   trace.push({
     service,
     method,
-    route: path.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, ":id"),
+    route: path.startsWith("/email/unsubscribe?") ? "/email/unsubscribe" : path.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, ":id"),
     status: response.status,
     expected: status,
   });
@@ -444,6 +454,32 @@ try {
     );
   });
   await caseOf(
+    "email.scanner-safe-token-opt-out-and-export",
+    async () => {
+      unsubscribeToken = issueUnsubscribeToken(owner.uid);
+      const path = `/email/unsubscribe?token=${encodeURIComponent(unsubscribeToken)}`;
+      const before = await request("api", "/v1/users/export", 200, { token: owner.token });
+      require(before.data.email_preferences.length === 0, "new account already has lifecycle preferences");
+      for (let index = 0; index < 2; index++) {
+        const page = await request("api", path, 200, { bytes: true });
+        require(page.data.toString().includes('<form method="post"'), "scanner GET omitted confirmation form");
+        require(page.headers.get("cache-control") === "no-store" && page.headers.get("referrer-policy") === "no-referrer", "unsubscribe leaked cache/referrer state");
+      }
+      const scanned = await request("api", "/v1/users/export", 200, { token: owner.token });
+      require(scanned.data.email_preferences.length === 0, "scanner GET changed consent");
+      for (let index = 0; index < 2; index++) {
+        const result = await request("api", path, 200, {
+          method: "POST", rawBody: "List-Unsubscribe=One-Click", bytes: true,
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        });
+        require(!result.data.toString().includes(unsubscribeToken), "POST echoed the unsubscribe token");
+      }
+      const invalid = await request("api", "/email/unsubscribe?token=invalid", 400, { method: "POST", bytes: true });
+      const missing = await request("api", `/email/unsubscribe?token=${issueUnsubscribeToken(randomUUID())}`, 400, { method: "POST", bytes: true });
+      require(invalid.data.equals(missing.data), "unsubscribe revealed account existence");
+    },
+  );
+  await caseOf(
     "recording.export-restored-recording-memory-task-and-profile",
     async () => {
       await request("api", "/v1/users/export", 401);
@@ -459,6 +495,9 @@ try {
       require(exported.data.csat_ratings.length === 1 &&
         exported.data.csat_ratings[0].comment === "Synthetic private feedback",
         "export lost owned CSAT rating");
+      require(exported.data.email_preferences.length === 1 &&
+        exported.data.email_preferences[0].lifecycle_opted_out === 1,
+        "export lost token-owned lifecycle opt-out");
       require(exported.data.profile.uid === owner.uid &&
         exported.data.profile.email === owner.email &&
         exported.data.profile.name ===
@@ -478,6 +517,7 @@ try {
         token: other.token,
       });
       require(isolated.data.csat_ratings.length === 0, "CSAT export crossed account boundary");
+      require(isolated.data.email_preferences.length === 0, "email consent crossed account boundary");
       require(!JSON.stringify(isolated.data).includes(id) &&
         !JSON.stringify(isolated.data).includes(
           owner.email,
@@ -593,6 +633,8 @@ try {
   await caseOf(
     "recording.account-deletion-zero-persisted-residual",
     async () => {
+      const retired = await request("api", `/email/unsubscribe?token=${encodeURIComponent(unsubscribeToken)}`, 400, { method: "POST", bytes: true });
+      require(!retired.data.toString().includes(unsubscribeToken), "retired account token was echoed");
       const deadline = Date.now() + 15000;
       let erased;
       while (Date.now() < deadline) {

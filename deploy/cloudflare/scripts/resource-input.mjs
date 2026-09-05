@@ -39,6 +39,7 @@ export const REQUIRED_SECRETS = Object.freeze({
   "api-core": [
     "ANNOUNCEMENTS_ADMIN_KEY",
     "FAIR_USE_ADMIN_KEY",
+    "LIFECYCLE_EMAIL_SIGNING_SECRET",
     "INTERNAL_ASSERTION_SECRET",
   ],
   "api-ai": ["INTERNAL_ASSERTION_SECRET"],

@@ -52,6 +52,15 @@ work. This package neither reads environment values nor uploads these references
 A release consumer must resolve the named values securely and qualify enabled
 provider capabilities before publishing.
 
+API Core additionally requires `LIFECYCLE_EMAIL_SIGNING_SECRET`, an independent
+issuer key for the public lifecycle unsubscribe capability. Keep the secret in
+the operator store and only its environment-variable reference in the inventory.
+The publisher never generates it. Preserve it across deploys: upstream link
+tokens deliberately have no expiry, and replacing the key invalidates old links.
+The local product runner generates a separate disposable key and uses it only
+to exercise the real opt-out endpoint; it never sends an email.
+
+
 ## Profile and routing
 
 `deploy/web/profile_input.py` is the common brand/profile renderer. The Web

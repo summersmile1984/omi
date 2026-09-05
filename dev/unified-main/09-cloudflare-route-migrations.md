@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT and calendar capture-gap implementations, the inventory has 619 unique method/path/protocol slots: 581 have Worker owners and 38 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap and lifecycle opt-out implementations, the inventory has 619 unique method/path/protocol slots: 583 have Worker owners and 36 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -71,9 +71,9 @@ Recipient claims, quota, share publication and ambiguous-delivery idempotency ar
 <a id="cf4-email-preferences"></a>
 ## CF-4: email-preferences
 
-Owner: `jobs`. Upstream authority: `backend/routers/email_preferences.py`.
+Owner: `api-core`. Upstream authority: `backend/routers/email_preferences.py`.
 
-Lifecycle email signature verification, scanner-safe GET and idempotent POST opt-out need the same Jobs mail authority.
+Implemented with the upstream canonical lifecycle HMAC, scanner-safe GET, branded confirmation and idempotent POST. Core owns the consent row and verifies account existence through Auth; Jobs uses its existing deletion registry to purge it. An independent issuer secret is required in the resource inventory. Provider/identity/store failures and deleted accounts have neutral responses. Real local HTTP/export/queue evidence is recorded in [the verification journal](implementation-2026-09-05/eddy-email-preferences-2026-09-06.md). Lifecycle mail sending remains a separate operation; these endpoint tests do not claim delivery.
 
 | Method | Path |
 |---|---|

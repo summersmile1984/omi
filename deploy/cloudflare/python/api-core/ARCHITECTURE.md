@@ -46,6 +46,18 @@ request reaches this Worker. Legacy workstream search/index refresh and
 candidate automation remain outside this package until their own authority and
 backfill contracts are migrated.
 
+`email_preference_routes.py` owns the public lifecycle unsubscribe capability.
+GET validates the canonical upstream HMAC and renders a branded POST form without
+writing. POST ignores the body, verifies the same purpose-bound token and upserts
+the lifecycle opt-out in App D1. Both resolve account existence through a signed,
+request-bound Auth `/internal/profile` call; missing accounts, malformed tokens,
+deletion fences and dependency failures return the same neutral 400 HTML.
+Migration 0160 fences late writes against account deletion. Export reads the
+same consent row and the existing Jobs deletion registry removes it. The shared
+HTTP suite covers invalid-link parity, and the recording/privacy suite proves
+actual scanner GET, one-click POST, export, isolation, queued erasure and old-link
+denial. This adds the consent surface, not a lifecycle email sender.
+
 `csat_routes.py` owns the product configuration singleton and one immutable
 rating per UID/platform. It matches the upstream CSAT validation, normalization
 and 201/409 receipt contract; default display copy uses the deployment brand.

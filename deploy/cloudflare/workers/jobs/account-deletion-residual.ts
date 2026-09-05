@@ -177,6 +177,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_user_location_context_consent", column: "uid" },
   { table: "cf_user_notification_preferences", column: "uid" },
   { table: "cf_user_notification_settings", column: "uid" },
+  { table: "cf_user_email_preferences", column: "uid" },
   { table: "cf_user_onboarding", column: "uid" },
   { table: "cf_user_privacy_settings", column: "uid" },
   { table: "cf_user_subscriptions", column: "uid" },
