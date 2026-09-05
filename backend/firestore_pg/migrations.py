@@ -25,7 +25,7 @@ from database.memory_collections import MemoryCollections
 from .engine import KNOWN_COLLECTIONS, create_composite_indexes, get_engine
 from .sql import build_ddl, resolve_collection
 
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 MIGRATION_LOCK_ID = 7_362_737_641_104_927_311
 MIGRATION_TABLE = 'firestore_pg_schema_migrations'
 COLLECTION_TABLE = 'firestore_pg_collections'
@@ -229,6 +229,9 @@ STATIC_HASHED_COLLECTION_IDS_V7 = frozenset({'feedback_events', 'feedback_report
 # with no frames. Its empty reads require explicit schema ownership too.
 STATIC_HASHED_COLLECTION_IDS_V8 = frozenset({'frame_vision_receipts'})
 
+# CSAT's singleton/read and create-only per-platform ratings resolve collection constants.
+STATIC_HASHED_COLLECTION_IDS_V9 = frozenset({'csat_config', 'csat_ratings'})
+
 
 class SchemaNotCurrent(RuntimeError):
     """The database has not been admitted by the explicit migration owner."""
@@ -266,6 +269,7 @@ def _assert_known_inventory_versioned() -> None:
         | STATIC_HASHED_COLLECTION_IDS_V6
         | STATIC_HASHED_COLLECTION_IDS_V7
         | STATIC_HASHED_COLLECTION_IDS_V8
+        | STATIC_HASHED_COLLECTION_IDS_V9
     )
     declared = _declared_known_collections()
     added = declared - versioned
@@ -294,6 +298,7 @@ def known_collections() -> tuple[str, ...]:
             | STATIC_HASHED_COLLECTION_IDS_V6
             | STATIC_HASHED_COLLECTION_IDS_V7
             | STATIC_HASHED_COLLECTION_IDS_V8
+            | STATIC_HASHED_COLLECTION_IDS_V9
         )
     )
 
@@ -475,6 +480,13 @@ def migrate(engine: Optional[Engine] = None) -> SchemaStatus:
             conn.execute(
                 text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (8, :name)'),
                 {'name': 'retained_frame_vision_receipts'},
+            )
+        if 9 not in applied:
+            for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V9):
+                _register_collection(conn, collection_id)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (9, :name)'),
+                {'name': 'product_csat_config_and_ratings'},
             )
     return check_schema(engine)
 

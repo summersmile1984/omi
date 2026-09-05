@@ -42,8 +42,8 @@ pytestmark = pytest.mark.skipif(
 def test_forward_migration_imports_full_paths_and_reconciles(tmp_path):
     first = migrate()
     second = migrate()
-    assert first.current_version == second.current_version == 8
-    assert check_schema().latest_version == 8
+    assert first.current_version == second.current_version == 9
+    assert check_schema().latest_version == 9
 
     production_controls = {
         'account_deletions',

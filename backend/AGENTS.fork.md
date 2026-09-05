@@ -79,6 +79,11 @@ entrypoint. The existing Fork Checks workflow runs
 `deploy/self-host/ci/build_context.py` locally and in CI using offline scratch
 Docker builds; keep the intended runtime sources in each context.
 
+The CSAT singleton and per-platform ratings require schema v9. Keep earlier
+inventories frozen, and exercise `database.csat` through the schema-admitted
+fixture; constant-based collection names are invisible to a literal scan.
+The shared local/CI product contract exercises the public config/rating routes.
+
 - Self-host auth consumers are patched before importing upstream routers. Preserve
   the shim's authority-unavailable classification: HTTP dependencies return 503
   with `auth_service_unavailable`/`retryable`, and WebSocket auth closes 1013.

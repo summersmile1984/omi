@@ -82,6 +82,35 @@ def _reset(db, doc_id):
     db.collection("txn_semantics").document(doc_id).delete()
 
 
+def test_csat_create_only_owner_and_erasure_use_real_postgres(db, monkeypatch):
+    from types import SimpleNamespace
+    from database import csat
+    from firestore_pg.erasure import delete_user_owned_rows
+
+    uid = 'pg-csat-' + uuid4().hex
+    monkeypatch.setattr(csat, 'get_firestore_client', lambda: db)
+    monkeypatch.setattr(
+        csat, 'get_memory_cache', lambda: SimpleNamespace(get_or_fetch=lambda key, fetch, **kw: fetch())
+    )
+    assert csat.get_product_config() == csat.DEFAULT_CONFIG
+
+    def submit(score):
+        return csat.submit_rating(
+            uid=uid, platform='macos', app_version='1', score=score, comment='private', revision=0
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        receipts = list(pool.map(submit, (2, 3)))
+    assert sorted(created for _, created in receipts) == [False, True]
+    ref = db.collection('csat_ratings').document('macos_' + uid)
+    stored = ref.get().to_dict()
+    assert stored['uid'] == uid and stored['score'] in (2, 3) and stored['comment'] == 'private'
+    assert submit(5) == ('macos_' + uid, False)
+    assert ref.get().to_dict() == stored
+    delete_user_owned_rows(uid)
+    assert not ref.get().exists
+
+
 def test_v7_upgrade_adds_receipt_reads_and_preserves_existing_user_data(db):
     from firestore_pg import migrations
 
@@ -97,10 +126,10 @@ def test_v7_upgrade_adds_receipt_reads_and_preserves_existing_user_data(db):
             {'name': 'frame_vision_receipts'},
         )
         conn.execute(text(f'DELETE FROM {migrations.MIGRATION_TABLE} WHERE version = 8'))
-    with pytest.raises(migrations.SchemaNotCurrent, match='1..8'):
+    with pytest.raises(migrations.SchemaNotCurrent, match='1..9'):
         migrations.check_schema(engine)
-    assert migrations.migrate(engine).current_version == 8
-    assert migrations.migrate(engine).current_version == 8
+    assert migrations.migrate(engine).current_version == 9
+    assert migrations.migrate(engine).current_version == 9
     assert user.get().to_dict() == {'state': 'retained-from-v7'}
     receipts = user.collection('frame_vision_receipts')
     assert list(receipts.stream()) == []
@@ -316,12 +345,12 @@ def test_v5_upgrade_registers_memory_collections_without_rewriting_existing_rows
         )
         conn.execute(text(f'DELETE FROM {MIGRATION_TABLE} WHERE version = 6'))
 
-    with pytest.raises(SchemaNotCurrent, match='1..8'):
+    with pytest.raises(SchemaNotCurrent, match='1..9'):
         check_schema(engine)
 
     status = migrate(engine)
 
-    assert status.current_version == status.latest_version == 8
+    assert status.current_version == status.latest_version == 9
     assert legacy.get().to_dict() == {'state': 'created-under-v5'}
     with engine.connect() as conn:
         registered = dict(
@@ -363,12 +392,12 @@ def test_v6_upgrade_registers_feedback_collections_without_rewriting_existing_ro
         )
         conn.execute(text(f'DELETE FROM {MIGRATION_TABLE} WHERE version = 7'))
 
-    with pytest.raises(SchemaNotCurrent, match='1..8'):
+    with pytest.raises(SchemaNotCurrent, match='1..9'):
         check_schema(engine)
 
     status = migrate(engine)
 
-    assert status.current_version == status.latest_version == 8
+    assert status.current_version == status.latest_version == 9
     assert event.get().to_dict() == {'uid': 'pg-v6-owner', 'state': 'created-under-v6'}
     with engine.connect() as conn:
         registered = dict(

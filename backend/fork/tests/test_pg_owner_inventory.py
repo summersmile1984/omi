@@ -10,6 +10,23 @@ from fork.tests.schema_firestore import SchemaFirestore
 from models.feedback import FeedbackSurface, FeedbackTargetKind
 
 
+def test_csat_config_and_rating_owners_use_versioned_collections_for_legacy_accounts(monkeypatch):
+    from database import csat
+
+    db = SchemaFirestore({})
+    monkeypatch.setattr(csat, 'get_firestore_client', lambda: db)
+    monkeypatch.setattr(
+        csat, 'get_memory_cache', lambda: SimpleNamespace(get_or_fetch=lambda key, fetch, **kw: fetch())
+    )
+    assert csat.get_product_config() == csat.DEFAULT_CONFIG
+    receipt = csat.submit_rating(
+        uid='legacy', platform='macos', app_version='1', score=5, comment='discard', revision=0
+    )
+    assert receipt == ('macos_legacy', True)
+    assert db.rows[('csat_ratings', 'macos_legacy')]['comment'] == ''
+    assert db.observed == {'csat_config', 'csat_ratings'}
+
+
 @pytest.mark.parametrize('brand', ['eddy', 'x', '1'])
 def test_export_brand_follows_image_and_preserves_auth_body_and_upstream_mode(monkeypatch, brand):
     monkeypatch.setenv('ENCRYPTION_SECRET', 'synthetic-export-contract-key-32-bytes')

@@ -80,6 +80,8 @@ KNOWN_COLLECTIONS = frozenset(
         'announcements',
         'api_keys',
         'app_review_config',
+        'csat_config',
+        'csat_ratings',
         'artifact_heads',
         'artifact_refs',
         'candidate_idempotency_aliases',
