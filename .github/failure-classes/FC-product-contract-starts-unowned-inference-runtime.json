@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "FC-product-contract-starts-unowned-inference-runtime",
+  "violated_contract": "The bounded self-host product contract may only admit capabilities whose runtime it starts and controls. Leaving the selected local LLM in a core-only fixture made API admission resolve a nonexistent llm service before the identity, onboarding, and Tasks contract could run.",
+  "canonical_prevention": "Derive the core fixture profile through core_only_profile: remove unexercised speech and local LLM contracts, set their capabilities to disabled, and validate the resulting deployment profile before rendering Compose. Keep the full runtime qualification in its dedicated model contract.",
+  "canonical_prevention_artifact": [
+    "deploy/self-host/ci/product.py",
+    "deploy/self-host/ci/test_product.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/self-host/ci/**"
+  ],
+  "status": "open"
+}

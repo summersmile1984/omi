@@ -13,7 +13,7 @@ import tempfile
 import threading
 import unittest
 
-from product import Fixture
+from product import Fixture, core_only_profile
 from loopback import handler as proxy_handler
 
 
@@ -162,6 +162,28 @@ signal.pause()
             self.assertTrue(not status or status.startswith('Z'), 'cancelled fixture left a serving descendant')
             with self.assertRaisesRegex(RuntimeError, 'startup was cancelled'):
                 fixture.command([sys.executable, '-c', 'raise AssertionError("must not start")'])
+
+
+class FixtureProfile(unittest.TestCase):
+    def test_core_contract_disables_unowned_media_and_llm_capabilities(self):
+        profile = core_only_profile(
+            {
+                'llm': {'unvalidated': 'removed before admission'},
+                'speech': {'unvalidated': 'removed before admission'},
+                'capabilities': {
+                    'llm_provider': 'ollama',
+                    'stt_providers': ['sensevoice'],
+                    'tts_provider': 'kokoro',
+                    'push_provider': 'disabled',
+                },
+            }
+        )
+
+        self.assertNotIn('llm', profile)
+        self.assertNotIn('speech', profile)
+        self.assertEqual(profile['capabilities']['llm_provider'], 'disabled')
+        self.assertEqual(profile['capabilities']['stt_providers'], [])
+        self.assertEqual(profile['capabilities']['tts_provider'], 'disabled')
 
 
 if __name__ == '__main__':

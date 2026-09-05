@@ -30,6 +30,18 @@ sys.path.insert(0, str(ROOT / 'scripts/profiles'))
 import render  # noqa: E402
 
 
+def core_only_profile(row):
+    """Limit the shared product contract to the services its fixture owns."""
+    result = copy.deepcopy(row)
+    result.pop('speech', None)
+    result.pop('llm', None)
+    result['capabilities'].update(stt_providers=[], tts_provider='disabled', llm_provider='disabled')
+    from fork.capabilities import validate
+
+    validate(result)
+    return result
+
+
 class Fixture:
     def __init__(self, output, brand_id, port, runtime_image=None):
         if not re.fullmatch(r'[a-z][a-z0-9-]{2,40}', brand_id) or not 1024 <= port <= 65000:
@@ -125,12 +137,7 @@ class Fixture:
         manifest_file = self.output / 'brand.json'
         manifest_file.write_text(json.dumps(manifest))
         table = render.resolve('self_hosted', None, manifest_file, 'local')
-        row = table['profiles']['self_hosted.local']
-        row.pop('speech', None)
-        row['capabilities'].update(stt_providers=[], tts_provider='disabled')
-        from fork.capabilities import validate
-
-        validate(row)
+        table['profiles']['self_hosted.local'] = core_only_profile(table['profiles']['self_hosted.local'])
         profile_file = self.output / 'profile.json'
         profile_file.write_text(json.dumps(table, indent=2) + '\n')
         env = {}
