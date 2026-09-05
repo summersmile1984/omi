@@ -1,15 +1,18 @@
 # macOS native deployment consumer
 
 This package stages the current upstream Swift app with a selected fork profile.
-It is a **local native authentication and selected raster** acceptance package, not a signed
-white-label distribution. No command installs, launches, seeds, or stops an app.
-Use only a synthetic `omi-*` named bundle when running it.
+It owns native authentication, selected brand resources and isolated application
+packaging. No command installs, launches, seeds, or stops an app. Use an `omi-*`
+named identity for development and automated live verification.
 
 ## Boundary and ownership
 
 `prepare.py` calls the same brand manifest loader and profile resolver as the
-server/web builds. Only `self_hosted.local` and `cloudflare.local` are admitted by
-this first packager; missing or invalid configuration fails closed. Public
+server/web builds. Both targets admit `local`, `beta` and `production`; missing
+or invalid configuration fails closed. The deployment stage is independent of
+the development/distribution identity, allowing a named app to verify a
+production endpoint. Beta/production identities require their matching stage
+and manifest application name; they cannot claim an upstream identity. Public
 origins are embedded in `ForkDeployment.json`, never credentials. The staged
 `DesktopBackendEnvironment` is authoritative for all existing API and native
 WebSocket callers. The bundle does not load `.env` files, Firebase emulator
@@ -46,7 +49,11 @@ Firebase accounts. Named storage is rooted at `<brand-id> Dev Bundles/<bundle>`.
 Upstream custom-bundle production classification and shared-storage fallback
 were reproduced during audit B1; this package executes the staged classification
 and storage code as regression coverage. Sparkle admission is disabled, feed/key
-entries and URL callback schemes are removed from this local artifact.
+entries and URL callback schemes are removed from each artifact. Stable data is
+rooted at `<brand-id>`, beta at `<brand-id> Beta`; every fork identity disables
+legacy upstream storage migration and the stable-app deletion/termination path.
+PostHog initialization is disabled at its SDK owner, including production
+classification; the fork does not enroll in the upstream analytics project.
 
 ## Source staging
 
@@ -138,14 +145,40 @@ It proves credential/header/wire handling only when a local ASR fixture is used.
 against the selected protected API. None returns tokens or transcript contents.
 These live checks need configured local Auth/API/WS services and stay outside CI.
 
+## Developer ID packaging
+
+`release.py` builds an isolated release configuration, prepares the locked
+universal Node and agent payload through the upstream scripts copied into that
+stage, and assembles a new app bundle. It vendors the actual non-system dylib
+dependencies, removes host build rpaths, derives the minimum macOS version from
+the Mach-O load commands, and signs nested code before the outer app. Node alone
+receives the existing JIT entitlements; the app has no debug or Apple Sign-In
+entitlement. The exact Developer ID certificate fingerprint is explicit.
+
+```sh
+python3 desktop/macos/fork/release.py \
+  --manifest brand/eddy/manifest.yaml --target cloudflare --stage production \
+  --app-name Eddy --output /tmp/new-eddy-release \
+  --signing-identity <Developer-ID-certificate-SHA1> \
+  --version 0.1.0 --build-number 2026090501
+```
+
+Optional `--dependency-cache` reuses locked SwiftPM downloads through independent
+APFS clones. After deep strict signature verification, the publisher checks the
+actual signing team, bundle identity, hardened runtime and secure timestamp,
+then runs the existing full bundle dependency audit. The artifact receipt keeps
+`release_ready`, `service_verified` and `notarized` false: signing never supplies
+remote product or Apple notarization evidence. The local ad-hoc packager still
+rejects production profiles and identities.
+
 ## Remaining distribution acceptance
 
-This first package does not claim beta/production signing, notarization, updater
-feed isolation, universal architecture, portable dependency closure or macOS 14
-runtime acceptance. The local host linked Homebrew libwebp built for macOS 26;
-that must be vendored/qualified before distribution. Uncovered upstream
+Notarization, universal app architecture and macOS 14 runtime acceptance remain
+separate checks. The local Homebrew libwebp requires macOS 26; the signed package
+must declare that actual floor until a qualified older-OS library is supplied.
+Uncovered upstream
 onboarding text/assets, browser/account links and AI personality remain visible
 after login and require subsequent reviewed packages. OAuth, direct-provider
-capability consumption and a packaged local agent runtime remain separate native
-acceptance work. Real signing teams/keys and final brand inputs are external
-inputs; generic generation and failure tests continue without them.
+capability consumption remain separate native acceptance work. Generic identity,
+dependency and signing-verifier tests run without a personal certificate; a
+real signed artifact and its live client flow are separate required evidence.

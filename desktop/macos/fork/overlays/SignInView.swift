@@ -17,6 +17,9 @@ struct SignInView: View {
         Text("Brand asset unavailable").foregroundStyle(.secondary)
       }
       Text(ForkDesktopBuild.productName).font(.largeTitle.weight(.semibold))
+      if !ForkDesktopBuild.tagline.isEmpty {
+        Text(ForkDesktopBuild.tagline).font(.body).foregroundStyle(.secondary)
+      }
       Text(createAccount ? "Create an account" : "Sign in").font(.title2)
       if createAccount {
         TextField("Name", text: $name).accessibilityIdentifier("fork-auth-name")

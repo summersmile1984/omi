@@ -116,9 +116,24 @@ def build(
     output: Path,
     dependency_cache: Path | None = None,
     compile_only: bool = False,
+    *,
+    deployment_stage: str = "local",
+    distribution: str = "development",
+    configuration: str = "debug",
 ) -> Path:
+    if configuration not in ("debug", "release"):
+        raise ValueError("Select debug or release compilation")
     output = output.resolve()
-    stage(manifest, target, app_name, output)
+    stage(manifest, target, app_name, output, deployment_stage=deployment_stage, distribution=distribution)
+    if distribution != "development":
+        for name in ("scripts", "agent", "pi-mono-extension"):
+            shutil.copytree(
+                ROOT / "desktop/macos" / name,
+                output / name,
+                ignore=shutil.ignore_patterns("node_modules", "dist", ".DS_Store"),
+                symlinks=True,
+            )
+        run("bash", str(output / "scripts/prepare-agent-runtime.sh"), "--universal-node")
     if dependency_cache:
         # Copy checkout/artifact repositories only. Compiled module caches encode
         # absolute source/cache paths and cannot be reused at a new stage path.
@@ -127,7 +142,9 @@ def build(
         for name in ("artifacts", "checkouts", "repositories", "workspace-state.json"):
             source = dependency_cache.resolve(strict=True) / name
             if source.is_dir():
-                shutil.copytree(source, cache / name, symlinks=True)
+                # APFS clones preserve separate writable ownership without
+                # duplicating multi-gigabyte locked SwiftPM downloads.
+                run("/bin/cp", "-cR", str(source), str(cache / name))
             elif source.is_file():
                 shutil.copy2(source, cache / name)
     run(
@@ -135,13 +152,13 @@ def build(
         "swift",
         "build",
         "-c",
-        "debug",
+        configuration,
         "--package-path",
         str(output / "Desktop"),
         "--disable-automatic-resolution",
     )
     if compile_only:
-        return output / "Desktop/.build/debug/Omi Computer"
+        return output / f"Desktop/.build/{configuration}/Omi Computer"
     return package_local(output)
 
 

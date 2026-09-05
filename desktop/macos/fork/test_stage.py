@@ -12,8 +12,11 @@ from unittest.mock import patch
 
 from build import install_brand_package_resources, local_info_plist
 from ci_build import TARGETS, build_matrix, synthetic_manifest
-from prepare import AUTH_REPLACEMENTS, ROOT, stage
+from prepare import AUTH_REPLACEMENTS, ROOT, application_identity, stage
 from swift_overlay import OverlayError, load_owners, rewrite_functions
+from render import ProfileError
+from release import command, dependencies, normalize_resource_bundle, runtime_code, signing_details, vendor_dependencies
+from swift_overlay import declarations
 
 
 class NativeStageTests(unittest.TestCase):
@@ -45,6 +48,15 @@ class NativeStageTests(unittest.TestCase):
         cls.temporary.cleanup()
 
     def test_real_staged_identity_functions_isolate_brand_storage_and_disable_updater(self):
+        source = self.output / "Desktop/Sources"
+        app = source / "OmiApp.swift"
+        left, right = declarations(app)["windowTitle(displayName:version:launchMode:isNonProduction:)"][0]
+        title_probe = self.directory / "title.swift"
+        title_probe.write_text(
+            "enum LaunchMode { case normal, rewind }\nenum TitleOwner {\n"
+            + app.read_bytes()[left:right].decode()
+            + "\n}\n"
+        )
         main = self.directory / "main.swift"
         main.write_text('''import Foundation
 let bundle = "test.synthetic.omi-auth-contract"
@@ -59,6 +71,18 @@ precondition(storage.isNamedDevelopmentBundle)
 precondition(storage.usesIsolatedStorage)
 precondition(storage.applicationSupportPathComponents == ["synthetic-native Dev Bundles", bundle])
 precondition(!DesktopLocalProfile.isEnabled(bundleIdentifier: bundle, profileValue: nil))
+for development in [false, true] {
+  precondition(TitleOwner.windowTitle(displayName: "Eddy", version: "0.1.0", launchMode: .normal, isNonProduction: development) == "Eddy v0.1.0")
+  precondition(TitleOwner.windowTitle(displayName: "Eddy", version: "", launchMode: .rewind, isNonProduction: development) == "Eddy Rewind")
+}
+for (identity, root) in [(AppBuild.productionBundleIdentifier, "synthetic-native"), (AppBuild.betaProductionBundleIdentifier, "synthetic-native Beta")] {
+  let release = AppBuild.configuration(bundleIdentifier: identity, infoDictionary: [:])
+  precondition(!release.isNonProduction && !release.allowsLocalAutomation && !release.allowsSparkleUpdates)
+  precondition(!AppBuild.mayRunLegacyStableAppCleanup(bundleIdentifier: identity))
+  let storage = DesktopStorageIdentity(bundleIdentifier: identity, localProfileEnabled: false, localProfileStorageName: nil)
+  precondition(storage.usesIsolatedStorage && storage.applicationSupportPathComponents == [root])
+  precondition(!DesktopLocalProfile.isEnabled(bundleIdentifier: identity, profileValue: "1"))
+}
 print("native identity behavior passed")
 ''')
         source = self.output / "Desktop/Sources"
@@ -71,6 +95,7 @@ print("native identity behavior passed")
                 "ForkStage",
                 str(source / "AppBuild.swift"),
                 str(source / "OmiSupport/DesktopLocalProfile.swift"),
+                str(title_probe),
                 str(main),
                 "-o",
                 str(binary),
@@ -141,7 +166,12 @@ print("native identity behavior passed")
             )
         resources = self.output / "Desktop/Sources/Resources"
         for name in ("ForkBrandLight.png", "ForkBrandDark.png"):
-            shutil.copy2(resources / name, good / "Resources" / name)
+            shutil.copy2(resources / name, good.parent / name)
+        # Execute the actual release layout conversion; moving Node alone
+        # created Contents/Resources and made AppKit stop finding flat images.
+        (good.parent / "node").write_bytes(b"synthetic-node-layout-entry")
+        normalize_resource_bundle(good.parent)
+        self.assertTrue((good / "Resources/node").is_file())
         (corrupt / "Resources/ForkBrandLight.png").write_bytes(b"not an image")
         probe = self.directory / "brand-probe.swift"
         probe.write_text('''import AppKit
@@ -189,7 +219,10 @@ enum SessionPhase { case signedOut, recoveryRequired }
   func signInWithEmail(email: String, password: String, name: String?) async throws {}
   func retryRestoredSession() async {}
 }
-enum ForkDesktopBuild { static let productName = "Synthetic Native" }
+enum ForkDesktopBuild {
+  static let productName = "Synthetic Native"
+  static let tagline = "A synthetic companion"
+}
 extension Bundle { static let resourceBundle = Bundle.main }
 ''')
         subprocess.run(
@@ -272,6 +305,178 @@ extension Bundle { static let resourceBundle = Bundle.main }
         for target, name in [("omi_cloud", "omi-auth-contract"), ("cloudflare", "Omi"), ("cloudflare", "../Omi")]:
             with self.assertRaises(ValueError):
                 stage(self.manifest, target, name, self.directory / "rejected")
+
+    def test_distribution_identity_requires_matching_stage_and_brand_without_upstream_collision(self):
+        value = json.loads(self.manifest.read_text())
+        name = value["identifiers"]["macos_binary_name"]
+        self.assertEqual(application_identity(value, name, "production", "production"), "test.synthetic.native")
+        self.assertEqual(application_identity(value, name + " Beta", "beta", "beta"), "test.synthetic.native.beta")
+        self.assertEqual(
+            application_identity(value, "omi-production-proof", "production", "development"),
+            "test.synthetic.omi-production-proof",
+        )
+        for app, selected_stage, distribution in [
+            (name, "local", "production"),
+            (name, "production", "beta"),
+            ("../Eddy", "production", "production"),
+        ]:
+            with self.assertRaises(ValueError):
+                application_identity(value, app, selected_stage, distribution)
+        value["identifiers"]["macos_bundle_id"] = "com.omi.computer-macos"
+        with self.assertRaisesRegex(ValueError, "upstream"):
+            application_identity(value, name, "production", "production")
+
+    def test_vendored_actual_dylib_runs_after_the_original_build_dependency_is_removed(self):
+        root = self.directory / "dependency-contract"
+        (root / "source").mkdir(parents=True)
+        app = root / "Synthetic.app"
+        (app / "Contents/MacOS").mkdir(parents=True)
+        (app / "Contents/Frameworks").mkdir()
+        library = root / "source/libfixture.dylib"
+        base = root / "source/libfixture-base.1.dylib"
+        alias = root / "source/libfixture-base.dylib"
+        base_source = root / "source/base.c"
+        base_source.write_text("int base(void) { return 42; }\n")
+        command(
+            "xcrun",
+            "clang",
+            "-dynamiclib",
+            str(base_source),
+            "-Wl,-install_name,@rpath/libfixture-base.dylib",
+            "-o",
+            str(base),
+        )
+        alias.symlink_to(base.name)
+        source = root / "source/library.c"
+        source.write_text("extern int base(void); int fixture(void) { return base(); }\n")
+        command("xcrun", "clang", "-dynamiclib", str(source), str(alias), "-o", str(library))
+        main = root / "main.c"
+        main.write_text("extern int fixture(void); int main(void) { return fixture() == 42 ? 0 : 1; }\n")
+        binary = app / "Contents/MacOS/Synthetic"
+        command(
+            "xcrun", "clang", str(main), str(library), "-Wl,-rpath,@executable_path/../Frameworks", "-o", str(binary)
+        )
+        observed = vendor_dependencies(app)
+        self.assertEqual(set(observed), {"libfixture.dylib", "libfixture-base.1.dylib"})
+        self.assertIn("@rpath/libfixture.dylib", dependencies(binary))
+        library.unlink()
+        alias.unlink()
+        base.unlink()
+        command("codesign", "--force", "--sign", "-", str(app / "Contents/Frameworks/libfixture.dylib"))
+        command("codesign", "--force", "--sign", "-", str(app / "Contents/Frameworks/libfixture-base.1.dylib"))
+        command("codesign", "--force", "--sign", "-", str(binary))
+        command(str(binary))
+
+    def test_distribution_verifier_rejects_wrong_team_ad_hoc_and_unsigned_runtime(self):
+        valid = "Identifier=test.synthetic.native\nAuthority=Developer ID Application: Synthetic (ABCDE12345)\nTeamIdentifier=ABCDE12345\nCodeDirectory flags=0x10000(runtime)\nTimestamp=Sep 5, 2026\n"
+        signing_details(valid, "ABCDE12345", "test.synthetic.native")
+        for actual in [
+            valid.replace("ABCDE12345", "WRONG12345"),
+            valid.replace("Developer ID Application", "Apple Development"),
+            valid.replace("(runtime)", ""),
+            valid.replace("Timestamp=Sep 5, 2026\n", ""),
+            valid.replace("Identifier=test.synthetic.native", "Identifier=com.omi.computer-macos"),
+        ]:
+            with self.assertRaises(ValueError):
+                signing_details(actual, "ABCDE12345", "test.synthetic.native")
+
+    def test_universal_static_archive_is_not_packaged_or_signed_as_a_dynamic_framework(self):
+        root = self.directory / "static-framework"
+        root.mkdir()
+        source = root / "value.c"
+        source.write_text("int value(void) { return 7; }\n")
+        archives = []
+        for arch in ("arm64", "x86_64"):
+            obj, archive = root / (arch + ".o"), root / (arch + ".a")
+            command("xcrun", "clang", "-arch", arch, "-c", str(source), "-o", str(obj))
+            command("xcrun", "libtool", "-static", "-o", str(archive), str(obj))
+            archives.append(str(archive))
+        universal = root / "SyntheticFramework"
+        command("xcrun", "lipo", "-create", *archives, "-output", str(universal))
+        self.assertFalse(runtime_code(universal))
+
+    def test_real_staged_analytics_initializer_never_enrolls_in_the_upstream_project(self):
+        # Execute the compiler-located production method with SDK setup as the
+        # controllable network seam; this is not a source-string assertion.
+        path = self.output / "Desktop/Sources/PostHogManager.swift"
+        left, right = declarations(path)["initialize()"][0]
+        method = path.read_bytes()[left:right].decode()
+        source = self.directory / "analytics-probe.swift"
+        source.write_text(
+            '''import Foundation
+var enrollments = 0
+class PostHogConfig {
+  var captureApplicationLifecycleEvents = true
+  var captureScreenViews = false
+  var preloadFeatureFlags = false
+  init(projectToken: String, host: String) {}
+}
+class PostHogSDK {
+  static let shared = PostHogSDK()
+  func setup(_ config: PostHogConfig) { enrollments += 1 }
+  func register(_ value: [String: String]) {}
+}
+enum AppBuild { static let currentUpdateChannel = "production" }
+func log(_ message: String) {}
+class PostHogManager {
+  var isInitialized = false
+  let apiKey = "synthetic-upstream-project"
+  let host = "https://upstream.synthetic.invalid"
+'''
+            + method
+            + '''
+}
+@main struct Probe {
+  static func main() {
+    let owner = PostHogManager()
+    owner.initialize()
+    owner.initialize()
+    precondition(!owner.isInitialized && enrollments == 0)
+  }
+}
+'''
+        )
+        binary = self.directory / "analytics-probe"
+        command("xcrun", "swiftc", "-parse-as-library", str(source), "-o", str(binary))
+        command(str(binary))
+
+    def test_production_stage_embeds_https_profile_and_ad_hoc_packager_rejects_it(self):
+        from build import package_local
+
+        value = json.loads(self.manifest.read_text())
+        value["deployments"]["cloudflare"]["production"] = {
+            key: "https://production.synthetic.invalid" for key in value["deployments"]["cloudflare"]["local"]
+        }
+        path = self.directory / "production-brand.json"
+        path.write_text(json.dumps(value))
+        output = self.directory / "production-stage"
+        proof = stage(
+            path,
+            "cloudflare",
+            value["identifiers"]["macos_binary_name"],
+            output,
+            deployment_stage="production",
+            distribution="production",
+        )
+        self.assertEqual(proof["profile"], "cloudflare.production")
+        self.assertEqual(proof["bundle_id"], "test.synthetic.native")
+        profile = json.loads((output / "ForkDeployment.json").read_text())
+        self.assertEqual(profile["auth_base_url"], "https://production.synthetic.invalid")
+        self.assertFalse(profile["allows_env_url_override"])
+        self.assertFalse(proof["release_ready"])
+        with self.assertRaisesRegex(ValueError, "local"):
+            package_local(output)
+        value["deployments"]["cloudflare"]["production"]["auth_base"] = "http://production.synthetic.invalid"
+        path.write_text(json.dumps(value))
+        with self.assertRaises(ProfileError):
+            stage(
+                path,
+                "cloudflare",
+                value["identifiers"]["macos_binary_name"],
+                self.directory / "bad-production",
+                deployment_stage="production",
+                distribution="production",
+            )
 
     def test_static_compiler_owner_tripwire_rejects_an_unreviewed_auth_change(self):
         # omi-test-quality: source-inspection -- static staging owner contract;

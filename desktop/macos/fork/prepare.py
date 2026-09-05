@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Stage the existing macOS app with a selected native identity owner.
 
-Only named local artifacts are admitted by this first package. Published bundle
-identities and Sparkle admission require the separate signing/distribution gate.
+Deployment stage and application identity are independent: a named verification
+app may connect to production. Distribution identities require the matching
+stage and the separate Developer ID packaging boundary. Sparkle stays disabled.
 """
 
 from __future__ import annotations
@@ -73,26 +74,52 @@ FIREBASE_START = "    // Initialize Firebase (skipped for local harness"
 FIREBASE_END = "    // Initialize analytics (PostHog)"
 
 
-def stage(manifest_path: Path, target: str, app_name: str, output: Path) -> dict:
-    if target not in ("self_hosted", "cloudflare") or not re.fullmatch(r"omi-[a-z0-9][a-z0-9-]*", app_name):
-        raise ValueError("Select a fork target and a named omi-* local test bundle")
+def application_identity(manifest: dict, app_name: str, deployment_stage: str, distribution: str) -> str:
+    identities = manifest["identifiers"]
+    if deployment_stage not in ("local", "beta", "production"):
+        raise ValueError("Select an explicit deployment stage")
+    if distribution == "development":
+        if not re.fullmatch(r"omi-[a-z0-9][a-z0-9-]*", app_name):
+            raise ValueError("A development artifact requires a named omi-* test bundle")
+        bundle_id = identities["macos_named_bundle_prefix"] + app_name
+        if bundle_id in (identities["macos_bundle_id"], identities["macos_bundle_id_beta"]):
+            raise ValueError("A development artifact cannot claim a distribution identity")
+    elif distribution in ("production", "beta"):
+        if deployment_stage != distribution:
+            raise ValueError("A distribution identity must match its deployment stage")
+        expected_name = identities["macos_binary_name"] + (" Beta" if distribution == "beta" else "")
+        if app_name != expected_name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]*", app_name):
+            raise ValueError("Distribution application name must match the brand binary name")
+        bundle_id = identities["macos_bundle_id" if distribution == "production" else "macos_bundle_id_beta"]
+    else:
+        raise ValueError("Unknown native distribution identity")
+    if bundle_id.startswith("com.omi.") and distribution != "development":
+        raise ValueError("A fork distribution cannot claim an upstream application identity")
+    if bundle_id in {"com.omi.computer-macos", "com.omi.computer-macos.beta", "com.omi.desktop-dev"}:
+        raise ValueError("A fork artifact cannot claim an installed upstream identity")
+    return bundle_id
+
+
+def stage(
+    manifest_path: Path,
+    target: str,
+    app_name: str,
+    output: Path,
+    *,
+    deployment_stage: str = "local",
+    distribution: str = "development",
+) -> dict:
+    if target not in ("self_hosted", "cloudflare"):
+        raise ValueError("Select a fork target")
     output = output.resolve()
     if output.exists() or output == ROOT or ROOT in output.parents:
         raise ValueError("Output must be a new isolated directory outside the repository")
     manifest_path = manifest_path.resolve(strict=True)
     manifest = load_manifest(None, ROOT, manifest_path)
-    resolved = resolve(target, manifest_path=manifest_path, stage="local")
-    profile = resolved["profiles"][f"{target}.local"]
+    bundle_id = application_identity(manifest, app_name, deployment_stage, distribution)
+    resolved = resolve(target, manifest_path=manifest_path, stage=deployment_stage)
+    profile = resolved["profiles"][f"{target}.{deployment_stage}"]
     identities = manifest["identifiers"]
-    bundle_id = identities["macos_named_bundle_prefix"] + app_name
-    if bundle_id in {
-        identities["macos_bundle_id"],
-        identities["macos_bundle_id_beta"],
-        "com.omi.computer-macos",
-        "com.omi.computer-macos.beta",
-        "com.omi.desktop-dev",
-    }:
-        raise ValueError("A local test cannot claim an installed production/development identity")
     owners = load_owners()
     for name in ("omi_app_icon.png", "omi_menu_bar_icon.png", "herologo.png"):
         path = ROOT / "desktop/macos/Desktop/Sources/Resources" / name
@@ -158,8 +185,25 @@ def stage(manifest_path: Path, target: str, app_name: str, output: Path) -> dict
         app, '"https://bbffa02d948c81ea4dccd36246c7bd20@o4511085999816704.ingest.us.sentry.io/4511086024851456"', '""'
     )
     rewrite_functions(
+        app,
+        {
+            "windowTitle(displayName:version:launchMode:isNonProduction:)": '''static func windowTitle(displayName: String, version: String, launchMode: LaunchMode, isNonProduction: Bool) -> String {
+    let title = launchMode == .rewind ? "\\(displayName) Rewind" : displayName
+    return version.isEmpty ? title : "\\(title) v\\(version)"
+  }'''
+        },
+        owners,
+    )
+    rewrite_functions(
         source / "BundleEnvironment.swift",
         {"loadIfNeeded()": "static func loadIfNeeded() { ForkDesktopBuild.installEnvironment() }"},
+        owners,
+    )
+    # A fork cannot enroll itself in the upstream PostHog project. Telemetry
+    # stays off until a brand-owned provider is implemented and qualified.
+    rewrite_functions(
+        source / "PostHogManager.swift",
+        {"initialize()": "func initialize() { isInitialized = false }"},
         owners,
     )
     app_build = source / "AppBuild.swift"
@@ -175,7 +219,22 @@ def stage(manifest_path: Path, target: str, app_name: str, output: Path) -> dict
     )
     replace_literal(app_build, '"com.omi.desktop-dev"', json.dumps(identities["macos_bundle_id_dev"]))
     replace_literal(app_build, "!isExternalPreview && !isNamedDevelopmentBundle", "false")
+    # Production classification must never grant a fork permission to terminate
+    # or remove the user's existing upstream app.
+    replace_literal(app_build, "bundleIdentifier == productionBundleIdentifier", "false")
+    replace_literal(app_build, 'return "omi"', "return " + json.dumps(manifest["brand"]["display_name"]))
+    replace_literal(
+        app_build,
+        '"https://github.com/BasedHardware/omi/releases"',
+        json.dumps("https://github.com/" + manifest["distribution"]["github_releases_repo"] + "/releases"),
+    )
     replace_literal(storage, '"com.omi.omi-"', json.dumps(identities["macos_named_bundle_prefix"] + "omi-"))
+    replace_literal(storage, "localProfileEnabled || isNamedDevelopmentBundle || isBetaProductionBundle", "true")
+    replace_literal(storage, '["Omi Beta"]', json.dumps([manifest["brand"]["id"] + " Beta"]))
+    replace_literal(
+        storage, 'localProfileStorageName ?? "Omi"', "localProfileStorageName ?? " + json.dumps(manifest["brand"]["id"])
+    )
+    replace_literal(storage, '["Omi"]', json.dumps([manifest["brand"]["id"]]))
     replace_literal(
         storage,
         '["Omi Dev Bundles", bundleIdentifier]',
@@ -187,14 +246,15 @@ def stage(manifest_path: Path, target: str, app_name: str, output: Path) -> dict
     swift = f'''import Foundation
 enum ForkDesktopBuild {{
   static let productName = {json.dumps(manifest["brand"]["display_name"], ensure_ascii=False)}
+  static let tagline = {json.dumps(manifest["brand"].get("tagline", ""), ensure_ascii=False)}
   static let keychainPrefix = {json.dumps(identities["keychain_service_prefix"])}
   static let expectedBundleID = {json.dumps(bundle_id)}
   static let profile: NativeDeploymentProfile = {{
     guard Bundle.main.bundleIdentifier == expectedBundleID,
       let path = Bundle.main.url(forResource: "ForkDeployment", withExtension: "json"),
       let data = try? Data(contentsOf: path),
-      let profile = try? NativeDeploymentProfile.decode(data), profile.stage == "local"
-    else {{ fatalError("Invalid named deployment bundle") }}
+      let profile = try? NativeDeploymentProfile.decode(data), profile.name == {json.dumps(profile["name"])}
+    else {{ fatalError("Invalid deployment bundle") }}
     return profile
   }}()
   static func installEnvironment() {{
@@ -213,6 +273,9 @@ enum ForkDesktopBuild {{
         "app_name": app_name,
         "brand": manifest["brand"]["id"],
         "product_name": manifest["brand"]["display_name"],
+        "tagline": manifest["brand"].get("tagline", ""),
+        "distribution": distribution,
+        "signing_team": identities["apple_team_id"],
         "assets": json.loads((output / "brand-assets.json").read_text()),
         "profile": profile["name"],
         "release_ready": False,
@@ -231,7 +294,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--target", required=True)
+    parser.add_argument("--stage", choices=("local", "beta", "production"), default="local")
+    parser.add_argument("--distribution", choices=("development", "beta", "production"), default="development")
     parser.add_argument("--app-name", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    print(json.dumps(stage(args.manifest, args.target, args.app_name, args.output), indent=2))
+    print(
+        json.dumps(
+            stage(
+                args.manifest,
+                args.target,
+                args.app_name,
+                args.output,
+                deployment_stage=args.stage,
+                distribution=args.distribution,
+            ),
+            indent=2,
+        )
+    )
