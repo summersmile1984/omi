@@ -13,6 +13,7 @@
 
 | 文档 | 回答的问题 | 产出物 |
 |---|---|---|
+| [architecture/three-track-architecture.md](architecture/three-track-architecture.md) | 整体系统如何在一个主线、两个部署目标和白牌客户端之间组织；数据、实体、处理和删除边界如何流动 | 架构文档 + 图集 |
 | [00-upstream-touch-policy.md](00-upstream-touch-policy.md) | 为什么"能不改上游代码就不改"、shim 分支 653 个上游文件改动的诊断、T0 技术目录（每个平台）、T1 白名单、T2 禁改、两条测试通道 | 纪律 + 技术目录 |
 | [01-branch-consolidation.md](01-branch-consolidation.md) | 两条分支怎么收敛到 main：冻结、先同步上游、接缝 PR（S 系列）、新增目录合入（M 系列）、20 个冲突文件归属、门禁命令、回滚 | 操作手册 |
 | [02-deployment-profile.md](02-deployment-profile.md) | 客户端与后端如何用同一份 profile 同时支持 `omi_cloud / self_hosted / cloudflare`；身份契约 v1（Better Auth 两种部署同一契约）；能力开关默认值；两分支现有代码的迁移映射 | 设计 + 生成器规范 |
