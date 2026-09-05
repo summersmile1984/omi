@@ -12,6 +12,11 @@ LABEL com.omi.source.git-commit="${OMI_SOURCE_GIT_COMMIT}" \
 USER root
 COPY backend/requirements-fork.txt /tmp/fork-requirements.txt
 RUN python -m pip install --no-cache-dir --no-deps --require-hashes -r /tmp/fork-requirements.txt
+# Retrieval counts tokens inside the isolated application network. Package the
+# locked tokenizer's hash-checked vocabulary before switching to the runtime user.
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
+RUN python /app/scripts/prewarm_tiktoken_cache.py \
+    && chmod 0555 /opt/tiktoken-cache && chmod 0444 /opt/tiktoken-cache/*
 COPY backend/fork/model_contract.py /opt/profile-build/backend/fork/model_contract.py
 COPY scripts/profiles /opt/profile-build/scripts/profiles
 COPY scripts/brand /opt/profile-build/scripts/brand

@@ -398,6 +398,9 @@ class Fixture:
         (self.output / 'Dockerfile').write_text(
             'ARG BASE\nFROM ${BASE}\nUSER root\nCOPY requirements.txt /tmp/fork-requirements.txt\n'
             'RUN python -m pip install --no-cache-dir --no-deps --require-hashes -r /tmp/fork-requirements.txt\n'
+            'ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache\n'
+            'RUN python /app/scripts/prewarm_tiktoken_cache.py '
+            '&& chmod 0555 /opt/tiktoken-cache && chmod 0444 /opt/tiktoken-cache/*\n'
             'COPY --chown=omi:omi --chmod=0444 profile.json /app/fork/deployment_profiles.generated.json\nUSER omi\n'
             'CMD ["uvicorn","fork.main:app","--host","0.0.0.0","--port","8080","--loop","uvloop"]\n'
         )
@@ -413,6 +416,27 @@ class Fixture:
                 str(self.output),
             ],
             timeout=600,
+        )
+        # The real image must tokenize on a cold process without any network or
+        # writable cache. A host prewarm or an already-running process cannot
+        # satisfy this regression check (recorded retrieval failure, 2026-09-05).
+        self.command(
+            [
+                'docker',
+                'run',
+                '--rm',
+                '--read-only',
+                '--network=none',
+                '--platform=linux/amd64',
+                '--user=10001:10001',
+                self.api_image,
+                'python',
+                '-c',
+                'import tiktoken; e=tiktoken.encoding_for_model("gpt-4"); '
+                's="Eddy understands 茉莉花茶"; ids=e.encode(s); '
+                'assert ids and e.decode(ids)==s; print("offline tokenizer round-trip passed")',
+            ],
+            timeout=60,
         )
         if self.model_stores:
             self.command(

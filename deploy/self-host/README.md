@@ -16,6 +16,14 @@ and `SELF_HOST_BRAND_MANIFEST` (a repository-relative public manifest); the
 manifest endpoints and `PUBLIC_*` environment values must agree. `SELF_HOST_STAGE`
 is `production`, `beta`, or `local`; Python derives its upstream env stage.
 
+The fork image also prewarms the locked tiktoken `cl100k_base` vocabulary using
+the upstream build helper. `TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache` is packaged
+read-only for the runtime user, so retrieval token counting needs no outbound
+download. The existing product CI lane checks a fresh non-root image process
+with networking disabled and a read-only filesystem before starting services.
+This covers the actual first-chat failure recorded in
+[the real-model product run](../../dev/unified-main/implementation-2026-09-05/server-real-model-product.md).
+
 The API runs `fork.main:app`; queue consumers run `python -m fork.worker`, which
 validates per-queue credentials and supervises child failures. Canonical-memory
 projection delivery runs in `python -m fork.memory_maintenance_worker`: it pages

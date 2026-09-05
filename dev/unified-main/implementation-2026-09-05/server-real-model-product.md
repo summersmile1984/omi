@@ -95,3 +95,27 @@ API 读回 2 条记忆，其中一条包含录音中的 jasmine 偏好，并读�
 9 月 6 日继续检查时，夹具父进程仍存活，但 Docker 明确显示该项目容器已退出；
 API/入口退出时间为 `2026-09-05T19:22:28Z`，`OOMKilled=false`。
 此状态不能视为模型仍在执行，也不能将本轮退出归因于先前的 OOM。
+
+## 9 月 6 日：分词工件修复
+
+正式 fork Dockerfile 和验收镜像均在构建阶段执行上游已有的
+`scripts/prewarm_tiktoken_cache.py`。锁定 tiktoken 自身校验词表 hash，
+结果放在固定、只读的 `/opt/tiktoken-cache`。不放开应用出站网络。
+现有 product CI 入口在启动服务前执行真实镜像的冷进程回归检查：
+`docker run --read-only --network=none --user=10001:10001 ...`，对中英文
+文本执行实际 encode/decode；词表缺失会直接失败。
+
+本次重新构建的验收镜像 `memweft-contract-2ec66c5e3867-api` 通过该检查，
+profile 与 d 轮逐字节一致。正式 `deploy/self-host/Dockerfile` 也独立构建为
+`eddy-self-host-tokenizer-20260906-b` 并通过同样的断网检查。
+首次正式构建缺少自托管端点而被 renderer 拒绝；第二次明确提供工程夹具
+manifest 和 local stage 后成功，没有跳过渲染或将此称为生产发布。
+
+d 轮原有存储卷未重建，恢复后换用新应用镜像，实际会话换票返回 200，
+2 条已存记忆仍可读回。聊天不再报告词表下载失败，但入口仍在长响应期间
+断开：API 容器保持 healthy，入口对 HTTP 使用 30 秒超时并先缓冲整条响应。
+这项转发问题及导出 schema 问题仍待修复，不能报告完整聊天闭环通过。
+
+本次夹具测试 8 项、启动配置测试 7 项通过。新增检查直接运行在现有
+`deploy/self-host/ci/product.sh` 的镜像构建路径内，覆盖本记录中的实际故障；
+未新增独立检查或修改上游代码、词表算法及依赖锁。
