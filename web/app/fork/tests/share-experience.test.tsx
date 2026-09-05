@@ -187,8 +187,9 @@ describe('the public relay overlay', () => {
     vi.stubEnv('NEXT_PUBLIC_API_BASE_URL', 'https://api.example.invalid');
     const external = vi.fn();
     vi.stubGlobal('fetch', external);
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
     const binding = {
-      fetch: vi.fn(async () => Response.json(taskPreview)),
+      fetch: vi.fn(async (_request: Request) => Response.json(taskPreview)),
     };
     const response = await publicProxyGet(
       new Request(
@@ -199,6 +200,8 @@ describe('the public relay overlay', () => {
     expect(response.status).toBe(200);
     expect(binding.fetch).toHaveBeenCalledTimes(1);
     expect(external).not.toHaveBeenCalled();
+    expect(timeout).not.toHaveBeenCalled();
+    expect((binding.fetch.mock.calls[0][0] as Request).redirect).toBe('follow');
   });
 });
 

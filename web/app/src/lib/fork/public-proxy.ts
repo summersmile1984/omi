@@ -63,8 +63,13 @@ export async function proxyPublicGet(
       `${apiBaseUrl.replace(/\/+$/, '')}/${path}${search ? `?${search}` : ''}`,
       {
         headers: { Accept: 'application/json' },
-        redirect: 'error',
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+        // workerd does not permit `redirect: 'error'` or a transferable
+        // AbortSignal on a service-binding request. The external fetch path
+        // retains both controls; a request-scoped Worker binding owns its
+        // execution and cannot escape to an arbitrary redirect target.
+        ...(apiBinding
+          ? {}
+          : { redirect: 'error', signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) }),
       },
     );
     const response = apiBinding
