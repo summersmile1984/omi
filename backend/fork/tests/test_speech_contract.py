@@ -247,3 +247,23 @@ def test_native_tts_invalid_result_never_becomes_successful_audio(samples):
     with runtime.tts_gate:
         with pytest.raises(speech.SpeechError, match='busy'):
             runtime.synthesize('test', 'af_heart')
+
+
+@pytest.mark.asyncio
+async def test_listen_receiver_socket_is_owned_by_the_fork_patch(monkeypatch):
+    from fork.patches.speech import patches
+    from routers.listen.receiver import ListenReceiver
+    from utils.sensevoice import socket as local_socket
+    from utils.stt.streaming import STTService
+
+    patch = next(
+        patch
+        for patch in patches()
+        if patch.module == 'routers.listen.receiver' and patch.attribute == 'ListenReceiver'
+    )
+    created = object()
+    monkeypatch.setattr(local_socket, 'SenseVoiceSocket', lambda **kwargs: created)
+    receiver = type('Receiver', (), {'host': type('Host', (), {'stt_service': STTService.sensevoice})()})()
+
+    patched = patch.build(ListenReceiver)
+    assert await patched._create_stt_socket(receiver, lambda _segments: None, 16000) is created

@@ -27,6 +27,21 @@ def patches():
 
         return ServingSocket
 
+    def listen_receiver(original):
+        create_original = original._create_stt_socket
+
+        async def create(receiver, callback, sample_rate, *args, **kwargs):
+            from utils.stt.streaming import STTService
+
+            if receiver.host.stt_service == STTService.sensevoice:
+                from utils.sensevoice.socket import SenseVoiceSocket
+
+                return SenseVoiceSocket(sample_rate=sample_rate, transcript_callback=callback)
+            return await create_original(receiver, callback, sample_rate, *args, **kwargs)
+
+        original._create_stt_socket = create
+        return original
+
     targets = [
         ('utils.stt.pre_recorded', 'get_prerecorded_service', lambda original: speech.prerecorded_selection),
         ('utils.chat', 'get_prerecorded_service', lambda original: speech.prerecorded_selection),
@@ -37,6 +52,7 @@ def patches():
         ('routers.chat', 'get_stt_service_for_language', lambda original: speech.streaming_selection),
         ('routers.listen.runtime', 'get_stt_service_for_language', lambda original: speech.streaming_selection),
         ('routers.listen.receiver', 'get_stt_service_for_language', lambda original: speech.streaming_selection),
+        ('routers.listen.receiver', 'ListenReceiver', listen_receiver),
         ('utils.sensevoice.socket', 'get_sensevoice_recognizer', lambda original: speech.recognizer),
         ('utils.sensevoice.prerecorded_provider', 'get_sensevoice_recognizer', lambda original: speech.recognizer),
         ('utils.sensevoice.socket', 'SenseVoiceSocket', socket),

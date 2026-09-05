@@ -17,7 +17,7 @@ retain upstream bytes and leave local model routing at the fork patch seam.
 no remaining merge conflicts and `git rev-list --left-right --count
 upstream/main...HEAD` was `0 248` after the latest merge. The latest merge
 changed only upstream macOS changelog inputs and passes the merge-scoped
-zero-upstream-touch check. A whole-candidate check currently reports 22
+zero-upstream-touch check. A whole-candidate check currently reports 21
 pre-existing upstream-touch violations, so the one-fork topology is not yet
 accepted; the incremental WL-7 commits themselves are clean. The scheduled
 workflow continues to create a regular sync PR only for clean merge trees. This
