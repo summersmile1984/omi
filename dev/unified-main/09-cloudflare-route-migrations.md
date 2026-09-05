@@ -175,3 +175,44 @@ this route can be marked owned. The target profile's
 `allow_direct_model_providers: false` must gate both visible Web controls and
 the token-request entry point (CLIENT-1); this is a retained delivery obligation,
 not a permanent removal of the user's live-model goal.
+
+<a id="cf4-desktop-daily-writes"></a>
+## CF-4: desktop daily writes
+
+Owner: `api-core`. Upstream authority: `backend/routers/users.py` and
+`backend/database/daily_summaries.py`. The 2026-09-05 Eddy production preparation
+found these actual registrations missing from the inventory. They have no
+Cloudflare route owner and remain blocked; inventory classification is not an
+implementation or release qualification.
+
+| Method | Path |
+|---|---|
+| POST | `/v1/users/desktop-usage/daily` |
+| POST | `/v1/users/daily-summaries` |
+
+The usage write requires a UID/device/day owner, monotonic per-device counters,
+bounded date window, IANA timezone validation and the existing rate-limit policy.
+The on-demand summary requires the user's local-day boundaries, quota admission,
+existing-record reuse, generation ownership, cooldown only after actual spend,
+and distinct empty-day versus concurrent-generation responses. The existing CF
+UTC deterministic regenerate route does not implement this upstream contract.
+
+<a id="cf4-feedback-reports"></a>
+## CF-4: feedback reports
+
+Owner: `api-core` with `jobs` generation. Upstream authority:
+`backend/routers/feedback_admin.py`. The same production preparation discovered
+five missing admin registrations:
+
+| Method | Path |
+|---|---|
+| GET | `/v1/admin/feedback/reports` |
+| GET | `/v1/admin/feedback/reports/{report_date}` |
+| GET | `/v1/admin/feedback/events/{event_id}/context` |
+| POST | `/v1/admin/feedback/reports/{report_date}/generate` |
+| POST | `/v1/admin/feedback/reports/generate-yesterday` |
+
+The required boundary joins the admin secret gate and actor attribution with a
+feedback event ledger, bounded pointer-only daily reports and authorized
+on-demand context hydration. End-user JWTs must not grant access. No CF source
+currently implements that complete boundary; all five remain blocked.
