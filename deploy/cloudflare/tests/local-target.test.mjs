@@ -172,7 +172,6 @@ describe("disposable actual Cloudflare target", () => {
   it("refuses enabled migration or anonymous-client policies instead of weakening a frozen candidate", () => {
     for (const key of [
       "ACCOUNT_ACTIVATION_FENCE_ENABLED",
-      "ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED",
       "MCP_ALLOW_UNAUTHENTICATED_DCR",
       "CHAT_STAGING_ENABLED",
       "ORIGIN_BACKEND_URL",
@@ -190,6 +189,31 @@ describe("disposable actual Cloudflare target", () => {
       expect(() =>
         localConfigs({ ...inputs, templates, preservePolicy: true }),
       ).toThrow(`policy adapter required for ${key}`);
+    }
+  });
+  it("preserves native ownership policy in a frozen candidate", () => {
+    for (const enabled of ["false", "true"]) {
+      const templates = readWorkerTemplates(root);
+      for (const entry of Object.values(templates)) {
+        delete entry.config.vars?.ORIGIN_BACKEND_URL;
+        for (const name of Object.keys(entry.config.vars ?? {}))
+          if (
+            name.endsWith("_ENABLED") ||
+            name === "MCP_ALLOW_UNAUTHENTICATED_DCR"
+          )
+            entry.config.vars[name] = "false";
+      }
+      for (const role of ["edge", "realtime", "api-core"])
+        templates[role].config.vars.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED = enabled;
+      const { configs } = localConfigs({
+        ...inputs,
+        templates,
+        preservePolicy: true,
+      });
+      for (const role of ["edge", "realtime", "api-core"])
+        expect(configs[role].vars.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED).toBe(
+          enabled,
+        );
     }
   });
   it("creates a private default cache and only reuses an explicitly existing ordinary cache", () => {

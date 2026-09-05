@@ -99,7 +99,6 @@ export function localConfigs({
           ((key.endsWith("_STAGING_ENABLED") ||
             [
               "ACCOUNT_ACTIVATION_FENCE_ENABLED",
-              "ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED",
               "MCP_ALLOW_UNAUTHENTICATED_DCR",
             ].includes(key)) &&
             value !== "false") ||
@@ -152,9 +151,10 @@ export function localConfigs({
       MCP_AUTHORIZATION_SERVER_URL: `${origin}/api/auth`,
       NATIVE_AUTH_PUBLIC_BASE_URL: origin,
       ACCOUNT_ACTIVATION_FENCE_ENABLED: "false",
-      ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED: "false",
       MCP_ALLOW_UNAUTHENTICATED_DCR: "false",
     };
+    if (!preservePolicy && ["edge", "realtime", "api-core"].includes(role))
+      config.vars.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED = "true";
     if (["api-core", "api-ai"].includes(role))
       config.vars.BRAND_RUNTIME_JSON = JSON.stringify(brandRuntime);
     if (role === "api-core") {

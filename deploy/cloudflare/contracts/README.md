@@ -14,7 +14,19 @@ locked Wrangler/workerd, then executes:
   `/v4/web/listen` (first-frame JWT) PCM recording flows: authenticated
   capture, committed transcript reads, reconnect ownership, cross-user denial,
   explicit finalization through actual Queue/Jobs/Core, derived memories/tasks,
-  and denial after logout. This is not the full dual-target recording matrix.
+  and denial after logout. It then restores the real account session, exports
+  profile/recording/memory/tasks, and checks cross-user isolation. The privacy
+  path uploads and reads real R2 bytes with checksum rejection, deletes both
+  a populated account and a just-registered account through public routes,
+  waits for the actual Queue consumer and unchanged 60-second quiescence /
+  30-second settling delays, then proves credential revocation and another
+  account's retention. `local-privacy.mjs` opens only the fixture's SQLite stores
+  read-only: all product identity columns in the application's deletion registry,
+  Auth identity columns, and R2 object keys must reach zero. The short-lived App
+  tombstone and durable Auth revocation fence remain by design. This checks
+  logical R2 deletion, not physical disk reclamation or hosted Vectorize erasure.
+  The inspector never seeds state or runs a deletion processor. This is not the
+  full dual-target recording matrix.
 - `chat.mjs`, the current upstream Web `api.ts` get/send/clear functions against
   actual HTTP/SSE, Python model RPC and D1: configured brand greeting/default
   system prompt (via an inference-only echo), app-generator platform identity,
@@ -52,7 +64,8 @@ and verifies its source and artifact hashes before copying all eight Workers,
 Python dependencies, Web assets and Auth/App SQL into its private output. It
 does not recompile those Workers. Their brand/persona/contact/firmware inputs
 come from the candidate. Only resource names, local secrets, origins and provider
-IO are projected; enabled migration, hybrid or anonymous-registration policies
+IO are projected; native account bootstrap policy is preserved exactly. Enabled
+migration, hybrid or anonymous-registration policies
 without a local contract are rejected instead of being disabled. Module, asset
 and SQL bytes are rechecked after startup and after the selected product suites.
 
@@ -97,6 +110,8 @@ The local fixture explicitly supplies synthetic public brand metadata
 the upstream brand/contact from Worker templates, and the projection rejects missing or
 cross-brand input. This synthetic fixture is not a production brand manifest;
 resource-plan tests separately execute the real manifest/profile renderer.
+Source mode enables native ownership bootstrap on Core/Edge/Realtime, matching
+the production renderer's new-allocation policy; migration mode stays disabled.
 The presentation case temporarily sets warning/restrict through the actual local
 fair-use admin endpoint using this fixture's private generated key, reads the
 public user status, then resets in `finally`. Traces contain route/status only;

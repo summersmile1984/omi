@@ -349,6 +349,8 @@ describe('one brand/stage Cloudflare resource authority', () => {
       expect(plan.configs.realtime.config.vars.ACCOUNT_ACTIVATION_FENCE_ENABLED).toBe(
         'false',
       );
+      for (const role of ['edge', 'realtime', 'api-core'])
+        expect(plan.configs[role].config.vars.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED).toBe('true');
       expect(plan.configs['api-core'].config.vars.ACCOUNT_CUTOVER_MANIFEST_ID).toBe(
         fixture.input.migration_lineage,
       );

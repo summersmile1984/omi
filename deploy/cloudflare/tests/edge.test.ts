@@ -1812,6 +1812,51 @@ describe("edge gateway", () => {
     expect(unauthenticated.status).toBe(401);
   });
 
+  it.each(["new", "migrating", "unavailable"])(
+    "reads native ownership before privacy deletion in %s state",
+    async (state) => {
+      const calls: string[] = [];
+      const env = {
+        INTERNAL_ASSERTION_SECRET: "test-secret",
+        ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED: "true",
+        ACCOUNT_ACTIVATION_FENCE_ENABLED: "false",
+        AUTH: rawService(() =>
+          Response.json({ uid: "native-user", authority: "better-auth" }),
+        ),
+        API_CORE: rawService((request) => {
+          calls.push("core");
+          expect(new URL(request.url).pathname).toBe(
+            "/v1/account/cutover/control",
+          );
+          expect(
+            decodeAuthContext(request.headers.get("x-omi-auth-context")),
+          ).toMatchObject({ uid: "native-user", authority: "better-auth" });
+          return state === "unavailable"
+            ? new Response(null, { status: 503 })
+            : Response.json({
+                state,
+                product_traffic_allowed: state === "new",
+              });
+        }),
+        JOBS: rawService(() => {
+          calls.push("jobs");
+          return Response.json({ status: "ok" });
+        }),
+      };
+      const response = await edge.fetch(
+        new Request("https://edge.test/v1/users/delete-account", {
+          method: "DELETE",
+          headers: { authorization: "Bearer native-session" },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(state === "unavailable" ? 503 : 200);
+      expect(calls).toEqual(
+        state === "unavailable" ? ["core"] : ["core", "jobs"],
+      );
+    },
+  );
+
   it("routes the sync job run boundary to Jobs with only signed Better Auth context", async () => {
     let forwarded: Request | undefined;
     const env = {

@@ -22,6 +22,7 @@ import {
 import {
   ACCOUNT_CUTOVER_CONTROL_PATH,
   cloudflareProductTrafficDenial,
+  readCloudflareAccountControl,
 } from "./cutover";
 import type { EdgeEnv, EdgeVariables } from "./env";
 import type { AuthAudience, AuthContext } from "../shared/auth-context";
@@ -1226,6 +1227,15 @@ const proxyAuthenticatedAccountDeletion = async (
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
+  if (c.env.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED === "true") {
+    const control = await readCloudflareAccountControl(
+      c.req.raw,
+      c.env,
+      auth,
+      id,
+    );
+    if (control instanceof Response) return withRequestId(control, id);
+  }
   const headers = stripUntrustedHeaders(c.req.raw);
   await attachAuthContext(
     headers,

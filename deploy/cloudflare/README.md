@@ -404,16 +404,24 @@ This prevents a captured assertion for one service or route from being replayed
 against another. The explicit legacy fallback is the only path that preserves a
 client bearer, because the legacy backend remains its verifier during cutover.
 
-The isolated staging profile has one server-authoritative account/data-plane
-binding. On its first authenticated control read, a Better Auth principal is
-atomically registered in D1 as a bound `new` account; this is safe only because
-the profile cannot contain a historical Firebase account. Edge checks that
-control row before Core, AI, Jobs, or Realtime product traffic and fails closed
-unless `state=new`, product traffic is allowed, and the destination is bound.
-Auth/profile and the control endpoint remain reachable while product traffic is
-fenced. Missing rows outside the exact
-`ACCOUNT_CUTOVER_PROFILE=isolated-staging` configuration still project as
-`legacy`; no existing-account migration or production cutover is inferred.
+An isolated allocation has one server-authoritative account/data-plane binding.
+For `allocation: new`, the resource renderer enables
+`ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED` on Core, Edge and Realtime, retaining the
+configured `ACCOUNT_CUTOVER_MANIFEST_ID` on Core/Jobs. The first authenticated
+control read atomically registers a Better Auth principal as a bound `new`
+account. This is an explicit native-account policy for an allocation with no
+imported legacy authority; it never overwrites an existing ownership record or
+initializes a Firebase principal. Missing rows with bootstrap disabled still
+project as `legacy`. Existing allocations retain their template policies.
+
+Edge and Realtime consult this owner before product traffic even when the
+separate migration-only `account_activation_fence` capability is false. They
+require `state=new`, allowed traffic and a bound destination, including during
+account deletion. Auth/profile and control remain reachable. Native privacy
+requests also initialize/read ownership, so deletion can be the first request
+after signup; Jobs retains the authoritative deletion eligibility check and
+privacy stays reachable while ordinary traffic is fenced. A failed ownership
+read returns 503 before dispatching to Jobs.
 
 The current release workflow records exact prior versions for all eight Workers,
 then verifies SQL history, applies additive migrations, deploys dependencies in

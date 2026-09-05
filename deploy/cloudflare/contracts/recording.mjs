@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { WebSocket } from "ws";
+import { localPrivacyObserver } from "./local-privacy.mjs";
 
 // Actual public recording flow; only the target runner's inference is controlled.
 // Kept separate from the common core slice until both target runners support it.
@@ -24,7 +25,7 @@ for (const key of ["api_origin", "auth_origin"]) {
 }
 const report = {
   schema_version: 1,
-  scope: "recording-persistence-finalization",
+  scope: "recording-persistence-finalization-and-privacy",
   target: metadata.target,
   brand_id: metadata.brand_id,
   cases: [],
@@ -40,7 +41,15 @@ async function request(
   service,
   path,
   status,
-  { token, method = "GET", body, retrySignup = true } = {},
+  {
+    token,
+    method = "GET",
+    body,
+    retrySignup = true,
+    rawBody,
+    bytes = false,
+    headers = {},
+  } = {},
 ) {
   const response = await fetch(metadata[`${service}_origin`] + path, {
     method,
@@ -51,8 +60,9 @@ async function request(
       "Content-Type": "application/json",
       "X-App-Platform": "web",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...headers,
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: rawBody ?? (body === undefined ? undefined : JSON.stringify(body)),
   });
   trace.push({
     service,
@@ -80,17 +90,22 @@ async function request(
       retrySignup: false,
     });
   }
-  require(response.status ===
-    status, `${service} ${method} expected ${status}, received ${response.status}`);
-  const data = await response.json();
-  return { data, headers: response.headers };
+  require((Array.isArray(status) ? status : [status]).includes(
+    response.status,
+  ), `${service} ${method} expected ${status}, received ${response.status}`);
+  const data = bytes
+    ? Buffer.from(await response.arrayBuffer())
+    : await response.json();
+  return { data, headers: response.headers, status: response.status };
 }
 async function signup() {
+  const email = `record-${randomUUID()}@example.invalid`,
+    password = randomUUID() + randomUUID();
   const result = await request("auth", "/api/auth/sign-up/email", 200, {
     method: "POST",
     body: {
-      email: `record-${randomUUID()}@example.invalid`,
-      password: randomUUID() + randomUUID(),
+      email,
+      password,
       name: "Recording Contract",
     },
   });
@@ -98,7 +113,13 @@ async function signup() {
   require(session, "signup omitted opaque session");
   sessions.push(session);
   const jwt = await request("auth", "/api/auth/token", 200, { token: session });
-  return { token: jwt.data.token, session };
+  return {
+    token: jwt.data.token,
+    session,
+    email,
+    password,
+    uid: JSON.parse(Buffer.from(jwt.data.token.split(".")[1], "base64url")).sub,
+  };
 }
 async function connect(token, id, native = false) {
   const socket = new WebSocket(
@@ -302,6 +323,198 @@ try {
       token: owner.token,
     });
   });
+  const restored = await request("auth", "/api/auth/sign-in/email", 200, {
+    method: "POST",
+    body: { email: owner.email, password: owner.password },
+  });
+  owner.session = restored.headers.get("set-auth-token");
+  require(owner.session, "sign-in omitted restored session");
+  sessions.push(owner.session);
+  owner.token = (
+    await request("auth", "/api/auth/token", 200, { token: owner.session })
+  ).data.token;
+  await caseOf(
+    "recording.export-restored-recording-memory-task-and-profile",
+    async () => {
+      await request("api", "/v1/users/export", 401);
+      const exported = await request("api", "/v1/users/export", 200, {
+        token: owner.token,
+      });
+      require(exported.data.profile.uid === owner.uid &&
+        exported.data.profile.email === owner.email &&
+        exported.data.profile.name ===
+          "Recording Contract", "export omitted authoritative profile");
+      const conversation = exported.data.conversations.find(
+        (row) => row.id === id,
+      );
+      require(conversation?.transcript_segments.length === 2 &&
+        conversation.status === "completed", "export lost completed recording");
+      require(JSON.stringify(exported.data.memories).includes(
+        "prefers concise updates",
+      ), "export lost derived memory");
+      require(JSON.stringify(exported.data.action_items).includes(
+        "Send the synthetic follow-up",
+      ), "export lost derived task");
+      const isolated = await request("api", "/v1/users/export", 200, {
+        token: other.token,
+      });
+      require(!JSON.stringify(isolated.data).includes(id) &&
+        !JSON.stringify(isolated.data).includes(
+          owner.email,
+        ), "export crossed account boundary");
+    },
+  );
+  const assetPath = `/v1/cf/assets/privacy-${randomUUID()}.txt`,
+    ownerBytes = Buffer.from("Owner synthetic private attachment"),
+    otherBytes = Buffer.from("Other synthetic private attachment");
+  const sha256 = (data) => createHash("sha256").update(data).digest("hex");
+  await caseOf(
+    "recording.private-r2-integrity-and-account-isolation",
+    async () => {
+      await request("api", assetPath, 422, {
+        token: owner.token,
+        method: "PUT",
+        rawBody: ownerBytes,
+        headers: {
+          "Content-Type": "text/plain",
+          "x-content-sha256": "0".repeat(64),
+        },
+      });
+      const stored = await request("api", assetPath, 200, {
+        token: owner.token,
+        method: "PUT",
+        rawBody: ownerBytes,
+        headers: {
+          "Content-Type": "text/plain",
+          "x-content-sha256": sha256(ownerBytes),
+        },
+      });
+      require(stored.data.checksum_sha256 ===
+        sha256(ownerBytes), "R2 upload checksum differs");
+      await request("api", assetPath, 404, { token: other.token });
+      const read = await request("api", assetPath, 200, {
+        token: owner.token,
+        bytes: true,
+      });
+      require(read.data.equals(ownerBytes), "R2 attachment bytes differ");
+      await request("api", assetPath, 200, {
+        token: other.token,
+        method: "PUT",
+        rawBody: otherBytes,
+        headers: { "Content-Type": "text/plain" },
+      });
+    },
+  );
+  const unused = await signup();
+  const inspectPrivacy = await localPrivacyObserver(metadata);
+  const beforeDeletion = inspectPrivacy(owner.uid);
+  require(beforeDeletion.app["cf_conversations.uid"] > 0 &&
+    beforeDeletion.app["cf_memories.uid"] > 0 &&
+    beforeDeletion.app["cf_action_items.uid"] > 0 &&
+    beforeDeletion.auth["user.id"] === 1 &&
+    beforeDeletion.r2_objects >
+      0, "privacy fixture did not persist real App/Auth/R2 data");
+  await caseOf(
+    "recording.account-deletion-initializes-unused-native-account",
+    async () => {
+      await request("api", "/v1/users/delete-account", 401, {
+        method: "DELETE",
+        body: {},
+      });
+      await request("api", "/v1/users/delete-account", 200, {
+        token: unused.token,
+        method: "DELETE",
+        body: {},
+      });
+    },
+  );
+  await caseOf(
+    "recording.account-deletion-fences-and-completes-from-queue",
+    async () => {
+      await request("api", "/v1/users/delete-account", 200, {
+        token: owner.token,
+        method: "DELETE",
+        body: {},
+      });
+      await request("api", "/v1/users/export", 409, { token: owner.token });
+      // Preserve production quiescence/settling delays. The real Queue consumer,
+      // rather than a test-invoked processor or manual SQL, must revoke identity.
+      const deadline = Date.now() + 180000;
+      let revoked = false;
+      while (Date.now() < deadline) {
+        const check = await request(
+          "api",
+          `/v1/conversations/${id}`,
+          [409, 401],
+          { token: owner.token },
+        );
+        if (check.status === 401) {
+          revoked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      require(revoked, "account deletion queue did not revoke identity");
+      await request("auth", "/api/auth/sign-in/email", 401, {
+        method: "POST",
+        body: { email: owner.email, password: owner.password },
+      });
+      const survivor = await request("api", assetPath, 200, {
+        token: other.token,
+        bytes: true,
+      });
+      require(survivor.data.equals(
+        otherBytes,
+      ), "account deletion removed another account's attachment");
+      await request("api", "/v1/users/export", 200, { token: other.token });
+      mkdirSync(metadata.trace_dir, { recursive: true, mode: 0o700 });
+    },
+  );
+  await caseOf(
+    "recording.account-deletion-zero-persisted-residual",
+    async () => {
+      const deadline = Date.now() + 15000;
+      let erased;
+      while (Date.now() < deadline) {
+        erased = [owner, unused].map((account) => inspectPrivacy(account.uid));
+        if (
+          erased.every(
+            (data) => data.app_tombstones === 1 && data.pending_deletions === 0,
+          )
+        )
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      for (const data of erased) {
+        require(Object.values(data.app).every((count) => count === 0) &&
+          Object.values(data.auth).every((count) => count === 0) &&
+          data.r2_objects === 0 &&
+          data.app_tombstones === 1 &&
+          data.pending_deletions ===
+            0, "account deletion left persisted App/Auth/R2 residual");
+      }
+      const survivor = inspectPrivacy(other.uid);
+      require(survivor.auth["user.id"] === 1 &&
+        survivor.r2_objects >
+          0, "privacy erasure crossed persisted account boundary");
+      writeFileSync(
+        resolve(metadata.trace_dir, "privacy-storage-results.json"),
+        JSON.stringify(
+          {
+            boundary:
+              "read-only local Wrangler SQLite; production delays and actual queue; hosted Vectorize not exercised",
+            before: beforeDeletion,
+            erased,
+            survivor,
+            release_qualified: false,
+          },
+          null,
+          2,
+        ) + "\n",
+        { mode: 0o600 },
+      );
+    },
+  );
   report.passed = true;
 } catch (error) {
   report.passed = false;

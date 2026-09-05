@@ -138,7 +138,10 @@ function publicConfig(role, config, input, projected, names, origins) {
       config.vars.ACCOUNT_ACTIVATION_FENCE_ENABLED = String(
         projected.profile.capabilities.account_activation_fence,
       );
-    if (role === 'api-core') config.vars.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED = 'false';
+    // A new allocation has no imported legacy authority. Core initializes its
+    // native account owner; Edge/Realtime consult that owner and its deletion fence.
+    if (['edge', 'realtime', 'api-core'].includes(role))
+      config.vars.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED = 'true';
     const freshOff = {
       jobs: [
         'MCP_APP_LEGACY_EXACT_STAGING_ENABLED',
