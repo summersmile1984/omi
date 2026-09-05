@@ -16,8 +16,10 @@ they skip (CI stays hermetic; run locally with the dev stack up).
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("FIRESTORE_PG_DSN"), reason="needs live PostgreSQL (set FIRESTORE_PG_DSN)"
@@ -258,6 +260,116 @@ def test_existing_user_onboarding_admission_persists_and_stops_after_completion(
     assert root.get().to_dict()['preserved'] == 'legacy-principal'
     admission.delete()
     root.delete()
+
+
+def test_v5_upgrade_registers_memory_collections_without_rewriting_existing_rows(db):
+    """The forward v6 admission must preserve data that was valid under v5."""
+    from firestore_pg.migrations import (
+        COLLECTION_TABLE,
+        MIGRATION_TABLE,
+        STATIC_HASHED_COLLECTION_IDS_V6,
+        SchemaNotCurrent,
+        check_schema,
+        collection_table_name,
+        get_engine,
+        migrate,
+    )
+
+    uid = f'pg-v5-upgrade-{uuid4().hex}'
+    legacy = db.collection('users').document(uid)
+    legacy.set({'state': 'created-under-v5'})
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(f'DELETE FROM {COLLECTION_TABLE} WHERE collection_id = ANY(:collection_ids)'),
+            {'collection_ids': list(STATIC_HASHED_COLLECTION_IDS_V6)},
+        )
+        conn.execute(text(f'DELETE FROM {MIGRATION_TABLE} WHERE version = 6'))
+
+    with pytest.raises(SchemaNotCurrent, match='1..6'):
+        check_schema(engine)
+
+    status = migrate(engine)
+
+    assert status.current_version == status.latest_version == 6
+    assert legacy.get().to_dict() == {'state': 'created-under-v5'}
+    with engine.connect() as conn:
+        registered = dict(
+            conn.execute(
+                text(
+                    f'SELECT collection_id, table_name FROM {COLLECTION_TABLE} '
+                    'WHERE collection_id = ANY(:collection_ids)'
+                ),
+                {'collection_ids': list(STATIC_HASHED_COLLECTION_IDS_V6)},
+            ).fetchall()
+        )
+    assert registered == {
+        collection_id: collection_table_name(collection_id) for collection_id in STATIC_HASHED_COLLECTION_IDS_V6
+    }
+    legacy.delete()
+
+
+def test_canonical_source_replacement_reads_the_admitted_privacy_receipt_collection(db, monkeypatch):
+    """A v5 database could persist a recording but failed when replacement read its receipt.
+
+    This runs the production replacement transaction against PostgreSQL after the
+    migration fixture has admitted the v6 inventory.  It proves that a normal new
+    candidate may read the anti-resurrection receipt and commit atomically; it is
+    deliberately not a synthetic table-read assertion.
+    """
+    from database import memory_apply_store as store
+    from models.memory_apply import MemoryControlState
+    from tests.unit import test_memory_apply_store as memory_test
+
+    monkeypatch.setenv('MEMORY_MODE', 'write')
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'test-memory-inventory-receipt-secret-32-bytes')
+    suffix = uuid4().hex
+    uid = 'u1'
+    control = MemoryControlState(uid=uid, head_commit_id=f'head-{suffix}', account_generation=1, source_generation=2)
+    old_evidence = memory_test._evidence(evidence_id=f'old-evidence-{suffix}')
+    old = memory_test._short_term_target(memory_id=f'old-memory-{suffix}', evidence=[old_evidence])
+    replacement_id, replacement_digest, replacement_operation, write = memory_test._replacement_operation_and_write(
+        store,
+        control,
+        memory_id=f'new-memory-{suffix}',
+        replacement_id=f'replace-{suffix}',
+        replacement_digest=f'digest-{suffix}',
+        evidence_id=f'new-evidence-{suffix}',
+    )
+    collection = 'memory_deletion_receipts'
+    receipt_ref = db.collection('users').document(uid).collection(collection).document(f'probe-{suffix}')
+    for ref in (
+        db.document(f'users/{uid}/memory_state/apply_control'),
+        db.document(f'users/{uid}/memory_items/{old.memory_id}'),
+        db.document(f'users/{uid}/memory_evidence/{old_evidence.evidence_id}'),
+        db.document(f'users/{uid}/memory_items/{write.patch_payload["new_memory_id"]}'),
+        db.document(f'users/{uid}/memory_evidence/{write.evidence[0].evidence_id}'),
+        db.document(f'users/{uid}/memory_operations/{replacement_operation.operation_id}'),
+        db.document(f'users/{uid}/memory_operations/{write.operation.operation_id}'),
+        db.document(f'users/{uid}/memory_source_replacements/{replacement_id}'),
+        receipt_ref,
+    ):
+        ref.delete()
+    db.document(f'users/{uid}/memory_state/apply_control').set(control.model_dump(mode='json'))
+    db.document(f'users/{uid}/memory_items/{old.memory_id}').set(old.model_dump(mode='json'))
+    db.document(f'users/{uid}/memory_evidence/{old_evidence.evidence_id}').set(old_evidence.model_dump(mode='json'))
+
+    result = store.replace_conversation_source_firestore(
+        uid=uid,
+        conversation_id='conv1',
+        replacement_id=replacement_id,
+        replacement_digest=replacement_digest,
+        replacement_operation=replacement_operation,
+        observed_control=control,
+        expected_source_items=[old],
+        expected_reactivation_items=[],
+        writes=[write],
+        db_client=db,
+    )
+
+    assert result.committed_memory_ids == [write.patch_payload['new_memory_id']]
+    assert db.document(f'users/{uid}/memory_items/{old.memory_id}').get().to_dict()['status'] == 'tombstoned'
+    assert db.document(f'users/{uid}/memory_items/{write.patch_payload["new_memory_id"]}').get().exists
 
 
 def test_account_deletion_completion_replaces_private_marker_atomically(db, monkeypatch):

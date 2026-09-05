@@ -1,5 +1,5 @@
 > Current startup CLI: `python -m fork.migrate migrate|check` from `backend/`.
-> Schema v5 registers backend onboarding admission; v4 registers legal-hold and deletion-gate authorities; v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
+> Schema v6 registers canonical-memory paths, including replacement privacy receipts; v5 registers backend onboarding admission; v4 registers legal-hold and deletion-gate authorities; v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
 > and `frame_requests` without changing v1/v2 mappings. The historical source
 > import/cutover CLI below is not yet shipped on unified main; do not execute its
 > example until the source-freeze/authority tooling is restored and verified.
@@ -296,6 +296,13 @@ weaken its completion, expiry or caller-identity checks. The shared strict
 schema fixture in `fork/tests/schema_firestore.py` exercises the real onboarding
 and legal-hold owners against the admitted inventory in the startup CI lane.
 It catches required dynamic paths that a literal `.collection()` scan misses.
+
+Schema v6 freezes the collection IDs reached through
+`database.memory_collections.MemoryCollections`, including the canonical
+replacement privacy receipts. It preserves v1–v5 physical mappings and fails
+startup when a future typed memory path is not covered by a new explicit schema
+version. The live PostgreSQL transaction suite verifies both a v5→v6 upgrade
+and a real source-replacement transaction after migration.
 
 Completion requires no residual owned rows and no outstanding late VM cleanup.
 One serializable transaction replaces the private UID-keyed active marker with

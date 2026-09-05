@@ -3,6 +3,7 @@
 import pytest
 
 from database import legal_holds, users
+from database.memory_collections import MemoryCollections
 from fork.tests.schema_firestore import SchemaFirestore
 
 
@@ -35,3 +36,45 @@ def test_legal_hold_dynamic_owner_uses_same_admitted_inventory():
     )
     assert db.observed == {'legal_holds', 'legal_hold_deletion_gates'}
     assert db.rows[('legal_hold_deletion_gates', 'legacy')]['state'] == 'completed'
+
+
+def test_memory_collection_owner_uses_the_migration_admitted_inventory():
+    db = SchemaFirestore()
+    collections = MemoryCollections(uid='legacy')
+
+    for path in collections.all_collection_paths():
+        assert not db.document(f'{path}/inventory-check').get().exists
+
+    assert db.observed == {
+        'daily_memory_sweep_daily_summary_staged',
+        'daily_memory_sweep_model_invocations',
+        'daily_memory_sweep_onboarding_sources',
+        'daily_memory_sweep_onboarding_staged',
+        'daily_memory_sweep_receipts',
+        'daily_memory_sweep_sources',
+        'jit_proactivity_candidate_turns',
+        'jit_proactivity_daily_budgets',
+        'jit_proactivity_events',
+        'jit_trigger_feedback',
+        'memory_commits',
+        'memory_deletion_receipts',
+        'memory_evidence',
+        'memory_graph_assertions',
+        'memory_historical_overrides',
+        'memory_import_artifacts',
+        'memory_import_candidates',
+        'memory_import_runs',
+        'memory_ledger_reopens',
+        'memory_legacy_fallback',
+        'memory_lineage',
+        'memory_operations',
+        'memory_outbox',
+        'memory_review_queue',
+        'memory_runs',
+        'memory_source_replacements',
+        'memory_state',
+        'memory_items',
+        'non_active_memory_routes',
+        'short_term_lifecycle_transitions',
+        'users',
+    }
