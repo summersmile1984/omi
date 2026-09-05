@@ -18,6 +18,7 @@ ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
 RUN python /app/scripts/prewarm_tiktoken_cache.py \
     && chmod 0555 /opt/tiktoken-cache && chmod 0444 /opt/tiktoken-cache/*
 COPY backend/fork/model_contract.py /opt/profile-build/backend/fork/model_contract.py
+COPY backend/fork/operator_ai.py /opt/profile-build/backend/fork/operator_ai.py
 COPY scripts/profiles /opt/profile-build/scripts/profiles
 COPY scripts/brand /opt/profile-build/scripts/brand
 COPY brand /opt/profile-build/brand

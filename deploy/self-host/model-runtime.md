@@ -1,5 +1,9 @@
 # Current local model runtime
 
+For the explicit hosted LLM/ASR/TTS option with local embedding, see
+[Local Server OS with Xiaomi MiMo](mimo-local.md). The pinned offline reference
+below remains the default when that option is not selected.
+
 The self-host reference selects pinned BGE-M3 embeddings, Qwen3 1.7B text inference,
 and the SenseVoice/Kokoro speech bundle described in [speech-runtime.md](speech-runtime.md).
 Push and speaker identification remain disabled. The older full-cutover sections

@@ -98,6 +98,21 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(row["llm"]["parallel_requests"], 1)
         self.assertEqual(row["llm"]["request_timeout_seconds"], 300)
 
+    def test_mimo_selection_is_explicit_local_only_and_leaves_embedding_unchanged(self):
+        self.configure()
+        baseline = json.loads(self.cli('self_hosted', '--stage', 'local', '--emit-json').stdout)
+        selected = self.cli('self_hosted', '--stage', 'local', '--operator-ai', 'mimo-cn', '--emit-json')
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        row = json.loads(selected.stdout)['profiles']['self_hosted.local']
+        self.assertEqual(row['embedding'], baseline['profiles']['self_hosted.local']['embedding'])
+        self.assertEqual(row['capabilities']['llm_provider'], 'mimo')
+        self.assertEqual(row['operator_ai']['asr_model'], 'mimo-v2.5-asr')
+        self.assertNotIn('llm', row)
+        self.assertNotIn('speech', row)
+        for target, stage in [('cloudflare', 'local'), ('self_hosted', 'production')]:
+            denied = self.cli(target, '--stage', stage, '--operator-ai', 'mimo-cn', '--emit-json')
+            self.assertNotEqual(denied.returncode, 0)
+
     def test_all_five_generated_outputs_are_checked_and_missing_is_failure(self):
         self.configure()
         for target in ("self_hosted", "cloudflare"):

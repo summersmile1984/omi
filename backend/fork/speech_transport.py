@@ -31,12 +31,24 @@ def voice_for_request(request):
 def _synthesize(request):
     if getattr(request, 'instructions', None) or getattr(request, 'voice_settings', None):
         raise SpeechError('speech_unsupported_settings')
-    if getattr(request, 'model_id', 'eleven_turbo_v2_5') not in ('eleven_turbo_v2_5', 'kokoro'):
+    mimo = speech.streaming_service() == 'mimo'
+    if getattr(request, 'model_id', 'eleven_turbo_v2_5') not in (
+        'eleven_turbo_v2_5',
+        'mimo-v2.5-tts' if mimo else 'kokoro',
+    ):
         raise SpeechError('speech_unsupported_model')
     format_name = getattr(request, 'output_format', 'mp3_44100_128')
     if format_name not in ('wav', 'mp3_44100_128'):
         raise SpeechError('speech_unsupported_format')
-    audio = speech.runtime().synthesize(request.text.strip(), voice_for_request(request))
+    if mimo:
+        from .mimo_speech import synthesize
+
+        requested = getattr(request, 'voice_id', '').strip()
+        if requested not in {'', 'default', 'alloy', 'BAMYoBHLZM7lJgJAmFz0', 'mimo_default'}:
+            raise SpeechError('speech_unsupported_voice')
+        audio = synthesize(request.text.strip())
+    else:
+        audio = speech.runtime().synthesize(request.text.strip(), voice_for_request(request))
     if format_name == 'wav':
         return audio, 'audio/wav'
     try:
@@ -128,7 +140,6 @@ async def ptt(
 ):
     from routers import chat
     from utils.executors import critical_executor, db_executor, run_blocking
-    from utils.sensevoice.socket import SenseVoiceSocket
     from utils.stt.outcomes import TranscriptionFailure
 
     await websocket.accept()
@@ -182,7 +193,7 @@ async def ptt(
 
     segments = asyncio.Queue(maxsize=16)
     try:
-        socket = SenseVoiceSocket(sample_rate=sample_rate, transcript_callback=segments.put_nowait)
+        socket = speech.new_socket(sample_rate=sample_rate, transcript_callback=segments.put_nowait, language=language)
         socket.start()
     except Exception:
         await websocket.close(1013, 'speech_provider_unavailable')

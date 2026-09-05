@@ -28,7 +28,9 @@ def contract_for_profile():
     row = current()
     if row.get('target') != 'self_hosted':
         raise ValueError('local LLM requires self_hosted')
-    contract = validate_llm(row.get('llm'))
+    from .operator_ai import select
+
+    contract = select(row) or validate_llm(row.get('llm'))
     expected = contract.provider if contract else 'disabled'
     if row.get('capabilities', {}).get('llm_provider', 'disabled') != expected:
         raise ValueError('LLM capability conflicts with selected model')
@@ -132,6 +134,10 @@ def build(model, provider, streaming=False, options=None):
         return LocalChatModel(authority=None, streaming=streaming)
     if (model, provider) != (contract.model, contract.provider):
         raise LLMInputRejected('caller changed the selected local model')
+    if contract.provider == 'mimo':
+        from .mimo_chat import build as build_mimo
+
+        return build_mimo(streaming=streaming, options=options)
     options = options or {}
     return LocalChatModel(
         authority=Authority(contract, os.environ.get('LLM_ENDPOINT', ''), timeout=contract.request_timeout_seconds),

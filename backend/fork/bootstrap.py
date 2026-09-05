@@ -95,11 +95,14 @@ def bootstrap(role: Role = Role.API) -> Admission:
         _require('REDIS_DB_PASSWORD')
         _require_modules(('redis',))
 
-    if row.get('llm'):
+    from .operator_ai import select as select_operator_ai
+
+    operator_ai = select_operator_ai(row)
+    if row.get('llm') or operator_ai:
         from .model_contract import validate_llm
         from .llm_runtime import process_environment
 
-        llm = validate_llm(row['llm'])
+        llm = operator_ai or validate_llm(row['llm'])
         # Cloud-provider 25/60-second defaults are not CPU-model budgets. Bind
         # before imports so captured chat owners share the selected deadline.
         for name, value in process_environment(llm).items():
@@ -111,15 +114,15 @@ def bootstrap(role: Role = Role.API) -> Admission:
         validate_capabilities(row)
         for name, value in {
             'SPEAKER_EMBEDDING_PROVIDER': 'disabled',
-            'TTS_PROVIDER': 'kokoro' if row.get('speech') else 'disabled',
+            'TTS_PROVIDER': 'mimo' if operator_ai else 'kokoro' if row.get('speech') else 'disabled',
             'PUSH_PROVIDER': 'disabled',
             'OMI_LLM_GATEWAY_FEATURE_MODE': 'off',
             'OMI_LLM_CHAT_AGENT_ROUTE': 'direct',
             'OMI_LLM_GATEWAY_DEV_SHADOW_ALL_ENABLED': '0',
             'OMI_LLM_GATEWAY_CONVERSATION_STRUCTURE_SHADOW_ENABLED': '0',
             'OMI_LLM_GATEWAY_CONVERSATION_ACTION_ITEMS_SHADOW_ENABLED': '0',
-            'STT_SERVICE_MODELS': 'sensevoice' if row.get('speech') else 'disabled',
-            'STT_PRERECORDED_MODEL': 'sensevoice' if row.get('speech') else 'disabled',
+            'STT_SERVICE_MODELS': 'mimo' if operator_ai else 'sensevoice' if row.get('speech') else 'disabled',
+            'STT_PRERECORDED_MODEL': 'mimo' if operator_ai else 'sensevoice' if row.get('speech') else 'disabled',
             'SENSEVOICE_SPEAKER_MODE': 'single_speaker',
         }.items():
             _bind(name, value)
@@ -143,6 +146,10 @@ def bootstrap(role: Role = Role.API) -> Admission:
 
             contract_for_profile()
             _require('LLM_ENDPOINT')
+        if operator_ai:
+            from .operator_ai import credentials
+
+            credentials()
         _require('ENCRYPTION_SECRET', 32)
         _require('AUTH_JWKS_URL')
         _bind('VECTOR_STORE_PROVIDER', 'qdrant')
@@ -154,7 +161,7 @@ def bootstrap(role: Role = Role.API) -> Admission:
         ObjectConfig.from_env()
         registry = build_registry(collect()).apply(row)
         applied = tuple(registry.applied)
-        if row.get('llm'):
+        if row.get('llm') or operator_ai:
             from .local_llm import check as check_llm
 
             check_llm()

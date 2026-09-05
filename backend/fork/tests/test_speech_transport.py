@@ -14,6 +14,12 @@ from fork import speech, speech_transport
 from utils.sensevoice import socket as local_socket
 
 
+@pytest.fixture(autouse=True)
+def selected_profile(monkeypatch):
+    # Route adapters now choose between explicit deployment speech providers.
+    monkeypatch.setattr(speech.profile, 'current', lambda: {'target': 'self_hosted'})
+
+
 @pytest.fixture
 def application(monkeypatch):
     app = FastAPI()

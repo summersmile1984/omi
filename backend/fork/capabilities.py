@@ -22,6 +22,20 @@ class CapabilityDisabled(RuntimeError):
 def validate(row):
     caps = row.get('capabilities', {})
     from .model_contract import validate_speech, validate_llm
+    from .operator_ai import select
+
+    if select(row):
+        if any(
+            caps.get(key) != value
+            for key, value in {
+                'llm_provider': 'mimo',
+                'stt_providers': ['mimo'],
+                'tts_provider': 'mimo',
+                'push_provider': 'disabled',
+            }.items()
+        ):
+            raise ValueError('capabilities must match the selected MiMo provider')
+        return
 
     llm = validate_llm(row.get('llm'))
     if caps.get('llm_provider', 'disabled') != (llm.provider if llm else 'disabled'):

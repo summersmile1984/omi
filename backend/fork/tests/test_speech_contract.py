@@ -30,6 +30,160 @@ def selected():
         return renderer.resolve('self_hosted', stage='local')['profiles']['self_hosted.local']
 
 
+def test_explicit_mimo_profile_preserves_embedding_and_bounds_egress(monkeypatch):
+    from fork import operator_ai, capabilities
+    from fork.egress_policy import assert_http_endpoint_allowed, EgressPolicyUnavailable
+
+    original = selected()
+    row = operator_ai.configure(original, 'mimo-cn')
+    assert row['embedding'] == original['embedding']
+    assert 'llm' not in row and 'speech' not in row
+    capabilities.validate(row)
+    monkeypatch.setattr(profile, 'current', lambda: row)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted.local')
+    endpoint = operator_ai.MiMo().base_url + '/chat/completions'
+    assert assert_http_endpoint_allowed(endpoint) == 'token-plan-cn.xiaomimimo.com'
+    assert speech.prerecorded_selection('zh-CN') == ('mimo', 'zh', 'mimo-v2.5-asr')
+    assert speech.streaming_selection('en', exclude={'mimo'}) == (None, None, None)
+    for url in (endpoint + '?extra=1', endpoint.replace('https:', 'http:'), endpoint.replace('token-plan-cn', 'api')):
+        with pytest.raises(EgressPolicyUnavailable):
+            assert_http_endpoint_allowed(url)
+    with pytest.raises(ValueError):
+        operator_ai.configure({**original, 'stage': 'production'}, 'mimo-cn')
+    monkeypatch.setattr(profile, 'current', lambda: original)
+    with pytest.raises(EgressPolicyUnavailable):
+        assert_http_endpoint_allowed(endpoint)
+
+
+def test_mimo_speech_uses_documented_audio_protocol_and_hides_provider_error(monkeypatch):
+    import httpx
+    from fork import operator_ai, mimo_speech
+
+    row = operator_ai.configure(selected(), 'mimo-cn')
+    monkeypatch.setattr(profile, 'current', lambda: row)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted.local')
+    monkeypatch.setenv('MIMO_API_KEY', 'synthetic-secret')
+    monkeypatch.delenv('MIMO_SECRET_FILE', raising=False)
+    sent = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        sent.append(payload)
+        assert request.url.path == '/v1/chat/completions'
+        assert request.headers['authorization'] == 'Bearer synthetic-secret'
+        return httpx.Response(
+            200,
+            json={
+                'model': payload['model'],
+                'choices': [{'finish_reason': 'stop', 'message': {'content': '茉莉花茶'}}],
+                'usage': {'seconds': 2},
+            },
+        )
+
+    request = mimo_speech.request
+    monkeypatch.setattr(
+        mimo_speech, 'request', lambda payload: request(payload, transport=httpx.MockTransport(handler))
+    )
+    result = mimo_speech.Client().transcribe_audio(b'controlled-audio', language='zh-CN')
+    assert result.text == '茉莉花茶' and result.duration == 2
+    assert sent[0]['asr_options'] == {'language': 'zh'}
+    assert sent[0]['messages'][0]['content'][0]['input_audio']['data'].startswith('data:audio/wav;base64,')
+    with pytest.raises(speech.SpeechError, match='speech_provider_http_401') as failure:
+        request(
+            {'model': 'mimo-v2.5-asr'},
+            transport=httpx.MockTransport(lambda _: httpx.Response(401, text='private audio and synthetic-secret')),
+        )
+    assert 'synthetic-secret' not in str(failure.value)
+    assert not failure.value.retryable
+
+
+@pytest.mark.asyncio
+async def test_selected_mimo_socket_does_not_construct_the_local_recognizer(monkeypatch):
+    from contextlib import ExitStack
+    from fork import operator_ai, mimo_speech
+    from fork.patches.speech import patches
+
+    row = operator_ai.configure(selected(), 'mimo-cn')
+    monkeypatch.setattr(profile, 'current', lambda: row)
+    monkeypatch.setattr(speech, 'recognizer', mock.Mock(side_effect=AssertionError('local ASR was constructed')))
+    monkeypatch.setenv('SENSEVOICE_SPEAKER_MODE', 'single_speaker')
+    monkeypatch.setattr('utils.stt.vad.linear16_pcm_is_silent', lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        mimo_speech.Client, 'transcribe_audio', lambda *args, **kwargs: SimpleNamespace(text='MiMo transcript')
+    )
+    received = []
+    with ExitStack() as stack:
+        for patch in patches():
+            if patch.applies_to(row):
+                module, original = patch.target()
+                stack.enter_context(mock.patch.object(module, patch.attribute, patch.build(original)))
+        socket = speech.new_socket(16000, received.extend, 'en')
+        assert socket.send(b'\x00\x01' * 1600)
+        await socket.drain_and_close()
+    assert received[0]['text'] == 'MiMo transcript'
+    assert received[0]['end'] == 0.1
+    speech.recognizer.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failed', [False, True])
+async def test_disconnect_waits_for_late_audio_before_persisting_or_refuses_finalization(monkeypatch, failed):
+    import asyncio
+    from starlette.websockets import WebSocketState
+    from utils.async_tasks import WebSocketTaskSupervisor
+    from fork import mimo_listen, operator_ai
+
+    monkeypatch.setattr(mimo_listen, 'current', operator_ai.MiMo)
+    release, observed = asyncio.Event(), asyncio.Event()
+    segments, saved = [], []
+    supervisor = WebSocketTaskSupervisor(uid='synthetic', label='listen')
+
+    async def producer():
+        await release.wait()
+        if failed:
+            raise RuntimeError('controlled ASR failure')
+        segments.append('last four seconds')
+
+    async def early_consumer():
+        return
+
+    async def persist():
+        saved.extend(segments)
+        segments.clear()
+
+    receiver = supervisor.create_task(producer(), name='receive')
+    supervisor.create_lifetime_task(early_consumer(), name='stream_transcript')
+    host = SimpleNamespace(
+        use_custom_stt=False,
+        request=SimpleNamespace(
+            websocket=SimpleNamespace(client_state=WebSocketState.DISCONNECTED),
+            owner_persistence_blocked=asyncio.Event(),
+        ),
+        state=SimpleNamespace(close_code=1000, stt_terminal_failure=False),
+        task_supervisor=supervisor,
+        transcripts=SimpleNamespace(segment_buffer=segments, photo_buffer=[], process_loop=persist),
+    )
+
+    async def supervise(**kwargs):
+        result = await supervisor.supervise(**kwargs)
+        observed.set()
+        return result
+
+    completion = asyncio.create_task(mimo_listen.supervise_disconnect(host, supervise, receiver))
+    await asyncio.wait_for(observed.wait(), 1)
+    assert not completion.done() and not saved
+    release.set()
+    if failed:
+        with pytest.raises(RuntimeError, match='controlled ASR failure'):
+            await completion
+        assert host.state.close_code == 1011 and host.state.stt_terminal_failure
+        assert not saved
+    else:
+        result = await completion
+        assert result.reason == 'disconnect'
+        assert saved == ['last four seconds'] and not segments
+
+
 def test_bundle_verification_rejects_corruption_missing_and_unlisted_files(tmp_path):
     value = validate_speech(selected()['speech'])
     for model in (value.stt_model, value.tts_model):
@@ -255,6 +409,8 @@ async def test_listen_receiver_socket_is_owned_by_the_fork_patch(monkeypatch):
     from fork.patches.speech import patches
     from routers.listen.receiver import ListenReceiver
 
+    monkeypatch.setattr(profile, 'current', selected)
+
     receiver_patch = next(
         patch
         for patch in patches()
@@ -269,7 +425,7 @@ async def test_listen_receiver_socket_is_owned_by_the_fork_patch(monkeypatch):
     monkeypatch.setattr('utils.sensevoice.socket.SenseVoiceSocket', lambda **kwargs: created)
     patched = receiver_patch.build(Original)
     receiver = patched()
-    receiver.host = type('Host', (), {'stt_service': 'sensevoice'})()
+    receiver.host = type('Host', (), {'stt_service': 'sensevoice', 'stt_language': 'en'})()
     assert patched is not Original
     assert await receiver._create_stt_socket(lambda _segments: None, 16000) is created
     receiver.host.stt_service = 'upstream'

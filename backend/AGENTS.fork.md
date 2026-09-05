@@ -186,3 +186,12 @@ Docker builds; keep the intended runtime sources in each context.
   route-options factory and bind both canonical and captured consumers; never
   loosen the parser to fit a model response. The startup lane covers that real
   parser and finalization's terminal-status acceptance through controlled seams.
+
+- The opt-in `self_hosted.local` MiMo profile replaces local `llm`/`speech`
+  contracts with the sole `operator_ai` owner; embedding remains local.
+  `fork/operator_ai.py` fixes model identities and the exact CN endpoint, while
+  server-only credentials come from `MIMO_API_KEY` or `MIMO_SECRET_FILE`.
+  `fork/mimo_listen.py` drains accepted ASR and its existing persistence owner
+  before normal disconnect finalization. Keep default prompts and extraction
+  policies unchanged. Setup and live-verification limits:
+  [`deploy/self-host/mimo-local.md`](../deploy/self-host/mimo-local.md).

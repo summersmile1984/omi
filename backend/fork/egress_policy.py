@@ -172,6 +172,10 @@ def assert_http_endpoint_allowed(url: str) -> str:
     if not host:
         raise EgressPolicyUnavailable('invalid_egress_endpoint')
     if _is_official_host(host):
+        from .operator_ai import allows
+
+        if allows(url):
+            return host
         raise EgressPolicyUnavailable('official_endpoint_forbidden', host=host)
     if _is_internal_host(host):
         return host

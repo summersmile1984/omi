@@ -325,6 +325,29 @@ signal.pause()
 
 
 class FixtureProfile(unittest.TestCase):
+    def test_mimo_mode_requires_only_local_embedding_and_rejects_ambiguous_stores(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = root / 'secret.json'
+            secret.write_text(json.dumps({'MIMO_API_KEY': 'synthetic'}))
+            fixture = Fixture(
+                root / 'mimo', 'fixture-mimo', 34800, model_stores={'embedding': root}, mimo_secret_file=secret
+            )
+            self.assertEqual(set(fixture.model_stores), {'embedding'})
+            fixture.command = lambda *args, **kwargs: str(8 * 1024**3)
+            fixture.admit_model_capacity({'embedding': {'mem_limit': '4294967296'}})
+            report = json.loads((fixture.output / 'model-capacity.json').read_text())
+            self.assertEqual(set(report['model_memory_limits']), {'embedding'})
+            with self.assertRaises(ValueError):
+                Fixture(
+                    root / 'bad',
+                    'fixture-mimo',
+                    34800,
+                    model_stores={'embedding': root, 'llm': root},
+                    mimo_secret_file=secret,
+                )
+            self.assertFalse((root / 'bad').exists())
+
     def test_model_capacity_rejects_the_observed_oom_host_and_leaves_core_mode_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

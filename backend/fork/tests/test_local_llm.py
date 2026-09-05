@@ -13,6 +13,78 @@ from fork import local_llm
 from fork.local_llm_chat import LocalChatModel
 from fork.model_contract import validate_llm
 
+
+def test_mimo_preserves_prompts_tools_and_parses_structured_results():
+    from fork.mimo_chat import MiMoChat
+    from pydantic import BaseModel
+
+    class Drink(BaseModel):
+        drink: str
+
+    sent = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        sent.append(payload)
+        return httpx.Response(
+            200,
+            json={
+                'id': 'controlled',
+                'object': 'chat.completion',
+                'created': 1,
+                'model': 'mimo-v2.5',
+                'choices': [
+                    {
+                        'index': 0,
+                        'finish_reason': 'tool_calls',
+                        'message': {
+                            'role': 'assistant',
+                            'content': None,
+                            'tool_calls': [
+                                {
+                                    'id': 'call-1',
+                                    'type': 'function',
+                                    'function': {'name': 'Drink', 'arguments': '{"drink":"jasmine tea"}'},
+                                }
+                            ],
+                        },
+                    }
+                ],
+                'usage': {'prompt_tokens': 100, 'completion_tokens': 8, 'total_tokens': 108},
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        model = MiMoChat(
+            model='mimo-v2.5',
+            api_key='synthetic',
+            base_url='https://selected.invalid/v1',
+            http_client=client,
+            extra_body={'thinking': {'type': 'disabled'}},
+        )
+        prompt = 'Existing default prompt and full schema descriptions must stay intact.'
+        result = model.with_structured_output(Drink).invoke(prompt)
+        assert result.drink == 'jasmine tea'
+        assert sent[0]['messages'] == [{'content': prompt, 'role': 'user'}]
+        assert sent[0]['tool_choice'] == 'auto'
+        assert sent[0]['tools'][0]['function']['parameters']['properties']['drink']['type'] == 'string'
+        assert sent[0]['thinking'] == {'type': 'disabled'}
+
+
+def test_mimo_factory_retains_existing_local_sampling_options(monkeypatch):
+    from fork import mimo_chat, operator_ai, profile
+
+    row = operator_ai.configure({'target': 'self_hosted', 'stage': 'local', 'capabilities': {}}, 'mimo-cn')
+    monkeypatch.setattr(profile, 'current', lambda: row)
+    monkeypatch.setenv('MIMO_API_KEY', 'synthetic')
+    monkeypatch.delenv('MIMO_SECRET_FILE', raising=False)
+    model = mimo_chat.build()
+    assert model.temperature == 0
+    assert model.extra_body == {'thinking': {'type': 'disabled'}}
+    assert model.model_name == 'mimo-v2.5'
+    model.http_client.close()
+
+
 CONTRACT = {
     'provider': 'ollama',
     'model': 'test:fixed',

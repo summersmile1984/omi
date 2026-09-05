@@ -24,7 +24,7 @@ if admission.target == 'self_hosted':
     from .llm_transport import install as install_llm
 
     install_llm(app)
-    if row.get('speech'):
+    if row.get('speech') or row.get('operator_ai'):
         from .speech_transport import install as install_speech
 
         install_speech(app)

@@ -50,21 +50,47 @@ def language(value):
 
 
 def prerecorded_selection(value='en'):
+    from .operator_ai import select
+
+    mimo = select(profile.current())
+    if mimo:
+        normalized = language(value)
+        if normalized not in {'en', 'zh', 'multi'}:
+            from config.prerecorded_stt import TranscriptionOutcome
+            from utils.stt.outcomes import TranscriptionFailure
+
+            raise TranscriptionFailure(TranscriptionOutcome.INVALID_INPUT, provider='mimo', retryable=False)
+        return 'mimo', normalized, mimo.asr_model
     return 'sensevoice', language(value), contract().stt_model
 
 
 LOCAL_STREAMING_SERVICE = 'sensevoice'
 
 
+def streaming_service():
+    from .operator_ai import select
+
+    return 'mimo' if select(profile.current()) else LOCAL_STREAMING_SERVICE
+
+
+def new_socket(sample_rate, transcript_callback, language='multi'):
+    if streaming_service() == 'mimo':
+        from .mimo_speech import socket
+
+        return socket(sample_rate, transcript_callback, language)
+    from utils.sensevoice.socket import SenseVoiceSocket
+
+    return SenseVoiceSocket(sample_rate=sample_rate, transcript_callback=transcript_callback)
+
+
 def streaming_selection(
     value='en', multi_lang_enabled=True, *, surface=None, preferred_service=None, exclude=frozenset()
 ):
-    selected = contract()
     # This profile owns one live provider. Any failed provider recorded by the
     # listener ends the session; it must never enter upstream's cloud fallback.
     if exclude:
         return None, None, None
-    return LOCAL_STREAMING_SERVICE, language(value), selected.stt_model
+    return prerecorded_selection(value)
 
 
 class Runtime:

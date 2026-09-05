@@ -1,5 +1,17 @@
 # Fork runtime ownership
 
+Local Server OS may explicitly select `--operator-ai mimo-cn` when rendering its
+profile. `operator_ai.py` owns the public model/endpoint contract and credential
+admission; `mimo_chat.py` and `mimo_speech.py` adapt the selected API. The ASGI
+capability gate and speech route installation consume that same selection.
+Default prompts and the existing business/tool/data owners remain unchanged.
+Embedding remains local. Setup and protocol limits: [local MiMo](../../deploy/self-host/mimo-local.md).
+
+`mimo_listen.py` keeps the accepted-audio receiver and transcript consumer ahead
+of normal disconnect finalization. A peer/heartbeat close cannot cancel the last
+remote ASR window. The existing transcript owner drains late segments after its
+previous task finishes; inference/drain failures fence automatic finalization.
+
 `python -m fork.migrate migrate` owns PostgreSQL schema changes.
 It requires an explicit `FIRESTORE_PG_DSN`; `check` performs read-only admission.
 Schema v8 admits retained frame-vision receipts for complete export; v7 adds feedback ledgers. Schema v6 adds canonical-memory collection admission; v5 adds backend onboarding admission; v4 adds legal-hold/deletion-gate

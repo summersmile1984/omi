@@ -40,9 +40,13 @@ class DisabledCapabilityMiddleware:
 
 
 def install(app, row=None):
+    from .operator_ai import select
+
     enabled = set()
+    if row and select(row):
+        enabled.update({Capability.STT, Capability.TTS, Capability.LLM})
     if row and row.get('speech'):
-        enabled = {Capability.STT, Capability.TTS}
+        enabled.update({Capability.STT, Capability.TTS})
     if row and row.get('llm'):
         enabled.add(Capability.LLM)
     routes, found = {}, set()

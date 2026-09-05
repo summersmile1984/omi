@@ -45,12 +45,18 @@ def core_only_profile(row):
 
 
 class Fixture:
-    def __init__(self, output, brand_id, port, runtime_image=None, *, model_stores=None):
+    def __init__(self, output, brand_id, port, runtime_image=None, *, model_stores=None, mimo_secret_file=None):
         if not re.fullmatch(r'[a-z][a-z0-9-]{2,40}', brand_id) or not 1024 <= port <= 65000:
             raise ValueError('fixture needs a safe brand id and unprivileged port')
         self.model_stores = {}
+        self.mimo_secret_file = Path(mimo_secret_file).resolve() if mimo_secret_file else None
+        if self.mimo_secret_file and not self.mimo_secret_file.is_file():
+            raise ValueError('MiMo secret file must exist')
+        required_stores = {'embedding'} if self.mimo_secret_file else {'embedding', 'llm', 'speech'}
+        if self.mimo_secret_file and model_stores is None:
+            raise ValueError('MiMo mode requires the local embedding store')
         if model_stores is not None:
-            if set(model_stores) != {'embedding', 'llm', 'speech'} or not all(model_stores.values()):
+            if set(model_stores) != required_stores or not all(model_stores.values()):
                 raise ValueError('real-model fixture requires embedding, llm and speech stores together')
             for kind, path in model_stores.items():
                 path = Path(path)
@@ -132,7 +138,7 @@ class Fixture:
     def admit_model_capacity(self, services):
         if not self.model_stores:
             return
-        limits = {name: services[name].get('mem_limit') for name in ('embedding', 'llm')}
+        limits = {name: services[name].get('mem_limit') for name in ('embedding', 'llm') if name in self.model_stores}
         # `docker compose config --format json` emits byte counts as decimal
         # strings, including the production YAML's `4g` model limits.
         if any(not isinstance(value, str) or not re.fullmatch(r'[1-9][0-9]*', value) for value in limits.values()):
@@ -173,7 +179,9 @@ class Fixture:
         }
         manifest_file = self.output / 'brand.json'
         manifest_file.write_text(json.dumps(manifest))
-        table = render.resolve('self_hosted', None, manifest_file, 'local')
+        table = render.resolve(
+            'self_hosted', None, manifest_file, 'local', 'mimo-cn' if self.mimo_secret_file else None
+        )
         if not self.model_stores:
             table['profiles']['self_hosted.local'] = core_only_profile(table['profiles']['self_hosted.local'])
         profile_file = self.output / 'profile.json'
@@ -257,7 +265,9 @@ class Fixture:
             'memory-maintenance-worker',
         )
         if self.model_stores:
-            selected += ('embedding-artifact-check', 'embedding', 'llm-artifact-check', 'llm')
+            selected += ('embedding-artifact-check', 'embedding')
+        if 'llm' in self.model_stores:
+            selected += ('llm-artifact-check', 'llm')
         services = {name: config['services'][name] for name in selected}
         for name, service in services.items():
             service.pop('build', None)
@@ -267,10 +277,18 @@ class Fixture:
             service['networks'] = ['default']
             if name not in ('auth-server', 'backend', 'minio'):
                 service.pop('ports', None)
-            if name in ('backend', 'queue-worker') and not self.model_stores:
+            if name in ('backend', 'queue-worker') and 'speech' not in self.model_stores:
                 service['volumes'] = [{'type': 'volume', 'source': 'backend-syncing', 'target': '/app/syncing'}]
             if 'healthcheck' in service:
                 service['healthcheck'].update(interval='2s', start_period='2s', retries=60)
+        if self.mimo_secret_file:
+            from fork.operator_ai import MiMo
+
+            credential = json.loads(self.mimo_secret_file.read_text())
+            if credential.get('MIMO_BASE_URL') != MiMo().base_url or not credential.get('MIMO_API_KEY'):
+                raise ValueError('MiMo credential must select the China Token Plan endpoint')
+            services['backend']['networks'].append('client')
+            services['backend']['environment']['MIMO_API_KEY'] = credential['MIMO_API_KEY']
         controlled_embedding = {
             'image': self.api_image,
             'platform': 'linux/amd64',
@@ -331,12 +349,20 @@ class Fixture:
                 {
                     'scope': 'real-model-product-runtime' if self.model_stores else 'identity-onboarding-tasks',
                     'profile_sha256': hashlib.sha256(profile_file.read_bytes()).hexdigest(),
-                    'speech': 'admitted-local-SenseVoice-Kokoro' if self.model_stores else 'explicitly-disabled',
-                    'llm': 'admitted-local-Qwen-Ollama' if self.model_stores else 'explicitly-disabled',
+                    'speech': (
+                        'MiMo-CN-ASR-TTS'
+                        if self.mimo_secret_file
+                        else 'admitted-local-SenseVoice-Kokoro' if self.model_stores else 'explicitly-disabled'
+                    ),
+                    'llm': (
+                        'MiMo-CN-mimo-v2.5'
+                        if self.mimo_secret_file
+                        else 'admitted-local-Qwen-Ollama' if self.model_stores else 'explicitly-disabled'
+                    ),
                     'embedding': (
                         'admitted-local-BGE-M3-Ollama' if self.model_stores else 'controlled-HTTP-no-model-inference'
                     ),
-                    'application_network': 'internal-only',
+                    'application_network': 'API-outbound-selected-MiMo' if self.mimo_secret_file else 'internal-only',
                     'http_ingress': 'isolated-two-port-loopback-proxy',
                     'websocket_ingress': 'same-proxy-bounded-bidirectional-tunnel',
                     'release_qualified': False,
@@ -438,7 +464,7 @@ class Fixture:
             ],
             timeout=60,
         )
-        if self.model_stores:
+        if 'llm' in self.model_stores:
             self.command(
                 [
                     'docker',
@@ -459,7 +485,8 @@ class Fixture:
         self.created = True
         if self.model_stores:
             for service in ('embedding-artifact-check', 'llm-artifact-check'):
-                self.compose('run', '--rm', service)
+                if service.removesuffix('-artifact-check') in self.model_stores:
+                    self.compose('run', '--rm', service)
         self.compose(
             'up',
             '-d',
@@ -472,7 +499,7 @@ class Fixture:
             'qdrant',
             'typesense',
             'embedding',
-            *(['llm'] if self.model_stores else []),
+            *(['llm'] if 'llm' in self.model_stores else []),
         )
         for service in ('auth-migrate', 'firestore-pg-migrate', 'qdrant-migrate'):
             self.compose('run', '--rm', service)
@@ -521,6 +548,9 @@ def main():
     parser.add_argument('--brand-id', default='product-fixture')
     parser.add_argument('--port', type=int, default=34800)
     parser.add_argument('--runtime-image', help='reuse only after actual source-byte admission')
+    parser.add_argument(
+        '--mimo-secret-file', type=Path, help='local MiMo CN LLM/ASR/TTS; requires only --embedding-store'
+    )
     parser.add_argument('--embedding-store', type=Path, help='admitted BGE-M3 store; requires both other stores')
     parser.add_argument('--llm-store', type=Path, help='admitted Qwen store; requires both other stores')
     parser.add_argument(
@@ -529,8 +559,15 @@ def main():
     parser.add_argument('--self-test', action='store_true', help='run common HTTP contract and clean up')
     args = parser.parse_args()
     stores = {kind: getattr(args, kind + '_store') for kind in ('embedding', 'llm', 'speech')}
+    if args.mimo_secret_file:
+        stores = {kind: value for kind, value in stores.items() if value is not None}
     fixture = Fixture(
-        args.output, args.brand_id, args.port, args.runtime_image, model_stores=stores if any(stores.values()) else None
+        args.output,
+        args.brand_id,
+        args.port,
+        args.runtime_image,
+        model_stores=stores if any(stores.values()) else None,
+        mimo_secret_file=args.mimo_secret_file,
     )
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, fixture.stop)

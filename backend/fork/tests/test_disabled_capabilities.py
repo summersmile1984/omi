@@ -96,6 +96,38 @@ def test_admission_rejects_unsupported_enabled_capability():
         )
 
 
+def test_selected_mimo_reaches_real_http_auth_while_push_stays_disabled():
+    from fastapi import HTTPException
+    from fork.operator_ai import configure
+
+    app = FastAPI()
+    for module in (
+        'routers.tts',
+        'routers.desktop_tts_updates',
+        'routers.transcribe',
+        'routers.chat',
+        'routers.notifications',
+    ):
+        app.include_router(importlib.import_module(module).router)
+    row = configure(
+        {'target': 'self_hosted', 'stage': 'local', 'capabilities': {'push_provider': 'disabled'}}, 'mimo-cn'
+    )
+    install(app, row)
+
+    def deny():
+        raise HTTPException(401, 'controlled real-auth boundary')
+
+    paths = {'/v2/messages', '/v2/tts/synthesize', '/v2/voice-message/transcribe'}
+    for route in app.routes:
+        if getattr(route, 'path', '') in paths:
+            for dependency in route.dependant.dependencies:
+                app.dependency_overrides[dependency.call] = deny
+    with TestClient(app) as client:
+        for path in paths:
+            assert client.post(path, json={'text': 'existing client'}).status_code == 401
+        assert client.post('/v1/users/fcm-token', json={'token': 'legacy'}).json()['capability'] == 'push'
+
+
 def test_real_byok_error_entrypoints_cannot_bypass_disabled_delivery_or_set_cooldown(monkeypatch, caplog):
     import asyncio
     from utils import byok

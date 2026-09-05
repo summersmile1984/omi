@@ -11,6 +11,10 @@ def patches():
 
         def provider(language='en'):
             speech.language(language)
+            if speech.streaming_service() == 'mimo':
+                from ..mimo_speech import prerecorded
+
+                return prerecorded()
             return SenseVoicePrerecordedProvider(speech.recognizer())
 
         return provider
@@ -30,18 +34,18 @@ def patches():
     def listen_receiver(original):
         class ServingListenReceiver(original):
             async def _create_stt_socket(self, callback, sample_rate, modulate_callback=None):
-                if self.host.stt_service == speech.LOCAL_STREAMING_SERVICE:
-                    from utils.sensevoice.socket import SenseVoiceSocket
-
-                    return SenseVoiceSocket(sample_rate=sample_rate, transcript_callback=callback)
+                if self.host.stt_service == speech.streaming_service():
+                    return speech.new_socket(
+                        sample_rate=sample_rate, transcript_callback=callback, language=self.host.stt_language
+                    )
                 return await super()._create_stt_socket(callback, sample_rate, modulate_callback)
 
         return ServingListenReceiver
 
     def listen_provider(original):
         def provider(service):
-            if service == speech.LOCAL_STREAMING_SERVICE:
-                return speech.LOCAL_STREAMING_SERVICE
+            if service == speech.streaming_service():
+                return speech.streaming_service()
             return original(service)
 
         return provider
@@ -62,16 +66,30 @@ def patches():
         ('utils.sensevoice.socket', 'get_sensevoice_recognizer', lambda original: speech.recognizer),
         ('utils.sensevoice.prerecorded_provider', 'get_sensevoice_recognizer', lambda original: speech.recognizer),
         ('utils.sensevoice.socket', 'SenseVoiceSocket', socket),
-        ('utils.stt.outcomes', '_KNOWN_PROVIDERS', lambda original: original | {'sensevoice'}),
+        ('utils.stt.outcomes', '_KNOWN_PROVIDERS', lambda original: original | {'sensevoice', 'mimo'}),
     ]
-    return [
+    selected_patches = [
         Patch(
             'speech.' + module + '.' + attribute,
             module,
             attribute,
             build,
-            lambda row: row.get('target') == 'self_hosted',
+            lambda row, module=module: row.get('target') == 'self_hosted'
+            and not (row.get('operator_ai') and module.startswith('utils.sensevoice.')),
             'one admitted local model owns both canonical and captured speech consumers',
         )
         for module, attribute, build in targets
     ]
+    from ..mimo_listen import runtime
+
+    selected_patches.append(
+        Patch(
+            'speech.mimo.listen-audio-owner',
+            'routers.listen.runtime',
+            'ListenSessionRuntime',
+            runtime,
+            lambda row: row.get('target') == 'self_hosted' and bool(row.get('operator_ai')),
+            'normal disconnect drains accepted ASR windows and their transcript owner before finalization',
+        )
+    )
+    return selected_patches

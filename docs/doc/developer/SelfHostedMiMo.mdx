@@ -1,0 +1,25 @@
+---
+title: "Local Server OS with Xiaomi MiMo"
+description: "Select hosted chat and speech while retaining local embedding and storage."
+---
+
+Render `self_hosted.local` with `--operator-ai mimo-cn` to select Xiaomi China
+Token Plan for chat, business extraction, ASR and TTS. The model identities are
+`mimo-v2.5`, `mimo-v2.5-asr` and `mimo-v2.5-tts`. BGE-M3 embedding and the existing
+PostgreSQL, Redis, MinIO, Qdrant and Typesense services remain local.
+
+Run `deploy/self-host/ci/product.py` with a new private `--output` directory,
+`--embedding-store` and `--mimo-secret-file`. The private JSON contains
+`MIMO_API_KEY` and `MIMO_BASE_URL`; the latter must be
+`https://token-plan-cn.xiaomimimo.com/v1`. Do not supply the local LLM or speech
+model stores in this mode. Keep the credential file outside the source tree.
+
+All three providers use Chat Completions. Live recording submits bounded audio
+windows and preserves the existing transcript, finalization and memory owners.
+It provides chunked recognition and a single anonymous speaker, not native
+MiMo WebSocket streaming or speaker identification. Default prompts are retained.
+
+This local option does not change production/beta selection or qualify a
+Cloudflare deployment. The repository runbook `deploy/self-host/mimo-local.md`
+documents the complete launch command, credentials, boundaries and official API
+references.
