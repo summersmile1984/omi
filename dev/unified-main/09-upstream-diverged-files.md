@@ -32,7 +32,7 @@ python3 scripts/fork/check-upstream-touch.py \
 树对当前 `upstream/main` 的 `merge-tree` 已无冲突；这不会倒改上面的
 `origin/main` 历史快照，直到候选通过 review 后常规合入。
 
-## 未消化的分歧(29 个,按子系统分组;第 30 个是 `AuthService.swift`,单独处理见下方)
+## 未消化的分歧(23 个,按子系统分组;第 24 个是 `AuthService.swift`,单独处理见下方)
 
 状态列:`待处置`(已经有一个可以直接照做的处置方案,不管背后那次改动的源头提交是否已经追溯到)· `待诊断`(处置方案本身还没想清楚——通常是因为不确定具体改了什么、影响面多大,需要有人接手前先查清楚才能定处置方案)。两者都不代表"原因"列一定写了具体的源头提交:"原因"列的 commit 是 `check-upstream-touch.py` 报告里离 HEAD 最近的一次改动,不一定是最初引入分歧的那次;标了 `合并提交` 的还没往前追溯到真正的源头提交,但这不影响处置方案是否已经明确。
 
@@ -47,7 +47,6 @@ python3 scripts/fork/check-upstream-touch.py \
 | `backend/utils/stt/streaming.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
 | `backend/utils/llm/providers.py` | `76468f50be` Merge cloud-neutral shim onto upstream main | 同上 | 待处置 |
 | `backend/utils/translation_core/providers.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
-| `backend/utils/other/endpoints.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
 
 对应测试(同一批 provider 工作带出来的,**不能**直接改上游测试——上游测试要保持不动,fork 行为要在 fork 自己的测试目录里断言):
 
@@ -55,17 +54,6 @@ python3 scripts/fork/check-upstream-touch.py \
 |---|---|---|---|
 | `backend/tests/unit/test_prerecorded_stt_config.py` | `9b8ba655bf` | 上游测试恢复原样;fork 行为的断言挪到 `backend/tests/unit/fork/` | 待处置 |
 | `backend/tests/unit/test_stt_provider_policy.py` | 合并提交,源头需要追溯 | 同上 | 待处置 |
-| `backend/tests/unit/test_agent_vm_firebase_project_split.py` | `9b8ba655bf` | 同上 | 待处置 |
-
-### B. Backend 云中立基建(self-host 部署核心,4 个)
-M1(自托管部署)的直接产物,`c6fc05dd70` 已经把 `storage_minio.py` 这类**新增**文件迁出了上游包,但下面这几个**上游自己的文件**还留着改动——说明那次"迁移"做了一半。
-
-| 文件 | 原因 | 处置方案 | 状态 |
-|---|---|---|---|
-| `backend/utils/other/storage.py` | `c6fc05dd70` 之后仍有残留改动(该提交只迁出了新增的 `storage_minio.py`,没有把这个上游文件本身清零) | 确认上游文件里具体还剩什么 hook,收尾迁移 | 待诊断 |
-| `backend/utils/cloud_tasks.py` | `83e627b428` feat(queue): Redis task queue shim — Cloud Tasks replacement for local dev(`06-upstream-sync.md` 旧 §1 就记录过这条,一直没执行) | `backend/fork/patches/queue.py` 在导入时替换 `utils.cloud_tasks` 的派发函数,实现挪到 `backend/fork/cloud_tasks_redis.py`;上游文件零改动 | 待处置 |
-| `backend/database/__init__.py` | `f259167751` chore(cloud-neutral): preserve optional database imports | 迁到条件导入的 fork 补丁,而不是改上游 `__init__.py` | 待处置 |
-| `backend/database/_client.py` | 合并提交,源头需要追溯 | 同上 | 待诊断 |
 
 ### C. Backend 打包/依赖清单(10 个)
 锁文件与 Dockerfile 这类"生成物"本来就在 T2 永不可改清单里——这批全都需要一个不同的解法(独立 pusher 镜像/依赖树),而不是让 upstream-touch-allowlist 破例。
@@ -77,7 +65,7 @@ M1(自托管部署)的直接产物,`c6fc05dd70` 已经把 `storage_minio.py` 这
 | `backend/pusher/pylock.toml` / `requirements.txt` | 合并提交,大概率是 fork 加了 provider SDK 依赖后锁文件跟着变 | 需要判断这些依赖能不能只加在 fork 自己的 extra/optional-dependency 分组 | 待诊断 |
 | `backend/pylock.{toml,macos.toml,macos-x86_64.toml,runtime.toml,windows.toml}` / `requirements.txt` | 同上 | 同上 | 待诊断 |
 
-### D. Backend routers(3 个)+ 相关测试(2 个)
+### D. Backend routers(3 个)+ 相关测试(1 个)
 | 文件 | 原因 | 处置方案 | 状态 |
 |---|---|---|---|
 | `backend/routers/desktop_tts_updates.py` | 合并提交,源头需要追溯 | 待诊断具体改了什么 | 待诊断 |
@@ -114,6 +102,10 @@ M1(自托管部署)的直接产物,`c6fc05dd70` 已经把 `storage_minio.py` 这
 | `app/lib/pages/onboarding/primary_language/primary_language_widget.dart` | historical Dart formatter drift | upstream byte restored; existing provider language test passes 14/14 with Flutter 3.44.5 | candidate `codex/unified-delivery` |
 | `.github/workflows/gcp_backend_pusher_auto_deploy.yml` / `backend/tests/unit/test_pusher_auto_deploy_paths.py` | historical fork pusher trigger expansion | upstream bytes restored; fork-owned `fork-checks.yml` has unfiltered main push/PR triggers, while the restored upstream path test passes | candidate `codex/unified-delivery` |
 | `app/lib/pages/onboarding/auth.dart` / `app/lib/providers/auth_provider.dart` | historical Better Auth injection into upstream mobile callers | upstream bytes restored; complete fork overlays replace both before staged use, no longer treat either as a source owner, and the two-target Flutter stage/test/bundle matrix passes | candidate `codex/unified-delivery` |
+| `backend/utils/other/storage.py` | MinIO client selection in an upstream factory | fork-owned `storage.minio-client` patch already replaces the factory; upstream byte restored and MinIO contract tests pass | candidate `codex/unified-delivery` |
+| `backend/utils/cloud_tasks.py` | Redis queue dispatch and worker authentication branches | fork queue registry now replaces all producer and public FastAPI authentication seams with route-scoped Redis handlers; upstream byte restored and finalizer route/retry tests pass | candidate `codex/unified-delivery` |
+| `backend/utils/other/endpoints.py` | Better Auth token branch | fork auth registry owns token/HTTP/WebSocket consumer replacements; upstream byte restored and auth consumer tests pass | candidate `codex/unified-delivery` |
+| `backend/database/__init__.py` / `backend/database/_client.py` / `backend/tests/unit/test_agent_vm_firebase_project_split.py` | PostgreSQL Firestore shim injection and customer-client branch | self-host admission installs the facade before any upstream database import; upstream bytes restored and a subprocess admission/import proof passes | candidate `codex/unified-delivery` |
 
 ## 用法
 

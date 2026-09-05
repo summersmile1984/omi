@@ -11,11 +11,10 @@ staged audio must not start an inline worker after an enqueue exception: a
 lost create-task acknowledgement can mean the deterministic named task exists.
 """
 
-import hashlib
 import json
 import logging
+import hashlib
 import os
-import secrets
 import uuid
 from typing import Any, Dict, Literal, NamedTuple, Optional
 
@@ -25,7 +24,6 @@ from google.auth.transport import requests as google_auth_requests
 from google.cloud import tasks_v2
 from google.oauth2 import id_token
 from google.protobuf import duration_pb2
-from utils import cloud_tasks_redis
 
 from utils.log_sanitizer import sanitize
 
@@ -286,9 +284,6 @@ def enqueue_sync_job(payload: Dict[str, Any]) -> None:
     """
     if frozenset(payload) != SYNC_JOB_TASK_PAYLOAD_KEYS:
         raise ValueError('sync job payload does not match the durable worker schema')
-    if cloud_tasks_redis.queue_enabled():
-        cloud_tasks_redis.enqueue_sync_job(payload)
-        return
     if payload.get('lane') == 'backfill' and is_sync_backfill_routing_enabled():
         queue = os.getenv('SYNC_BACKFILL_TASKS_QUEUE', '').strip()
         handler_url = os.getenv('SYNC_BACKFILL_TASKS_HANDLER_URL', '').strip()
@@ -317,9 +312,6 @@ def enqueue_audio_merge_job(payload: Dict[str, Any]) -> None:
     and isn't swallowed by the named-task tombstone. 'amc-' cannot collide with
     per-part names (audio_file ids are UUIDv4).
     """
-    if cloud_tasks_redis.queue_enabled():
-        cloud_tasks_redis.enqueue_audio_merge_job(payload)
-        return
     if payload.get('schema_version') == 2:
         task_id = f"amc-{payload['conversation_id']}-{payload['fingerprint']}"
     else:
@@ -339,9 +331,6 @@ def enqueue_account_deletion_wipe(wipe_job_id: str) -> None:
     Firebase uid; the OIDC handler resolves the uid only after looking up this
     opaque job identifier.
     """
-    if cloud_tasks_redis.queue_enabled():
-        cloud_tasks_redis.enqueue_account_deletion_wipe(wipe_job_id)
-        return
     if not wipe_job_id:
         raise ValueError('wipe_job_id must be non-empty')
     job_hash = hashlib.sha256(wipe_job_id.encode('utf-8')).hexdigest()[:32]
@@ -374,9 +363,6 @@ def enqueue_listen_finalization_job(job_id: str, dispatch_generation: int) -> No
     uid nor any conversation/BYOK material so Cloud Tasks diagnostics cannot
     expose user content or credentials.
     """
-    if cloud_tasks_redis.queue_enabled():
-        cloud_tasks_redis.enqueue_listen_finalization_job(job_id, dispatch_generation)
-        return
     _enqueue_named_task(
         os.getenv('LISTEN_FINALIZATION_TASKS_QUEUE', ''),
         _listen_finalization_handler_url(),
@@ -419,18 +405,8 @@ def _verify_cloud_tasks_oidc(request: Request, *, audience: str, invoker_sa: str
         return 0
 
 
-def _verify_redis_worker(request: Request) -> int:
-    expected = os.getenv('QUEUE_REDIS_WORKER_SECRET', '')
-    presented = request.headers.get('x-omi-queue-secret', '')
-    if not expected or not secrets.compare_digest(presented, expected):
-        raise HTTPException(status_code=403, detail='Invalid Redis worker secret')
-    return 0
-
-
 def verify_cloud_tasks_oidc(request: Request) -> int:
     """FastAPI dependency for sync and merge task routes."""
-    if cloud_tasks_redis.queue_enabled():
-        return _verify_redis_worker(request)
     return _verify_cloud_tasks_oidc(request, audience=_oidc_audience(), invoker_sa=_invoker_sa())
 
 
@@ -441,10 +417,6 @@ def verify_account_deletion_cloud_tasks_oidc(request: Request) -> AccountDeletio
     audience. Verify that former audience only during the queue drain window;
     the route rejects it for new job-ID payloads before any lookup or mutation.
     """
-    if cloud_tasks_redis.queue_enabled():
-        retry_count = _verify_redis_worker(request)
-        return AccountDeletionTaskAuthentication(retry_count=retry_count, audience='account_deletion')
-
     deletion_audience = _account_deletion_oidc_audience()
     try:
         retry_count = _verify_cloud_tasks_oidc(
@@ -469,8 +441,6 @@ def verify_account_deletion_cloud_tasks_oidc(request: Request) -> AccountDeletio
 
 def verify_listen_finalization_cloud_tasks_oidc(request: Request) -> int:
     """FastAPI dependency for the isolated listen finalization task route."""
-    if cloud_tasks_redis.queue_enabled():
-        return _verify_redis_worker(request)
     return _verify_cloud_tasks_oidc(
         request,
         audience=_listen_finalization_audience(),

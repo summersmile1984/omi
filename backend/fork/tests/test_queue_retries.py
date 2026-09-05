@@ -9,8 +9,16 @@ import httpx
 import pytest
 from starlette.requests import Request
 
-from fork.patches.queue import _route_worker_auth
+from fork.patches.queue import patches as queue_patches
 from fork.queue_config import QUEUES
+
+
+def install_queue_patches(monkeypatch):
+    for patch in queue_patches():
+        if patch.module != 'utils.cloud_tasks':
+            continue
+        module, original = patch.target()
+        monkeypatch.setattr(module, patch.attribute, patch.build(original))
 
 
 class Redis:
@@ -48,7 +56,7 @@ def test_retry_headers_are_authenticated_scoped_bounded_and_legacy_starts_at_zer
     from utils import cloud_tasks
 
     configure(monkeypatch, queue)
-    monkeypatch.setattr(cloud_tasks, '_verify_redis_worker', _route_worker_auth(None))
+    install_queue_patches(monkeypatch)
     owner = (
         cloud_tasks.verify_account_deletion_cloud_tasks_oidc
         if queue.name == 'account-deletion'
@@ -105,7 +113,8 @@ def test_actual_finalizer_handler_receives_final_attempt_and_terminal_ack_stops_
 
     queue = next(queue for queue in QUEUES if queue.name == 'finalization')
     configure(monkeypatch, queue)
-    monkeypatch.setattr(cloud_tasks, '_verify_redis_worker', _route_worker_auth(None))
+    original_verifier = route.verify_listen_finalization_cloud_tasks_oidc
+    install_queue_patches(monkeypatch)
     redis = Redis(
         [json.dumps({'task_id': 'existing-finalizer', 'payload': {'job_id': 'job', 'dispatch_generation': 2}})]
     )
@@ -131,6 +140,7 @@ def test_actual_finalizer_handler_receives_final_attempt_and_terminal_ack_stops_
     monkeypatch.setattr(route, 'finalize_persisted_conversation', fail)
     app = FastAPI()
     app.include_router(route.router)
+    app.dependency_overrides[original_verifier] = cloud_tasks.verify_listen_finalization_cloud_tasks_oidc
     with TestClient(app) as client:
         monkeypatch.setattr(worker, '_r', lambda: redis)
         monkeypatch.setattr(worker.httpx, 'post', lambda url, **kwargs: client.post(queue.path, **kwargs))

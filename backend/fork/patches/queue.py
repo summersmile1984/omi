@@ -7,6 +7,7 @@ keeps its file.
 
 from __future__ import annotations
 
+from functools import wraps
 from typing import Any, Callable, List
 
 from ..registry import Patch
@@ -53,18 +54,54 @@ def patches() -> List[Patch]:
             )
             for name in ENQUEUE_SEAMS
         ]
-        + [
-            Patch(
-                name="queue.worker-authentication",
-                module="utils.cloud_tasks",
-                attribute="_verify_redis_worker",
-                build=_route_worker_auth,
-                applies_to=_uses_redis_queue,
-                reason="each Redis queue accepts only its configured worker credential",
-            )
-        ]
+        + _authentication_patches()
         + _finalization_patches()
     )
+
+
+def _redis_worker_verifier(original: Callable[..., Any]) -> Callable[..., Any]:
+    verify = _route_worker_auth(original)
+
+    from fastapi import Request
+
+    @wraps(original)
+    def route(request: Request) -> int:
+        return verify(request)
+
+    return route
+
+
+def _redis_account_deletion_verifier(original: Callable[..., Any]) -> Callable[..., Any]:
+    verify = _route_worker_auth(original)
+
+    from fastapi import Request
+
+    @wraps(original)
+    def route(request: Request) -> Any:
+        from utils.cloud_tasks import AccountDeletionTaskAuthentication
+
+        return AccountDeletionTaskAuthentication(retry_count=verify(request), audience='account_deletion')
+
+    return route
+
+
+def _authentication_patches() -> List[Patch]:
+    targets = (
+        ('verify_cloud_tasks_oidc', _redis_worker_verifier),
+        ('verify_account_deletion_cloud_tasks_oidc', _redis_account_deletion_verifier),
+        ('verify_listen_finalization_cloud_tasks_oidc', _redis_worker_verifier),
+    )
+    return [
+        Patch(
+            name='queue.' + name,
+            module='utils.cloud_tasks',
+            attribute=name,
+            build=build,
+            applies_to=_uses_redis_queue,
+            reason='Redis workers authenticate by route-scoped secret rather than Cloud Tasks OIDC',
+        )
+        for name, build in targets
+    ]
 
 
 def _finalization_patches():

@@ -48,6 +48,32 @@ def test_unknown_profile_stops_real_entrypoint(entry):
     assert 'WORKLOAD_RAN' not in result.stdout
 
 
+def test_self_host_admission_installs_firestore_facade_before_database_import():
+    code = f'''from unittest import mock
+from fork import bootstrap
+from firestore_pg import migrations
+with mock.patch.object(bootstrap.profile, 'current', return_value={SELF_HOST!r}), mock.patch.object(
+    bootstrap, '_require_modules'
+), mock.patch.object(migrations, 'check_schema'):
+    bootstrap.bootstrap(bootstrap.Role.WORKER)
+from database import _client
+from firestore_pg.client import Client
+assert _client.firestore.Client is Client
+'''
+    result = child(
+        code,
+        OMI_DEPLOYMENT_TARGET='self_hosted',
+        OMI_ENV_STAGE='local',
+        AUTH_PROVIDER='better_auth',
+        QUEUE_BACKEND='redis',
+        STORAGE_BACKEND='minio',
+        FIRESTORE_PG_DSN='postgresql+psycopg://unused',
+        REDIS_DB_HOST='localhost',
+        REDIS_DB_PASSWORD='test-only',
+    )
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize('role', ['API', 'WORKER', 'MEMORY_MAINTENANCE'])
 def test_dependency_failure_stops_admission(role):
     code = f'''

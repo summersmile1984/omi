@@ -84,6 +84,11 @@ def bootstrap(role: Role = Role.API) -> Admission:
     _bind('QUEUE_BACKEND', 'redis')
     _require('FIRESTORE_PG_DSN')
     _require_modules(('sqlalchemy', 'psycopg', 'httpx'))
+    # Must precede any upstream database import: the facade replaces the SDK
+    # module aliases that captured business modules resolve through.
+    from firestore_pg.compat import install as install_firestore_facade
+
+    install_firestore_facade()
 
     if role in (Role.API, Role.WORKER):
         _require('REDIS_DB_HOST')

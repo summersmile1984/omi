@@ -1,16 +1,8 @@
 import json
 from unittest.mock import MagicMock
 
-import pytest
-from starlette.requests import Request
-
-from utils import cloud_tasks, cloud_tasks_redis
+from utils import cloud_tasks_redis
 from fork import storage_minio
-
-
-def _request(headers=None):
-    raw_headers = [(key.lower().encode(), value.encode()) for key, value in (headers or {}).items()]
-    return Request({'type': 'http', 'headers': raw_headers})
 
 
 def test_minio_client_reads_runtime_configuration(monkeypatch):
@@ -76,14 +68,3 @@ def test_account_deletion_redis_payload_matches_handler_contract(monkeypatch):
         'wipe-wipe-123',
         {'job_id': 'wipe-123'},
     )
-
-
-def test_redis_worker_auth_fails_closed(monkeypatch):
-    monkeypatch.setenv('QUEUE_BACKEND', 'redis')
-    monkeypatch.setenv('QUEUE_REDIS_WORKER_SECRET', 'expected-secret')
-
-    with pytest.raises(cloud_tasks.HTTPException) as exc:
-        cloud_tasks.verify_cloud_tasks_oidc(_request({'x-omi-queue-secret': 'wrong-secret'}))
-    assert exc.value.status_code == 403
-
-    assert cloud_tasks.verify_cloud_tasks_oidc(_request({'x-omi-queue-secret': 'expected-secret'})) == 0
