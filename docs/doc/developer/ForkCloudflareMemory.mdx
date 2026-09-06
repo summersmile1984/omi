@@ -52,8 +52,22 @@ Its inference IO remains controlled, and that product lane does not exercise
 hosted Vectorize. The Worker suite separately drives the production projector
 through real SQLite transactions and controlled asynchronous Vectorize IO.
 
-Freshness-aware hydration with accurate diagnostics and equivalent publication
-ownership for the other projection families remain required. Ledger
+Native, MCP, developer and chat-tool vector searches now use one canonical D1
+snapshot for memory content, revision, model/publication metadata and access.
+The result limit is applied after rejection and chunk deduplication. Native
+diagnostics distinguish missing items, stale projections, stale vector IDs and
+access denials; the hydration read count includes rejected candidates.
+
+Repairs recheck canonical intent in the write transaction, preserve a newer
+publication, and reuse the existing artifact journal and projection outbox.
+Due work receives a post-commit Queue hint. The native
+`repair_purge_outbox_records` contains actual pending D1 artifact records,
+identified by vector ID and `storage: cf_memory_vector_artifacts`; these are
+not fabricated Firestore records. Unknown provider IDs without a trusted
+uid-scoped owner are counted and logged without authorizing external deletion.
+
+Equivalent publication ownership for the other projection families remains
+required, along with hosted provider qualification. Ledger
 history/revert also require append-only lineage and exact idempotency. These
 remain tracked in the fork CF-4 migration ledger and block full production
 product qualification; no default prompts or extraction policies are changed.

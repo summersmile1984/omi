@@ -41,6 +41,7 @@ from goal_routes import _response as goal_response
 from integration_routes import _json_schema, _workers_ai_json
 from internal_auth import create_request_context
 from memory_routes import MemoryCreate, _SELECT as MEMORY_SELECT
+from memory_vector_hydration import hydrate_memory_vectors
 from vector_search import (
     embed_query,
     hydrate_candidate_ids,
@@ -867,20 +868,13 @@ async def search_memories(request: Request):
             vector,
             top_k=min(int(limit) * 3, 60),
         )
-        candidates = await hydrate_candidate_ids(env, principal.uid, "memory", matches)
-        rows = await _rows_for_ids(
-            env,
-            MEMORY_SELECT,
-            principal.uid,
-            [source_id for source_id, _ in candidates],
-            "AND deleted_at IS NULL AND invalid_at IS NULL AND memory_tier != 'archive' "
-            "AND COALESCE(user_review, 1) != 0 AND is_locked = 0",
-        )
+        hydration = await hydrate_memory_vectors(env, principal.uid, matches)
+        rows = hydration.rows
     except ValueError as error:
         return _detail(str(error), 422)
     except Exception:
         return _error("memory search unavailable", 503)
-    score_by_id = dict(candidates)
+    score_by_id = hydration.scores
     return [
         {
             "id": str(row.get("id") or ""),

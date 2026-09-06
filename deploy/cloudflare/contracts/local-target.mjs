@@ -477,7 +477,7 @@ export async function startLocalTarget({
       inference_control_origin: inferenceControl.origin,
       command: [process.execPath, ...args],
       provider_boundary:
-        "synthetic ASR and structured/text inference; actual application Workers, D1, R2, DO, Queue",
+        "synthetic ASR, structured/text/embedding inference and transient memory Vectorize IO; actual application Workers, D1, R2, DO, Queue",
       unproved: [
         "hosted-model quality",
         "remote Vectorize/Images",

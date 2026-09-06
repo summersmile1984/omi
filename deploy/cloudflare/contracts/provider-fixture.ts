@@ -1,11 +1,15 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-// Controlled inference only: no application, identity, queue or storage binding.
+// Controlled inference and memory-index IO, with no application/identity/queue
+// binding. The disposable index deliberately has no durability/quality claim.
 // Real Python Workers own validation, accounting and every persisted result.
 export class Provider extends WorkerEntrypoint<{
   INFERENCE_CONTROL_ORIGIN: string;
 }> {
   async run(_model: string, input: Record<string, unknown>) {
+    if (Array.isArray(input.text)) {
+      return { data: input.text.map(() => Array(1024).fill(0.01)) };
+    }
     if (!input.response_format) {
       const messages = input.messages as { role: string; content: string }[];
       const reference = messages
@@ -96,6 +100,41 @@ export class Provider extends WorkerEntrypoint<{
     };
   }
 }
+
+const memoryVectors = new Map<string, Record<string, unknown>>();
+let processedMemoryMutation = "";
+
+export class MemoryVectors extends WorkerEntrypoint {
+  async upsert(vectors: Array<Record<string, unknown>>) {
+    for (const vector of vectors) memoryVectors.set(String(vector.id), vector);
+    processedMemoryMutation = crypto.randomUUID();
+    return { mutationId: processedMemoryMutation };
+  }
+
+  async deleteByIds(ids: string[]) {
+    for (const id of ids) memoryVectors.delete(id);
+    processedMemoryMutation = crypto.randomUUID();
+    return { mutationId: processedMemoryMutation };
+  }
+
+  async getByIds(ids: string[]) {
+    return ids.flatMap((id) => memoryVectors.has(id) ? [memoryVectors.get(id)] : []);
+  }
+
+  async describe() {
+    return { processedUpToMutation: processedMemoryMutation };
+  }
+
+  async query(_vector: number[], options: { namespace: string; topK: number }) {
+    const matches = [...memoryVectors.values()]
+      .filter((vector) => vector.namespace === options.namespace)
+      .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+      .slice(0, options.topK)
+      .map((vector) => ({ id: vector.id, score: 0.99 }));
+    return { count: matches.length, matches };
+  }
+}
+
 export default {
   fetch() {
     return new Response("local inference fixture");

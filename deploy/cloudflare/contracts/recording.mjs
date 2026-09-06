@@ -313,6 +313,36 @@ try {
       }
     },
   );
+  await caseOf("recording.memory-vector-search-fences-old-revisions", async () => {
+    const listed = await request("api", "/v3/memories", 200, { token: owner.token });
+    const memory = listed.data.find((row) => row.content.includes("prefers concise updates"));
+    require(memory, "derived memory missing before vector search");
+    const searchPath = "/memory/vector/search?query=concise&limit=10";
+    async function waitForContent(content) {
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        const result = await request("api", searchPath, 200, { token: owner.token });
+        const item = result.data.items.find((row) => row.id === memory.id);
+        if (item) {
+          require(item.content === content, "stale vector returned the wrong canonical content");
+          const revision = Number(result.data.projection_commit_ids_by_memory_id[memory.id]);
+          require(Number.isSafeInteger(revision) && revision > 0, "vector result lost its canonical revision");
+          return revision;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      throw new Error("actual queue did not publish the current memory revision");
+    }
+    const firstRevision = await waitForContent(memory.content);
+    const content = `${memory.content} Updated by the recording contract.`;
+    await request("api", `/v3/memories/${memory.id}`, 200, {
+      token: owner.token, method: "PATCH", body: { value: content },
+    });
+    const updatedRevision = await waitForContent(content);
+    require(updatedRevision > firstRevision, "memory edit reused its prior vector revision");
+    const isolated = await request("api", searchPath, 200, { token: other.token });
+    require(isolated.data.items.every((row) => row.id !== memory.id), "memory vector crossed account boundary");
+  });
   await caseOf("recording.completed-generation-never-reopened", async () => {
     const next = await connect(owner.token, id);
     require(next.event.conversation_id !==

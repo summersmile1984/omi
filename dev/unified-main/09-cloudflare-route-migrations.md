@@ -155,9 +155,13 @@ so a same-second edit during embedding retains its new work. Migration 0163
 adds immutable external memory-vector IDs, canonical publication comparison,
 and an artifact journal that survives in-flight writes and asynchronous erasure.
 Production projector regressions now cover reverse completion, stale deletion,
-late account-deletion writers and uncertain provider responses. Hosted Vectorize
-cleanup behavior, freshness-aware hydration/diagnostics and equivalent ownership
-for other projection families still require qualification; this remains a
+late account-deletion writers and uncertain provider responses. The shared
+memory hydration owner now reads canonical content, revision, publication/model
+metadata and current access in one snapshot for native, MCP, developer and
+chat-tool searches. It reports actual rejection/repair diagnostics and sends
+due repair work to the existing Queue owner after commit. Hosted Vectorize
+cleanup behavior and equivalent ownership for other projection families still
+require qualification; this remains a
 prerequisite to qualifying append-only ledger history and revert.
 
 | Method | Path |

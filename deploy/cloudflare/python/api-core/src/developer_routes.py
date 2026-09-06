@@ -21,7 +21,8 @@ from goal_routes import (
     _response as goal_response,
 )
 from memory_routes import _SELECT as MEMORY_SELECT, _response as memory_response
-from vector_search import embed_query, hydrate_candidate_ids, query_vector_ids
+from memory_vector_hydration import hydrate_memory_vectors
+from vector_search import embed_query, query_vector_ids
 
 router = APIRouter()
 
@@ -411,23 +412,6 @@ async def list_developer_memories(request: Request):
     return [_developer_memory(row) for row in rows if isinstance(row, dict)]
 
 
-async def _memory_rows_for_ids(env: object, uid: str, ids: list[str]) -> list[dict[str, object]]:
-    if not ids:
-        return []
-    placeholders = ",".join("?" for _ in ids)
-    result = (
-        await env.APP_DB.prepare(
-            MEMORY_SELECT + f"WHERE uid = ? AND id IN ({placeholders}) AND deleted_at IS NULL AND invalid_at IS NULL "
-            "AND memory_tier != 'archive' AND COALESCE(user_review, 1) != 0 AND is_locked = 0"
-        )
-        .bind(uid, *ids)
-        .all()
-    )
-    rows = result.get("results", []) if isinstance(result, dict) else []
-    by_id = {str(row.get("id")): row for row in rows if isinstance(row, dict)}
-    return [by_id[item_id] for item_id in ids if item_id in by_id]
-
-
 @router.get("/v1/dev/user/memories/vector/search")
 async def search_developer_memories(request: Request):
     principal, denial = await _authenticate(request, "memories:read")
@@ -449,13 +433,13 @@ async def search_developer_memories(request: Request):
             vector,
             top_k=min(result_limit * 3, 100),
         )
-        candidates = await hydrate_candidate_ids(env, principal.uid, "memory", matches)
-        rows = await _memory_rows_for_ids(env, principal.uid, [source_id for source_id, _ in candidates])
+        hydration = await hydrate_memory_vectors(env, principal.uid, matches)
+        rows = hydration.rows
     except ValueError as error:
         return _detail(str(error), 422)
     except Exception:
         return _error("memory search unavailable", 503)
-    score_by_id = dict(candidates)
+    score_by_id = hydration.scores
     items = [
         {
             "id": str(row.get("id") or ""),

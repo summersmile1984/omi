@@ -113,9 +113,18 @@ the outbox and Jobs: lifecycle, lock, generation, expiry and restricted labels.
 Jobs reads and acknowledges the actual revision, preserving a later same-second
 edit while an earlier embedding is in flight. The native path relies on durable
 scheduled reconciliation; MCP/developer notifications remain post-commit hints.
-This revision/outbox boundary is implemented. Revision-scoped Vectorize object
-identity, concurrent external-write fencing, complete hydration diagnostics and
-ledger lineage remain required before full memory product qualification.
+Migration 0163 adds immutable memory-vector publication IDs and a durable
+artifact owner. `memory_vector_hydration.py` reads each candidate's canonical
+content, revision, publication/model metadata and current access in one D1
+snapshot. Native, MCP, developer and chat-tool vector searches consume that
+snapshot without a second source read. Invalid candidates are classified before
+the result limit; duplicate chunks are not missing items. Repairs retain owned
+IDs in the existing artifact journal, re-evaluate canonical intent inside a D1
+transaction and wake due projection work through post-commit Queue hints.
+Unknown provider IDs never authorize deleting another account's objects.
+Native diagnostics report actual rejections and pending D1 artifact records.
+Hosted Vectorize qualification, other projection families and ledger lineage
+remain required before full memory product qualification.
 
 The same module owns the staging-only `GET /memory/archive/search` read
 boundary. Archive rows live in the separate D1 `cf_memory_archive_items`

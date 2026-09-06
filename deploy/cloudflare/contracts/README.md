@@ -15,6 +15,8 @@ locked Wrangler/workerd, then executes:
   `/v4/web/listen` (first-frame JWT) PCM recording flows: authenticated
   capture, committed transcript reads, reconnect ownership, cross-user denial,
   explicit finalization through actual Queue/Jobs/Core, derived memories/tasks,
+  memory-vector retrieval, canonical content edits and retrieval of a strictly
+  newer published revision, using the real public API and Queue consumer,
   and denial after logout. A separate account's recording proves that cascade
   deletion retracts its derived memories/tasks while the owner's recording
   remains; the populated owner's whole-account erasure stays a separate case.
@@ -44,6 +46,10 @@ locked Wrangler/workerd, then executes:
   logical R2 deletion, not physical disk reclamation or hosted Vectorize erasure.
   The inspector never seeds state or runs a deletion processor. This is not the
   full dual-target recording matrix.
+  The local provider includes deterministic embedding output and a transient
+  memory-index RPC double. Production publication, D1 hydration and cleanup run
+  unchanged against that controlled IO. The double proves neither hosted
+  Vectorize semantics/latency nor index durability across provider restarts.
 - `chat.mjs`, the current upstream Web `api.ts` get/send/clear functions against
   actual HTTP/SSE, Python model RPC and D1: configured brand greeting/default
   system prompt (via an inference-only echo), app-generator platform identity,

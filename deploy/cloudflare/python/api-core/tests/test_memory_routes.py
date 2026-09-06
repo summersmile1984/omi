@@ -228,21 +228,23 @@ def test_vector_memory_search_uses_vectorize_candidates_and_d1_hydration():
     vector_id = "a" * 64
     env.MEMORY_VECTORS = FakeVectorIndex([{"id": vector_id, "score": 0.91}])
     env.WORKERS_AI_VECTOR_MODEL = "test-vector-model"
-    env.APP_DB.connection.execute(
-        "CREATE TABLE cf_vector_projection_state ("
-        "uid TEXT NOT NULL, projection_kind TEXT NOT NULL, source_id TEXT NOT NULL, sub_id TEXT NOT NULL, "
-        "vector_id TEXT NOT NULL, source_version INTEGER NOT NULL, model TEXT NOT NULL, updated_at INTEGER NOT NULL)"
-    )
-    env.APP_DB.connection.commit()
+    from test_memory_mutation_lock import Database
 
+    env.APP_DB = Database()
     memory = create(env, secret, content="Coffee before vector search", category="manual")
     env.APP_DB.connection.execute(
         "INSERT INTO cf_vector_projection_state "
         "(uid, projection_kind, source_id, sub_id, vector_id, source_version, model, updated_at) "
-        "VALUES (?, 'memory', ?, '', ?, 7, 'test-vector-model', 1)",
-        ("memory-user", memory["id"], vector_id),
+        "VALUES (?, 'memory', ?, '', ?, ?, 'test-vector-model', 1)",
+        ("memory-user", memory["id"], vector_id, env.APP_DB.row(memory["id"])["item_revision"]),
     )
     env.APP_DB.connection.commit()
+
+    # INV-MEM-2 requires the canonical revision and its owned publication,
+    # rather than the former unrelated constant 7.
+    from test_memory_vector_hydration import adopt_state
+
+    adopt_state(env.APP_DB)
 
     response = asyncio.run(
         search_vector_memory(FakeRequest(env, signed_headers(secret), {"query": "coffee", "limit": "1"}))
@@ -252,7 +254,9 @@ def test_vector_memory_search_uses_vectorize_candidates_and_d1_hydration():
     assert response["returned_count"] == 1
     assert response["items"][0]["id"] == memory["id"]
     assert response["scores_by_memory_id"] == {memory["id"]: 0.91}
-    assert response["projection_commit_ids_by_memory_id"] == {memory["id"]: "7"}
+    assert response["projection_commit_ids_by_memory_id"] == {
+        memory["id"]: str(env.APP_DB.row(memory["id"])["item_revision"])
+    }
     assert response["legacy_fallback_used"] is False
     assert response["rollout"]["surface"] == "product_vector_search"
     assert env.MEMORY_VECTORS.calls[0][1]["namespace"]

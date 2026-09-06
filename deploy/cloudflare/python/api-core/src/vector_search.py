@@ -139,6 +139,8 @@ async def hydrate_candidate_ids(
     *,
     minimum_score: float | None = None,
 ) -> list[tuple[str, float]]:
+    if projection_kind == "memory":
+        raise ValueError("memory candidates require canonical snapshot hydration")
     if projection_kind not in PROJECTION_KINDS:
         raise ValueError("invalid projection kind")
     filtered = [match for match in matches if minimum_score is None or match[1] >= minimum_score]

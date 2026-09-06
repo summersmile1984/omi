@@ -232,12 +232,19 @@ def run(awaitable):
 
 
 def insert_vector_state(database, source_id, vector_id):
+    revision = database.connection.execute(
+        "SELECT item_revision FROM cf_memories WHERE uid = 'developer-user' AND id = ?",
+        (source_id,),
+    ).fetchone()[0]
     database.connection.execute(
         "INSERT INTO cf_vector_projection_state "
         "(uid, projection_kind, source_id, sub_id, vector_id, source_version, model, updated_at) "
-        "VALUES ('developer-user', 'memory', ?, '000000', ?, 10, 'developer-vector-test-model', 10)",
-        (source_id, vector_id),
+        "VALUES ('developer-user', 'memory', ?, '000000', ?, ?, 'developer-vector-test-model', 10)",
+        (source_id, vector_id, revision),
     )
+    from test_memory_vector_hydration import adopt_state
+
+    adopt_state(database)
 
 
 def test_developer_auth_is_strict_scope_bound_and_cutover_fenced():

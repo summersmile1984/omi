@@ -31,6 +31,7 @@ from conversation_routes import (
 )
 from fallback import record_fallback
 from internal_auth import decode_context
+from memory_vector_hydration import hydrate_memory_vectors
 from vector_search import embed_query, hydrate_candidate_ids, query_vector_ids
 
 router = APIRouter()
@@ -559,23 +560,6 @@ async def _memory_rows(
     return [row for row in rows if isinstance(row, dict)]
 
 
-async def _memory_rows_for_ids(env: object, uid: str, ids: list[str]) -> list[dict[str, object]]:
-    if not ids:
-        return []
-    placeholders = ",".join("?" for _ in ids)
-    result = (
-        await env.APP_DB.prepare(
-            MEMORY_SELECT + f"WHERE uid = ? AND id IN ({placeholders}) AND deleted_at IS NULL AND invalid_at IS NULL "
-            "AND memory_tier != 'archive' AND COALESCE(user_review, 1) != 0 AND is_locked = 0"
-        )
-        .bind(uid, *ids)
-        .all()
-    )
-    rows = result.get("results", []) if isinstance(result, dict) else []
-    by_id = {str(row["id"]): row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)}
-    return [by_id[item_id] for item_id in ids if item_id in by_id]
-
-
 def _memory_source(row: dict[str, object]) -> dict[str, object]:
     return _source(
         "memory",
@@ -644,13 +628,13 @@ async def search_memories(request: Request):
             vector,
             top_k=min(search.limit * 3, 60),
         )
-        candidates = await hydrate_candidate_ids(env, uid, "memory", matches)
-        rows = await _memory_rows_for_ids(env, uid, [source_id for source_id, _ in candidates])
+        hydration = await hydrate_memory_vectors(env, uid, matches)
+        rows = hydration.rows
     except Exception:
         return _ok("search_memories", "Error searching memories: search unavailable")
     if not rows:
         return _ok("search_memories", f"No memories found matching '{search.query}'.")
-    score_by_id = dict(candidates)
+    score_by_id = hydration.scores
     lines = [
         f"- {row.get('content') or ''} (relevance: {score_by_id.get(str(row.get('id') or ''), 0.0):.2f}, "
         f"category: {row.get('category') or 'interesting'}, date: {(_iso(row.get('created_at')) or 'Unknown')[:10]})"

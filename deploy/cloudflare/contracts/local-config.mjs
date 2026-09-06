@@ -187,6 +187,13 @@ export function localConfigs({
         service: `${namespace}-provider`,
         entrypoint: "Provider",
       });
+      if (["api-core", "jobs"].includes(role)) {
+        config.services.push({
+          binding: "MEMORY_VECTORS",
+          service: `${namespace}-provider`,
+          entrypoint: "MemoryVectors",
+        });
+      }
     }
     for (const object of config.durable_objects?.bindings ?? [])
       if (object.script_name)

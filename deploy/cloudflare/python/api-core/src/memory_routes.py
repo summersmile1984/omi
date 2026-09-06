@@ -23,7 +23,8 @@ from internal_auth import decode_context
 from memory_mutation_errors import memory_mutation_error
 from account_routes import usage_source_statement
 from memory_review_routes import build_review_queue_statements
-from vector_search import embed_query, hydrate_candidate_ids, query_vector_ids
+from memory_vector_hydration import hydrate_memory_vectors
+from vector_search import embed_query, query_vector_ids
 
 router = APIRouter()
 
@@ -813,56 +814,16 @@ async def search_vector_memory(request: Request):
             vector,
             top_k=candidate_limit,
         )
-        hydrated = await hydrate_candidate_ids(env, uid, "memory", candidates)
-        ordered_ids = [source_id for source_id, _ in hydrated[:limit]]
-        rows: list[dict[str, object]] = []
-        if ordered_ids:
-            placeholders = ",".join("?" for _ in ordered_ids)
-            result = (
-                await env.APP_DB.prepare(
-                    _SELECT
-                    + "WHERE uid = ? AND id IN ("
-                    + placeholders
-                    + ") AND deleted_at IS NULL AND invalid_at IS NULL "
-                    + "AND memory_tier != 'archive' AND COALESCE(user_review, 1) != 0 AND is_locked = 0"
-                )
-                .bind(uid, *ordered_ids)
-                .all()
-            )
-            raw_rows = result.get("results", []) if isinstance(result, dict) else []
-            by_id = {
-                str(row["id"]): row for row in raw_rows if isinstance(row, dict) and isinstance(row.get("id"), str)
-            }
-            rows = [by_id[memory_id] for memory_id in ordered_ids if memory_id in by_id]
+        hydration = await hydrate_memory_vectors(env, uid, candidates)
+        rows = hydration.rows[:limit]
     except ValueError:
         return JSONResponse({"error": "invalid search parameters"}, status_code=400)
     except Exception:
         return JSONResponse({"error": "memory vector search unavailable"}, status_code=503)
 
-    scores = {source_id: score for source_id, score in hydrated if source_id in {str(row["id"]) for row in rows}}
-    source_versions: dict[str, str] = {}
-    if scores:
-        placeholders = ",".join("?" for _ in scores)
-        try:
-            state_result = (
-                await env.APP_DB.prepare(
-                    "SELECT source_id, source_version FROM cf_vector_projection_state "
-                    "WHERE uid = ? AND projection_kind = 'memory' AND source_id IN (" + placeholders + ")"
-                )
-                .bind(uid, *scores.keys())
-                .all()
-            )
-            state_rows = state_result.get("results", []) if isinstance(state_result, dict) else []
-            source_versions = {
-                str(row["source_id"]): str(row.get("source_version"))
-                for row in state_rows
-                if isinstance(row, dict) and isinstance(row.get("source_id"), str)
-            }
-        except Exception:
-            return JSONResponse({"error": "memory vector search unavailable"}, status_code=503)
-
+    scores = hydration.scores
+    source_versions = hydration.versions
     items = [_response(row) for row in rows]
-    rejected = max(0, len(candidates) - len(hydrated))
     return {
         "uid": uid,
         "query": query,
@@ -871,7 +832,7 @@ async def search_vector_memory(request: Request):
         "projection_commit_ids_by_memory_id": {
             str(row["id"]): source_versions[str(row["id"])] for row in rows if str(row["id"]) in source_versions
         },
-        "decisions": {str(row["id"]): "USE_MEMORY" for row in rows},
+        "decisions": hydration.decisions,
         "total_count": len(items),
         "returned_count": len(items),
         "limit": limit,
@@ -889,17 +850,17 @@ async def search_vector_memory(request: Request):
         "legacy_fallback_used": False,
         "vector_query_count": 1,
         "queried_candidate_count": len(candidates),
-        "hydrated_candidate_count": len(items),
-        "candidate_hydration_read_count": len(hydrated),
-        "hydration_rejected_missing_count": rejected,
-        "hydration_rejected_stale_projection_count": 0,
-        "hydration_rejected_stale_vector_count": 0,
-        "hydration_rejected_access_denied_count": max(0, len(hydrated) - len(items)),
+        "hydrated_candidate_count": hydration.authoritative_count,
+        "candidate_hydration_read_count": hydration.reads,
+        "hydration_rejected_missing_count": hydration.rejected["missing"],
+        "hydration_rejected_stale_projection_count": hydration.rejected["stale_projection"],
+        "hydration_rejected_stale_vector_count": hydration.rejected["stale_vector"],
+        "hydration_rejected_access_denied_count": hydration.rejected["access_denied"],
         "vector_rejected_count": 0,
-        "repair_purge_candidate_count": 0,
-        "repair_purge_candidates": [],
-        "repair_purge_outbox_record_count": 0,
-        "repair_purge_outbox_records": [],
+        "repair_purge_candidate_count": len(hydration.repairs),
+        "repair_purge_candidates": hydration.repairs,
+        "repair_purge_outbox_record_count": len(hydration.records),
+        "repair_purge_outbox_records": hydration.records,
         "archive_default_visible": False,
         "telemetry": {"source": "cloudflare_vectorize", "projection_kind": "memory"},
         "policy": _product_search_policy(),

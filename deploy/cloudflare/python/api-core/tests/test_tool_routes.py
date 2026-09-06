@@ -228,12 +228,24 @@ def insert_fixtures(database):
 
 
 def insert_vector_state(database, kind, source_id, vector_id, *, sub_id="000000"):
+    version = (
+        database.connection.execute(
+            "SELECT item_revision FROM cf_memories WHERE uid = ? AND id = ?",
+            (UID, source_id),
+        ).fetchone()[0]
+        if kind == 'memory'
+        else 1_788_072_001
+    )
     database.connection.execute(
         "INSERT INTO cf_vector_projection_state "
         "(uid,projection_kind,source_id,sub_id,vector_id,source_version,model,updated_at) "
         "VALUES (?,?,?,?,?,?,?,?)",
-        (UID, kind, source_id, sub_id, vector_id, 1_788_072_001, "test-vector-model", 1_788_072_001),
+        (UID, kind, source_id, sub_id, vector_id, version, "test-vector-model", 1_788_072_001),
     )
+    if kind == 'memory':
+        from test_memory_vector_hydration import adopt_state
+
+        adopt_state(database)
     database.connection.commit()
 
 
@@ -263,6 +275,8 @@ def test_tool_lists_are_authenticated_uid_scoped_and_emit_typed_sources():
 
 def test_tool_vector_searches_hydrate_d1_and_reconstruct_transcript_chunks():
     database, env = environment()
+    # Read the historical short-term fixture inside its canonical 48-hour lifetime.
+    database.connection.create_function('unixepoch', 0, lambda: 1_788_072_001)
     insert_fixtures(database)
     memory_vector = "a" * 64
     action_vector = "b" * 64
