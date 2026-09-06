@@ -36,9 +36,12 @@ adds the independent R2 writer, one-use approval verification, revocable content
 reads and account erasure. The subsequent
 [Core screenshot views verification](implementation-2026-09-05/screen-frame-views-2026-09-06.md)
 adds settings, owner/public reads, sharing revocation, concurrent-safe deletion
-and the streaming content proxy in Core. These eight route slots remain blocked
-pending Core adjudication, approval minting, survivor publication, Edge routing
-and full hosted business qualification.
+and the streaming content proxy in Core. The
+[Core adjudication verification](implementation-2026-09-05/screen-frame-adjudication-2026-09-06.md)
+then implements original-prompt adjudication, approval minting and atomic survivor
+publication, with actual local PNG/D1/R2 execution and controlled inference.
+These eight route slots remain blocked pending hosted model access, supported-input
+memory qualification, Edge routing and full hosted business qualification.
 
 | Method | Path                                                         |
 | ------ | ------------------------------------------------------------ |

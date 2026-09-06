@@ -85,6 +85,7 @@ export function sourceIdentity(root) {
         "brand",
         "contracts",
         "backend/models/screen_frame.py",
+        "backend/routers/screen_frames.py",
         "backend/utils/screen_frames",
       ])
         .split("\0")

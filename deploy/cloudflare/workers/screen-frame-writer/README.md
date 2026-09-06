@@ -34,6 +34,9 @@ or upload bytes after that fence. Ordinary deletion retains a consumed approval
 until expiry; account erasure can remove it immediately because its account
 fence remains authoritative. The five-minute cron processes bounded cleanup
 batches. Storage errors retain the receipt for retry.
+The same scheduler removes at most 128 expired adjudication attempts per pass,
+preserving their 24-hour replay window and any live or other-owner attempts in
+an owner-scoped cleanup call.
 
 Cloudflare documents `NoSuchUpload` as Workers error code 10024. An abort that
 resolves or reports that exact code has no active upload; other failures are
@@ -47,7 +50,8 @@ evidence; hosted R2 concurrency remains part of production qualification.
 `GET /v1/screen-frame-content` uses a separate one-hour capability. Every read
 checks current D1 membership, account/subject existence, global setting and
 shared visibility, both before and after the R2 read. The response disables
-caching. Core's public proxy and URL minting are not implemented yet.
+caching. Core issues these capabilities and streams the writer's response through
+its public-shaped content proxy; the writer remains the sole owner of image IO.
 
 Jobs calls `/internal/users/{uid}/screen-frames/cleanup` or `residual` with the
 common internal assertion, bound to method, path, uid and the writer audience.
@@ -58,8 +62,10 @@ writer receipts. The same writer check participates in subsequent zero scans.
 Tests run in the existing `deploy/cloudflare/ci/routes.sh` lane:
 `screen-frame-writer.test.ts`, `screen-frame-r2.test.mjs`, account deletion and
 resource-plan tests, plus Core's user export test. The eight upstream public
-screenshot routes remain classified as blocked: this storage prerequisite does
-not establish end-to-end adjudication or production deployment.
+screenshot routes remain classified as blocked. Core now also has native local
+PNG → controlled judge → signed approval → writer → D1/R2 → content-proxy evidence.
+Hosted model access, supported-input memory limits, Edge routing and production
+business qualification remain outstanding.
 
 Protocol sources:
 [R2 Workers multipart API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/),

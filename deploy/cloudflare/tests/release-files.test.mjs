@@ -40,6 +40,11 @@ function fixture() {
     "export const value=1;\n"
   );
   mkdirSync(resolve(root, "backend/models"), { recursive: true });
+  mkdirSync(resolve(root, "backend/routers"), { recursive: true });
+  writeFileSync(
+    resolve(root, "backend/routers/screen_frames.py"),
+    "SLACK = 120\n"
+  );
   mkdirSync(resolve(root, "backend/utils/screen_frames"), { recursive: true });
   writeFileSync(
     resolve(root, "backend/models/screen_frame.py"),
@@ -79,6 +84,7 @@ describe("immutable release inputs and output ownership", () => {
     const f = fixture();
     for (const path of [
       "backend/models/screen_frame.py",
+      "backend/routers/screen_frames.py",
       "backend/utils/screen_frames/judge.py",
     ]) {
       const original = readFileSync(resolve(f.root, path));

@@ -175,6 +175,13 @@ export async function cleanup(env: WriterEnv, uid?: string): Promise<number> {
   )
     .bind(...(uid === undefined ? [] : [uid]))
     .run();
+  await env.APP_DB.prepare(
+    `DELETE FROM cf_screen_frame_attempts WHERE (uid, attempt_id) IN (
+      SELECT uid, attempt_id FROM cf_screen_frame_attempts WHERE expires_at <= unixepoch()${scope}
+      ORDER BY expires_at LIMIT 128)`
+  )
+    .bind(...(uid === undefined ? [] : [uid]))
+    .run();
   return rows.results.length;
 }
 

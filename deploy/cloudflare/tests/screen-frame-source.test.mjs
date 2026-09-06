@@ -36,15 +36,29 @@ from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 from PIL import Image
 from screen_frames_canonical import canonicalize_candidate,ScreenFrameCanonicalizationError
-from screen_frames_contract import ScreenFrameJudgement
+from screen_frames_contract import ScreenFrameJudgement,ScreenFrameCandidateIn
 from screen_frames_palette import compute_ground
 from screen_frames_prompt import _PRIVACY_PROMPT
 from screen_frames_selection import _apply_cap_and_roles
+from screen_frames_transport import decode_and_verify_transport_digest,ScreenFrameDigestMismatch
+from screen_frames_admission import _validate_capture_window,CAPTURE_WINDOW_SLACK_SECONDS
+from datetime import datetime,timezone,timedelta
+import base64
 raw=io.BytesIO();Image.new('RGB',(1920,1080),'#24405A').save(raw,format='PNG')
 frame=canonicalize_candidate(raw.getvalue())
 assert (frame.width,frame.height)==(1600,900)
 assert frame.sha256_hex==hashlib.sha256(frame.jpeg_bytes).hexdigest()
 assert compute_ground(frame.jpeg_bytes).model_dump()['stops']
+stamp=datetime(2026,9,6,tzinfo=timezone.utc)
+candidate=ScreenFrameCandidateIn(client_frame_id='fixture',captured_at=stamp,mime_type='image/png',declared_width=1920,declared_height=1080,sha256_base64=base64.b64encode(hashlib.sha256(raw.getvalue()).digest()).decode(),bytes_base64=base64.b64encode(raw.getvalue()).decode())
+assert decode_and_verify_transport_digest(candidate)==raw.getvalue()
+assert CAPTURE_WINDOW_SLACK_SECONDS==120
+_validate_capture_window({'started_at':stamp+timedelta(seconds=120),'finished_at':stamp},[candidate])
+candidate.bytes_base64='invalid!'
+try:
+ decode_and_verify_transport_digest(candidate)
+ raise AssertionError('invalid transport admitted')
+except ScreenFrameDigestMismatch: pass
 try:
  canonicalize_candidate(b'corrupt')
  raise AssertionError('corrupt image admitted')

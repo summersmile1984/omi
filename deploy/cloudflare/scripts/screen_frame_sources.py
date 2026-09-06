@@ -31,8 +31,10 @@ def selected_nodes(relative: str, names: set[str]) -> str:
         owned = set()
         if isinstance(node, ast.Assign):
             owned = {target.id for target in node.targets if isinstance(target, ast.Name)}
-        elif isinstance(node, (ast.FunctionDef, ast.AnnAssign)):
-            owned = {node.name} if isinstance(node, ast.FunctionDef) else {getattr(node.target, 'id', '')}
+        elif isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.AnnAssign)):
+            owned = (
+                {node.name} if isinstance(node, (ast.FunctionDef, ast.ClassDef)) else {getattr(node.target, 'id', '')}
+            )
         if owned & names:
             result.append(ast.get_source_segment(original, node))
             found |= owned & names
@@ -63,6 +65,29 @@ def generate(output: Path) -> None:
         + selected_nodes(
             'backend/utils/screen_frames/enforcement.py',
             {'BANNER_SUITABILITY_THRESHOLD', 'STRIP_MAX', '_apply_cap_and_roles'},
+        )
+    )
+    outputs['screen_frames_transport.py'] = (
+        'import base64, binascii, hashlib\nfrom screen_frames_contract import ScreenFrameCandidateIn\n\n'
+        + selected_nodes(
+            'backend/utils/screen_frames/pipeline.py',
+            {'ScreenFrameDigestMismatch', 'decode_and_verify_transport_digest'},
+        )
+    )
+    outputs['screen_frames_admission.py'] = (
+        'from datetime import datetime, timedelta, timezone\nimport hashlib, json\n'
+        'from typing import Any, Dict, List\nfrom fastapi import HTTPException\n'
+        'from screen_frames_contract import ScreenFrameCandidateIn, ScreenFrameAdjudicationRequest\n\n'
+        + selected_nodes(
+            'backend/routers/screen_frames.py',
+            {
+                'MAX_CANDIDATE_DECODED_BYTES',
+                'CAPTURE_WINDOW_SLACK_SECONDS',
+                'IDEMPOTENCY_TTL_SECONDS',
+                '_ensure_aware',
+                '_validate_capture_window',
+                '_request_fingerprint',
+            },
         )
     )
     # Read/validate every input before publishing any source. The stage owner is

@@ -4,8 +4,8 @@ description: "Screenshot display, settings and revocation for clients using the 
 ---
 
 The screenshot API is under development in the Cloudflare target. Core implements
-the read and revocation operations below; the public Edge route family remains
-unavailable until candidate adjudication and the complete workflow are qualified.
+candidate adjudication, display and revocation; the public Edge route family remains
+unavailable until hosted model access and the complete workflow are qualified.
 Do not use these implementation results as evidence of a live deployment.
 
 An authenticated `GET /v1/screen-frame-egress/settings` returns
@@ -44,6 +44,23 @@ updated set and increment its revision. Removed image URLs become unavailable
 immediately after the committed mutation; physical object cleanup is retried by
 the storage service. Deletion preserves `adjudicated_at`.
 
-Client-supplied verdicts cannot approve an image. The separate candidate
-adjudication endpoint must be implemented before this route family can be
-enabled for deployment.
+Candidate submission uses `POST /v1/screen-frame-egress/adjudications` with
+`schema_version: 1`, a UUID `attempt_id`, `purpose: "meeting_note_v1"`,
+`subject: {"kind": "conversation", "id": "conversation-id"}` and one to eight
+`candidates`. Each candidate provides `client_frame_id`, `captured_at`,
+`mime_type`, `declared_width`, `declared_height`, `sha256_base64` and `bytes_base64`.
+The conversation must be owned and completed; captures must fall within its
+time window with the existing two-minute slack.
+
+Every transport digest is checked before model processing. Core standardizes
+the image and judges those exact bytes with the upstream privacy prompt and
+strict output schema. A client verdict cannot approve an image. Rejected or
+unreadable candidates are omitted; a failed approved-image write returns 503.
+The successful result contains `attempt_id`, `outcome` (`committed` or
+`no_approved_frames`) and `frame_set`.
+
+Repeating an attempt with the same request replays its stored response for
+24 hours; a different fingerprint returns 409 and an unfinished attempt returns 503. An all-rejected pass updates `adjudicated_at` while leaving revision
+unchanged. At most seven approved frames survive, with up to one banner and six
+visible strip entries. Turning screenshots off or deleting the subject during
+processing prevents pending images from being published.

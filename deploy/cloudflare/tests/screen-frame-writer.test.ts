@@ -29,6 +29,36 @@ afterEach(() => {
 });
 const secret = "screen-frame-test-key-".repeat(3);
 const internalSecret = "screen-frame-internal-test-key-".repeat(2);
+
+it("expires bounded attempt receipts without erasing live or other-owner attempts", async () => {
+  const f = await fixture();
+  f.db.exec(
+    "INSERT INTO cf_conversations(uid,id,created_at) VALUES ('other','meeting',1); INSERT INTO cf_screen_frame_sets(uid,conversation_id) VALUES ('other','meeting')"
+  );
+  for (const uid of [f.p.uid, "other"]) {
+    for (let i = 0; i < 130; i++) {
+      f.db
+        .prepare(
+          "INSERT INTO cf_screen_frame_attempts(uid,conversation_id,attempt_id,fingerprint,epoch,expires_at) VALUES (?,'meeting',?, ?,0,1)"
+        )
+        .run(uid, `expired-${i}`, "a".repeat(64));
+    }
+  }
+  const count = (uid: string) =>
+    f.db
+      .prepare("SELECT count(*) AS n FROM cf_screen_frame_attempts WHERE uid=?")
+      .get(uid)?.n;
+  await cleanup(f.env, f.p.uid);
+  expect(count(f.p.uid)).toBe(3);
+  expect(count("other")).toBe(130);
+  await cleanup(f.env, f.p.uid);
+  expect(count(f.p.uid)).toBe(1);
+  expect(
+    f.db
+      .prepare("SELECT attempt_id FROM cf_screen_frame_attempts WHERE uid=?")
+      .get(f.p.uid)?.attempt_id
+  ).toBe(f.p.attempt_id);
+});
 const jpeg = new Uint8Array([255, 216, 1, 2, 255, 217]);
 const thumbnail = new Uint8Array([255, 216, 3, 255, 217]);
 function token(payload: unknown, purpose = APPROVAL_PURPOSE, key = secret) {

@@ -66,6 +66,7 @@
     }
   ],
   "vars": {
+    "SCREEN_FRAME_EGRESS_ENABLED": "false",
     "BRAND_SUPPORT_EMAIL": "help@omi.me",
     "PUBLIC_SHARE_BASE_URL": "https://h.omi.me",
     "BRAND_RUNTIME_JSON": "{\"brand_id\":\"omi-upstream\",\"display_name\":\"Omi\",\"ai_persona_name\":\"Omi\"}",

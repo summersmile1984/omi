@@ -7,7 +7,7 @@ APIs through the Worker fetch bridge. The route modules must stay async and
 must not import Firestore, Redis, thread pools, local persistent files, or
 process-lifetime network clients.
 
-The build stages six `screen_frames_*` modules directly from the upstream
+The build stages eight `screen_frames_*` modules directly from the upstream
 screenshot contract owners. Pillow 11.3.0 supplies the unchanged canonicalizer
 and palette implementation in Pyodide. The staged privacy prompt is identical
 to the upstream prompt; there is no Cloudflare-specific prompt rewrite. These
@@ -36,10 +36,37 @@ All successful responses use no-store. Malformed stored frames are omitted with
 the shared sanitized fallback event; missing legacy palette uses the upstream
 neutral colors. Invalid signing configuration fails the entire read with 503.
 
-These are Core prerequisites: Edge routing and the eight route inventory slots
-remain blocked until adjudication, approval minting, atomic publication and full
-hosted business qualification are implemented. Native local workerd evidence
-uses pre-seeded approved receipts/bytes and does not qualify AI adjudication.
+`screen_frame_adjudication.py` now registers candidate admission and processing.
+The upstream transport digest checks, capture window and request fingerprint are
+staged without rewriting their behavior. Every candidate digest is checked before
+the first model call; binary bytes are decoded again per candidate instead of
+retaining a second whole batch. Codec and judge failures reject that candidate;
+writer failures return 503 without a completed attempt. Global egress remains
+default off. It requires the explicit flag, isolated signer, AI binding and
+successful writer readiness before a candidate can leave Core.
+
+`screen_frame_judge.py` sends the unchanged upstream privacy prompt and judgement
+schema through `AI.run('google/gemini-2.5-flash-lite', ...)`. Contradictory or
+malformed output never authorizes storage. Only the judged canonical JPEG and
+its derived thumbnail/metadata enter a signed write approval. Usage uses the
+existing `screen_frame_judge` feature in the D1 LLM ledger.
+
+`screen_frame_adjudication_store.py` owns the 24-hour attempt reservation and
+replay response. A D1 batch acquires the attempt response against the current
+revision/epoch/admission snapshot, publishes the selected survivors, and marks
+newly written evictions for cleanup. Any frame-publication trigger failure rolls
+back the response too. Concurrent new attempts merge against a fresh snapshot;
+privacy epoch changes cancel the whole pending publication. An all-rejected pass
+sets `adjudicated_at` without incrementing revision, matching the upstream rule.
+The storage worker expires attempt rows in bounded batches.
+
+Core's entire screenshot pipeline has now run in local workerd with real PNG
+canonicalization, actual writer approval verification and real D1/R2. Inference
+was controlled and checked the original prompt hash; this is not model-quality
+or hosted-provider evidence. Edge routing and the eight inventory slots remain
+blocked until hosted model access, supported-input memory bounds and complete
+business qualification are resolved. The current upstream 64-megapixel codec
+limit must not be mistaken for proof that those images fit a hosted Worker.
 
 `referral_routes.py` preserves the desktop `ref1` HMAC wire format using a
 dedicated `REFERRAL_SIGNING_SECRET`. Link and login destinations come from the
