@@ -87,7 +87,9 @@ export function sourceIdentity(root) {
         "backend/models/screen_frame.py",
         "backend/models/frame_request.py",
         "backend/routers/screen_frames.py",
+        "backend/routers/frame_requests.py",
         "backend/utils/retrieval/frame_request_policy.py",
+        "backend/utils/retrieval/frame_request_storage.py",
         "backend/utils/jit_rollout.py",
         "backend/utils/screen_frames",
       ])

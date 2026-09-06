@@ -96,14 +96,44 @@ at most 32 old active rows and returns only the requesting device's requested
 rows. Frame metadata participates in the existing user export, conversation
 deletion and account-deletion residual/purge owners.
 
-Only metadata has been exercised in real local workerd: 29 HTTP calls through
-the frozen normal Core entry and all App D1 migrations passed. Uploaded and
-attached states return 503 until a pixel owner actually stores/promotes the
-image. No JIT image bytes are written by this implementation. Temporary upload,
-canonicalization, promotion into conversation photos, pixel reads and durable
-retention/deletion cleanup remain required work. The eight frame-request and
-six JIT route slots remain blocked at Edge; the decision endpoint alone does
-not implement the JIT memory/trigger family.
+`frame_request_pixels.py` now owns image upload, promotion and private reads.
+The original image validator/canonicalizer is staged from the upstream router;
+`python-multipart` 0.0.31 matches the Server pin and is recorded in both the
+project dependency list and Worker wheel lock. The Worker retains Pillow 11.3.0
+for its Pyodide wheel. The upload endpoint accepts the same multipart `file`
+with query `device_id`/`account_generation`, validates the actual JPEG/PNG/WebP
+content and applies the original metadata stripping and JPEG output bounds.
+Only upload/promotion can publish pixel states; JSON-only state updates cannot
+fabricate storage and return 409 for those transitions.
+
+Migration 0168 records every R2 multipart handle before uploading the first part.
+Temporary and permanent bytes use separate `FRAME_REQUESTS_TEMPORARY` and
+`FRAME_REQUESTS` bindings. Each copy has an immutable object ID; the deterministic
+permanent storage identifier resolves to exactly one live copy. One D1 statement
+publishes the object, changes request state, appends the conversation photo and
+sets the content/photo markers. Trigger failure rolls the whole publication back.
+An ambiguous response re-reads the authoritative state instead of deleting live
+bytes; competing promotion copies return the winning request and queue their own
+unreferenced copies for erasure.
+
+`workers/jobs/frame-request-storage.ts` runs from the existing scheduler and
+account-deletion owner. Expiry and conversation/photo removal atomically turn
+object receipts into cleanup work. Cleanup aborts the durable upload handle
+before deleting the object, preventing a late completion after erasure. Failed
+erasure retains the receipt, retry time and original frame cleanup status.
+Account deletion waits for both bucket residuals and the journal to become empty.
+Permanent photos follow conversation lifetime and remain readable when JIT is
+stopped; temporary reads recheck rollout, generation, expiry and live ownership
+after the R2 fetch. Both read paths stream authorized bytes with no-store.
+
+A real local workerd run exercised PNG upload, temporary reads, concurrent
+promotion, conversation photo reads, deletion and the actual Jobs cleanup against
+two local R2 buckets. The public Edge family remains blocked pending supported-input
+hosted memory/CPU qualification, new bucket provisioning and complete deployment
+acceptance. Reusing the upstream canonicalizer source does not guarantee
+byte-identical JPEG encodings across native and WASM image-library builds; storage
+integrity is checked against the canonical bytes produced by the active runtime.
+No JIT memory/trigger family was promoted by implementing its image transport.
 
 `referral_routes.py` preserves the desktop `ref1` HMAC wire format using a
 dedicated `REFERRAL_SIGNING_SECRET`. Link and login destinations come from the

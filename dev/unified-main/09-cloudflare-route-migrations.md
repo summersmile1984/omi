@@ -66,8 +66,11 @@ The [2026-09-06 metadata foundation](implementation-2026-09-05/frame-request-met
 implements the original wire/pure policy through a D1-owned JIT provider,
 request identity, dedupe, bounded delivery and guarded state transitions. Real
 local workerd passed 29 HTTP calls; no pixels or model inference participated.
-All eight slots remain blocked until upload, promotion, temporary/permanent
-reads and durable image cleanup are implemented and qualified together.
+The subsequent [pixel implementation](implementation-2026-09-05/frame-request-pixels-2026-09-06.md)
+adds upload, deterministic promotion, private reads and durable multipart cleanup
+with separate temporary/permanent buckets. A real local Core/Jobs/R2 flow now
+passes. All eight slots remain blocked pending hosted input-limit qualification,
+new bucket provisioning, public Edge routing and deployment acceptance.
 
 | Method | Path                                                          |
 | ------ | ------------------------------------------------------------- |

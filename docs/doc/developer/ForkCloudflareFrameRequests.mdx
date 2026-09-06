@@ -4,9 +4,10 @@ description: "Frame request metadata and client lifecycle in the Cloudflare targ
 ---
 
 The frame-request API is under development in the Cloudflare target. Core
-implements metadata creation, delivery and state changes. Public routing remains
-unavailable until image upload, promotion, reading and cleanup work together.
-The metadata implementation is not evidence of a live production service.
+implements metadata, image upload, promotion, private reads and cleanup. Public
+routing remains unavailable until the hosted resource/input limits and complete
+deployment are qualified. The implementation is not evidence of a live
+production service.
 
 Create a request with `POST /v1/frame-requests`, supplying `device_id` and
 `dedupe_key`. Optional fields are `account_generation` (default 0),
@@ -32,8 +33,32 @@ terminal state. A terminal update requires `terminal_reason`. A device mismatch
 returns 403; an invalid or conflicting transition returns 409. Re-read the
 request after a conflict before deciding what to do next.
 
-The current metadata implementation returns 503 for transitions to `uploaded`
-or `attached`. Sending a `storage_id` cannot create a stored image. Clients
-must wait for the complete image workflow before treating either state as
-available on this target. Frame metadata is included in account export and
-removed with its conversation or account.
+Upload pixels with `POST /v1/frame-requests/{request_id}/upload`. Send the image
+in multipart field `file`, and pass `device_id` and `account_generation` in the
+query string. The request must already be claimed by that device. JPEG, PNG and
+WebP are accepted up to 10 MiB; the actual content is validated. The original
+image conversion strips metadata, bounds the output to a 1920-pixel long side
+and 2.5 million pixels, and stores JPEG. Invalid images return 415; oversized
+uploads return 413. The original 25-million-pixel source limit still needs
+hosted Worker resource qualification.
+
+An uploaded request without a `conversation_id` can be read at
+`GET /v1/frame-requests/temporary/{request_id}/image`, with the same
+`account_generation`. Expired requests return 410. This read does not extend
+retention or promote the image.
+
+For a request created with a conversation ID, POST
+`/v1/frame-requests/{request_id}/promote` with `device_id`,
+`account_generation` and that `conversation_id`. The request must be uploaded.
+The operation returns an attached request and adds a photo to the conversation.
+Retries return the existing attachment. Read it through
+`GET /v1/conversations/{conversation_id}/photos/{photo_id}/image`, using the
+request ID as `photo_id`. The photo's `storage_id` is opaque and its `base64`
+field is empty.
+
+JSON state updates cannot create uploaded or attached evidence and return 409
+for those transitions; use the pixel endpoints. The temporary image expires
+with its request, while an attached photo follows the conversation's lifetime.
+Removing its conversation revokes reads immediately and queues physical erasure.
+Failed erasure is retried and reported by the frame's cleanup fields. Metadata
+participates in account export and deletion.

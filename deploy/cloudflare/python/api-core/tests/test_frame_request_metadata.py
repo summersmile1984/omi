@@ -57,7 +57,7 @@ def target():
         request.scope['env'] = env
         return await call_next(request)
 
-    async def call(method, path=BASE, *, uid='owner', body=None, headers=None):
+    async def call(method, path=BASE, *, uid='owner', body=None, headers=None, files=None):
         auth = {}
         if uid:
             encoded, signature = create_request_context(
@@ -71,9 +71,11 @@ def target():
             )
             auth = {'x-omi-auth-context': encoded, 'x-omi-internal-signature': signature}
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='https://eddy.test') as client:
-            return await client.request(method, path, json=body, headers=auth if headers is None else headers)
+            return await client.request(
+                method, path, json=body, files=files, headers=auth if headers is None else headers
+            )
 
-    yield SimpleNamespace(db=db, env=env, call=lambda *a, **kw: asyncio.run(call(*a, **kw)), async_call=call)
+    yield SimpleNamespace(db=db, env=env, call=lambda *a, **kw: asyncio.run(call(*a, **kw)), async_call=call, app=app)
     db.connection.close()
 
 
@@ -131,7 +133,7 @@ def test_pending_claim_device_isolation_and_pixel_state_is_not_fabricated(target
         target.call(
             'POST', path, body={'device_id': 'desktop', 'state': 'uploaded', 'storage_id': 'opaque'}
         ).status_code
-        == 503
+        == 409
     )
     assert target.call('GET', BASE + '/status/' + row['request_id']).json()['request']['state'] == 'claimed'
     assert target.call('GET', BASE + '/status/' + row['request_id'], uid='other').status_code == 404

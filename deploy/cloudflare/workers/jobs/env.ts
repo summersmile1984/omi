@@ -77,6 +77,8 @@ export type JobsEnv = {
   CHAT_FILES?: R2Bucket;
   CONVERSATION_RECORDINGS: R2Bucket;
   SPEECH_PROFILES: R2Bucket;
+  FRAME_REQUESTS?: R2Bucket;
+  FRAME_REQUESTS_TEMPORARY?: R2Bucket;
   AI: WorkersAiBinding;
   /** Optional until the account has Cloudflare Images transformations enabled. */
   IMAGES?: ImagesTransformBinding;

@@ -20,6 +20,8 @@ export const STORAGE_BINDINGS = Object.freeze({
     SPEECH_PROFILES: "speech-profiles",
     DESKTOP_UPDATES: "desktop-updates",
     SCREEN_FRAMES: "screen-frames",
+    FRAME_REQUESTS: "frame-requests",
+    FRAME_REQUESTS_TEMPORARY: "frame-requests-temporary",
   },
   vectorize: {
     CONVERSATION_VECTORS: "conversations",

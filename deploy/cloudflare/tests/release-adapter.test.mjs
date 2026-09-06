@@ -424,6 +424,7 @@ describe("locked Wrangler release adapter", () => {
       name: "assets",
       id: "expiry",
       prefix: "cf-sync/",
+      seconds: 86400,
     });
     expect(spawn.mock.calls.map(([, args]) => args.slice(1))).toEqual([
       [
@@ -447,6 +448,55 @@ describe("locked Wrangler release adapter", () => {
         "1",
       ],
     ]);
+  });
+  it("enforces seven-day temporary expiry and a non-expiring permanent frame bucket", async () => {
+    const spawn = vi.fn(() => ({ status: 0 }));
+    let rules = [];
+    const adapter = fixture({ spawn, fetchImpl: async () => ok({ rules }) });
+    const temporary = {
+      kind: "r2",
+      name: "temporary-frames",
+      id: "expiry",
+      prefix: "",
+      seconds: 604800,
+      exclusive: true,
+    };
+    adapter.addPolicy(temporary);
+    expect(spawn.mock.calls[0][1].slice(-2)).toEqual(["--expire-days", "7"]);
+    const permanent = {
+      kind: "r2",
+      name: "permanent-frames",
+      id: "retain",
+      retain: true,
+    };
+    expect(await adapter.observePolicy(permanent)).toEqual({
+      status: "present",
+    });
+    rules = [
+      {
+        id: "expiry",
+        enabled: true,
+        conditions: { prefix: "" },
+        deleteObjectsTransition: { condition: { type: "Age", maxAge: 604800 } },
+      },
+    ];
+    expect(await adapter.observePolicy(temporary)).toEqual({
+      status: "present",
+    });
+    await expect(adapter.observePolicy(permanent)).rejects.toThrow(
+      "must not expire"
+    );
+    rules.push({
+      ...rules[0],
+      id: "shorter",
+      deleteObjectsTransition: { condition: { type: "Age", maxAge: 86400 } },
+    });
+    await expect(adapter.observePolicy(temporary)).rejects.toThrow(
+      "unowned expiration"
+    );
+    expect(() => adapter.addPolicy(permanent)).toThrow(
+      "explicit positive whole-day"
+    );
   });
   it("reads only the D1 migration ledger and refuses incomplete query envelopes", async () => {
     const fetchImpl = vi.fn(async (_url, options) => {

@@ -56,8 +56,10 @@ function fixture() {
   );
   mkdirSync(resolve(root, "backend/utils/retrieval"), { recursive: true });
   for (const path of [
+    "backend/routers/frame_requests.py",
     "backend/models/frame_request.py",
     "backend/utils/retrieval/frame_request_policy.py",
+    "backend/utils/retrieval/frame_request_storage.py",
     "backend/utils/jit_rollout.py",
   ])
     writeFileSync(resolve(root, path), "CONTRACT = 1\n");
@@ -90,8 +92,10 @@ describe("immutable release inputs and output ownership", () => {
   it("binds the projected upstream screenshot, frame-request and JIT policy bytes to the source digest", () => {
     const f = fixture();
     for (const path of [
+      "backend/routers/frame_requests.py",
       "backend/models/frame_request.py",
       "backend/utils/retrieval/frame_request_policy.py",
+      "backend/utils/retrieval/frame_request_storage.py",
       "backend/utils/jit_rollout.py",
       "backend/models/screen_frame.py",
       "backend/routers/screen_frames.py",

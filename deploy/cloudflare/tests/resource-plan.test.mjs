@@ -339,7 +339,16 @@ describe("one brand/stage Cloudflare resource authority", () => {
     for (const stage of ["local", "beta", "production"]) {
       const fixture = resourceFixture("alpha", stage),
         plan = render(fixture);
-      expect(plan.resources).toHaveLength(30);
+      expect(plan.resources).toHaveLength(32);
+      const frames = plan.resources.filter((resource) =>
+        ["r2:frame-requests", "r2:frame-requests-temporary"].includes(
+          resource.key
+        )
+      );
+      expect(frames).toHaveLength(2);
+      expect(new Set(frames.map((resource) => resource.name)).size).toBe(2);
+      for (const resource of frames)
+        expect(resource.owners).toEqual(["api-core", "jobs"]);
       expect(
         plan.resources.find((resource) => resource.key === "r2:screen-frames")
           .owners

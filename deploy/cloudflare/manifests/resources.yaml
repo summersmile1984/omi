@@ -1,5 +1,13 @@
 version: 1
 resources:
+  - kind: r2
+    name: omi-cf-frame-requests-temporary-staging
+    owner: api-core
+    environment: staging
+  - kind: r2
+    name: omi-cf-frame-requests-staging
+    owner: api-core
+    environment: staging
   - kind: d1
     name: omi-cf-auth-staging
     owner: auth

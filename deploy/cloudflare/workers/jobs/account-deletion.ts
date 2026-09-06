@@ -1,3 +1,7 @@
+import {
+  cleanupFramePixels,
+  framePixelResidual,
+} from "./frame-request-storage";
 import type { Context, Hono } from "hono";
 import type { SignedAuthContext } from "../shared/auth-context";
 import {
@@ -1103,6 +1107,16 @@ export async function processAccountDeletionMessage(
           phase: "purging",
           settledAt: null,
           delaySeconds: 1,
+        });
+        message.ack();
+        return;
+      }
+      await cleanupFramePixels(env, intent.uid, now);
+      if (!(await framePixelResidual(env, intent.uid)).empty) {
+        await releaseIntent(env, intent, {
+          phase: "purging",
+          settledAt: null,
+          delaySeconds: 30,
         });
         message.ack();
         return;

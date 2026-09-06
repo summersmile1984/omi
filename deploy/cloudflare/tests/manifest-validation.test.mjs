@@ -475,10 +475,11 @@ describe("Cloudflare migration manifests", () => {
 
   it("requires every R2 target bucket to be isolated by environment", async () => {
     const manifest = await loadYaml("r2-namespaces.yaml");
-    const storageSource = await readFile(
-      resolve(repoRoot, manifest.source),
-      "utf8",
-    );
+    const storageSource = (
+      await Promise.all(
+        manifest.sources.map((path) => readFile(resolve(repoRoot, path), "utf8")),
+      )
+    ).join("\n");
     const invalid = structuredClone(manifest);
     invalid.namespaces[0].target_bucket_pattern = "shared-speech-profiles";
 
@@ -489,10 +490,11 @@ describe("Cloudflare migration manifests", () => {
 
   it("requires shared-binding R2 namespaces to declare disjoint key prefixes", async () => {
     const manifest = await loadYaml("r2-namespaces.yaml");
-    const storageSource = await readFile(
-      resolve(repoRoot, manifest.source),
-      "utf8",
-    );
+    const storageSource = (
+      await Promise.all(
+        manifest.sources.map((path) => readFile(resolve(repoRoot, path), "utf8")),
+      )
+    ).join("\n");
 
     const missingPrefixes = structuredClone(manifest);
     const temporalSync = missingPrefixes.namespaces.find(
@@ -529,10 +531,11 @@ describe("Cloudflare migration manifests", () => {
       loadYaml("r2-namespaces.yaml"),
       loadYaml("resources.yaml"),
     ]);
-    const storageSource = await readFile(
-      resolve(repoRoot, manifest.source),
-      "utf8",
-    );
+    const storageSource = (
+      await Promise.all(
+        manifest.sources.map((path) => readFile(resolve(repoRoot, path), "utf8")),
+      )
+    ).join("\n");
 
     const unprovisioned = structuredClone(resources);
     unprovisioned.resources = unprovisioned.resources.filter(

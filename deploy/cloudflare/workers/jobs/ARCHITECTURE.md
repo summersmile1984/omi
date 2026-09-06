@@ -21,6 +21,16 @@ before its receipts disappear. Generic D1 purging excludes those receipts, and
 both the cleanup step and later zero scans require the writer to respond.
 See the [writer contract](../screen-frame-writer/README.md).
 
+JIT frame evidence uses its own two R2 bindings, `FRAME_REQUESTS_TEMPORARY`
+and `FRAME_REQUESTS`. Core publishes the request/photo reference atomically in
+App D1; `frame-request-storage.ts` owns physical erasure. It expires temporary
+requests and abandoned writes, aborts each durable multipart handle before
+deleting its object, and retains the journal with retry backoff on failure.
+Conversation/photo deletion marks permanent objects for cleanup. Account erasure
+requires the journal and both bucket prefixes to be empty before generic D1
+purging can finish. The scheduled Jobs reconciler and account erasure coordinator
+invoke the same cleanup owner.
+
 Recording, sync, app, connector and import modules retain their respective
 state transitions and queue dispatchers. Their storage boundaries are declared
 in the Worker configuration and resource renderer; adding a bucket or service

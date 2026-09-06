@@ -29,12 +29,12 @@ New names derive from brand, stage and logical owner. Workers use
 `<brand>-cf-<role>-<stage>` (Web uses `<brand>-web-<stage>`); storage follows the
 same rule, with `-v1` on Vectorize names. D1, R2, Queue and Vectorize are separate
 Cloudflare namespaces. The complete plan includes nine Workers, two D1 databases,
-six R2 buckets, four queues, seven Vectorize indexes and two active Durable
-Object namespaces: 30 resource entries. Account-managed AI/Images bindings are
+eight R2 buckets, four queues, seven Vectorize indexes and two active Durable
+Object namespaces: 32 resource entries. Account-managed AI/Images bindings are
 listed separately in `platform_bindings`. Vectorize model/dimension metadata
 comes from the existing namespace manifest; no embedding model is changed.
 
-An existing allocation must list all 28 provisioned physical resource names;
+An existing allocation must list all 30 provisioned physical resource names;
 the two Durable Object namespace identities derive from their Worker/class.
 `resourceKeys()` in `scripts/resource-input.mjs` is the typed logical catalog.
 No prefix substitution guesses existing names. Existing templates' legacy and
@@ -67,6 +67,16 @@ key and every other private credential. The writer alone binds the `SCREEN_FRAME
 R2 bucket; Core signs approved bytes and proxies authorized content through its
 service binding. Provisioning the bucket and resolving these references does not
 enable screenshot egress or qualify its hosted model and input limits.
+
+Frame requests require two additional R2 bindings in Core and Jobs:
+`FRAME_REQUESTS_TEMPORARY` and `FRAME_REQUESTS`. Their separate buckets preserve
+the temporary versus conversation-lifetime ownership boundary. The release
+adapter requires a seven-day object expiration rule on the temporary bucket,
+and rejects any enabled object-expiration rule on the permanent bucket. Jobs
+expires temporary metadata at its earlier deadline and erases pixels through
+durable multipart receipts. These planned bindings do not imply that the two
+new Eddy production buckets have been created; the previous 19-resource remote
+provisioning proof predates them and must be refreshed before deployment.
 
 ## Profile and routing
 

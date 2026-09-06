@@ -1,5 +1,5 @@
 version: 1
-source: backend/utils/other/storage.py
+sources: [backend/utils/other/storage.py, backend/utils/retrieval/frame_request_storage.py]
 policy:
   dual_write_allowed: false
   cutover_sequence: copy-checksum-freeze-delta-switch-verify
@@ -123,4 +123,21 @@ namespaces:
       ["{encoded_uid}/{approval_id}/frame.jpg", "{encoded_uid}/{approval_id}/thumbnail.jpg"]
     data_classification: customer-content
     lifecycle: prefix-specific
+    migration_state: blocked
+
+  - id: frame-requests-temporary
+    legacy_env: BUCKET_FRAME_REQUESTS_TEMPORARY
+    target_binding: FRAME_REQUESTS_TEMPORARY
+    target_bucket_pattern: omi-cf-frame-requests-temporary-{environment}
+    object_patterns: ["frame-requests/{uid}/{object_id}.jpg"]
+    data_classification: customer-content
+    lifecycle: seven-days
+    migration_state: blocked
+  - id: frame-requests
+    legacy_env: BUCKET_FRAME_REQUESTS
+    target_binding: FRAME_REQUESTS
+    target_bucket_pattern: omi-cf-frame-requests-{environment}
+    object_patterns: ["frame-requests/{uid}/{object_id}.jpg"]
+    data_classification: customer-content
+    lifecycle: conversation-lifetime
     migration_state: blocked

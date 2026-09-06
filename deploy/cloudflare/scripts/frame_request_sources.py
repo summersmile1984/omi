@@ -16,6 +16,21 @@ def generate(output: Path) -> None:
     if policy.count('from models.frame_request import ') != 1:
         raise ValueError('frame request model import changed')
     outputs = {
+        'frame_request_image.py': (
+            'from io import BytesIO\nfrom fastapi import HTTPException\n'
+            'from PIL import Image, ImageOps, UnidentifiedImageError\n\n'
+            + selected_nodes(
+                'backend/routers/frame_requests.py',
+                {
+                    '_ALLOWED_IMAGE_FORMATS',
+                    '_MAX_IMAGE_PIXELS',
+                    '_MAX_EGRESS_DIMENSION',
+                    '_MAX_EGRESS_PIXELS',
+                    '_validated_image_content_type',
+                    '_canonicalize_frame_image',
+                },
+            )
+        ),
         'frame_request_contract.py': source('backend/models/frame_request.py'),
         'frame_request_policy.py': policy.replace(
             'from models.frame_request import ', 'from frame_request_contract import '

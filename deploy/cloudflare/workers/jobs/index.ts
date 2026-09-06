@@ -1,3 +1,4 @@
+import { cleanupFramePixels } from "./frame-request-storage";
 import { Hono, type Context } from "hono";
 import { verifyRequestAuthContext } from "../shared/auth-context";
 import {
@@ -1253,6 +1254,7 @@ export default {
         : [];
     const results = await Promise.allSettled([
       drainAssetCleanup(env),
+      cleanupFramePixels(env),
       evaluateFairUseBatch(env),
       drainNotifications(env),
       drainIntegrationWebhooks(env, now),

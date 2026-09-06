@@ -626,11 +626,15 @@ export function validateVectorNamespaceManifest(
 }
 
 export function discoverR2LegacyEnvs(storageSource) {
+  // Storage owners include both literal getenv calls and a conditional
+  // env-name assignment for the temporary/permanent frame bucket split.
   return [
-    ...storageSource.matchAll(/os\.getenv\(\s*["'](BUCKET_[A-Z0-9_]+)["']/g),
-  ]
-    .map((match) => match[1])
-    .sort();
+    ...new Set(
+      [...storageSource.matchAll(/["'](BUCKET_[A-Z0-9_]+)["']/g)].map(
+        (match) => match[1],
+      ),
+    ),
+  ].sort();
 }
 
 const ACTIVE_R2_STATES = new Set([
@@ -892,7 +896,6 @@ export async function validateManifests() {
     backendRouteInventory,
     edgeSource,
     redisSource,
-    storageSource,
   ] = await Promise.all([
     loadYaml(resolve(root, "manifests/routes.yaml")),
     loadYaml(resolve(root, "manifests/resources.yaml")),
@@ -902,8 +905,12 @@ export async function validateManifests() {
     loadJson(resolve(root, "manifests/backend-routes.json")),
     readFile(resolve(root, "workers/edge/index.ts"), "utf8"),
     readFile(resolve(repoRoot, "backend/database/redis_db.py"), "utf8"),
-    readFile(resolve(repoRoot, "backend/utils/other/storage.py"), "utf8"),
   ]);
+  const storageSource = (
+    await Promise.all(
+      r2Manifest.sources.map((path) => readFile(resolve(repoRoot, path), "utf8")),
+    )
+  ).join("\n");
   const vectorSources = await Promise.all(
     vectorManifest.sources.map((path) =>
       readFile(resolve(repoRoot, path), "utf8"),

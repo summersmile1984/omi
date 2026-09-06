@@ -46,6 +46,11 @@ version = "2.27.2"
 wheels = [{ url = "https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pydantic_core-2.27.2-cp313-cp313-pyodide_2025_0_wasm32.whl", hashes = { sha256 = "3695112ef99b222e48e0a2837b055ec818b43ff5e2e0802e99f5d6d2dd36af7b" } }]
 
 [[packages]]
+name = "python-multipart"
+version = "0.0.31"
+wheels = [{ url = "https://files.pythonhosted.org/packages/5e/1e/7f7f299527a5a8ad90acd5f2f78dfa6c8495c6301a3205106ea68a84de96/python_multipart-0.0.31-py3-none-any.whl", upload-time = 2026-06-04T08:27:47Z, size = 29996, hashes = { sha256 = "8408153d68a9773291fc1da39a8b85a50044bddbabd2dd72e9229776b7b15e28" } }]
+
+[[packages]]
 name = "pytz"
 version = "2024.1"
 wheels = [{ url = "https://files.pythonhosted.org/packages/9c/3d/a121f284241f08268b21359bd425f7d4825cffc5ac5cd0e1b3d82ffd2b10/pytz-2024.1-py2.py3-none-any.whl", upload-time = 2024-02-02T01:18:37Z, size = 505474, hashes = { sha256 = "328171f4e3623139da4983451950b28e95ac706e13f3f2630a879749e7a8b319" } }]

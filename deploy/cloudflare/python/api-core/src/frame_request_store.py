@@ -188,9 +188,9 @@ async def transition(env, uid, request_id, update):
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
     if update.state in {FrameRequestState.uploaded, FrameRequestState.attached}:
-        # No successful pixel state before the upload/promotion storage owner
-        # is implemented. The entire Edge family remains blocked meanwhile.
-        raise HTTPException(503, 'frame_request_pixel_storage_unavailable')
+        # Only the pixel endpoints can atomically publish a storage receipt.
+        # Client metadata alone cannot create uploaded or attached evidence.
+        raise HTTPException(409, 'use_frame_upload_or_promotion_endpoint')
     terminal = update.state in TERMINAL_FRAME_REQUEST_STATES
     if update.storage_id or update.content_type or update.byte_count:
         raise HTTPException(409, 'storage metadata is only valid when uploading a frame')

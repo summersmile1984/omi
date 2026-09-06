@@ -53,6 +53,14 @@
   ],
   "r2_buckets": [
     {
+      "binding": "FRAME_REQUESTS_TEMPORARY",
+      "bucket_name": "omi-cf-frame-requests-temporary-staging"
+    },
+    {
+      "binding": "FRAME_REQUESTS",
+      "bucket_name": "omi-cf-frame-requests-staging"
+    },
+    {
       "binding": "ASSETS",
       "bucket_name": "omi-cf-staging"
     },

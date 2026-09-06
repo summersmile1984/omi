@@ -245,6 +245,22 @@ export class WranglerReleaseAdapter {
         prefix,
         seconds: 86400,
       })),
+      {
+        kind: "r2",
+        name: resources.find(
+          (entry) => entry.key === "r2:frame-requests-temporary"
+        ).name,
+        id: "expire-temporary-frames",
+        prefix: "",
+        seconds: 604800,
+        exclusive: true,
+      },
+      {
+        kind: "r2",
+        name: resources.find((entry) => entry.key === "r2:frame-requests").name,
+        id: "retain-conversation-frames",
+        retain: true,
+      },
     ];
   }
   async observePolicy(policy) {
@@ -276,6 +292,25 @@ export class WranglerReleaseAdapter {
       ?.rules;
     if (!Array.isArray(rules))
       throw new Error("R2 lifecycle observation is incomplete");
+    if (policy.retain) {
+      if (
+        rules.some(
+          (rule) => rule.enabled === true && rule.deleteObjectsTransition
+        )
+      )
+        throw new Error("conversation frame bucket must not expire objects");
+      return { status: "present" };
+    }
+    if (
+      policy.exclusive &&
+      rules.some(
+        (rule) =>
+          rule.enabled === true &&
+          rule.deleteObjectsTransition &&
+          rule.id !== policy.id
+      )
+    )
+      throw new Error("temporary frame bucket has an unowned expiration rule");
     const row = rules.find((rule) => rule.id === policy.id);
     if (
       row &&
@@ -288,6 +323,15 @@ export class WranglerReleaseAdapter {
     return row ? { status: "present" } : { status: "absent" };
   }
   addPolicy(policy) {
+    if (
+      policy.kind === "r2" &&
+      (policy.retain ||
+        !Number.isSafeInteger(policy.seconds / 86400) ||
+        policy.seconds <= 0)
+    )
+      throw new Error(
+        "R2 expiration requires an explicit positive whole-day duration"
+      );
     return this.command(
       policy.kind === "vectorize"
         ? [
@@ -308,7 +352,7 @@ export class WranglerReleaseAdapter {
             policy.id,
             policy.prefix,
             "--expire-days",
-            "1",
+            String(policy.seconds / 86400),
           ]
     );
   }

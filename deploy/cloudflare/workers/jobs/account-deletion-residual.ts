@@ -29,6 +29,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_account_cutover", column: "uid" },
   { table: "cf_jit_flags", column: "uid" },
   { table: "cf_frame_requests", column: "uid" },
+  { table: "cf_frame_objects", column: "uid" },
   { table: "cf_action_items", column: "uid" },
   { table: "cf_advice", column: "uid" },
   { table: "cf_announcement_dismissals", column: "uid" },
@@ -319,6 +320,7 @@ const PURGE_PRIORITY_SET = new Set<string>(PURGE_PRIORITY);
 
 // The independent writer must acknowledge R2 erasure before removing receipts.
 export const ACCOUNT_DELETION_WRITER_D1_SURFACES = Object.freeze([
+  { table: "cf_frame_objects", column: "uid" },
   { table: "cf_screen_frame_writes", column: "uid" },
 ] satisfies readonly D1IdentitySurface[]);
 
@@ -405,6 +407,8 @@ export async function readAccountProductResidual(
     | "CHAT_FILES"
     | "CONVERSATION_RECORDINGS"
     | "SPEECH_PROFILES"
+    | "FRAME_REQUESTS"
+    | "FRAME_REQUESTS_TEMPORARY"
     | "SCREEN_FRAME_WRITER"
     | "INTERNAL_ASSERTION_SECRET"
   >,
@@ -422,6 +426,26 @@ export async function readAccountProductResidual(
   const [d1Results, r2Results] = await Promise.all([
     env.APP_DB.batch<{ count?: unknown }>(statements),
     Promise.all([
+      ...(
+        [
+          ["frame-requests-temporary", env.FRAME_REQUESTS_TEMPORARY],
+          ["frame-requests", env.FRAME_REQUESTS],
+        ] as const
+      ).flatMap(([name, bucket]) =>
+        bucket
+          ? [
+              bucket
+                .list({ prefix: `frame-requests/${uid}/`, limit: 1 })
+                .then(
+                  (value) =>
+                    [
+                      `${name}:frame-requests/${uid}/`,
+                      value.objects.length ? 1 : 0,
+                    ] as const
+                ),
+            ]
+          : []
+      ),
       screenFrameStorageState(env, uid, "residual").then(
         (value) =>
           [

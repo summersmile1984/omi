@@ -2,10 +2,18 @@
 
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, File, UploadFile
 
 import frame_request_store as store
-from frame_request_contract import CreateFrameRequest, FrameRequestBatch, FrameRequestEnvelope, FrameRequestStateUpdate
+import frame_request_pixels as pixels
+from frame_request_image import _ALLOWED_IMAGE_FORMATS, _validated_image_content_type, _canonicalize_frame_image
+from frame_request_contract import (
+    CreateFrameRequest,
+    FrameRequestBatch,
+    FrameRequestEnvelope,
+    FrameRequestStateUpdate,
+    FrameRequestPromotion,
+)
 from jit_authority import authorize, resolve
 from screen_frame_views import ScreenshotRoute, _response, owner
 
@@ -52,3 +60,43 @@ async def pending(
 async def transition(request: Request, request_id: str, body: FrameRequestStateUpdate, uid: str = Depends(owner)):
     result = await store.transition(request.scope['env'], uid, request_id, body)
     return _response(FrameRequestEnvelope(request=result).model_dump(mode='json'))
+
+
+@router.post('/v1/frame-requests/{request_id}/upload')
+async def upload(
+    request: Request,
+    request_id: str,
+    device_id: str,
+    account_generation: int,
+    file: UploadFile = File(...),
+    uid: str = Depends(owner),
+):
+    env = request.scope['env']
+    await authorize(env, uid, account_generation)
+    if not file.content_type or file.content_type.lower() not in set(_ALLOWED_IMAGE_FORMATS.values()):
+        raise HTTPException(415, 'frame_upload_requires_image')
+    payload = await file.read(10 * 1024 * 1024 + 1)
+    if len(payload) > 10 * 1024 * 1024:
+        raise HTTPException(413, 'frame_upload_too_large')
+    _validated_image_content_type(payload)
+    canonical = _canonicalize_frame_image(payload)
+    result = await pixels.upload(env, uid, request_id, device_id, account_generation, canonical)
+    return _response(FrameRequestEnvelope(request=result).model_dump(mode='json'))
+
+
+@router.post('/v1/frame-requests/{request_id}/promote')
+async def promote(request: Request, request_id: str, promotion: FrameRequestPromotion, uid: str = Depends(owner)):
+    result = await pixels.promote(request.scope['env'], uid, request_id, promotion)
+    return _response(FrameRequestEnvelope(request=result).model_dump(mode='json'))
+
+
+@router.get('/v1/frame-requests/temporary/{request_id}/image')
+async def temporary_image(
+    request: Request, request_id: str, account_generation: int = Query(default=0, ge=0), uid: str = Depends(owner)
+):
+    return await pixels.temporary_image(request.scope['env'], uid, request_id, account_generation)
+
+
+@router.get('/v1/conversations/{conversation_id}/photos/{photo_id}/image')
+async def conversation_image(request: Request, conversation_id: str, photo_id: str, uid: str = Depends(owner)):
+    return await pixels.conversation_image(request.scope['env'], uid, conversation_id, photo_id)

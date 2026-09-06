@@ -124,7 +124,11 @@ npm run rollback:staging -- --candidate /tmp/reprepared-beta --journal /secure/r
 Provision creates only absent explicit D1/R2/Queue/Vectorize resources, preserves
 existing dimensions/metric and requires actual create-response IDs plus a matching
 observation before recording ownership. It also preserves the three `created_at`
-Vectorize metadata indexes and one-day assets lifecycle prefixes. Created D1 IDs
+Vectorize metadata indexes and one-day assets lifecycle prefixes. Frame storage
+adds an exclusive seven-day expiration policy for the temporary bucket and a
+read-only check that the permanent bucket has no object-expiration rule. The
+publisher derives each expiration duration explicitly; it cannot expire the
+conversation-lifetime bucket. Created D1 IDs
 are written into `journal.result_inventory` as they become known. Reprepare using
 that inventory before publishing; placeholder IDs are never deployed. Existing
 D1 names must already match explicit inventory UUIDs. Asynchronous metadata
