@@ -309,7 +309,7 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the fork route
-  gate. The current inventory contains 619 backend route identities: 601 have
+  gate. The current inventory contains 619 backend route identities: 602 have
   Cloudflare staging owners, 18 are blocked with planned owners and missing
   contracts in [the CF-4 ledger](../../dev/unified-main/09-cloudflare-route-migrations.md),
   and 0 remain `legacy-owned`. This is a coverage classification, not a
@@ -2847,3 +2847,24 @@ defines the structured message and error codes. Resend is not used in this CF pa
 [Transaction verification](../../dev/unified-main/implementation-2026-09-05/share-email-transactions-2026-09-06.md)
 records the native Auth/Edge/Jobs/Core/D1 run with controlled provider outcomes,
 zero outbound emails, local recovery/erasure tests and the exact remaining scope.
+
+## JIT rollout decision
+
+`GET /v1/jit/rollout-decision` uses the authenticated Edge-to-Core boundary and
+the same D1 policy owner as frame requests. The original upstream tri-state and
+allowlist decision rules are staged by `frame_request_sources.py`; no model or
+prompt is involved. `cf_jit_flags` stores deployment defaults under the empty UID
+and explicit per-owner overrides under the authenticated UID. A global enabled
+kill switch cannot be cleared by an owner override. Each read takes one current
+flags/account-generation snapshot and returns `no-store`, with no decision cache.
+Missing rollout state is disabled; provider failures preserve unknown status and
+emit sanitized shared telemetry. Account-deletion fences still deny access.
+
+This read does not grant a reservation or claim that trigger/ledger routes are
+available. The remaining five JIT route identities retain their own migration
+requirements. The shared Server/Cloudflare HTTP suite includes the authenticated
+tri-state wire contract; provider flag transitions and owner isolation also run
+against the actual D1 implementation. See the
+[client API guide](../../docs/doc/developer/ForkCloudflareJit.mdx).
+The [verification record](../../dev/unified-main/implementation-2026-09-05/jit-rollout-2026-09-06.md)
+distinguishes the hosted decision flow from the remaining trigger/ledger work.

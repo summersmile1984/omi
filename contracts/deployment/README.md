@@ -2,7 +2,7 @@
 
 `core.py` executes the same HTTP cases against either real target: two public
 signups, opaque session restore and JWT exchange, protected admission,
-onboarding persistence, calendar capture-gap query/auth/disconnected admission, public invalid-email-link
+onboarding persistence, authenticated JIT tri-state rollout decisions, calendar capture-gap query/auth/disconnected admission, public invalid-email-link
 neutral HTML, CSAT configuration/validation/create-only ratings,
 manual and batch memory intake into Short-term despite caller durability hints,
 content/visibility/review/read/baseline persistence,
@@ -78,7 +78,7 @@ or its 64 MiB per-direction bound. It never synthesizes transcripts. Real socket
 tests run in the existing `product.sh` lane alongside HTTP-framing and process
 ownership tests.
 
-`--self-test` executes thirteen common core cases, including when
+`--self-test` executes sixteen common core cases, including when
 real models are enabled. Enabling this runtime is not evidence that recording,
 finalization, canonical-memory retrieval or the complete CI-1 qualifier passed.
 See the [real-model execution record](../../dev/unified-main/implementation-2026-09-05/server-real-model-product.md).
@@ -97,7 +97,7 @@ platform input, 422/400 validation, 201 creation, 409 resubmission and account
 isolation. Cloudflare also checks rating export and actual account deletion in
 its recording/privacy suite. These are synthetic ratings in disposable accounts.
 
-This is the identity/onboarding/calendar/email/CSAT/tasks slice of **CI-1**. It deliberately does
+This is the identity/JIT/onboarding/calendar/email/CSAT/memory/tasks slice of **CI-1**. It deliberately does
 not implement `qualify-dual-target.mjs`, which owns the complete candidate and
 platform/brand product qualification. Recording finalization, conversation and
 memory retrieval, process restart, full error shapes, client UI, supported OSes

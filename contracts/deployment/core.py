@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One HTTP product contract against either real, disposable deployment target.
 
-This is the identity/onboarding/calendar/email/CSAT/memory/tasks slice of CI-1, not a release qualifier.
+This is the identity/JIT/onboarding/calendar/email/CSAT/memory/tasks slice of CI-1, not a release qualifier.
 Target runners own disposable state, provider fixtures and teardown. This client
 never seeds a database, imports a backend handler or supplies an auth bypass.
 """
@@ -184,6 +184,44 @@ class ProductContract:
             self.request('api', 'GET', '/v1/action-items', 200, bearer=owner.jwt)
 
         self.case('auth.protected-admission', auth_admission)
+
+        def jit_rollout_decision():
+            path = '/v1/jit/rollout-decision'
+            self.request('api', 'GET', path, 401)
+            for principal in (owner, other):
+                state, _ = self.request('api', 'GET', path, 200, bearer=principal.jwt)
+                require(
+                    set(state)
+                    == {
+                        'rollout',
+                        'kill_switch',
+                        'effective',
+                        'reason',
+                        'error_class',
+                        'cache_hit',
+                        'cache_ttl_seconds',
+                    },
+                    'JIT rollout decision wire fields differ',
+                )
+                for field in ('rollout', 'kill_switch', 'effective'):
+                    require(state[field] in {'enabled', 'disabled', 'unknown'}, 'JIT decision lost tri-state authority')
+                require(
+                    type(state['cache_hit']) is bool
+                    and type(state['cache_ttl_seconds']) is int
+                    and 0 <= state['cache_ttl_seconds'] <= 30,
+                    'JIT cache receipt differs',
+                )
+                if state['kill_switch'] == 'enabled':
+                    require(
+                        state['effective'] == 'disabled' and state['reason'] == 'kill_switch_enabled',
+                        'JIT kill switch failed to remove authority',
+                    )
+                elif state['effective'] == 'enabled':
+                    require(state['reason'] == 'rollout_enabled', 'JIT enabled decision lacks admission reason')
+                elif state['effective'] == 'unknown':
+                    require(state['error_class'] != 'none', 'JIT unavailable authority became a successful decision')
+
+        self.case('jit.authenticated-tristate-rollout-decision', jit_rollout_decision)
 
         def onboarding():
             state, _ = self.request('api', 'GET', '/v1/users/onboarding', 200, bearer=owner.jwt)
@@ -503,7 +541,7 @@ class ProductContract:
     def report(self):
         report = {
             'schema_version': 1,
-            'scope': 'identity-onboarding-calendar-email-csat-memory-tasks-referrals',
+            'scope': 'identity-jit-onboarding-calendar-email-csat-memory-tasks-referrals',
             'target': self.metadata['target'],
             'brand_id': self.metadata['brand_id'],
             'cases': self.cases,

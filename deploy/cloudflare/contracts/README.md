@@ -8,7 +8,7 @@ The entry builds seven real application Workers and an inference-only Worker,
 applies the actual Auth/App migrations into a new local state directory, starts
 locked Wrangler/workerd, then executes:
 
-- The same `contracts/deployment/core.py` identity/onboarding/calendar/email/CSAT/memory/tasks HTTP suite
+- The same `contracts/deployment/core.py` identity/JIT/onboarding/calendar/email/CSAT/memory/tasks HTTP suite
   used by the Server OS runner, including manual-memory edits, visibility,
   review, read/dismiss/baseline persistence, account isolation and deletion.
 - `recording.mjs`, separate public `/v4/listen` (Upgrade Bearer) and

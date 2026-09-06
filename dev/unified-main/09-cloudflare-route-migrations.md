@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 601 have Worker owners and 18 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 602 have Worker owners and 17 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -165,7 +165,9 @@ are staging-owned; this is not production publication or full CF-4 qualification
 
 Owner: `api-core`. Upstream authority: `backend/routers/jit_rollout.py; backend/routers/jit_ledger_snapshot.py`.
 
-Rollout/trigger and ledger snapshots, feedback receipts and atomic proactivity reservations have no equivalent CF state.
+The rollout decision is now exposed through authenticated Edge/Core using the existing D1 control owner. It retains the upstream tri-state/allowlist policy, current owner/default flags, dominant global kill switch and no-store response. The shared HTTP contract passes on Server and local Cloudflare; actual hosted Auth/Edge/Core/D1 flag transitions, isolation and logout revocation also pass. See [verification](implementation-2026-09-05/jit-rollout-2026-09-06.md).
+
+The other five trigger/ledger snapshot, feedback and atomic proactivity reservation routes still require canonical CF business state. This decision read does not qualify those routes or enable them through empty responses.
 
 | Method | Path                                       |
 | ------ | ------------------------------------------ |

@@ -1,0 +1,42 @@
+---
+title: 'Cloudflare JIT rollout decision'
+description: 'Read the authenticated admission decision before starting just-in-time work in a fork.'
+---
+
+Clients read the current server decision using their normal session token:
+
+```http
+GET /v1/jit/rollout-decision
+Authorization: Bearer <session-token>
+```
+
+```json
+{
+  "rollout": "disabled",
+  "kill_switch": "disabled",
+  "effective": "disabled",
+  "reason": "flag_absent",
+  "error_class": "absent",
+  "cache_hit": false,
+  "cache_ttl_seconds": 0
+}
+```
+
+`rollout`, `kill_switch` and `effective` each use `enabled`, `disabled` or
+`unknown`. Only an `effective` value of `enabled` permits the client to proceed
+to the relevant business API. An enabled kill switch disables work. Missing
+rollout configuration normally produces `disabled`; provider failure produces
+`unknown` for an ordinary account. The existing upstream admission exceptions
+remain subject to a known enabled kill switch.
+
+The Cloudflare implementation reads the current account's state on every request
+and returns `Cache-Control: no-store`, `cache_hit: false` and a zero cache TTL.
+Clients cannot choose an account or override admission through query parameters
+or identity headers. Unauthenticated requests return `401`; accounts blocked by
+migration or deletion do not receive actionable authority.
+
+This read does not reserve a proactive-work budget, perform inference or provide
+a trigger watchlist. Those operations retain their own authorization checks.
+The trigger, feedback, reservation and knowledge-ledger snapshot endpoints are
+still undergoing Cloudflare migration; an enabled rollout response alone does
+not establish their availability.

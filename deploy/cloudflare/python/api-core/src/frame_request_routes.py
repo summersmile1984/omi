@@ -1,4 +1,4 @@
-"""Internal Core frame metadata endpoints; Edge waits for the complete family."""
+"""Core JIT rollout decision and frame request lifecycle endpoints."""
 
 from dataclasses import asdict
 
