@@ -12,10 +12,7 @@
   "scope_hints": [
     "deploy/cloudflare/python/api-core/src/frame_image*.py",
     "deploy/cloudflare/python/api-core/src/frame_upload_form.py",
-    "deploy/cloudflare/python/api-core/src/frame_request_routes.py",
-    "deploy/cloudflare/python/api-core/src/screen_frame_image.py",
-    "deploy/cloudflare/python/api-core/src/screen_frame_png.py",
-    "deploy/cloudflare/python/api-core/src/screen_frame_adjudication.py"
+    "deploy/cloudflare/python/api-core/src/frame_request_routes.py"
   ],
   "status": "open"
 }
