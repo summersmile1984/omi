@@ -105,3 +105,62 @@ print(json.dumps({'codec':'pass','prompt':'unchanged','selection':'pass','wire':
     rmSync(stage, { recursive: true, force: true });
   }
 });
+
+it("builds executable upstream frame-request types and decorated JIT policy", () => {
+  const stage = mkdtempSync(resolve(tmpdir(), "frame-request-source-"));
+  const projector = resolve(
+    repository,
+    "deploy/cloudflare/scripts/frame_request_sources.py"
+  );
+  try {
+    const generated = spawnSync(python, [projector, "--output", stage], {
+      encoding: "utf8",
+    });
+    expect(generated.status, generated.stderr).toBe(0);
+    expect(readFileSync(resolve(stage, "frame_request_contract.py"))).toEqual(
+      readFileSync(resolve(repository, "backend/models/frame_request.py"))
+    );
+    expect(
+      readFileSync(resolve(stage, "frame_request_policy.py"), "utf8")
+    ).toBe(
+      readFileSync(
+        resolve(repository, "backend/utils/retrieval/frame_request_policy.py"),
+        "utf8"
+      ).replace(
+        "from models.frame_request import ",
+        "from frame_request_contract import "
+      )
+    );
+    const executed = spawnSync(
+      python,
+      [
+        "-c",
+        `
+import sys
+from dataclasses import asdict,is_dataclass
+from datetime import datetime,timezone,timedelta
+sys.path.insert(0,sys.argv[1])
+from frame_request_policy import request_expiry
+from jit_policy import JITFlagEvaluation,JITDecisionReason,JITErrorClass,TriState,_effective_decision
+assert is_dataclass(JITFlagEvaluation)
+evaluation=JITFlagEvaluation(TriState.ENABLED,TriState.ENABLED,JITDecisionReason.EVALUATED,JITErrorClass.NONE)
+decision=_effective_decision(evaluation,allowlisted=True,cache_hit=False,cache_ttl_seconds=0)
+assert not decision.permits_work and asdict(decision)['effective']=='disabled'
+stamp=datetime(2026,9,6,tzinfo=timezone.utc)
+assert request_expiry(created_at=stamp,requested_ttl_seconds=999999,device_retention_seconds=None)==stamp+timedelta(days=6)
+assert request_expiry(created_at=stamp,requested_ttl_seconds=1000,device_retention_seconds=60)==stamp+timedelta(seconds=60)
+`,
+        stage,
+      ],
+      { encoding: "utf8" }
+    );
+    expect(executed.status, executed.stderr).toBe(0);
+    const collision = spawnSync(python, [projector, "--output", stage], {
+      encoding: "utf8",
+    });
+    expect(collision.status).not.toBe(0);
+    expect(collision.stderr).toContain("collides with a staged source owner");
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
+  }
+});

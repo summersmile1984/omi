@@ -68,6 +68,43 @@ blocked until hosted model access, supported-input memory bounds and complete
 business qualification are resolved. The current upstream 64-megapixel codec
 limit must not be mistaken for proof that those images fit a hosted Worker.
 
+`frame_request_routes.py` registers frame creation, status, pending delivery,
+state transitions and the JIT decision envelope in Core. The ordinary builder
+stages the exact upstream frame wire model, its pure lifecycle policy (one
+module import redirected), and the original decorated JIT decision dataclasses
+and policy. Those source owners participate in release identity and the existing
+route test lane. There is no prompt change.
+
+`jit_authority.py` is the Cloudflare provider: App D1 stores deployment defaults
+at `cf_jit_flags.uid = ''` and optional account overrides. A deployment kill
+cannot be cleared by a user override. Missing rollout retains the upstream
+negative decision; the upstream allowlist and kill precedence remain in the
+staged pure policy. This provider does not use PostHog or an isolate cache.
+Provider failure emits the bounded fallback event and cannot admit frame work,
+even if the original allowlist decision is enabled, because no current account
+generation can be established. Missing legacy cutover rows retain generation 0.
+The same JSON provider snapshot and account generation are compared inside the
+D1 read or write that returns metadata, admits work or changes state.
+
+`frame_request_store.py` owns the immutable request identity, active-intent
+replay across minute buckets, terminal retry numbering and bounded delivery.
+Migration 0167 enforces eight pending requests per device/generation, one active
+or attached request per conversation, immutable owner/identity and account
+fences. State writes compare the previous state and current authority together;
+a concurrent cancellation cannot be replaced by a stale claim. Polling expires
+at most 32 old active rows and returns only the requesting device's requested
+rows. Frame metadata participates in the existing user export, conversation
+deletion and account-deletion residual/purge owners.
+
+Only metadata has been exercised in real local workerd: 29 HTTP calls through
+the frozen normal Core entry and all App D1 migrations passed. Uploaded and
+attached states return 503 until a pixel owner actually stores/promotes the
+image. No JIT image bytes are written by this implementation. Temporary upload,
+canonicalization, promotion into conversation photos, pixel reads and durable
+retention/deletion cleanup remain required work. The eight frame-request and
+six JIT route slots remain blocked at Edge; the decision endpoint alone does
+not implement the JIT memory/trigger family.
+
 `referral_routes.py` preserves the desktop `ref1` HMAC wire format using a
 dedicated `REFERRAL_SIGNING_SECRET`. Link and login destinations come from the
 rendered API/Web origins. The secure HttpOnly referral cookie is presentation

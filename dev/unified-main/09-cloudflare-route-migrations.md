@@ -62,6 +62,13 @@ Owner: `api-core`. Upstream authority: `backend/routers/frame_requests.py`.
 
 Temporary frame request lifecycle, consent/promotion, R2 image bytes and retention cleanup require one authority.
 
+The [2026-09-06 metadata foundation](implementation-2026-09-05/frame-request-metadata-2026-09-06.md)
+implements the original wire/pure policy through a D1-owned JIT provider,
+request identity, dedupe, bounded delivery and guarded state transitions. Real
+local workerd passed 29 HTTP calls; no pixels or model inference participated.
+All eight slots remain blocked until upload, promotion, temporary/permanent
+reads and durable image cleanup are implemented and qualified together.
+
 | Method | Path                                                          |
 | ------ | ------------------------------------------------------------- |
 | GET    | `/v1/conversations/{conversation_id}/photos/{photo_id}/image` |

@@ -85,7 +85,10 @@ export function sourceIdentity(root) {
         "brand",
         "contracts",
         "backend/models/screen_frame.py",
+        "backend/models/frame_request.py",
         "backend/routers/screen_frames.py",
+        "backend/utils/retrieval/frame_request_policy.py",
+        "backend/utils/jit_rollout.py",
         "backend/utils/screen_frames",
       ])
         .split("\0")

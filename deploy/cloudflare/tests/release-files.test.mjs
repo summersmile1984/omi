@@ -54,6 +54,13 @@ function fixture() {
     resolve(root, "backend/utils/screen_frames/judge.py"),
     "PROMPT = 'original'\n"
   );
+  mkdirSync(resolve(root, "backend/utils/retrieval"), { recursive: true });
+  for (const path of [
+    "backend/models/frame_request.py",
+    "backend/utils/retrieval/frame_request_policy.py",
+    "backend/utils/jit_rollout.py",
+  ])
+    writeFileSync(resolve(root, path), "CONTRACT = 1\n");
   git("add", ".");
   git(
     "-c",
@@ -80,9 +87,12 @@ function fixture() {
   return { root, directory, candidate };
 }
 describe("immutable release inputs and output ownership", () => {
-  it("binds the projected upstream screenshot wire and policy bytes to the source digest", () => {
+  it("binds the projected upstream screenshot, frame-request and JIT policy bytes to the source digest", () => {
     const f = fixture();
     for (const path of [
+      "backend/models/frame_request.py",
+      "backend/utils/retrieval/frame_request_policy.py",
+      "backend/utils/jit_rollout.py",
       "backend/models/screen_frame.py",
       "backend/routers/screen_frames.py",
       "backend/utils/screen_frames/judge.py",

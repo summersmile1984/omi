@@ -36,7 +36,9 @@ def selected_nodes(relative: str, names: set[str]) -> str:
                 {node.name} if isinstance(node, (ast.FunctionDef, ast.ClassDef)) else {getattr(node.target, 'id', '')}
             )
         if owned & names:
-            result.append(ast.get_source_segment(original, node))
+            decorators = getattr(node, 'decorator_list', [])
+            start = min([node.lineno, *(item.lineno for item in decorators)])
+            result.append('\n'.join(original.splitlines()[start - 1 : node.end_lineno]))
             found |= owned & names
     if found != names:
         raise ValueError('upstream screenshot policy source changed; review the Worker projection')

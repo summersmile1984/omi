@@ -76,22 +76,24 @@ export function preparePythonSource(projectDirectory, args) {
         dirname(fileURLToPath(import.meta.url)),
         "../../.."
       );
-      const projection = spawnSync(
-        resolve(repository, "backend/.venv/bin/python"),
-        [
-          resolve(
-            repository,
-            "deploy/cloudflare/scripts/screen_frame_sources.py"
-          ),
-          "--output",
-          resolve(stage, "src"),
-        ],
-        { encoding: "utf8" }
-      );
-      if (projection.status !== 0)
-        throw new Error(
-          "screenshot source projection failed; inspect the upstream contract owners"
+      for (const sourceProjector of [
+        "screen_frame_sources.py",
+        "frame_request_sources.py",
+      ]) {
+        const projection = spawnSync(
+          resolve(repository, "backend/.venv/bin/python"),
+          [
+            resolve(repository, `deploy/cloudflare/scripts/${sourceProjector}`),
+            "--output",
+            resolve(stage, "src"),
+          ],
+          { encoding: "utf8" }
         );
+        if (projection.status !== 0)
+          throw new Error(
+            "Core source projection failed; inspect the upstream contract owners"
+          );
+      }
     }
     // Vendored immutable dependencies retain the existing staging link contract;
     // Wrangler's compiled/frozen payload is checked to contain regular files.
