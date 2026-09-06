@@ -36,6 +36,15 @@ def main() -> int:
                 'product_name': manifest['brand']['display_name'],
                 'tagline': manifest['brand'].get('tagline', ''),
                 'support_email': manifest['brand']['support_email'],
+                'links': {
+                    **{
+                        key: manifest['domains'][key]
+                        for key in ('docs', 'help', 'feedback', 'community', 'privacy', 'terms')
+                    },
+                    'website': resolved['profiles'][f'{args.target}.{args.stage}']['web_base_url'],
+                    'download': resolved['profiles'][f'{args.target}.{args.stage}']['api_base_url'].rstrip('/')
+                    + '/v2/desktop/download/latest',
+                },
                 'asset_input': {
                     'root': str(
                         (args.manifest.parent if args.manifest else ROOT / 'brand' / manifest['brand']['id']).resolve()

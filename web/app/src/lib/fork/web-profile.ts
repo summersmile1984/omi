@@ -76,3 +76,54 @@ export function productName(): string {
   if (!name) throw new Error('The Web product name is missing.');
   return name;
 }
+
+export interface WebPresentation {
+  tagline: string;
+  support_email: string;
+  links: Record<
+    | 'website'
+    | 'download'
+    | 'docs'
+    | 'help'
+    | 'feedback'
+    | 'community'
+    | 'privacy'
+    | 'terms',
+    string
+  >;
+}
+
+export function parseWebPresentation(serialized: string | undefined): WebPresentation {
+  if (!serialized) throw new Error('The Web presentation is missing.');
+  const value = JSON.parse(serialized) as WebPresentation;
+  if (
+    typeof value?.tagline !== 'string' ||
+    typeof value.support_email !== 'string' ||
+    !/^[^\s@]+@[^\s@]+$/.test(value.support_email) ||
+    !value.links
+  )
+    throw new Error('The Web presentation is invalid.');
+  for (const key of [
+    'website',
+    'download',
+    'docs',
+    'help',
+    'feedback',
+    'community',
+    'privacy',
+    'terms',
+  ] as const) {
+    const link = value.links[key];
+    if (key === 'community' && link === '') continue;
+    if (typeof link !== 'string' || !link || /[\x00-\x20\x7f]/.test(link))
+      throw new Error(`The Web presentation requires ${key}.`);
+    const url = new URL(link);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+      throw new Error(`The Web presentation has an invalid ${key}.`);
+  }
+  return value;
+}
+
+export function webPresentation(): WebPresentation {
+  return parseWebPresentation(process.env.NEXT_PUBLIC_OMI_PRESENTATION_JSON);
+}

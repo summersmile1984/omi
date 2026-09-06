@@ -12,8 +12,8 @@ manifest directory; all inputs are decoded before replacing staged public files.
 temporary source stage, for both targets. It records input and output hashes in
 `build-manifest.json.brand_assets`. The `omi-upstream` regression identity keeps
 upstream files. Other brands fail on missing/invalid assets; they cannot silently
-ship the upstream mark. This covers these public image paths, not every inlined
-logo, product string or browser surface. Local asset paths never enter the public
+ship the upstream mark. The retired `/omi-white.webp` wordmark is removed from the
+brand stage after its consumers move to `/logo.png`. Local asset paths never enter the public
 environment projection. Install the existing `scripts/brand/raster` npm lock;
 `ci.sh` does so in the current local/CI lane.
 
@@ -23,6 +23,18 @@ page and marketplace headings/descriptions retain upstream HTML escaping;
 runtime app names/descriptions and API URLs are not rewritten. The primary
 metadata literals must still have their known unique owner, so upstream changes
 require reviewing this build adapter instead of silently shipping Omi titles.
+
+`presentation.ts` also rewrites static product copy, client-side document titles,
+SEO destinations and contact links in an explicit list of reviewed source owners.
+It uses the TypeScript syntax tree, escapes brand names in JSX/templates, and
+records modified file hashes in `build-manifest.json.presentation`. It preserves
+dynamic user/app text and excludes model prompt modules and API protocol owners.
+This prevents Home hydration from replacing the branded server title with Omi.
+The same source stage overlays the help page, footer, mobile notice and activity
+indicators. They use the manifest name, support email, declared destinations and
+generated mark; an empty community link is hidden. Help no longer loads the
+upstream support iframe. The welcome notice offers issue reporting because the
+fork authentication provider has no managed error analytics.
 
 Cloudflare prepare also snapshots the consumed PNGs beside an explicit private
 manifest before building either target, preserving its relative asset references.
@@ -79,7 +91,10 @@ pages use the same upstream route/renderer code on both targets.
 
 - `profile_input.py` calls the existing `scripts/profiles/render.py` and brand
   manifest loader. `public-environment.ts` projects only public profile fields,
-  API/WS bases and the brand display name. Environment secrets cannot enter the
+  API/WS bases, the brand display name and validated presentation links. Website
+  uses the selected Web origin; download uses the selected API's desktop download
+  route. Documentation, help, feedback, community and policy destinations come
+  from the manifest. Environment secrets cannot enter the
   client banner. API/WS mount paths survive; MCP uses its independently specified
   origin/path through CLIENT-1's `mcpServerUrl()`.
 - `source-stage.ts` applies CLIENT-1's `web/app/fork/overlays.json` full source
@@ -115,9 +130,9 @@ pages use the same upstream route/renderer code on both targets.
   ships only that module plus public assets. The Dockerfile consumes this
   artifact; an image build is separate evidence from a successful Bun run.
 
-`bash deploy/web/ci.sh` runs the same typecheck and three behavioral build-boundary
+`bash deploy/web/ci.sh` runs the same typecheck and behavioral build-boundary
 contract tests in the local and CI fork manifest. It covers public projection,
-source/MCP drift, original-source preservation, path escape and symlink
+source/MCP drift, safe presentation execution, original-source preservation, path escape and symlink
 counterexamples. It is not browser, Auth, WebSocket, D1 or production evidence.
 
 The current [Cloudflare release workflow](../cloudflare/release.md) builds both

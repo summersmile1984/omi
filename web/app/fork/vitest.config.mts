@@ -1,16 +1,29 @@
 import { defineConfig } from 'vitest/config';
-import { resolve } from 'node:path';
+import { resolve, relative } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { rewriteRealtimeStart, rewriteRealtimeControl } from './realtime-overlay';
+import { rewritePresentation } from '../../../deploy/web/presentation';
+import { presentationFixture } from './tests/presentation-fixture';
 
 export default defineConfig({
   plugins: [
     {
       name: 'fork-realtime-capability',
+      enforce: 'pre',
       transform(source, id) {
         if (id === resolve(import.meta.dirname, '../src/hooks/useGeminiLive.ts'))
           return rewriteRealtimeStart(source);
         if (id === resolve(import.meta.dirname, '../src/components/home/HomePage.tsx'))
-          return rewriteRealtimeControl(source);
+          source = rewriteRealtimeControl(source);
+        for (const name of ['OmiOrb', 'OmiPulseMark']) {
+          if (id === resolve(import.meta.dirname, `../src/components/ui/${name}.tsx`))
+            return readFileSync(
+              resolve(import.meta.dirname, `overlays/${name}.tsx`),
+              'utf8',
+            );
+        }
+        const path = relative(resolve(import.meta.dirname, '..'), id);
+        return rewritePresentation(source, path, presentationFixture);
       },
     },
   ],

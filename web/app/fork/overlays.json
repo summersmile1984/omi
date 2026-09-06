@@ -7,7 +7,12 @@
     "src/components/auth/LoginPanel.tsx": "fork/overlays/LoginPanel.tsx",
     "src/app/api/proxy/public/[...path]/route.ts": "fork/overlays/public-proxy-route.ts",
     "src/lib/referrals.ts": "fork/overlays/referrals.ts",
-    "src/app/api/referrals/claim/route.ts": "fork/overlays/referral-claim-route.ts"
+    "src/app/api/referrals/claim/route.ts": "fork/overlays/referral-claim-route.ts",
+    "src/components/ui/OmiPulseMark.tsx": "fork/overlays/OmiPulseMark.tsx",
+    "src/components/ui/OmiOrb.tsx": "fork/overlays/OmiOrb.tsx",
+    "src/components/layout/Footer.tsx": "fork/overlays/Footer.tsx",
+    "src/components/layout/MobileBlockOverlay.tsx": "fork/overlays/MobileBlockOverlay.tsx",
+    "src/app/(authenticated)/help/page.tsx": "fork/overlays/HelpPage.tsx"
   },
   "additions": {
     "src/app/(public)/chat/[token]/page.tsx": "fork/routes/chat-share-page.tsx",

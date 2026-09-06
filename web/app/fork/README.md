@@ -8,10 +8,33 @@ overlay it applied. Upstream builds and tests use their original modules.
 
 `NEXT_PUBLIC_OMI_PROFILE_JSON` contains one explicitly selected rendered profile.
 The builder projects only public profile fields, plus
-`NEXT_PUBLIC_OMI_PRODUCT_NAME` from `brand.display_name`; secrets never enter the
-client environment. API, WebSocket, and MCP URL consumers must use that same
+`NEXT_PUBLIC_OMI_PRODUCT_NAME` from `brand.display_name` and the allowlisted
+`NEXT_PUBLIC_OMI_PRESENTATION_JSON` (tagline, support email and eight destination
+links); secrets and manifest asset paths never enter the client environment.
+API, WebSocket, and MCP URL consumers must use that same
 profile. The existing settings MCP expression is transformed in staging to call
 `mcpServerUrl()`, preserving a distinct MCP origin and any path prefix.
+
+## Brand presentation
+
+`deploy/web/presentation.ts` transforms static presentation literals in an explicit
+list of reviewed components and metadata owners. It runs after the realtime/MCP
+transforms and before staged production typechecking. JSX and template literals
+retain escaping; dynamic user content and model prompt modules are not rewritten.
+The artifact manifest records every changed owner and its output hash.
+
+Footer, help, mobile notice and activity-mark overlays consume the same public
+presentation. Activity indicators use the generated `/logo.png` and honor pause
+and reduced motion. Help uses declared contact links without the upstream support
+iframe. Empty community configuration omits its link. Download destinations use
+the selected profile API's `/v2/desktop/download/latest`; current copy identifies
+the macOS deliverable. An unconfigured binary still returns its actual server
+error; changing the link does not establish that an installer is published.
+
+Fork Vitest executes the production components through the same presentation
+transform. It verifies the visible brand and links while submitting a goal that
+contains the upstream name unchanged. This is a Web presentation boundary; it
+does not change assistant identity, default prompts or backend response data.
 
 ## Identity behavior
 
