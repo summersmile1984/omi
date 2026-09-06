@@ -4,7 +4,8 @@
 signups, opaque session restore and JWT exchange, protected admission,
 onboarding persistence, calendar capture-gap query/auth/disconnected admission, public invalid-email-link
 neutral HTML, CSAT configuration/validation/create-only ratings,
-manual-memory creation, content/visibility/review/read/baseline persistence,
+manual and batch memory intake into Short-term despite caller durability hints,
+content/visibility/review/read/baseline persistence,
 cross-account mutation denial and deletion,
 task creation/completion, cross-account denial, refresh
 and logout revocation. It imports no backend handlers and seeds no business

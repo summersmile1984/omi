@@ -4,6 +4,13 @@ description: 'Canonical write admission and durable projection work in the fork 
 ---
 
 The isolated Cloudflare target owns memory rows in App D1 `cf_memories`.
+New native, MCP and Developer memory intake starts in Short-term, including
+manual memories and batches. `category`, `manually_added` and `durability` do
+not grant Long-term admission. Existing Long-term records retain their tier.
+The shared Server/Cloudflare HTTP contract verifies creation, persisted tier,
+editing and deletion; full canonical consolidation remains a separate
+implementation and qualification requirement.
+
 Migration 0161 enforces the current row's paid-plan lock inside interactive
 updates. A lock acquired after an API pre-read still returns 402 and rolls back
 the transaction. Database failures return 503. Privacy tombstones and account

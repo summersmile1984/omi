@@ -278,6 +278,7 @@ def test_review_resolution_rolls_back_all_memory_rows_and_receipt(target, decisi
 def test_same_second_edits_advance_canonical_revision_and_projection_work(target, monkeypatch):
     database, request, create = target
     monkeypatch.setattr(memory.time, 'time', lambda: 1_700_000_000)
+    database.connection.create_function('unixepoch', 0, lambda: 1_700_000_000)
     memory_id = create()
     original = database.row(memory_id)
     for index in (1, 2):

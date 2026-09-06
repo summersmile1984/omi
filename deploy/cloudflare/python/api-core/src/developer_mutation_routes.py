@@ -211,7 +211,7 @@ def _memory_row(
         "edited": 0,
         "scoring": _memory_score(category, now),
         "is_locked": 0,
-        "memory_tier": "long_term",
+        "memory_tier": "short_term",
         "valid_at": now,
         "created_at": now,
         "updated_at": now,
@@ -223,7 +223,7 @@ def _memory_insert_statement(env: object, row: dict[str, object]):
         "INSERT INTO cf_memories "
         "(uid, id, content, category, visibility, tags_json, reviewed, user_review, manually_added, edited, "
         "scoring, is_locked, memory_tier, valid_at, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, 1, 1, 1, 0, ?, 0, 'long_term', ?, ?, ?)"
+        "VALUES (?, ?, ?, ?, ?, ?, 1, 1, 1, 0, ?, 0, ?, ?, ?, ?)"
     ).bind(
         row["uid"],
         row["id"],
@@ -232,6 +232,7 @@ def _memory_insert_statement(env: object, row: dict[str, object]):
         row["visibility"],
         row["tags_json"],
         row["scoring"],
+        row["memory_tier"],
         row["valid_at"],
         row["created_at"],
         row["updated_at"],

@@ -88,6 +88,13 @@ read/dismiss state and the baseline flag, and retains deletions as tombstones.
 Batch creation preserves the released 100-memory contract, drops per-file
 onboarding imports, and atomically writes size-bounded JSON chunks plus usage
 sources without per-memory D1 queries.
+Native, MCP and Developer single/batch intake always starts in Short-term.
+Manual category, explicit-user attribution and caller durability hints do not
+admit new Long-term rows. D1 derives the capture/expiry fields and commits the
+initial vector work in the same transaction. MCP duplicate intake preserves an
+existing row's canonical tier instead of promoting it. Existing historical
+Long-term rows are not demoted. This admission correction does not implement
+the full consolidation/promotion or append-only knowledge-ledger authority.
 Migration 0161 makes the current D1 row the lock authority for interactive
 content, visibility, review and desktop-state writes, including MCP, developer
 and conflict resolution. The trigger runs inside the write transaction, so a

@@ -295,9 +295,15 @@ class ProductContract:
                 '/v3/memories',
                 200,
                 bearer=owner.jwt,
-                body={'content': 'Synthetic manual memory', 'category': 'manual'},
+                body={
+                    'content': 'Synthetic manual memory',
+                    'category': 'manual',
+                    'durability': 'long_term',
+                    'memory_tier': 'long_term',
+                },
             )
             require(isinstance(created.get('id'), str) and bool(created['id']), 'memory omitted id')
+            require(created.get('memory_tier') == 'short_term', 'caller metadata admitted direct Long-term intake')
             path = '/v3/memories/' + quote(created['id'], safe='')
             mutations = (
                 ('PATCH', path, {'value': 'Edited synthetic manual memory'}),
@@ -320,6 +326,7 @@ class ProductContract:
                 'is_read': True,
                 'is_dismissed': True,
                 'is_baseline': True,
+                'memory_tier': 'short_term',
             }.items():
                 require(stored.get(field) == value, f'memory {field} was not persisted')
             self.request('api', 'DELETE', path, 404, bearer=other.jwt)
@@ -329,6 +336,39 @@ class ProductContract:
             self.request('api', 'PATCH', path, 404, bearer=owner.jwt, body={'value': 'Must stay deleted'})
 
         self.case('memories.edit-state-isolate-and-delete', memory_mutations)
+
+        def memory_batch_intake():
+            created, _ = self.request(
+                'api',
+                'POST',
+                '/v3/memories/batch',
+                200,
+                bearer=owner.jwt,
+                body={
+                    'memories': [
+                        {'content': 'The user enjoys jasmine tea.', 'category': 'manual'},
+                        {
+                            'content': 'The user walks after lunch.',
+                            'category': 'interesting',
+                            'durability': 'long_term',
+                        },
+                    ]
+                },
+            )
+            rows = created.get('memories', [])
+            require(created.get('created_count') == 2 and len(rows) == 2, 'batch intake omitted a memory')
+            require(
+                all(row.get('memory_tier') == 'short_term' for row in rows), 'batch admitted direct Long-term intake'
+            )
+            ids = {row['id'] for row in rows}
+            listed, _ = self.request('api', 'GET', '/v3/memories', 200, bearer=owner.jwt)
+            require(
+                ids <= {row['id'] for row in listed if row.get('memory_tier') == 'short_term'},
+                'batch tier was not persisted',
+            )
+            self.request('api', 'DELETE', '/v3/memories/batch', 200, bearer=owner.jwt, body={'memory_ids': sorted(ids)})
+
+        self.case('memories.batch-intake-starts-short-term', memory_batch_intake)
         task = {}
 
         def create():

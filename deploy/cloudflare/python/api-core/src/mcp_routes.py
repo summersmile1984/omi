@@ -631,7 +631,7 @@ async def create_memory(request: Request):
             "subject_entity_id, subject_attribution, object_entity_ids_json, qualifiers_json, capture_confidence, "
             "veracity, uncertainty_reasons_json, durability, reviewed, user_review, manually_added, scoring, "
             "memory_tier, valid_at, created_at, updated_at, deleted_at, invalid_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, ?, 'long_term', ?, ?, ?, NULL, NULL) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, ?, 'short_term', ?, ?, ?, NULL, NULL) "
             "ON CONFLICT(uid, id) DO UPDATE SET content = excluded.content, category = excluded.category, "
             "visibility = excluded.visibility, tags_json = excluded.tags_json, headline = excluded.headline, "
             "predicate = excluded.predicate, arguments_json = excluded.arguments_json, "
@@ -640,7 +640,7 @@ async def create_memory(request: Request):
             "capture_confidence = excluded.capture_confidence, veracity = excluded.veracity, "
             "uncertainty_reasons_json = excluded.uncertainty_reasons_json, durability = excluded.durability, "
             "reviewed = 1, user_review = 1, manually_added = 1, scoring = excluded.scoring, "
-            "memory_tier = 'long_term', valid_at = excluded.valid_at, updated_at = excluded.updated_at, "
+            "valid_at = excluded.valid_at, updated_at = excluded.updated_at, "
             "deleted_at = NULL, invalid_at = NULL"
         ).bind(
             principal.uid,

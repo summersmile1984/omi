@@ -296,8 +296,8 @@ def test_memory_create_list_filters_and_preserves_canonical_shape_with_uid_isola
     assert manual["memory_id"] == manual["id"]
     assert manual["uid"] == "memory-user"
     assert manual["content"] == "Lives in Shanghai"
-    assert manual["memory_tier"] == "long_term"
-    assert manual["layer"] == "long_term"
+    assert manual["memory_tier"] == "short_term"
+    assert manual["layer"] == "short_term"
     assert manual["manually_added"] is True
     assert manual["arguments"] == {"place": "Shanghai"}
     assert manual["created_at"].endswith("+00:00")
@@ -341,7 +341,7 @@ def test_memory_batch_create_is_atomic_bounded_and_drops_per_file_imports():
         "Manual batch memory",
         "Automatic batch memory",
     ]
-    assert response["memories"][0]["memory_tier"] == "long_term"
+    assert response["memories"][0]["memory_tier"] == "short_term"
     assert response["memories"][1]["memory_tier"] == "short_term"
     assert env.APP_DB.batch_statement_counts == [2]
     assert env.APP_DB.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 2

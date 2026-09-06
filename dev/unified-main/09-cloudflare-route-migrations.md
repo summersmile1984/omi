@@ -142,6 +142,16 @@ Owner: `api-core`. Upstream authority: `backend/routers/memories.py`.
 
 Ledger history/revert require canonical memory lineage, revision/privacy authority and outbox; flat D1 projection is insufficient.
 
+The ordinary native, MCP and Developer single/batch intake paths now start in
+Short-term, matching `INV-MEM-4` and the upstream canonical adapter. Caller
+category/durability no longer creates Long-term rows; historical Long-term rows
+retain their tier. The shared HTTP contract checks both deployment targets.
+Full consolidation with one terminal route and atomic promotion/graph receipts
+still needs a Cloudflare owner, alongside append-only ledger producers. This
+correction does not make either history/revert endpoint owned or release-ready.
+The [intake verification record](implementation-2026-09-05/eddy-memory-intake-2026-09-06.md)
+contains the five failing baseline paths and the real dual-target HTTP results.
+
 Migration 0161 now enforces the existing row lock at the shared D1 mutation
 boundary for native, MCP, developer and review writers, including locks acquired
 after a pre-read. This closes a prerequisite write-admission defect; these two

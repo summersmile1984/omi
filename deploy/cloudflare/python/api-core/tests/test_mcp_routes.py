@@ -391,7 +391,7 @@ def test_mcp_memory_create_list_edit_delete_is_uid_scoped_and_uses_workers_ai():
         "reviewed": 1,
         "user_review": 1,
         "manually_added": 1,
-        "memory_tier": "long_term",
+        "memory_tier": "short_term",
     }
     assert len(env.AI.calls) == 1
 

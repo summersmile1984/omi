@@ -249,7 +249,6 @@ def _json_bind_chunks(rows: list[dict[str, object]]) -> list[tuple[str, str]]:
 
 def _batch_row(uid: str, memory_id: str, memory: MemoryCreate, now: int) -> dict[str, object]:
     manually_added = memory.category == "manual"
-    tier = "long_term" if manually_added or (memory.durability or "").lower() == "long_term" else "short_term"
     return {
         "uid": uid,
         "id": memory_id,
@@ -269,7 +268,7 @@ def _batch_row(uid: str, memory_id: str, memory: MemoryCreate, now: int) -> dict
         "uncertainty_reasons_json": json.dumps(memory.uncertainty_reasons, ensure_ascii=False, separators=(",", ":")),
         "durability": memory.durability,
         "manually_added": int(manually_added),
-        "memory_tier": tier,
+        "memory_tier": "short_term",
         "valid_at": now,
         "created_at": now,
         "updated_at": now,
@@ -918,7 +917,8 @@ async def create_memory(request: Request):
     now = int(time.time())
     memory_id = uuid.uuid4().hex
     manually_added = memory.category == "manual"
-    tier = "long_term" if manually_added or (memory.durability or "").lower() == "long_term" else "short_term"
+    # Category and durability describe capture; only canonical consolidation
+    # may admit a new item into Long-term (INV-MEM-4).
     try:
         memory_statement = env.APP_DB.prepare(
             "INSERT INTO cf_memories "
@@ -945,7 +945,7 @@ async def create_memory(request: Request):
             json.dumps(memory.uncertainty_reasons, ensure_ascii=False, separators=(",", ":")),
             memory.durability,
             int(manually_added),
-            tier,
+            "short_term",
             now,
             now,
             now,
