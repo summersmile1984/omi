@@ -25,7 +25,12 @@ For every family, port the production success and main failure path, preserve th
 
 Owner: `api-core`. Upstream authority: `backend/routers/screen_frames.py`.
 
-Opt-in adjudication, immutable screenshot receipts, per-conversation sharing and owner/delete policy must move together.
+Privacy adjudication, immutable screenshot receipts, per-conversation sharing and owner/delete policy must move together.
+
+The [2026-09-06 Worker prerequisite verification](implementation-2026-09-05/screen-frame-worker-prerequisite-2026-09-06.md)
+stages the unchanged upstream image processing, wire types and privacy prompt.
+It proves local Pyodide image execution only; these eight route slots remain
+blocked pending the approval, isolated writer, sharing and deletion owners.
 
 | Method | Path |
 |---|---|

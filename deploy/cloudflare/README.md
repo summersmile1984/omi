@@ -165,6 +165,20 @@ command. Neither the source tree nor CF5's regular-source-only rule is changed.
 Dev runs use that source snapshot; restart the command after editing source.
 CPython tests load the same canonical shared directory through their conftest.
 
+API Core also stages the upstream screenshot wire types, canonicalizer, palette,
+privacy prompt and survivor selection through `scripts/screen_frame_sources.py`.
+The compiler uses the existing `backend/.venv/bin/python` prerequisite and
+copies ordinary source files; only the model import paths are relocated. The
+prompt and selection expressions come from their upstream syntax trees. A
+missing expression or competing staged module fails the build. These backend
+owners participate in the release source identity and the existing route CI
+lane, so an upstream change requires a fresh candidate and verification.
+Core pins Pillow 11.3.0 to the Pyodide 0.28.3 wheel and its SHA-256 in its own
+`pylock.toml`; `npm run python -- api-core sync` prepares it with the other
+dependencies. This establishes the image-processing build prerequisite only.
+The eight screenshot privacy routes remain blocked until approval, isolated
+R2 writing, sharing and deletion owners are implemented and exercised.
+
 Local development on Linux/macOS resolves the native executable from the locked
 `workerd` package export, then uses its official Pyodide bundle/package cache
 flags. The shell wrapper executes that binary directly, preserving Miniflare's

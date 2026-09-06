@@ -28,6 +28,11 @@ version = "3.19"
 wheels = [{ url = "https://files.pythonhosted.org/packages/57/b0/0e52c878c53f245edd3a11020f20979b3f490f245af532c7cae3027754b5/idna-3.19-py3-none-any.whl", upload-time = 2026-08-18T05:14:22Z, size = 68550, hashes = { sha256 = "815e7be7a7806d54abb586dc943addc79e8b2ee16915059658cbeff4b1b43bf4" } }]
 
 [[packages]]
+name = "pillow"
+version = "11.3.0"
+wheels = [{ url = "https://cdn.jsdelivr.net/pyodide/v0.28.3/full/pillow-11.3.0-cp313-cp313-pyodide_2025_0_wasm32.whl", hashes = { sha256 = "52984112ca668d60291a7868011a04d66baf526d27e5eaef0a8a16e7ef22ab6c" } }]
+
+[[packages]]
 name = "pydantic"
 version = "2.10.6"
 wheels = [

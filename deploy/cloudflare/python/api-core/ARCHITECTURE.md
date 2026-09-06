@@ -7,6 +7,14 @@ APIs through the Worker fetch bridge. The route modules must stay async and
 must not import Firestore, Redis, thread pools, local persistent files, or
 process-lifetime network clients.
 
+The build stages six `screen_frames_*` modules directly from the upstream
+screenshot contract owners. Pillow 11.3.0 supplies the unchanged canonicalizer
+and palette implementation in Pyodide. The staged privacy prompt is identical
+to the upstream prompt; there is no Cloudflare-specific prompt rewrite. These
+modules are a build prerequisite, not registered screenshot routes: the
+isolated writer, one-use approval and privacy/deletion storage boundaries are
+still required before the eight route slots can become owned.
+
 `referral_routes.py` preserves the desktop `ref1` HMAC wire format using a
 dedicated `REFERRAL_SIGNING_SECRET`. Link and login destinations come from the
 rendered API/Web origins. The secure HttpOnly referral cookie is presentation

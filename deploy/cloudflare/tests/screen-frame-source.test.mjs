@@ -1,0 +1,93 @@
+import { expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+
+const repository = resolve(import.meta.dirname, "../../..");
+const python = resolve(repository, "backend/.venv/bin/python");
+const generator = resolve(
+  repository,
+  "deploy/cloudflare/scripts/screen_frame_sources.py"
+);
+
+it("executes the staged screenshot wire, codec, prompt and survivor policy from upstream sources", () => {
+  const stage = mkdtempSync(resolve(tmpdir(), "screen-frame-source-"));
+  try {
+    const generated = spawnSync(python, [generator, "--output", stage], {
+      encoding: "utf8",
+    });
+    expect(generated.status, generated.stderr).toBe(0);
+    expect(readFileSync(resolve(stage, "screen_frames_contract.py"))).toEqual(
+      readFileSync(resolve(repository, "backend/models/screen_frame.py"))
+    );
+    expect(readFileSync(resolve(stage, "screen_frames_canonical.py"))).toEqual(
+      readFileSync(
+        resolve(repository, "backend/utils/screen_frames/canonicalize.py")
+      )
+    );
+    const result = spawnSync(
+      python,
+      [
+        "-c",
+        `
+import ast,hashlib,io,json,logging,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from PIL import Image
+from screen_frames_canonical import canonicalize_candidate,ScreenFrameCanonicalizationError
+from screen_frames_contract import ScreenFrameJudgement
+from screen_frames_palette import compute_ground
+from screen_frames_prompt import _PRIVACY_PROMPT
+from screen_frames_selection import _apply_cap_and_roles
+raw=io.BytesIO();Image.new('RGB',(1920,1080),'#24405A').save(raw,format='PNG')
+frame=canonicalize_candidate(raw.getvalue())
+assert (frame.width,frame.height)==(1600,900)
+assert frame.sha256_hex==hashlib.sha256(frame.jpeg_bytes).hexdigest()
+assert compute_ground(frame.jpeg_bytes).model_dump()['stops']
+try:
+ canonicalize_candidate(b'corrupt')
+ raise AssertionError('corrupt image admitted')
+except ScreenFrameCanonicalizationError: pass
+# Evaluate the original module's constant assignments independently, with its
+# actual policy constant; provider imports and judge calls are never executed.
+policy_tree=ast.parse((Path(sys.argv[2])/'backend/utils/screen_frames/policy.py').read_text())
+scope={'logging':logging}
+for node in policy_tree.body:
+ if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='REJECT_IDENTIFIABLE_PERSONS' for t in node.targets):
+  exec(compile(ast.Module(body=[node],type_ignores=[]),'upstream-policy','exec'),scope)
+tree=ast.parse((Path(sys.argv[2])/'backend/utils/screen_frames/judge.py').read_text())
+for node in tree.body:
+ if isinstance(node,ast.Assign):
+  exec(compile(ast.Module(body=[node],type_ignores=[]),'upstream-judge','exec'),scope)
+assert _PRIVACY_PROMPT==scope['_PRIVACY_PROMPT']
+verdict=ScreenFrameJudgement(outcome='approved_clean',caption='a'*200,labels=list('abcdefghij'),banner_suitability=.5)
+assert len(verdict.caption)==160 and len(verdict.labels)==8
+rows=[dict(id=str(i),captured_at=i,banner_suitability=i/10) for i in range(10)]
+survivors,evicted=_apply_cap_and_roles([],rows,7)
+assert [r['id'] for r in survivors]==list('3456789')
+assert [r['id'] for r in evicted]==list('012')
+assert [r['id'] for r in survivors if r['role']=='banner']==['9']
+print(json.dumps({'codec':'pass','prompt':'unchanged','selection':'pass','wire':'pass'}))
+`,
+        stage,
+        repository,
+      ],
+      { encoding: "utf8" }
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      codec: "pass",
+      prompt: "unchanged",
+      selection: "pass",
+      wire: "pass",
+    });
+    const collision = spawnSync(python, [generator, "--output", stage], {
+      encoding: "utf8",
+    });
+    expect(collision.status).not.toBe(0);
+    expect(collision.stderr).toContain("collides with a staged source owner");
+  } finally {
+    rmSync(stage, { recursive: true, force: true });
+  }
+});

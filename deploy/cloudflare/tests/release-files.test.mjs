@@ -39,6 +39,16 @@ function fixture() {
     resolve(root, "deploy/cloudflare/source.mjs"),
     "export const value=1;\n"
   );
+  mkdirSync(resolve(root, "backend/models"), { recursive: true });
+  mkdirSync(resolve(root, "backend/utils/screen_frames"), { recursive: true });
+  writeFileSync(
+    resolve(root, "backend/models/screen_frame.py"),
+    "SCHEMA = 1\n"
+  );
+  writeFileSync(
+    resolve(root, "backend/utils/screen_frames/judge.py"),
+    "PROMPT = 'original'\n"
+  );
   git("add", ".");
   git(
     "-c",
@@ -65,6 +75,25 @@ function fixture() {
   return { root, directory, candidate };
 }
 describe("immutable release inputs and output ownership", () => {
+  it("binds the projected upstream screenshot wire and policy bytes to the source digest", () => {
+    const f = fixture();
+    for (const path of [
+      "backend/models/screen_frame.py",
+      "backend/utils/screen_frames/judge.py",
+    ]) {
+      const original = readFileSync(resolve(f.root, path));
+      expect(f.candidate.source.files[path]).toBe(digest(original));
+      writeFileSync(resolve(f.root, path), "CHANGED = True\n");
+      expect(sourceIdentity(f.root).digest).not.toBe(f.candidate.source.digest);
+      expect(() => verifyCandidate(f.directory, f.root)).toThrow(
+        "source changed"
+      );
+      writeFileSync(resolve(f.root, path), original);
+    }
+    expect(verifyCandidate(f.directory, f.root).source.digest).toBe(
+      f.candidate.source.digest
+    );
+  });
   it("passes a frozen directory to qualification and rejects substituted input or later artifact mutation", () => {
     const f = fixture();
     const candidate = JSON.parse(

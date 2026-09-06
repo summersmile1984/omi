@@ -10,7 +10,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseJsonc } from "./resource-configs.mjs";
 
 // Ordinary canonical sources -> isolated ordinary module files. No source tree
@@ -40,7 +42,7 @@ export function preparePythonSource(projectDirectory, args) {
     throw new Error("Python source must use the project's owned entry.py");
   if (config.base_dir || config.build || config.assets || config.env)
     throw new Error(
-      "Python source needs an explicit adapter for alternate build roots",
+      "Python source needs an explicit adapter for alternate build roots"
     );
   const stage = mkdtempSync(resolve(tmpdir(), "memweft-python-source-"));
   const close = () => rmSync(stage, { recursive: true, force: true });
@@ -60,7 +62,7 @@ export function preparePythonSource(projectDirectory, args) {
     const shared = resolve(dirname(projectDirectory), "shared");
     if (!lstatSync(shared).isDirectory())
       throw new Error(
-        "Python shared source must be an ordinary owned directory",
+        "Python shared source must be an ordinary owned directory"
       );
     for (const name of readdirSync(shared)) {
       if (!name.endsWith(".py")) continue;
@@ -69,12 +71,34 @@ export function preparePythonSource(projectDirectory, args) {
         throw new Error("Python shared module collides with project owner");
       copy(resolve(shared, name), destination);
     }
+    if (basename(projectDirectory) === "api-core") {
+      const repository = resolve(
+        dirname(fileURLToPath(import.meta.url)),
+        "../../.."
+      );
+      const projection = spawnSync(
+        resolve(repository, "backend/.venv/bin/python"),
+        [
+          resolve(
+            repository,
+            "deploy/cloudflare/scripts/screen_frame_sources.py"
+          ),
+          "--output",
+          resolve(stage, "src"),
+        ],
+        { encoding: "utf8" }
+      );
+      if (projection.status !== 0)
+        throw new Error(
+          "screenshot source projection failed; inspect the upstream contract owners"
+        );
+    }
     // Vendored immutable dependencies retain the existing staging link contract;
     // Wrangler's compiled/frozen payload is checked to contain regular files.
     symlinkSync(
       resolve(projectDirectory, "python_modules"),
       resolve(stage, "python_modules"),
-      "dir",
+      "dir"
     );
     for (const name of readdirSync(dirname(configPath))) {
       if (name === ".dev.vars" || name.startsWith(".dev.vars.")) {

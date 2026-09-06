@@ -48,7 +48,7 @@ export function fileTree(directory) {
       files[relative(directory, path)] = digest(readFileSync(path));
     else
       throw new Error(
-        "release artifact must contain only directories and files",
+        "release artifact must contain only directories and files"
       );
   }
   visit(directory);
@@ -84,6 +84,8 @@ export function sourceIdentity(root) {
         "deploy/profiles",
         "brand",
         "contracts",
+        "backend/models/screen_frame.py",
+        "backend/utils/screen_frames",
       ])
         .split("\0")
         .filter(Boolean),
@@ -104,7 +106,7 @@ export function sourceIdentity(root) {
     commit: git(root, ["rev-parse", "HEAD"]),
     tree: git(root, ["rev-parse", "HEAD^{tree}"]),
     working_diff_sha256: digest(
-      git(root, ["diff", "--no-ext-diff", "--binary", "HEAD"]),
+      git(root, ["diff", "--no-ext-diff", "--binary", "HEAD"])
     ),
     files,
     digest: digest(files),
@@ -122,12 +124,12 @@ export function verifyCandidate(directory, root) {
     throw new Error("candidate integrity or unqualified release state differs");
   if (digest(sourceIdentity(root)) !== digest(candidate.source))
     throw new Error(
-      "source changed after qualification; prepare a new candidate",
+      "source changed after qualification; prepare a new candidate"
     );
   for (const [path, files] of Object.entries(candidate.artifact_files)) {
     outputEntry(
       resolve(directory),
-      resolve(directory, path, "ownership-check"),
+      resolve(directory, path, "ownership-check")
     );
     if (digest(fileTree(resolve(directory, path))) !== digest(files))
       throw new Error(`artifact changed: ${path}`);
