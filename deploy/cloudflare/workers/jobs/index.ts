@@ -84,6 +84,7 @@ import {
 } from "./google-calendar";
 import { registerAdminNotificationRoutes } from "./admin-notification";
 import { registerFeedbackReportRoutes, ensureDailyFeedbackReport } from "./feedback-reports";
+import { registerShareEmailRoutes, expireShareEmailDispatches } from "./share-email";
 import { registerTwitterProfileRoutes } from "./twitter-profile";
 import { registerTwitterOwnershipRoutes } from "./twitter-ownership";
 import {
@@ -202,6 +203,7 @@ async function requestContext(c: Context<{ Bindings: JobsEnv }>) {
 
 registerSyncRoutes(app, requestContext);
 registerConversationFinalizationRoutes(app, requestContext);
+registerShareEmailRoutes(app, requestContext);
 registerAccountDeletionRoutes(app, requestContext);
 registerRecordingDeletionRoutes(app, requestContext);
 registerStripeBillingRoutes(app, requestContext);
@@ -1258,6 +1260,7 @@ export default {
       drainAssetCleanup(env),
       cleanupFramePixels(env),
       ensureDailyFeedbackReport(env, now),
+      expireShareEmailDispatches(env, now),
       evaluateFairUseBatch(env),
       drainNotifications(env),
       drainIntegrationWebhooks(env, now),

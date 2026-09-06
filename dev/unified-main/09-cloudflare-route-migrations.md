@@ -97,7 +97,7 @@ Owners: `api-core` for recipient suggestions; `jobs` for the remaining send tran
 
 Recipient suggestions now use the original calendar-source, named-attendee, owner-exclusion, deduplication and meeting-size rules in API Core. Auth supplies the current owner email; D1 supplies only owned calendar metadata. The read rechecks locks, deletion and calendar state after Auth enrichment. Missing owner email suppresses the proposal with shared telemetry. No email is sent by this read. [The verification record](implementation-2026-09-05/share-recipients-2026-09-06.md) covers the 37 successful hosted HTTP assertions and the remaining send/release obligations.
 
-The POST remains blocked: recipient claims, quota, share publication and ambiguous-delivery idempotency still need their CF authority and verified native email sending configuration.
+The POST remains blocked pending the verified Eddy native sender, provider delivery and public Edge qualification. Its internal Jobs/Core transaction now implements D1 recipient claims, daily quota, revision-owned publication/rollback, one-use dispatch, and confirmed/ambiguous delivery receipts. [Unit and hosted transaction evidence](implementation-2026-09-05/share-email-transactions-2026-09-06.md) is recorded separately from actual outbound delivery.
 
 | Method | Path                                                   |
 | ------ | ------------------------------------------------------ |

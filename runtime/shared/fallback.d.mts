@@ -5,6 +5,7 @@ export type FallbackEvent = {
   from:
     | "durable_object"
     | "d1"
+    | "cloudflare_email"
     | "postgres"
     | "fcm"
     | "workers_ai_streaming"

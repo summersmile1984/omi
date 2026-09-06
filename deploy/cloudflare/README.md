@@ -2803,5 +2803,47 @@ calendar changes return 409. Missing owner email returns an empty suggestion wit
 sanitized fallback telemetry; Auth failures return an error. All responses disable
 caching. It neither invokes a model nor sends mail.
 
-The separate POST share-email transaction remains required work. Recipient
-suggestions do not qualify outbound delivery, quota, publication or idempotency.
+Recipient suggestions do not qualify outbound delivery. The internal POST
+transaction and its remaining provider boundary are described below.
+
+## Share-email transaction (internal qualification)
+
+Jobs registers the upstream POST share-email handler and delegates preparation,
+claim and finalization to Core's signed `/internal/share-email/` service. The
+public Edge route remains unregistered until native sender/delivery qualification.
+The read-only recipient endpoint remains independently available.
+
+Migration 0171 adds recipient claims, per-UTC-day quota and dispatch receipts.
+One D1 batch reserves new recipients, charges their quota, publishes the owned
+conversation and records its write revision. Every conversation write advances
+that revision, including a same-value visibility write. A definite provider
+rejection refunds the original day's charge and revokes only publication still
+owned by that attempt. Other actors' share changes remain authoritative.
+
+Jobs calls the Cloudflare Email Service structured binding once after Core
+atomically changes the attempt from prepared to dispatching. Accepted and unknown
+outcomes retain the claim and share link; unknown outcomes return 504 and emit
+sanitized shared fallback telemetry. A repeated confirmed/ambiguous recipient is
+not sent again. An active in-flight duplicate returns 409. The scheduled sweep
+expires at most 100 prepared and 100 dispatching attempts per invocation; it never
+sends email. Abandoned prepared attempts release claims and quota; abandoned
+dispatching attempts become ambiguous. Payload HTML is removed on finalization.
+Receipts, recipient addresses and quota appear in user export; internal mail
+payloads and leases do not. All three authorities participate in account erasure.
+
+The source projector stages the original request, normalization, sender-name and
+markdown rules. Only the email footer's hardcoded upstream brand is replaced by
+the validated brand identity and public share origin. Default model prompts are
+unchanged, and sending does not call a model.
+
+To qualify the remaining provider boundary, Jobs needs a native `send_email`
+binding named `SHARE_EMAIL` and `SHARE_EMAIL_FROM_ADDRESS` from an onboarded
+Eddy sending domain. These are deliberately not provisioned by this change: the
+Eddy sender identity is not yet selected. The release resource contract must
+include that verified binding/sender before the public route is admitted. The
+[Cloudflare binding API](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/)
+defines the structured message and error codes. Resend is not used in this CF path.
+
+[Transaction verification](../../dev/unified-main/implementation-2026-09-05/share-email-transactions-2026-09-06.md)
+records the native Auth/Edge/Jobs/Core/D1 run with controlled provider outcomes,
+zero outbound emails, local recovery/erasure tests and the exact remaining scope.

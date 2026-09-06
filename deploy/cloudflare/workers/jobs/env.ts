@@ -1,3 +1,5 @@
+import type { ShareEmailBinding } from "./share-email";
+
 export type JobMessage = {
   jobId: string;
   uid: string;
@@ -67,6 +69,8 @@ export type MemoryVectorizeBinding = VectorizeBinding & {
 export type JobsEnv = {
   AUTH: Fetcher;
   API_CORE?: Fetcher;
+  SHARE_EMAIL?: ShareEmailBinding;
+  SHARE_EMAIL_FROM_ADDRESS?: string;
   SCREEN_FRAME_WRITER?: Fetcher;
   APP_DB: D1Database;
   ASSETS: R2Bucket;

@@ -90,6 +90,8 @@ export function sourceIdentity(root) {
         "backend/routers/developer.py",
         "backend/routers/conversations.py",
         "backend/utils/conversations/share_email.py",
+        "backend/utils/conversations/overview_markdown.py",
+        "backend/database/conversations.py",
         "backend/models/chat.py",
         "backend/models/memories.py",
         "backend/utils/llm/chat.py",

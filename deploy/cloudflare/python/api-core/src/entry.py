@@ -82,6 +82,7 @@ from mcp_routes import router as mcp_router
 from mcp_app_projection_routes import router as mcp_app_projection_router
 from developer_ask_routes import router as developer_ask_router
 from share_recipient_routes import router as share_recipient_router
+from share_email_routes import router as share_email_router
 from developer_routes import router as developer_router
 from developer_mutation_routes import router as developer_mutation_router
 from developer_conversation_create_routes import router as developer_conversation_create_router
@@ -158,6 +159,7 @@ app.include_router(mcp_app_projection_router)
 app.include_router(developer_router)
 app.include_router(developer_ask_router)
 app.include_router(share_recipient_router)
+app.include_router(share_email_router)
 app.include_router(developer_mutation_router)
 app.include_router(developer_conversation_create_router)
 app.include_router(tool_router)

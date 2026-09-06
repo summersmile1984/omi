@@ -15,6 +15,9 @@ from internal_auth import create_request_context, decode_context
 router = APIRouter()
 
 _EXPORT_QUERIES = (
+    ("share_email_dispatches", "cf_share_email_receipts", "created_at DESC, id"),
+    ("share_email_recipients", "cf_share_email_recipients", "conversation_id, email"),
+    ("share_email_quota", "cf_share_email_quota", "day DESC"),
     ("feedback_events", "cf_feedback_events", "created_at DESC, id DESC"),
     ("frame_requests", "cf_frame_requests", "created_at DESC, request_id"),
     ("conversations", "cf_conversations", "created_at DESC, id DESC"),
@@ -194,6 +197,9 @@ async def export_user_data(request: Request):
         "realtime_turns": sections.pop("realtime_turns", []),
         "csat_ratings": sections.pop("csat_ratings", []),
         "email_preferences": sections.pop("email_preferences", []),
+        "share_email_dispatches": sections.pop("share_email_dispatches", []),
+        "share_email_recipients": sections.pop("share_email_recipients", []),
+        "share_email_quota": sections.pop("share_email_quota", []),
         "daily_summaries": sections.pop("daily_summaries", []),
     }
     payload["exported_at"] = int(time.time())

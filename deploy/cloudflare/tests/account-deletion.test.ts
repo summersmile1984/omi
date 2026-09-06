@@ -225,6 +225,14 @@ function seedCloudflareAccount(database: SqliteD1, uid = "deletion-user") {
       "INSERT INTO cf_conversations (uid, id, created_at) VALUES (?, ?, ?)"
     )
     .run(uid, "deletion-conversation", 1);
+  database.database.prepare("INSERT INTO cf_share_email_quota VALUES (?,'20260906',1)").run(uid);
+  database.database.prepare(
+    "INSERT INTO cf_share_email_dispatches(id,uid,conversation_id,phase,quota_day,recipient_count,was_private,created_at,expires_at,payload_json) " +
+    "VALUES (?,?,'deletion-conversation','dispatching','20260906',1,1,1,10000,'{}')"
+  ).run("deletion-share-" + uid, uid);
+  database.database.prepare(
+    "INSERT INTO cf_share_email_recipients VALUES (?,'deletion-conversation','guest@example.invalid',?)"
+  ).run(uid, "deletion-share-" + uid);
   database.database
     .prepare(
       `INSERT INTO cf_task_shares

@@ -632,3 +632,15 @@ Only D1 calendar fields are hydrated, and current locks, account deletion and
 calendar identity are checked again after Auth yields. Missing owner email uses
 the original suppression policy and shared fallback telemetry. This read creates
 no data or email side effects; the separate share-email send is still blocked.
+
+`share_email_routes.py` exposes only signed internal preparation, claim and finish
+operations to Jobs. `share_email_store.py` owns the atomic D1 transaction and
+original-day quota refund. The 0171 migration maintains a conversation write
+revision so failure rollback cannot overwrite another actor's same-value share.
+The recipient ledger distinguishes active claims from sent/ambiguous records;
+terminal attempts cannot transition back to dispatching. Claim admission rechecks
+locks, account deletion, visibility and the prepared conversation revision.
+The current public Edge send route remains blocked pending native email provider
+qualification. Jobs holds that binding; Core performs no provider send. The
+`cf_share_email_receipts` view exports status metadata without the transient
+message payload or leases.

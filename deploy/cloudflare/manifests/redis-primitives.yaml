@@ -912,14 +912,12 @@ direct_legacy_callers:
       target_owner: jobs,
       migration_state: staging-owned,
     }
-  # share_email_quota:{uid}:{yyyymmdd} daily outbound-share-email counter
-  # (backend/utils/conversations/share_email.py), added to upstream after this
-  # branch's fork point. The route it guards has no CF owner yet. It fails
-  # open on a Redis outage already (see the call site's record_fallback),
-  # which is the KV-shaped tolerance profile, not a DO-shaped one.
+  # share_email_quota:{uid}:{yyyymmdd} now participates in Core's atomic D1
+  # recipient/publication transaction. Provider configuration and outbound
+  # delivery still block the public route's qualification.
   - {
       path: backend/utils/conversations/share_email.py,
-      target: kv,
+      target: d1,
       target_owner: api-core,
       migration_state: blocked,
     }
