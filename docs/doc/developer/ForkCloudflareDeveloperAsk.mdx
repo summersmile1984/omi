@@ -1,0 +1,89 @@
+---
+title: Cloudflare Developer Ask
+description: Scoped conversation retrieval and cited answers using D1, Vectorize and Workers AI.
+---
+
+`POST /v1/dev/user/ask` accepts a Developer API key with `conversations:read`.
+Its request remains the upstream `DeveloperAskRequest`: a question of 1–1000
+characters, a result limit of 1–10 (default 5), and an IANA timezone (default
+UTC). Blank questions return 400; invalid limits and timezones return 422.
+The response contains `answer` and ordered `sources` with `id`, `title` and
+`created_at`. It does not create conversations, memories or chat messages.
+
+Edge preserves the Developer Authorization header and strips caller cookies and
+internal identity assertions. The shared Durable Object applies the upstream
+`dev:ask` policy of 25 requests per key per hour using a one-way key digest.
+An exhausted quota returns 429. This billable route requests fail-closed
+admission: unavailable or malformed limiter responses return 503.
+Core verifies the D1 credential, scope, account cutover and deletion fences.
+There is no Firebase or legacy backend fallback.
+
+Core embeds the question through the native Workers AI BGE-M3 binding and
+queries the conversation and transcript-chunk Vectorize indexes in the owner's
+hashed namespace. Vector results provide candidate IDs only. D1 maps those IDs
+back to owned conversations, and the merged order prefers transcript matches
+before summary matches, without duplicates. Locked, discarded and unfinished
+conversations cannot enter the prompt. A summary search outage returns 503;
+a transcript-index outage preserves summary retrieval and emits the shared
+fallback event. Empty authoritative results return the upstream no-context
+answer without a generative model call.
+
+The ordinary Python builder extracts the upstream request/response classes,
+`_ask_context_from_conversations`, `_get_qa_rag_prompt`, legacy fact renderer,
+and their pure formatting methods directly from the repository sources.
+It does not rewrite the default prompt. The unchanged context formatter keeps
+the upstream 3000-character transcript limit for each conversation. A separate
+function-global dictionary supplies each invocation's fact data without shared
+mutable request state. The source identity includes every extracted upstream
+file, so a release cannot reuse an old prompt projection after its source
+changes.
+
+Fact context reads the existing CF memory authority with the upstream
+1000-row intake bound. Eligibility uses the current canonical projection
+policy: active, processed, unexpired Short-term/Long-term facts of the current
+account generation, with privacy exclusions. Rejected, archived, invalidated,
+locked, sensitive and superseded rows remain excluded. Current CF memory rows
+use the upstream legacy fact formatter; this endpoint does not establish the
+still-separate canonical ledger/history/JIT qualification. Auth supplies the
+optional display name through its signed internal profile endpoint.
+
+After all awaited enrichment, Core rechecks the key and both data snapshots
+before disclosing context to the model. It repeats the checks before returning
+the generated answer. A revoked key, changed scope, removed conversation,
+changed content, locked source or invalidated fact returns 409 and withholds
+the answer. These are checks at disclosure and response boundaries; they do
+not retract context already sent to an in-flight model call.
+
+The answer uses the dedicated `WORKERS_AI_DEVELOPER_ASK_MODEL` through the native
+`AI` binding, defaulting to `@cf/meta/llama-3.3-70b-instruct-fp8-fast` with
+`temperature: 0`. This is independent of the smaller model used for integration
+classification. Cloudflare documents this [native model and its parameters](https://developers.cloudflare.com/workers-ai/models/llama-3.3-70b-instruct-fp8-fast/).
+Generation has a 90-second deadline. Provider failure, malformed output,
+missing usage counters, absent numeric citations or citations outside the
+returned source list produce a sanitized 503. The route neither invents
+citations nor automatically retries a paid model call. Successful provider usage is
+recorded in the existing D1 `chat` feature counter; the question and generated
+answer are not persisted by this route. The existing usage export/deletion
+owners apply. No R2 bucket, Queue job or new schema is required.
+
+The Python Worker has no host OS timezone database. `worker_timezone.py` loads
+TZif resources from the existing pinned `pytz==2024.1` package and constructs
+standard-library `ZoneInfo` objects. Exact IANA registry membership rejects
+path traversal and case changes; timezones do not require a runtime download.
+This adapts the request validator's environment dependency while retaining its
+upstream body and error contract.
+
+Run the repository's existing Cloudflare lane:
+
+```sh
+PATH=/path/to/node22/bin:$PATH bash deploy/cloudflare/ci/routes.sh
+```
+
+`tests/test_developer_ask.py` executes HTTP requests against the real router and
+all D1 migrations with controlled AI/Vectorize seams. It covers retrieval,
+scope/tenant boundaries, changing authority, facts, usage, provider failures,
+prompt byte equality and a process without OS timezone data. The Edge tests
+exercise credential stripping, the exact policy, quota exhaustion and limiter
+faults. Hosted qualification uses isolated resources and synthetic records;
+its evidence is recorded in the implementation journal, separately from the
+full production and desktop qualification.

@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 599 have Worker owners and 20 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 600 have Worker owners and 19 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -225,7 +225,13 @@ prerequisite to qualifying append-only ledger history and revert.
 
 Owner: `api-core`. Upstream authority: `backend/routers/developer.py`.
 
-Developer scope/rate admission plus conversation/transcript retrieval, authoritative lock recheck and cited Workers AI answer must be combined.
+Implemented in Core with the original request/response types and unchanged upstream
+RAG prompt. Edge applies the per-key 25/hour policy; native BGE-M3 and both
+Vectorize indexes supply candidates, and D1 scope/privacy/content checks fence
+model disclosure and response release. The Worker loads packaged timezone data
+instead of relying on an OS database. See the [contract](../../docs/doc/developer/ForkCloudflareDeveloperAsk.mdx)
+and [verification journal](implementation-2026-09-05/developer-ask-2026-09-06.md).
+This route does not retire the separate memory-ledger or JIT obligations.
 
 | Method | Path               |
 | ------ | ------------------ |

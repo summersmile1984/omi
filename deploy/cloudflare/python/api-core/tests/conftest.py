@@ -16,6 +16,10 @@ runpy.run_path(str(Path(__file__).parents[3] / 'scripts/frame_request_sources.py
 sys.path.insert(0, _screen_stage.name)
 runpy.run_path(str(Path(__file__).parents[3] / 'scripts/feedback_sources.py'))['generate'](Path(_screen_stage.name))
 
+runpy.run_path(str(Path(__file__).parents[3] / 'scripts/developer_ask_sources.py'))['generate'](
+    Path(_screen_stage.name)
+)
+
 
 def pytest_unconfigure(config):
     sys.path.remove(_screen_stage.name)

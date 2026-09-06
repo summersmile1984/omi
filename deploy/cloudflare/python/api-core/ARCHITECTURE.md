@@ -607,3 +607,19 @@ minimum-build, deterministic per-user rollout, defaults, and response bounds.
 Missing configuration preserves the legacy empty response; unavailable D1 or
 malformed documents fail with 503. The table stores no account data and has no
 public write surface. Edge supplies the request-bound internal principal.
+
+
+`developer_ask_routes.py` owns the read-only Developer question/answer contract.
+`developer_ask_context.py` combines tenant-namespaced summary/transcript
+Vectorize candidates with current D1 conversation and memory admission. Key,
+scope and source snapshots are checked before model disclosure and before
+returning the answer. Its dedicated `WORKERS_AI_DEVELOPER_ASK_MODEL` defaults
+to the native Llama 3.3 70B FP8 fast model; unresolved or missing numeric
+citations withhold the output without a second inference call. Workers AI
+usage reaches the existing chat feature
+counter; questions, answers and new business records are not persisted.
+The ordinary source projector imports the upstream RAG prompt unchanged and
+uses a request-local fact adapter. `worker_timezone.py` loads the pinned pytz
+TZif data for the original validator because hosted Python lacks OS zoneinfo.
+The [public contract](../../../../docs/doc/developer/ForkCloudflareDeveloperAsk.mdx)
+and existing route CI lane describe the full boundary and verification.

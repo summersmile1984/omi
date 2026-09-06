@@ -422,6 +422,7 @@ families:
       - conversations:merge
       - conversations:search
       - daily_summary:regenerate
+      - dev:ask
       - dev:conversations
       - dev:goals_write
       - knowledge_graph:canonical
@@ -487,6 +488,7 @@ families:
       - PATCH /v1/dev/user/goals/{goal_id}
       - PATCH /v1/dev/user/goals/{goal_id}/progress
       - PATCH /v1/dev/user/memories/{memory_id}
+      - POST /v1/dev/user/ask
       - POST /v1/dev/user/action-items
       - POST /v1/dev/user/action-items/batch
       - POST /v1/dev/user/conversations

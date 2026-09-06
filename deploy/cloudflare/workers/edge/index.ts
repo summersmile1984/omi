@@ -458,6 +458,7 @@ const proxyDeveloperCore = async (
         { uid: `developer:${subject}`, authority: "internal", requestId: id },
         policy,
         id,
+        { failClosed: policy.name === "dev:ask" },
       );
       if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
     }
@@ -983,6 +984,7 @@ app.get("/v2/integrations/:app_id/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/search/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/notification", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/tasks", proxyIntegrationCore);
+app.post("/v1/dev/user/ask", proxyDeveloperCore);
 app.get("/v1/dev/user/memories/vector/search", proxyDeveloperCore);
 app.get("/v1/dev/user/memories", proxyDeveloperCore);
 app.post("/v1/dev/user/memories/batch", proxyDeveloperCore);

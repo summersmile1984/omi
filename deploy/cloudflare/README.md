@@ -309,8 +309,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the fork route
-  gate. The current inventory contains 619 backend route identities: 594 have
-  Cloudflare staging owners, 25 are blocked with planned owners and missing
+  gate. The current inventory contains 619 backend route identities: 600 have
+  Cloudflare staging owners, 19 are blocked with planned owners and missing
   contracts in [the CF-4 ledger](../../dev/unified-main/09-cloudflare-route-migrations.md),
   and 0 remain `legacy-owned`. This is a coverage classification, not a
   complete Cloudflare product qualification. Edge directly serves
@@ -2776,3 +2776,16 @@ a separate recording/Queue contract, then stops its process tree. Both fork
 manifest lanes execute this same command. Read `contracts/README.md` for tools,
 metadata, synthetic inference boundaries and retained evidence. A local green
 report never sets release qualification or authorizes remote deployment.
+
+
+### Developer conversation questions
+
+`POST /v1/dev/user/ask` combines the existing Developer key authority, the
+25/hour `dev:ask` limiter, tenant-scoped summary/transcript Vectorize retrieval,
+D1 source rechecks and native Workers AI. Its default prompt and wire types
+are staged from unchanged upstream sources. `WORKERS_AI_DEVELOPER_ASK_MODEL`
+selects its native Llama 3.3 70B FP8 fast model independently of integration
+classification; missing or invalid source citations return 503. Python timezone validation loads
+packaged TZif data rather than assuming a host OS database. See
+[the Developer Ask contract](../../docs/doc/developer/ForkCloudflareDeveloperAsk.mdx)
+for provider errors, usage accounting and verification boundaries.

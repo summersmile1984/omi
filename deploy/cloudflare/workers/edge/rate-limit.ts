@@ -137,6 +137,11 @@ export const EDGE_RATE_LIMIT_POLICIES = {
     maxRequests: 5,
     windowSeconds: 3600,
   },
+  "dev:ask": {
+    name: "dev:ask",
+    maxRequests: 25,
+    windowSeconds: 3600,
+  },
   "dev:conversations": {
     name: "dev:conversations",
     maxRequests: 25,
@@ -365,6 +370,7 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ],
   ["POST /v1/mcp/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
   ["POST /v1/mcp/action-items", EDGE_RATE_LIMIT_POLICIES["action_items:write"]],
+  ["POST /v1/dev/user/ask", EDGE_RATE_LIMIT_POLICIES["dev:ask"]],
   ["POST /v1/dev/user/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
   [
     "POST /v1/dev/user/memories/batch",
