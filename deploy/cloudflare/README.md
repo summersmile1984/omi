@@ -315,7 +315,7 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the fork route
   gate. The current inventory contains 619 backend route identities: 602 have
-  Cloudflare staging owners, 18 are blocked with planned owners and missing
+  Cloudflare staging owners, 17 are blocked with planned owners and missing
   contracts in [the CF-4 ledger](../../dev/unified-main/09-cloudflare-route-migrations.md),
   and 0 remain `legacy-owned`. This is a coverage classification, not a
   complete Cloudflare product qualification. Edge directly serves
