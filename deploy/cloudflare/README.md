@@ -309,8 +309,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the fork route
-  gate. The current inventory contains 619 backend route identities: 600 have
-  Cloudflare staging owners, 19 are blocked with planned owners and missing
+  gate. The current inventory contains 619 backend route identities: 601 have
+  Cloudflare staging owners, 18 are blocked with planned owners and missing
   contracts in [the CF-4 ledger](../../dev/unified-main/09-cloudflare-route-migrations.md),
   and 0 remain `legacy-owned`. This is a coverage classification, not a
   complete Cloudflare product qualification. Edge directly serves
@@ -2789,3 +2789,19 @@ classification; missing or invalid source citations return 503. Python timezone 
 packaged TZif data rather than assuming a host OS database. See
 [the Developer Ask contract](../../docs/doc/developer/ForkCloudflareDeveloperAsk.mdx)
 for provider errors, usage accounting and verification boundaries.
+
+## Calendar share recipients
+
+`GET /v1/conversations/{conversation_id}/share-recipients` runs in Core behind
+Edge session authentication and account admission. The build stages the original
+upstream response models and calendar-recipient functions through
+`scripts/share_email_sources.py`; their owners are included in the release source
+identity. It reads the owned conversation's calendar metadata from D1 and the
+owner's email from Auth, then rechecks the conversation after that awaited lookup.
+Locked conversations return 402, unavailable subjects return 404, and concurrent
+calendar changes return 409. Missing owner email returns an empty suggestion with
+sanitized fallback telemetry; Auth failures return an error. All responses disable
+caching. It neither invokes a model nor sends mail.
+
+The separate POST share-email transaction remains required work. Recipient
+suggestions do not qualify outbound delivery, quota, publication or idempotency.

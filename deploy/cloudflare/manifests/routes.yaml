@@ -5387,6 +5387,16 @@ routes:
     rollout: staging-only
     rollback: edge-route-to-legacy
   - method: GET
+    path: /v1/conversations/:conversationId/share-recipients
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, d1-auth, worker-secrets]
+    protocol: http
+    rollout: staging-only
+    rollback: restore-qualified-prior-version
+  - method: GET
     path: /v1/conversations/:conversationId/transcripts
     owner: api-core
     runtime: python-worker

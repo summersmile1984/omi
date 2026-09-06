@@ -81,6 +81,7 @@ export function preparePythonSource(projectDirectory, args) {
         "frame_request_sources.py",
         "feedback_sources.py",
         "developer_ask_sources.py",
+        "share_email_sources.py",
       ]) {
         const projection = spawnSync(
           resolve(repository, "backend/.venv/bin/python"),

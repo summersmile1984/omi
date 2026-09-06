@@ -623,3 +623,12 @@ uses a request-local fact adapter. `worker_timezone.py` loads the pinned pytz
 TZif data for the original validator because hosted Python lacks OS zoneinfo.
 The [public contract](../../../../docs/doc/developer/ForkCloudflareDeveloperAsk.mdx)
 and existing route CI lane describe the full boundary and verification.
+
+`share_recipient_routes.py` owns the read-only calendar recipient proposal. Its
+staged upstream contract retains all five attributed calendar sources, owner
+exclusion, named-recipient requirements, five-recipient cap and ten-attendee gate.
+The route uses a request-bound Edge identity and an Auth-signed profile lookup.
+Only D1 calendar fields are hydrated, and current locks, account deletion and
+calendar identity are checked again after Auth yields. Missing owner email uses
+the original suppression policy and shared fallback telemetry. This read creates
+no data or email side effects; the separate share-email send is still blocked.

@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 600 have Worker owners and 19 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 601 have Worker owners and 18 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -93,9 +93,11 @@ the separate JIT trigger/memory families remain required.
 
 ## CF-4: share-email
 
-Owner: `jobs`. Upstream authority: `backend/routers/conversations.py`.
+Owners: `api-core` for recipient suggestions; `jobs` for the remaining send transaction. Upstream authority: `backend/routers/conversations.py`.
 
-Recipient claims, quota, share publication and ambiguous-delivery idempotency are not in the CF conversation projection.
+Recipient suggestions now use the original calendar-source, named-attendee, owner-exclusion, deduplication and meeting-size rules in API Core. Auth supplies the current owner email; D1 supplies only owned calendar metadata. The read rechecks locks, deletion and calendar state after Auth enrichment. Missing owner email suppresses the proposal with shared telemetry. No email is sent by this read. [The verification record](implementation-2026-09-05/share-recipients-2026-09-06.md) covers the 37 successful hosted HTTP assertions and the remaining send/release obligations.
+
+The POST remains blocked: recipient claims, quota, share publication and ambiguous-delivery idempotency still need their CF authority and verified native email sending configuration.
 
 | Method | Path                                                   |
 | ------ | ------------------------------------------------------ |

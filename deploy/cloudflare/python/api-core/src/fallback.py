@@ -16,9 +16,9 @@ def record_fallback(
     """Emit the repository-wide fallback event shape without user data."""
 
     allowed_components = {"auth", "llm", "other"}
-    allowed_from = {"auth_worker", "workers_ai", "transcript_vectorize", "none"}
-    allowed_to = {"metadata_only", "system_default", "summary_vectorize", "none"}
-    allowed_reasons = {"dependency_unavailable", "malformed_doc", "other"}
+    allowed_from = {"auth_worker", "workers_ai", "transcript_vectorize", "share_recipients_proposed", "none"}
+    allowed_to = {"metadata_only", "system_default", "summary_vectorize", "share_recipients_suppressed", "none"}
+    allowed_reasons = {"dependency_unavailable", "malformed_doc", "auth", "other"}
     allowed_outcomes = {"recovered", "degraded", "exhausted"}
     print(
         json.dumps(

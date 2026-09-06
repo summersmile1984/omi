@@ -88,6 +88,8 @@ export function sourceIdentity(root) {
         "backend/models/frame_request.py",
         "backend/models/feedback.py",
         "backend/routers/developer.py",
+        "backend/routers/conversations.py",
+        "backend/utils/conversations/share_email.py",
         "backend/models/chat.py",
         "backend/models/memories.py",
         "backend/utils/llm/chat.py",
