@@ -226,3 +226,139 @@ def test_imported_dot_identity_survives_actual_http_request_normalization(author
         monkeypatch.setattr(auth_identity.httpx, 'request', client.request)
         assert auth_identity.delete_account(uid) == {'message': 'User deleted'}
     assert [request.method for request in requests] == ['DELETE', 'GET']
+
+
+@pytest.fixture
+def referral_app(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from fork import referral_transport
+    from routers import referrals as router
+    from utils.referrals import referral_claim_patch
+
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'synthetic-referral-contract-at-least-32')
+    monkeypatch.setenv('REFERRAL_PUBLIC_BASE_URL', 'https://wrong.invalid')
+    row = {
+        'target': 'self_hosted',
+        'api_base_url': 'https://api.eddy.invalid',
+        'web_base_url': 'https://web.eddy.invalid',
+    }
+    monkeypatch.setattr(referral_transport, 'current', lambda: row)
+    store = {}
+
+    def claim(uid, referrer_uid, *, is_new_user):
+        # Controlled persistence seam; execute the real eligibility policy.
+        # The shared HTTP lane separately exercises actual PG/D1 transactions.
+        patch, reason = referral_claim_patch(
+            referred_uid=uid,
+            referrer_uid=referrer_uid,
+            is_new_user=is_new_user,
+            user_data=store.get(uid),
+        )
+        if patch is not None:
+            store.setdefault(uid, {}).update(patch)
+        return patch is not None, reason
+
+    monkeypatch.setattr(router, 'claim_referral_trial', claim)
+    events = mock.Mock()
+    monkeypatch.setattr(router, 'emit_posthog_event', events)
+    sdk = mock.Mock(side_effect=AssertionError('Firebase referral lookup was called'))
+    monkeypatch.setattr(router.firebase_admin.auth, 'get_user', sdk)
+    app = FastAPI()
+    app.include_router(router.router)
+    referral_transport.install(app)
+    app.dependency_overrides[router.auth.get_current_user_uid] = lambda: 'existing-user'
+    with TestClient(app) as client:
+        yield client, store, row, app, router, sdk, events
+
+
+def test_referral_uses_admitted_origins_and_authoritative_age_once(authority, referral_app):
+    from datetime import datetime, timezone
+    from utils.referrals import create_referral_code
+
+    calls, replies = authority
+    client, store, _, _, _, sdk, _ = referral_app
+    issued = client.get('/v1/users/me/referral')
+    assert issued.status_code == 200 and issued.headers['cache-control'] == 'no-store'
+    assert issued.json()['referral_url'] == 'https://api.eddy.invalid/r/' + create_referral_code('existing-user')
+    code = create_referral_code('inviter')
+    captured = client.get('/r/' + code, follow_redirects=False)
+    assert captured.status_code == 302
+    assert captured.headers['location'] == f'https://web.eddy.invalid/login?referral={code}&environment=prod'
+    assert captured.headers['cache-control'] == 'no-store'
+    assert captured.headers['referrer-policy'] == 'no-referrer'
+    assert all(value in captured.headers['set-cookie'] for value in ('HttpOnly', 'Secure', 'SameSite=lax'))
+    replies.extend([(200, {'user': profile(createdAt=datetime.now(timezone.utc).isoformat())})] * 2)
+    assert client.post('/v1/users/me/referral/claim', json={'code': code}).json() == {'claimed': True, 'trial_days': 30}
+    assert client.post('/v1/users/me/referral/claim', json={'code': code}).json() == {
+        'claimed': False,
+        'trial_days': 30,
+    }
+    user = store['existing-user']
+    assert user['subscription']['plan'] == 'operator'
+    assert user['subscription']['current_period_end'] - user['subscription']['current_period_start'] == 2592000
+    assert user['referral']['referrer_uid'] == 'inviter'
+    assert len(calls) == 2
+    sdk.assert_not_called()
+
+
+@pytest.mark.parametrize('created_at', [None, '2020-01-01T00:00:00Z', '2099-01-01T00:00:00Z'])
+def test_referral_legacy_or_outside_window_never_mints_entitlement(authority, referral_app, created_at):
+    from utils.referrals import create_referral_code
+
+    _, replies = authority
+    client, store, *_ = referral_app
+    replies.append((200, {'user': profile(createdAt=created_at)}))
+    response = client.post('/v1/users/me/referral/claim', json={'code': create_referral_code('inviter')})
+    assert response.status_code == 200 and response.json() == {'claimed': False, 'trial_days': 30}
+    assert not store
+
+
+@pytest.mark.parametrize(
+    'reply,status',
+    [
+        ((404, {'error': 'user_not_found'}), 401),
+        ((200, {'user': profile(banned=True)}), 401),
+        ((200, {'user': profile(createdAt='private-invalid-date')}), 503),
+        ((200, {'user': profile(createdAt='2026-09-06T00:00:00')}), 503),
+        ((503, {'error': 'private diagnostic'}), 503),
+        (httpx.ReadTimeout('private timeout'), 503),
+    ],
+)
+def test_referral_unknown_authority_cannot_grant_or_hide_retry(authority, referral_app, reply, status):
+    from utils.referrals import create_referral_code
+
+    _, replies = authority
+    client, store, _, _, _, sdk, events = referral_app
+    replies.append(reply)
+    response = client.post('/v1/users/me/referral/claim', json={'code': create_referral_code('inviter')})
+    assert response.status_code == status and 'private' not in response.text
+    if status == 503:
+        assert response.json()['detail'] == {'code': 'auth_service_unavailable', 'retryable': True}
+    assert not store
+    sdk.assert_not_called()
+    events.assert_not_called()
+
+
+def test_referral_keeps_auth_decoding_and_upstream_route_owner(authority, referral_app, monkeypatch):
+    from fastapi import FastAPI, HTTPException
+    from fork import referral_transport
+    from utils.referrals import create_referral_code
+
+    calls, _ = authority
+    client, store, row, app, router, _, _ = referral_app
+    assert client.post('/v1/users/me/referral/claim', json={}).status_code == 422
+    assert client.post('/v1/users/me/referral/claim', json={'code': 'invalid'}).status_code == 404
+
+    def denied():
+        raise HTTPException(401, 'unauthorized')
+
+    app.dependency_overrides[router.auth.get_current_user_uid] = denied
+    assert client.get('/v1/users/me/referral').status_code == 401
+    assert client.post('/v1/users/me/referral/claim', json={'code': create_referral_code('inviter')}).status_code == 401
+    assert not store and not calls
+    row['target'] = 'omi_cloud'
+    upstream = FastAPI()
+    upstream.include_router(router.router)
+    referral_transport.install(upstream)
+    assert all(route.dependant.call is route.endpoint for route in upstream.routes if hasattr(route, 'dependant'))

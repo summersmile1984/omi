@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap and lifecycle opt-out implementations, the inventory has 619 unique method/path/protocol slots: 583 have Worker owners and 36 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 586 have Worker owners and 33 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -85,7 +85,7 @@ Implemented with the upstream canonical lifecycle HMAC, scanner-safe GET, brande
 
 Owner: `api-core`. Upstream authority: `backend/routers/referrals.py`.
 
-Referral cookie/codes, account-age admission and exactly-once trial entitlement need shared Auth and billing state.
+Implemented with the upstream HMAC/cookie contract, signed Auth account age and an immutable D1 claim receipt that grants the subscription atomically. Every entitlement reader sees trial expiry through the shared effective-subscription view; attribution is separately erasable, and export/deletion use their existing owners. Both Server and CF passed the shared public HTTP claim/reread contract. The branded Web signup was exercised in the browser, including visible success when the local download artifact is absent. Independent signing-secret provisioning and hosted/download validation remain release work. See [verification evidence](implementation-2026-09-05/eddy-referrals-2026-09-06.md).
 
 | Method | Path |
 |---|---|

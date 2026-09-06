@@ -16,7 +16,7 @@ import secrets
 import sys
 import time
 from urllib.error import HTTPError
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
@@ -98,9 +98,13 @@ class ProductContract:
                         'service': service,
                         'method': method,
                         'route': (
-                            '/email/unsubscribe'
-                            if path.startswith('/email/unsubscribe')
-                            else '/v1/action-items/:id/completed' if '/completed?' in path else path
+                            '/r/:code'
+                            if path.startswith('/r/')
+                            else (
+                                '/email/unsubscribe'
+                                if path.startswith('/email/unsubscribe')
+                                else '/v1/action-items/:id/completed' if '/completed?' in path else path
+                            )
                         ),
                         'status': status,
                         'expected': expected,
@@ -437,6 +441,52 @@ class ProductContract:
             ),
         )
 
+        def referral_trial():
+            link, _ = self.request('api', 'GET', '/v1/users/me/referral', 200, bearer=other.jwt)
+            issued = urlsplit(link['referral_url'])
+            authority = urlsplit(self.metadata['api_origin'])
+            require(
+                (issued.scheme, issued.netloc) == (authority.scheme, authority.netloc),
+                'referral issuer escaped the selected API origin',
+            )
+            path = issued.path
+            require(path.startswith('/r/ref1.'), 'referral issuer wire format differs')
+            code = path.removeprefix('/r/')
+            _, headers = self.request('api', 'GET', path, 302, as_text=True)
+            redirect = urlsplit(headers['location'])
+            if self.metadata.get('web_origin'):
+                web = urlsplit(self.metadata['web_origin'])
+                require(
+                    (redirect.scheme, redirect.netloc) == (web.scheme, web.netloc),
+                    'referral capture escaped the selected Web origin',
+                )
+            require(
+                redirect.path == '/login' and parse_qs(redirect.query).get('referral') == [code],
+                'referral capture lost the login code',
+            )
+            cookie = headers.get('set-cookie', '').lower()
+            require(
+                all(part in cookie for part in ('httponly', 'secure', 'samesite=lax', 'max-age=2592000')),
+                'referral cookie protections differ',
+            )
+            claim_path = '/v1/users/me/referral/claim'
+            self.request('api', 'POST', claim_path, 401, body={'code': code})
+            self.request('api', 'POST', claim_path, 404, bearer=owner.jwt, body={'code': 'invalid'})
+            own, _ = self.request('api', 'POST', claim_path, 200, bearer=other.jwt, body={'code': code})
+            require(own == {'claimed': False, 'trial_days': 30}, 'self-referral granted a trial')
+            granted, _ = self.request('api', 'POST', claim_path, 200, bearer=owner.jwt, body={'code': code})
+            require(granted == {'claimed': True, 'trial_days': 30}, 'new account did not receive the referral trial')
+            repeated, _ = self.request('api', 'POST', claim_path, 200, bearer=owner.jwt, body={'code': code})
+            require(repeated == {'claimed': False, 'trial_days': 30}, 'referral retry granted a second trial')
+            subscription, _ = self.request('api', 'GET', '/v1/users/me/subscription', 200, bearer=owner.jwt)
+            row = subscription['subscription']
+            require(
+                row['plan'] == 'operator' and row['current_period_end'] - row['current_period_start'] == 2592000,
+                'referral subscription does not carry thirty days of Operator',
+            )
+
+        self.case('referral.capture-once-and-publish-trial', referral_trial)
+
         def refresh_logout():
             payload, _ = self.request('auth', 'GET', '/api/auth/token', 200, bearer=owner.session)
             refreshed = payload['token']
@@ -453,7 +503,7 @@ class ProductContract:
     def report(self):
         report = {
             'schema_version': 1,
-            'scope': 'identity-onboarding-calendar-email-csat-memory-tasks',
+            'scope': 'identity-onboarding-calendar-email-csat-memory-tasks-referrals',
             'target': self.metadata['target'],
             'brand_id': self.metadata['brand_id'],
             'cases': self.cases,

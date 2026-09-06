@@ -53,6 +53,13 @@ upstream export route at startup and leaves authentication, export spooling,
 response status and body delivery with their existing owners. Omi-cloud mode
 retains upstream download behavior; request headers cannot select a brand.
 
+`referral_transport.py` retains the existing referral HTTP dependency tree and
+transactional grant policy while reading account creation time through
+`auth_identity.py`. Public API/Web destinations use the generated profile.
+Missing creation metadata keeps imported accounts ineligible; identity faults
+return retryable 503 before a grant. The auth contract lane exercises registered
+routes, with real PostgreSQL/D1 trials covered by the shared product lane.
+
 Do not use `sitecustomize` for admission: Python can continue after its import
 fails. New process types must call the same explicit bootstrap before importing
 or executing their workload. Tests execute real subprocess entrypoints, including

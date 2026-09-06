@@ -181,3 +181,8 @@ It refuses existing prior Workers and restore phases until an executable retaine
 version compatibility harness exists. Its HTTP/process boundary and SQL behavior
 tests run in the existing full Cloudflare Vitest local/CI lane; a controlled API
 test is not a remote account proof.
+The recording lane also exercises referral link capture, four concurrent
+claims, the thirty-day Operator subscription projection, owned export and
+the existing queue-driven account erasure. The signup Web UI is verified
+separately against the same local HTTP authority; this lane alone does not
+prove a browser flow or production deployment.

@@ -113,6 +113,7 @@ function publicConfig(role, config, input, projected, names, origins) {
     config.vars.FIRMWARE_BRAND_POLICY_JSON = JSON.stringify(projected.firmware_policy);
   if (role === 'api-core') config.vars.BRAND_SUPPORT_EMAIL = projected.support_email;
   if (role === 'api-core') config.vars.PUBLIC_SHARE_BASE_URL = origins.share;
+  if (role === 'api-core') config.vars.PUBLIC_WEB_BASE_URL = origins.web;
   if (['edge', 'auth'].includes(role)) {
     config.vars.ALLOWED_ORIGINS = [...new Set([origins.web, origins.share])].join(',');
     config.vars.MCP_RESOURCE_URL = `${origins.mcp}/v1/mcp/sse`;

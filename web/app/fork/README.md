@@ -2,7 +2,7 @@
 
 The `WEB-1` fork builder consumes `overlays.json` in an isolated staging copy of
 the current Moonshine/Bun app. It never rewrites or commits the upstream sources.
-Both deployment targets use the same four overlays and the same modules under
+Both deployment targets use the same declared overlays and the same modules under
 `src/lib/fork/`. The builder must verify each target exists and report every
 overlay it applied. Upstream builds and tests use their original modules.
 
@@ -35,6 +35,13 @@ profile. The existing settings MCP expression is transformed in staging to call
 - The upstream authentication port (`getIdToken`, `auth.currentUser`) resolves
   to this controller for REST, referrals, transcription and summary creation.
   There is no Firebase initialization or managed analytics in the fork provider.
+- Referral login waits for the signed-in identity before claiming the query's
+  code against the selected profile API. A query `environment` cannot choose a
+  backend. Failures remain visible with explicit retry and a route into the
+  account; success navigates to that profile's desktop download endpoint. The
+  upstream referral helper and server proxy are also overlaid so neither keeps
+  a separate managed-production destination. Login and referral flows retain
+  the same Better Auth controller and do not use the referral cookie as identity.
 - The current target profiles advertise webhook push. This is not browser FCM:
   the adapter reports notifications unsupported and never creates Firebase
   tokens or registers its service worker. Browser push requires its own client

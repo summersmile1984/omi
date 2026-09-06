@@ -41,6 +41,12 @@ including functions captured by model and conversation consumers before startup.
 Only an authoritative missing-user response returns absence; malformed/outage
 results emit sanitized shared fallback telemetry before the existing optional
 profile/default-name path. Upstream mode retains its original SDK owner.
+`fork/referral_transport.py` uses that same identity owner and its validated
+creation time before calling the upstream referral transaction. Missing creation
+metadata keeps imported accounts ineligible; authority faults return retryable
+503. Public invitation and signup destinations come from the admitted profile.
+The existing auth contract lane executes these registered HTTP routes; the shared
+product lane grants and rereads the trial through real Server and CF runtimes.
 
 ## Fork discipline
 

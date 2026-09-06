@@ -89,7 +89,7 @@ def question_reservation_statement(
         "(uid, idempotency_key, source, message_id, chat_session_id, platform, occurred_at) "
         "SELECT ?, ?, ?, ?, ?, ?, ? WHERE "
         "COALESCE((SELECT CASE WHEN status = 'active' THEN plan ELSE 'basic' END "
-        "FROM cf_user_subscriptions WHERE uid = ?), 'basic') != 'basic' OR "
+        "FROM cf_effective_user_subscriptions WHERE uid = ?), 'basic') != 'basic' OR "
         "(? = 0 AND (SELECT COUNT(*) FROM cf_chat_quota_events "
         "WHERE uid = ? AND occurred_at >= ? AND occurred_at < ?) < ?"
         ")"

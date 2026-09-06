@@ -116,7 +116,7 @@ export async function normalizeFairUseStates(
         "throttle_until = NULL, restrict_until = NULL, cleared_by = 'subscription_upgrade', cleared_at = ?, " +
         "evaluation_lease_token = NULL, evaluation_lease_until = NULL, next_evaluation_at = NULL, updated_at = ? " +
         "WHERE stage != 'none' AND last_classifier_type = 'free_exhausted' AND EXISTS (" +
-        "SELECT 1 FROM cf_user_subscriptions AS subscription WHERE subscription.uid = cf_fair_use_states.uid " +
+        "SELECT 1 FROM cf_effective_user_subscriptions AS subscription WHERE subscription.uid = cf_fair_use_states.uid " +
         `AND subscription.status = 'active' AND subscription.plan IN (${PAID_PLANS.map(() => "?").join(", ")})` +
         ")",
     )
@@ -162,7 +162,7 @@ export async function scanFairUseCandidates(
         "COALESCE(SUM(CASE WHEN usage.occurred_at >= ? THEN usage.speech_ms ELSE 0 END), 0) AS three_day_ms, " +
         "COALESCE(SUM(usage.speech_ms), 0) AS weekly_ms " +
         "FROM cf_fair_use_usage_sources AS usage " +
-        "LEFT JOIN cf_user_subscriptions AS subscription ON subscription.uid = usage.uid " +
+        "LEFT JOIN cf_effective_user_subscriptions AS subscription ON subscription.uid = usage.uid " +
         "LEFT JOIN cf_fair_use_states AS state ON state.uid = usage.uid " +
         "WHERE usage.source_kind IN ('realtime', 'sync_fresh') AND usage.occurred_at >= ? " +
         "AND COALESCE(state.stage, 'none') != 'restrict' " +

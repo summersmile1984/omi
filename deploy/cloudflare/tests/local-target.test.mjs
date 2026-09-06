@@ -243,6 +243,7 @@ describe("disposable actual Cloudflare target", () => {
     expect(configs["api-core"].vars.BRAND_SUPPORT_EMAIL).toBe(
       inputs.supportEmail,
     );
+    expect(configs["api-core"].vars.PUBLIC_WEB_BASE_URL).toBe(inputs.webOrigin);
     expect(configs["api-core"].vars.PUBLIC_SHARE_BASE_URL).toBe(
       inputs.shareOrigin,
     );

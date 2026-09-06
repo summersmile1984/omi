@@ -407,6 +407,32 @@ try {
     const otherExport = await request("api", "/v1/users/export", 200, { token: other.token });
     require(otherExport.data.realtime_turns.length === 0, "realtime usage crossed account ownership");
   });
+  await caseOf("referral.branded-link-atomic-trial-and-export", async () => {
+    const link = await request("api", "/v1/users/me/referral", 200, { token: other.token });
+    const url = new URL(link.data.referral_url);
+    require(url.origin === metadata.api_origin, "referral escaped the selected API origin");
+    const capture = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(20000) });
+    require(capture.status === 302, "referral capture did not redirect");
+    const redirect = new URL(capture.headers.get("location"));
+    require(redirect.pathname === "/login" && redirect.hostname === "127.0.0.1",
+      "referral did not use the configured local Web login");
+    const cookie = capture.headers.get("set-cookie") ?? "";
+    require(cookie.includes("HttpOnly") && cookie.includes("Secure"), "referral cookie lost its protections");
+    await capture.body?.cancel();
+    const code = redirect.searchParams.get("referral");
+    const claims = await Promise.all(Array.from({ length: 4 }, () => request("api",
+      "/v1/users/me/referral/claim", 200, { token: owner.token, method: "POST", body: { code } })));
+    require(claims.filter((item) => item.data.claimed).length === 1, "referral grant did not have exactly one winner");
+    const subscription = await request("api", "/v1/users/me/subscription", 200, { token: owner.token });
+    require(subscription.data.subscription.plan === "operator" &&
+      subscription.data.subscription.current_period_end - subscription.data.subscription.current_period_start === 2592000,
+      "referral did not publish the thirty-day Operator entitlement");
+    const exported = await request("api", "/v1/users/export", 200, { token: owner.token });
+    require(exported.data.referral_claims.length === 1 && exported.data.referral_attributions.length === 1,
+      "referral export lost its owned receipt");
+    const otherExport = await request("api", "/v1/users/export", 200, { token: other.token });
+    require(otherExport.data.referral_claims.length === 0, "referral receipt crossed accounts");
+  });
   await caseOf("recording.desktop-daily-usage-concurrent-maxima", async () => {
     const data = {
       date: new Date().toISOString().slice(0, 10),

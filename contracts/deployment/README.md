@@ -7,7 +7,8 @@ neutral HTML, CSAT configuration/validation/create-only ratings,
 manual and batch memory intake into Short-term despite caller durability hints,
 content/visibility/review/read/baseline persistence,
 cross-account mutation denial and deletion,
-task creation/completion, cross-account denial, refresh
+task creation/completion, cross-account denial, branded referral capture,
+fresh-account trial grant, self/referral retry rejection and subscription reread, refresh
 and logout revocation. It imports no backend handlers and seeds no business
 records. The task request contract comes from the actual FastAPI
 `ActionItemCreateRequest`: an empty description returns **422**. Cloudflare's

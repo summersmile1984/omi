@@ -70,6 +70,8 @@ class FakeDb:
             "0056_llm_usage_daily.sql",
         ):
             self.connection.executescript((migration_dir / name).read_text())
+        for name in ("0057_stripe_billing.sql", "0058_subscription_mutations.sql", "0165_referrals.sql"):
+            self.connection.executescript((migration_dir / name).read_text())
         self.connection.executescript(
             "ALTER TABLE cf_app_catalog ADD COLUMN owner_uid TEXT;"
             "CREATE TABLE cf_app_testers (uid TEXT PRIMARY KEY, added_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);"

@@ -182,7 +182,9 @@ async def _projection(env: object, brand: BrandRuntime, support_email: str, uid:
         .bind(uid)
         .first()
     )
-    subscription = await env.APP_DB.prepare("SELECT plan FROM cf_user_subscriptions WHERE uid = ?").bind(uid).first()
+    subscription = (
+        await env.APP_DB.prepare("SELECT plan FROM cf_effective_user_subscriptions WHERE uid = ?").bind(uid).first()
+    )
     cutoffs = (now - 86_400, now - 3 * 86_400, now - 7 * 86_400)
     live_usage = (
         await env.APP_DB.prepare(

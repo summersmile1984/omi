@@ -198,7 +198,7 @@ async def _subscription_row(env: object, uid: str) -> dict[str, object] | None:
         await env.APP_DB.prepare(
             "SELECT plan, status, current_period_start, current_period_end, stripe_subscription_id, "
             "current_price_id, features_json, cancel_at_period_end, show_subscription_ui "
-            "FROM cf_user_subscriptions WHERE uid = ?"
+            "FROM cf_effective_user_subscriptions WHERE uid = ?"
         )
         .bind(uid)
         .first()

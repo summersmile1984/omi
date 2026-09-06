@@ -7,6 +7,22 @@ APIs through the Worker fetch bridge. The route modules must stay async and
 must not import Firestore, Redis, thread pools, local persistent files, or
 process-lifetime network clients.
 
+`referral_routes.py` preserves the desktop `ref1` HMAC wire format using a
+dedicated `REFERRAL_SIGNING_SECRET`. Link and login destinations come from the
+rendered API/Web origins. The secure HttpOnly referral cookie is presentation
+state; only the signed code and Auth-issued account creation time admit a
+claim. Migration 0165 commits one immutable claim and its 30-day Operator
+subscription together. Existing/missing-age, self-referred and paid accounts
+receive `claimed: false`; retries cannot extend or replace the grant.
+
+All subscription entitlement readers use `cf_effective_user_subscriptions`.
+This D1 view expires the exact non-Stripe referral grant at database time, so
+no scheduler delay can extend it. Billing mutations retain the physical
+`cf_user_subscriptions` owner; a later Stripe subscription is independent.
+Inviter attribution lives separately from the recipient's one-time receipt.
+Both participate in export/deletion; erasing an inviter removes the relation
+without making the recipient eligible again. D1 fences reject late claims.
+
 `desktop_daily_usage_routes.py` owns running counters keyed by uid/local date/
 client device. A single D1 upsert takes the maximum of each counter, preserving
 retries and out-of-order delivery without an in-memory lock. The request applies

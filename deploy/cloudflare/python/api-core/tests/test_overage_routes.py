@@ -51,6 +51,8 @@ class FakeDb:
             "0056_llm_usage_daily.sql",
         ):
             self.connection.executescript((migration_dir / name).read_text())
+        for name in ("0057_stripe_billing.sql", "0058_subscription_mutations.sql", "0165_referrals.sql"):
+            self.connection.executescript((migration_dir / name).read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)

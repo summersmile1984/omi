@@ -6,6 +6,7 @@ An unavailable service or an unknown deletion outcome remains retryable.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from urllib.parse import quote
 
 import httpx
@@ -29,6 +30,23 @@ class IdentityUser:
     display_name: str
     photo_url: str | None
     disabled: bool
+    created_at_ms: int | None = None
+
+
+def _created_at_ms(value):
+    # Imported users without creation metadata retain their profile, but cannot
+    # be admitted as newly registered accounts by entitlement consumers.
+    if value is None:
+        return None
+    try:
+        if not isinstance(value, str):
+            raise ValueError
+        created = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if created.tzinfo is None:
+            raise ValueError
+        return int(created.timestamp() * 1000)
+    except (ValueError, OverflowError, OSError):
+        raise IdentityAuthorityUnavailable('Identity creation time could not be verified') from None
 
 
 def get_user(uid):
@@ -66,6 +84,7 @@ def get_user(uid):
             display_name=user['name'],
             photo_url=user.get('image'),
             disabled=user.get('banned', False),
+            created_at_ms=_created_at_ms(user.get('createdAt')),
         )
     except IdentityAuthorityUnavailable:
         from utils.observability.fallback import record_fallback

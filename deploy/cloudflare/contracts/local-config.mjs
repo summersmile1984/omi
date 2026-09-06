@@ -160,6 +160,7 @@ export function localConfigs({
     if (role === "api-core") {
       config.vars.BRAND_SUPPORT_EMAIL = supportEmail;
       config.vars.PUBLIC_SHARE_BASE_URL = shareOrigin;
+      config.vars.PUBLIC_WEB_BASE_URL = webOrigin;
       config.vars.FIRMWARE_BRAND_POLICY_JSON = JSON.stringify(firmwarePolicy);
     }
     delete config.vars.ORIGIN_BACKEND_URL;

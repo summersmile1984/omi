@@ -350,7 +350,7 @@ async function reserveQuota(env: JobsEnv, uid: string, key: string, messageId: s
   startDate.setUTCHours(0, 0, 0, 0);
   const endDate = new Date(startDate);
   endDate.setUTCMonth(endDate.getUTCMonth() + 1);
-  const plan = await env.APP_DB.prepare("SELECT plan, status FROM cf_user_subscriptions WHERE uid = ? LIMIT 1").bind(uid).first<{ plan: string; status: string }>();
+  const plan = await env.APP_DB.prepare("SELECT plan, status FROM cf_effective_user_subscriptions WHERE uid = ? LIMIT 1").bind(uid).first<{ plan: string; status: string }>();
   const paid = plan?.status === "active" && plan.plan !== "basic";
   await env.APP_DB.prepare(
     "INSERT OR IGNORE INTO cf_chat_quota_events (uid, idempotency_key, source, message_id, chat_session_id, platform, occurred_at) " +

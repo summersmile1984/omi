@@ -225,7 +225,11 @@ async def chat_quota_snapshot(
 
 
 async def subscription_plan(env: object, uid: str) -> str:
-    row = await env.APP_DB.prepare("SELECT plan, status FROM cf_user_subscriptions WHERE uid = ?").bind(uid).first()
+    row = (
+        await env.APP_DB.prepare("SELECT plan, status FROM cf_effective_user_subscriptions WHERE uid = ?")
+        .bind(uid)
+        .first()
+    )
     if isinstance(row, dict) and row.get("status") == "active":
         plan = str(row.get("plan") or "basic")
         if plan in PLAN_DISPLAY_NAMES:
