@@ -224,8 +224,11 @@ def remedy_for(path: str) -> str:
     return "keep the change in a fork-owned path; see " + POLICY_DOC
 
 
-def added_lines(base: str, head: str, path: str) -> int:
-    out = run_git(["diff", "--numstat", f"{base}...{head}", "--", path]).strip()
+def added_lines(upstream_ref: str, head: str, path: str) -> int:
+    # The budget belongs to the complete fork seam, not the PR increment.
+    # A sync may bring upstream-authored growth into the PR diff, while an
+    # ordinary follow-up may add to a seam already present on the PR base.
+    out = run_git(["diff", "--numstat", upstream_ref, head, "--", path]).strip()
     if not out:
         return 0
     total = 0
@@ -301,7 +304,7 @@ def evaluate(base: str, head: str, upstream_ref: str, allowlist_path: Path) -> R
             )
             continue
 
-        n = added_lines(base, head, path)
+        n = added_lines(upstream_ref, head, path)
         if n > entry.max_added_lines:
             result.violations.append(
                 Violation(

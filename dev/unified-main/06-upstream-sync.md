@@ -66,6 +66,12 @@ gh pr create --title "sync: upstream/main $(date +%F)" --body-file dev/unified-m
 
 守卫脚本 `scripts/fork/check-upstream-touch.py --allowlist dev/unified-main/upstream-touch-allowlist.yaml`（进 `checks-manifest.fork.yaml`，PR 触发）：对 PR diff 中属于"上游文件"（存在于 `upstream/main` 树）的每个文件——不在白名单 → 失败；在白名单但超过其行数上限 → 失败；命中清单 1/2/7 的 T2 类别 → 失败；并输出对应的 T0 做法提示。
 
+PR 的 `base...head` 只选择本次需要检查的文件；已选文件的行数预算按
+`git diff --numstat upstream/main HEAD -- <path>` 的实际 fork 差异计算。
+上游同步带来的原版增长不占 fork 接缝预算，接缝在此前 PR 已有的改动则仍
+占用预算。禁止修改类别、白名单和行数上限保持同一套规则。真实 merge 与
+连续增量提交的回归测试在现有 `fork-upstream-touch-tests` 本地/CI 检查中运行。
+
 ## 5. 度量与告警
 
 - 每次同步 PR 自动评论：真实冲突文件数、各文件处置、上游区间提交数。

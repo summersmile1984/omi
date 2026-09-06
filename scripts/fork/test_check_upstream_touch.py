@@ -164,6 +164,39 @@ class UpstreamTouchGuardTests(unittest.TestCase):
         self.assertEqual(v["kind"], "over-budget")
         self.assertIn("budget is 3", v["detail"])
 
+    def test_upstream_sync_preserves_the_existing_seam_budget(self):
+        h = self.harness()
+        original = (h.root / "seam.swift").read_text() + "\n\n// unchanged section\n\n\n"
+        h.commit("seam.swift", original, "upstream separated sections")
+        git(h.root, "update-ref", "refs/remotes/upstream/main", "HEAD")
+        fork = original.replace('["com.omi.app"]', 'readFromPlist()')
+        h.commit("seam.swift", fork, "existing allowed fork seam")
+        git(h.root, "branch", "-f", "base", "HEAD")
+
+        git(h.root, "switch", "-q", "-c", "upstream-update", "refs/remotes/upstream/main")
+        additions = "".join(f"// upstream paragraph {i}\n" for i in range(4))
+        h.commit("seam.swift", original + additions, "upstream document growth")
+        git(h.root, "update-ref", "refs/remotes/upstream/main", "HEAD")
+        git(h.root, "switch", "-q", "main")
+        git(h.root, "merge", "--no-ff", "--no-edit", "upstream-update")
+
+        rc, out = h.run()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["allowed"], ["seam.swift (+1/3)"])
+        self.assertEqual((h.root / "seam.swift").read_text(), fork + additions)
+
+    def test_seam_budget_counts_existing_fork_changes_with_the_new_increment(self):
+        h = self.harness()
+        fork = "".join(f"let extra{i} = {i}\n" for i in range(3))
+        h.commit("seam.swift", fork, "existing three-line seam")
+        git(h.root, "branch", "-f", "base", "HEAD")
+        h.commit("seam.swift", fork + "let extra3 = 3\n", "one more fork line")
+        rc, out = h.run()
+        self.assertEqual(rc, 1, out)
+        [v] = out["violations"]
+        self.assertEqual(v["kind"], "over-budget")
+        self.assertEqual(v["detail"], "added 4 lines, allowlist budget is 3")
+
     def test_upstream_test_is_forbidden_even_if_allowlisted(self):
         h = self.harness()
         allow = h.root / "dev/unified-main/upstream-touch-allowlist.yaml"
