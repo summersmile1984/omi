@@ -662,7 +662,9 @@ describe("jobs scheduled cleanup", () => {
                     })),
                   },
             first: async () =>
-              active.has(String(args[1])) ? { active: 1 } : null,
+              sql.includes("cf_feedback_reports")
+                ? { ready: 1 } // The independent daily report has already completed.
+                : active.has(String(args[1])) ? { active: 1 } : null,
             run: async () => {
               const storageKey = String(args[sql.startsWith("DELETE") ? 0 : 2]);
               if (sql.startsWith("DELETE")) tasks.delete(storageKey);

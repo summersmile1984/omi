@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 from brand_runtime import BrandRuntime, load_brand_runtime, load_share_origin
 from chat_target import APP_SCOPE, resolve_chat_target
 from feedback_routes import chat_feedback_statements
+from feedback_contract import FeedbackReason, MAX_COMMENT_LENGTH
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -37,6 +38,8 @@ class RateMessageRequest(BaseModel):
 
     rating: int | None = Field(None, ge=-1, le=1)
     app_version: str | None = None
+    reason: FeedbackReason | None = None
+    comment: str | None = Field(None, max_length=MAX_COMMENT_LENGTH)
 
 
 def _auth_context(request: Request) -> dict[str, object] | None:
@@ -267,8 +270,22 @@ async def rate_message(request: Request, message_id: str):
     uid = str(context["uid"])
     env = request.scope["env"]
     value = payload.rating if payload.rating is not None else 0
+    platform = (request.headers.get('x-app-platform') or '').strip().lower()
+    if platform not in {'desktop', 'mobile'}:
+        platform = 'desktop'
     try:
-        await env.APP_DB.batch(chat_feedback_statements(env, uid, message_id, value))
+        await env.APP_DB.batch(
+            chat_feedback_statements(
+                env,
+                uid,
+                message_id,
+                value,
+                payload.reason.value if payload.reason else None,
+                comment=payload.comment,
+                platform=platform,
+                app_version=payload.app_version,
+            )
+        )
     except Exception:
         return JSONResponse({"error": "messages unavailable"}, status_code=503)
     return {"status": "ok"}

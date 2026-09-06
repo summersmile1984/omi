@@ -2695,9 +2695,20 @@ surface a 404.
 
 The memory-summary and chat-message feedback routes store uid-scoped ratings
 in `cf_user_feedback`. Chat feedback also updates the matching D1 message JSON
-in the same batch, preserving the client-visible rating projection. The legacy
+in the same batch, preserving the client-visible rating projection. Every vote,
+including voice/notification chat and memory keep/discard, also appends its
+upstream envelope to `cf_feedback_events` in that transaction. The legacy
 LangSmith submission remains a non-blocking observability side effect and is
 not part of the staging request success boundary.
+
+Jobs owns the five `/v1/admin/feedback` routes with its existing `ADMIN_KEY` and
+hashed reader attribution. Core's signed internal service builds bounded,
+pointer-only daily reports in App D1 and hydrates individual windows on demand.
+The existing five-minute scheduled lane ensures yesterday's report after 01:30
+UTC. Leased publication preserves an earlier report on failure; per-user event
+and report-entry erasure prevents stale context reads or republication. See
+[the feedback contract](../../docs/doc/developer/ForkCloudflareFeedback.mdx)
+for the exact bounds, legacy defaults, unavailable encrypted context and tests.
 
 Developer webhook configuration routes now use the staging D1 table
 `cf_user_developer_webhooks`; supported types are `audio_bytes`,

@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 594 have Worker owners and 25 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 599 have Worker owners and 20 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -300,9 +300,10 @@ local scheduled send time, chat-card delivery, or hosted model quality.
 
 ## CF-4: feedback reports
 
-Owner: `api-core` with `jobs` generation. Upstream authority:
-`backend/routers/feedback_admin.py`. The same production preparation discovered
-five missing admin registrations:
+Owner: `jobs` public admin gate and schedule, with `api-core` report storage
+and context hydration. Upstream authority: `backend/routers/feedback_admin.py`.
+All five registrations are now staging-owned after the real hosted feedback
+flow and behavioral tests described below:
 
 | Method | Path                                                |
 | ------ | --------------------------------------------------- |
@@ -312,7 +313,18 @@ five missing admin registrations:
 | POST   | `/v1/admin/feedback/reports/{report_date}/generate` |
 | POST   | `/v1/admin/feedback/reports/generate-yesterday`     |
 
-The required boundary joins the admin secret gate and actor attribution with a
-feedback event ledger, bounded pointer-only daily reports and authorized
-on-demand context hydration. End-user JWTs must not grant access. No CF source
-currently implements that complete boundary; all five remain blocked.
+The public Jobs boundary checks its existing ADMIN_KEY, records hashed reader
+attribution and signs a feedback-specific internal Core assertion. End-user
+JWTs cannot enter the report service. All five rating surfaces append upstream
+feedback envelopes atomically with their current rating. The upstream policy
+owns reason-preserving collapse, UTC dates, raw/entry/byte caps and context limits.
+D1 leases fence concurrent report publication; events and pointer entries join
+export/erasure ownership and current privacy fences prevent stale republication.
+
+The existing five-minute Jobs schedule ensures yesterday's report after 01:30
+UTC. Actual hosted Auth/Edge/Jobs/Python Core/D1 requests proved rating writes,
+admin rejection/admission, report generation, precise context hydration and
+privacy revocation. These five routes do not remove the independent CF-4/CI-1
+production qualification gates. See the
+[contract](../../docs/doc/developer/ForkCloudflareFeedback.mdx) and
+[verification record](implementation-2026-09-05/feedback-reports-2026-09-06.md).

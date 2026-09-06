@@ -73,6 +73,7 @@ from chat_session_routes import router as chat_session_router
 from chat_session_file_routes import router as chat_session_file_router
 from app_review_routes import router as app_review_router
 from feedback_routes import router as feedback_router
+from feedback_admin_routes import router as feedback_admin_router
 from llm_usage_routes import router as llm_usage_router
 from overage_routes import router as overage_router
 from payment_callback_routes import router as payment_callback_router
@@ -145,6 +146,7 @@ app.include_router(chat_session_router)
 app.include_router(chat_session_file_router)
 app.include_router(app_review_router)
 app.include_router(feedback_router)
+app.include_router(feedback_admin_router)
 app.include_router(llm_usage_router)
 app.include_router(overage_router)
 app.include_router(payment_callback_router)

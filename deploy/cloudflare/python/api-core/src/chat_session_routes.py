@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from chat_routes import MAX_ID_LENGTH, MAX_MESSAGE_BYTES, _auth_context, _stored_message
 from feedback_routes import chat_feedback_statements
+from feedback_desktop_contract import RateMessageRequest, _LEDGER_SURFACES
 
 router = APIRouter()
 
@@ -56,13 +57,6 @@ class SaveMessageRequest(BaseModel):
     client_message_id: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
     message_source: str = Field("desktop_chat", pattern=r"^(desktop_chat|realtime_voice)$")
     journal_revision: int | None = Field(None, ge=1, le=MAX_JOURNAL_REVISION)
-
-
-class RateMessageRequest(BaseModel):
-    model_config = {"extra": "ignore"}
-
-    rating: int | None = Field(None, ge=-1, le=1)
-    app_version: str | None = None
 
 
 async def _bounded_json(request: Request) -> object:
@@ -469,9 +463,9 @@ async def delete_chat_session(request: Request, session_id: str):
                     "COALESCE(NULLIF(json_extract(message_json, '$.chat_session_id'), ''), "
                     "NULLIF(json_extract(message_json, '$.session_id'), '')) = ?"
                 ).bind(uid, session_id),
-                env.APP_DB.prepare(
-                    "DELETE FROM cf_chat_session_files WHERE uid = ? AND session_id = ?"
-                ).bind(uid, session_id),
+                env.APP_DB.prepare("DELETE FROM cf_chat_session_files WHERE uid = ? AND session_id = ?").bind(
+                    uid, session_id
+                ),
                 env.APP_DB.prepare("DELETE FROM cf_chat_sessions WHERE uid = ? AND id = ?").bind(uid, session_id),
             ]
         )
@@ -796,7 +790,19 @@ async def rate_desktop_message(request: Request, message_id: str):
         if await _existing_message(env, uid, message_id) is None:
             return JSONResponse({"error": "message not found"}, status_code=404)
         value = payload.rating if payload.rating is not None else 0
-        await env.APP_DB.batch(chat_feedback_statements(env, uid, message_id, value))
+        await env.APP_DB.batch(
+            chat_feedback_statements(
+                env,
+                uid,
+                message_id,
+                value,
+                payload.reason.value if payload.reason else None,
+                surface=_LEDGER_SURFACES[payload.surface],
+                comment=payload.comment,
+                platform='desktop',
+                app_version=payload.app_version,
+            )
+        )
     except Exception:
         return JSONResponse({"error": "messages unavailable"}, status_code=503)
     return {"status": "ok"}

@@ -83,6 +83,7 @@ import {
   registerGoogleCalendarRoutes,
 } from "./google-calendar";
 import { registerAdminNotificationRoutes } from "./admin-notification";
+import { registerFeedbackReportRoutes, ensureDailyFeedbackReport } from "./feedback-reports";
 import { registerTwitterProfileRoutes } from "./twitter-profile";
 import { registerTwitterOwnershipRoutes } from "./twitter-ownership";
 import {
@@ -215,6 +216,7 @@ registerXConnectorRoutes(app, requestContext);
 registerTaskIntegrationRoutes(app, requestContext);
 registerGoogleCalendarRoutes(app, requestContext);
 registerAdminNotificationRoutes(app);
+registerFeedbackReportRoutes(app);
 registerTwitterProfileRoutes(app, requestContext);
 registerTwitterOwnershipRoutes(app, requestContext);
 registerAppOwnerMigrationRoutes(app, requestContext);
@@ -1255,6 +1257,7 @@ export default {
     const results = await Promise.allSettled([
       drainAssetCleanup(env),
       cleanupFramePixels(env),
+      ensureDailyFeedbackReport(env, now),
       evaluateFairUseBatch(env),
       drainNotifications(env),
       drainIntegrationWebhooks(env, now),

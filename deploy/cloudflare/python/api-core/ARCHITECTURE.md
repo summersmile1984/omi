@@ -7,6 +7,23 @@ APIs through the Worker fetch bridge. The route modules must stay async and
 must not import Firestore, Redis, thread pools, local persistent files, or
 process-lifetime network clients.
 
+The feedback source projector stages the upstream wire models, desktop rating
+contract and pure daily-report policy into both the ordinary build and tests.
+`feedback_store.py` appends events in the same D1 batch as each rating projection;
+`feedback_reports.py` owns leased, bounded and atomic daily publication. Report
+entries remain separate uid-scoped rows with cascading event deletion, while
+aggregate headers contain no user identity. Events participate in export and
+both per-user tables participate in account erasure.
+
+`feedback_context.py` reads metadata-only chat windows and hydrates text only
+through `feedback_admin_routes.py`. The latter requires a request-bound internal
+feedback actor minted by Jobs after its existing ADMIN_KEY gate. User assertions
+cannot invoke the private service. Native message wire timestamps retain exact
+microseconds; history ordering slots are not treated as Unix time. Current
+deletion fences apply to context reads and report publication, including cached
+snapshots. Full API and scheduling details live in
+`docs/doc/developer/ForkCloudflareFeedback.mdx`.
+
 The build stages eight `screen_frames_*` modules directly from the upstream
 screenshot contract owners. Pillow 11.3.0 supplies the unchanged canonicalizer
 and palette implementation in Pyodide. The staged privacy prompt is identical

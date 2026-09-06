@@ -20,6 +20,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from internal_auth import decode_context
+from feedback_contract import FeedbackSurface, FeedbackTargetKind
+from feedback_store import feedback_event_statement
 from memory_mutation_errors import memory_mutation_error
 from account_routes import usage_source_statement
 from memory_review_routes import build_review_queue_statements
@@ -1208,10 +1210,23 @@ async def review_memory(request: Request, memory_id: str):
     try:
         if await _first_active(env, uid, memory_id) is None:
             return JSONResponse({"error": "memory not found"}, status_code=404)
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET reviewed = 1, user_review = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(int(value), int(time.time()), uid, memory_id).run()
+        await env.APP_DB.batch(
+            [
+                env.APP_DB.prepare(
+                    "UPDATE cf_memories SET reviewed = 1, user_review = ?, updated_at = ? "
+                    "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
+                ).bind(int(value), int(time.time()), uid, memory_id),
+                feedback_event_statement(
+                    env,
+                    uid,
+                    memory_id,
+                    1 if value else -1,
+                    surface=FeedbackSurface.memory,
+                    target_kind=FeedbackTargetKind.memory,
+                    after_mutation=True,
+                ),
+            ]
+        )
     except Exception as error:
         return memory_mutation_error(error)
     return {"status": "ok"}

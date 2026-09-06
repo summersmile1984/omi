@@ -32,6 +32,11 @@ class FakeDb:
         migration_dir = Path(__file__).parents[3] / "migrations/app"
         for name in ("0032_conversations.sql", "0037_memories.sql", "0046_account_usage.sql"):
             self.connection.executescript((migration_dir / name).read_text())
+        self.connection.executescript(
+            'CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);'
+            'CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY);'
+        )
+        self.connection.executescript((migration_dir / '0169_feedback_events.sql').read_text())
         self.batch_statement_counts = []
 
     def prepare(self, sql):

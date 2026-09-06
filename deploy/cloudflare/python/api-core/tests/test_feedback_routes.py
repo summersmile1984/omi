@@ -47,6 +47,7 @@ class FakeDb:
         migration_dir = Path(__file__).parents[3] / "migrations/app"
         self.connection.executescript((migration_dir / "0042_chat_messages.sql").read_text())
         self.connection.executescript((migration_dir / "0053_user_feedback.sql").read_text())
+        self.connection.executescript((migration_dir / "0169_feedback_events.sql").read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)

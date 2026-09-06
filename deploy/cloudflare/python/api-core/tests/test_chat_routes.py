@@ -56,6 +56,7 @@ class FakeDb:
         self.connection.executescript((migration_dir / "0042_chat_messages.sql").read_text())
         self.connection.executescript((migration_dir / "0044_chat_shares.sql").read_text())
         self.connection.executescript((migration_dir / "0053_user_feedback.sql").read_text())
+        self.connection.executescript((migration_dir / "0169_feedback_events.sql").read_text())
         self.connection.executescript((migration_dir / "0054_chat_sessions.sql").read_text())
         self.connection.executescript((migration_dir / "0155_chat_clear_epoch.sql").read_text())
 

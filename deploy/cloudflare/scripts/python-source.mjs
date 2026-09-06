@@ -79,6 +79,7 @@ export function preparePythonSource(projectDirectory, args) {
       for (const sourceProjector of [
         "screen_frame_sources.py",
         "frame_request_sources.py",
+        "feedback_sources.py",
       ]) {
         const projection = spawnSync(
           resolve(repository, "backend/.venv/bin/python"),

@@ -296,6 +296,12 @@ const proxyPublicJobs = async (
   return withRequestId(response, id);
 };
 
+app.get("/v1/admin/feedback/reports", proxyPublicJobs);
+app.get("/v1/admin/feedback/reports/:report_date", proxyPublicJobs);
+app.get("/v1/admin/feedback/events/:event_id/context", proxyPublicJobs);
+app.post("/v1/admin/feedback/reports/:report_date/generate", proxyPublicJobs);
+app.post("/v1/admin/feedback/reports/generate-yesterday", proxyPublicJobs);
+
 // Hume signs the exact request bytes. Preserve only the provider signature
 // envelope and content type; caller credentials and internal identity headers
 // must never cross this public webhook boundary.

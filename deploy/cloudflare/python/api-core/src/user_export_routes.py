@@ -15,6 +15,7 @@ from internal_auth import create_request_context, decode_context
 router = APIRouter()
 
 _EXPORT_QUERIES = (
+    ("feedback_events", "cf_feedback_events", "created_at DESC, id DESC"),
     ("frame_requests", "cf_frame_requests", "created_at DESC, request_id"),
     ("conversations", "cf_conversations", "created_at DESC, id DESC"),
     ("conversation_screenshots", "cf_screen_frame_sets", "conversation_id"),

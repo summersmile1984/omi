@@ -8,6 +8,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from internal_auth import decode_context
+from feedback_contract import FeedbackSurface, FeedbackTargetKind
+from feedback_store import feedback_event_statement
 
 router = APIRouter()
 
@@ -65,6 +67,11 @@ def chat_feedback_statements(
     message_id: str,
     value: int,
     reason: str | None = None,
+    *,
+    surface: FeedbackSurface = FeedbackSurface.chat_text,
+    comment: str | None = None,
+    platform: str | None = None,
+    app_version: str | None = None,
 ) -> list[object]:
     """Return one atomic feedback write and its client-visible message projection."""
     return [
@@ -73,6 +80,18 @@ def chat_feedback_statements(
             "UPDATE cf_chat_messages SET message_json = json_set(message_json, '$.rating', ?) "
             "WHERE uid = ? AND id = ?"
         ).bind(None if value == 0 else value, uid, message_id),
+        feedback_event_statement(
+            env,
+            uid,
+            message_id,
+            value,
+            surface=surface,
+            target_kind=FeedbackTargetKind.chat_message,
+            reason=reason,
+            comment=comment,
+            platform=platform,
+            app_version=app_version,
+        ),
     ]
 
 
@@ -86,9 +105,21 @@ async def set_memory_summary_rating(request: Request):
     if memory_id is None or value is None:
         return JSONResponse({"error": "invalid feedback"}, status_code=400)
     try:
-        await _feedback_upsert(
-            request.scope["env"], str(context["uid"]), "memory_summary", memory_id, value, None
-        ).run()
+        env = request.scope['env']
+        uid = str(context['uid'])
+        await env.APP_DB.batch(
+            [
+                _feedback_upsert(env, uid, 'memory_summary', memory_id, value, None),
+                feedback_event_statement(
+                    env,
+                    uid,
+                    memory_id,
+                    value,
+                    surface=FeedbackSurface.conversation_summary,
+                    target_kind=FeedbackTargetKind.conversation,
+                ),
+            ]
+        )
     except Exception:
         return JSONResponse({"error": "feedback unavailable"}, status_code=503)
     return {"status": "ok"}
@@ -134,7 +165,7 @@ async def set_chat_message_rating(request: Request):
     uid = str(context["uid"])
     env = request.scope["env"]
     try:
-        await env.APP_DB.batch(chat_feedback_statements(env, uid, message_id, value, reason))
+        await env.APP_DB.batch(chat_feedback_statements(env, uid, message_id, value, reason, platform='mobile'))
     except Exception:
         return JSONResponse({"error": "feedback unavailable"}, status_code=503)
     return {"status": "ok"}
