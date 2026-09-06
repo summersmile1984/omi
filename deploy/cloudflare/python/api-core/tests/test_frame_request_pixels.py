@@ -1,7 +1,8 @@
-"""Real HTTP/Pillow/all-D1 migrations; only R2 transport is controlled."""
+"""Real HTTP/multipart/all-D1 migrations; Images and R2 IO are controlled."""
 
 from io import BytesIO
 from types import SimpleNamespace
+from tempfile import SpooledTemporaryFile
 from uuid import uuid4
 import json
 
@@ -10,8 +11,9 @@ import pytest
 
 from test_frame_request_metadata import target, Query, BASE
 
-import frame_request_routes
 from frame_request_image import _canonicalize_frame_image
+from frame_image_metadata import jpeg_without_metadata
+from test_frame_image_transform import native_images
 
 
 class Stream:
@@ -89,7 +91,8 @@ class Bucket:
 
 
 @pytest.fixture
-def pixels(target):
+def pixels(target, native_images):
+    target.env.IMAGES = native_images
     target.env.FRAME_REQUESTS_TEMPORARY = Bucket()
     target.env.FRAME_REQUESTS = Bucket()
     target.db.connection.execute("INSERT INTO cf_conversations(uid,id,created_at) VALUES ('owner','meeting',1)")
@@ -139,7 +142,7 @@ def test_upload_canonical_bytes_private_read_and_owner_isolation(pixels, png):
     assert result.status_code == 200, result.text
     result = result.json()['request']
     assert result['state'] == 'uploaded' and result['storage_id'].startswith('temporary-')
-    expected = _canonicalize_frame_image(png)
+    expected = jpeg_without_metadata(_canonicalize_frame_image(png))
     assert list(pixels.env.FRAME_REQUESTS_TEMPORARY.objects.values()) == [expected]
     assert b'do not store metadata' not in expected
     path = f"{BASE}/temporary/{row['request_id']}/image"
@@ -166,7 +169,7 @@ def test_promotion_is_atomic_and_uses_conversation_lifetime_read(pixels, png):
     ).fetchone()
     assert tuple(markers) == (1, 1)
     path = f"/v1/conversations/meeting/photos/{row['request_id']}/image"
-    assert pixels.call('GET', path).content == _canonicalize_frame_image(png)
+    assert pixels.call('GET', path).content == jpeg_without_metadata(_canonicalize_frame_image(png))
     # Permanent evidence remains owned by its conversation when JIT is stopped.
     pixels.db.connection.execute("UPDATE cf_jit_flags SET kill_switch=1 WHERE uid=''")
     assert pixels.call('GET', path).status_code == 200
@@ -218,7 +221,9 @@ def test_ambiguous_publication_preserves_committed_image(pixels, png, monkeypatc
     result = upload(pixels, row, png)
     assert result.status_code == 200, result.text
     assert pixels.db.connection.execute('SELECT phase FROM cf_frame_objects').fetchone()[0] == 'live'
-    assert pixels.call('GET', f"{BASE}/temporary/{row['request_id']}/image").content == _canonicalize_frame_image(png)
+    assert pixels.call('GET', f"{BASE}/temporary/{row['request_id']}/image").content == jpeg_without_metadata(
+        _canonicalize_frame_image(png)
+    )
 
 
 @pytest.mark.parametrize('boundary', ['canonicalization', 'part', 'release'])
@@ -232,14 +237,7 @@ def test_revocation_during_processing_or_fetch_releases_no_image(pixels, png, mo
         kill()
 
     if boundary == 'canonicalization':
-        original = frame_request_routes._canonicalize_frame_image
-
-        def canonical(data):
-            result = original(data)
-            kill()
-            return result
-
-        monkeypatch.setattr(frame_request_routes, '_canonicalize_frame_image', canonical)
+        pixels.env.IMAGES.after_output = async_kill
     elif boundary == 'part':
         pixels.env.FRAME_REQUESTS_TEMPORARY.on_part = async_kill
     response = upload(pixels, row, png)
@@ -265,6 +263,30 @@ def test_bad_uploads_and_device_mismatch_never_publish(pixels, png):
     assert upload(pixels, row, b'x' * (10 * 1024 * 1024 + 1)).status_code == 413
     assert upload(pixels, row, png, device='other').status_code == 403
     assert not pixels.env.FRAME_REQUESTS_TEMPORARY.objects
+
+
+def test_native_transform_outage_leaves_claim_retryable_and_no_r2_write(pixels, png):
+    row = claimed(pixels)
+    pixels.env.IMAGES.failure = RuntimeError('images unavailable')
+    assert upload(pixels, row, png).status_code == 503
+    assert not pixels.env.FRAME_REQUESTS_TEMPORARY.uploads
+    assert pixels.db.connection.execute('SELECT count(*) FROM cf_frame_objects').fetchone()[0] == 0
+    pixels.env.IMAGES.failure = None
+    assert upload(pixels, row, png).status_code == 200
+
+
+def test_ten_mib_upload_uses_no_temporary_file_and_preserves_wire_validation(pixels, png, monkeypatch):
+    def no_disk(*args, **kwargs):
+        raise OSError(8, 'Bad file descriptor')
+
+    monkeypatch.setattr(SpooledTemporaryFile, 'rollover', no_disk)
+    row = claimed(pixels)
+    assert upload(pixels, row, png.ljust(10 * 1024 * 1024, b'\0')).status_code == 200
+    other = claimed(pixels)
+    assert upload(pixels, other, png.ljust(10 * 1024 * 1024 + 1, b'\0')).status_code == 413
+    path = f"{BASE}/{other['request_id']}/upload?device_id=desktop&account_generation=0"
+    assert pixels.call('POST', path, body={}).status_code == 422
+    assert not any(upload.aborted for upload in pixels.env.FRAME_REQUESTS_TEMPORARY.uploads.values())
 
 
 def test_photo_identity_conflict_rolls_back_both_object_and_frame(pixels, png):

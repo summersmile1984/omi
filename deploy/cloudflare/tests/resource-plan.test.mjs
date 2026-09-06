@@ -340,6 +340,15 @@ describe("one brand/stage Cloudflare resource authority", () => {
       const fixture = resourceFixture("alpha", stage),
         plan = render(fixture);
       expect(plan.resources).toHaveLength(32);
+      expect(plan.configs["api-core"].config.images).toEqual({
+        binding: "IMAGES",
+      });
+      expect(plan.platform_bindings).toContainEqual({
+        worker: plan.configs["api-core"].config.name,
+        kind: "images",
+        binding: "IMAGES",
+        account_id: fixture.input.account_id,
+      });
       const frames = plan.resources.filter((resource) =>
         ["r2:frame-requests", "r2:frame-requests-temporary"].includes(
           resource.key

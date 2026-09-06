@@ -6,6 +6,9 @@
   "compatibility_flags": ["python_workers"],
   "workers_dev": false,
   "preview_urls": false,
+  "images": {
+    "binding": "IMAGES"
+  },
   "ai": {
     "binding": "AI"
   },

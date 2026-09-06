@@ -36,11 +36,15 @@ request after a conflict before deciding what to do next.
 Upload pixels with `POST /v1/frame-requests/{request_id}/upload`. Send the image
 in multipart field `file`, and pass `device_id` and `account_generation` in the
 query string. The request must already be claimed by that device. JPEG, PNG and
-WebP are accepted up to 10 MiB; the actual content is validated. The original
-image conversion strips metadata, bounds the output to a 1920-pixel long side
-and 2.5 million pixels, and stores JPEG. Invalid images return 415; oversized
-uploads return 413. The original 25-million-pixel source limit still needs
-hosted Worker resource qualification.
+WebP are accepted up to 10 MiB and 25 million source pixels; the actual content
+is validated. Allow up to 64 KiB of multipart overhead, with one file and at
+most eight additional small fields. Cloudflare Images performs the image
+conversion through Core's `IMAGES` binding. Core preserves the image's EXIF
+orientation, removes metadata, bounds the output to a 1920-pixel long side and
+2.5 million pixels, and stores JPEG in R2. Viewing the stored image does not
+run this conversion again. Invalid images return 415; oversized uploads return
+413. If image processing is unavailable, the request remains retryable and
+returns 503 without publishing image storage.
 
 An uploaded request without a `conversation_id` can be read at
 `GET /v1/frame-requests/temporary/{request_id}/image`, with the same

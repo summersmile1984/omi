@@ -1,5 +1,10 @@
 # Cloudflare frame-request pixel ownership
 
+Later verification found and repaired hosted multipart/codec failures. See the
+[hosted runtime record](frame-image-hosted-runtime-2026-09-06.md) for the current
+native Images implementation and boundary evidence. The implementation and
+counts below describe this earlier commit.
+
 Core now implements the four image routes alongside the four existing metadata
 routes: multipart upload, promotion to conversation photos, temporary image
 reading and private conversation photo reading. The entire frame-request family

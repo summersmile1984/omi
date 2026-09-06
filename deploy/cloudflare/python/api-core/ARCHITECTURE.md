@@ -97,12 +97,29 @@ rows. Frame metadata participates in the existing user export, conversation
 deletion and account-deletion residual/purge owners.
 
 `frame_request_pixels.py` now owns image upload, promotion and private reads.
-The original image validator/canonicalizer is staged from the upstream router;
-`python-multipart` 0.0.31 matches the Server pin and is recorded in both the
-project dependency list and Worker wheel lock. The Worker retains Pillow 11.3.0
-for its Pyodide wheel. The upload endpoint accepts the same multipart `file`
-with query `device_id`/`account_generation`, validates the actual JPEG/PNG/WebP
-content and applies the original metadata stripping and JPEG output bounds.
+The upstream policy constants and Server reference canonicalizer are staged from
+the original router. `frame_image_transform.py` uses the required `IMAGES`
+binding for full-resolution decoding, EXIF transforms, resizing and JPEG encoding.
+Core reads container metadata without allocating the full pixel plane, removes
+metadata before transformation, applies orientation explicitly and strips output
+metadata again. This matters because the native Images service preserved JPEG
+EXIF and did not apply the tested WebP EXIF orientation automatically.
+JPEG/PNG validation uses Pillow headers and bounded PNG metadata parsing; WebP
+uses RIFF metadata plus `Images.info`, since Pillow's WebP decoder allocates full
+canvases during open. The output retains the upstream 1920-long-side/2.5M-pixel
+bounds, white alpha background and JPEG quality 85. Codec byte identity across
+Server/Pyodide/Images is not assumed. The exact returned JPEG is stored and read.
+An Images outage leaves the claim retryable and writes no R2 object.
+
+The upload endpoint keeps multipart `file` and query
+`device_id`/`account_generation`. `frame_upload_form.py` bounds this route's total
+multipart body to 10 MiB plus 64 KiB overhead, one file and eight small fields.
+Its Starlette parser stays in memory, avoiding the hosted cold-start temporary
+file `Bad file descriptor` error. Files above 10 MiB remain 413; a missing `file`
+retains FastAPI's 422 shape. The parser closes partially admitted files on source
+failure or cancellation. Other multipart routes keep their own parser ownership.
+`python-multipart` 0.0.31 and Pillow 11.3.0 remain pinned; screenshot adjudication
+still uses its separate upstream canonicalizer and has its own qualification.
 Only upload/promotion can publish pixel states; JSON-only state updates cannot
 fabricate storage and return 409 for those transitions.
 

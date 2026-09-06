@@ -62,6 +62,11 @@ No production Worker was published and no remote business SQL was applied here.
 
 ## Hosted image qualification is not yet proven
 
+This section records the initial failed preview. The subsequent
+[hosted runtime repair and verification](frame-image-hosted-runtime-2026-09-06.md)
+proved full Core startup and the supported frame-image envelope; complete
+product qualification remains pending.
+
 A private `wrangler dev --remote` preview copied the frozen Core modules and
 Python dependencies, imported the full Core app, and added an authenticated test
 adapter invoking the unchanged image validator/canonicalizer. It had no D1, R2,

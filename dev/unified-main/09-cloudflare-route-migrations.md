@@ -69,8 +69,11 @@ local workerd passed 29 HTTP calls; no pixels or model inference participated.
 The subsequent [pixel implementation](implementation-2026-09-05/frame-request-pixels-2026-09-06.md)
 adds upload, deterministic promotion, private reads and durable multipart cleanup
 with separate temporary/permanent buckets. A real local Core/Jobs/R2 flow now
-passes. All eight slots remain blocked pending hosted input-limit qualification,
-new bucket provisioning, public Edge routing and deployment acceptance.
+passes. Both production buckets and retention policies have since been
+provisioned. The [hosted image repair](implementation-2026-09-05/frame-image-hosted-runtime-2026-09-06.md)
+proves the supported file/pixel envelope through the production multipart and
+native Images helpers. All eight slots remain blocked pending public Edge
+routing and complete authenticated storage/deployment acceptance.
 
 | Method | Path                                                          |
 | ------ | ------------------------------------------------------------- |
