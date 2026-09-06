@@ -31,7 +31,11 @@ Migration 0163 and the memory publication owner now:
   abandoned claims, fenced cleanup and the previous-schema upgrade.
 - `uvx uv==0.12.3 run pytest -q` in `deploy/cloudflare/python/api-core`:
   **503 passed**, one existing Starlette/AnyIO deprecation warning.
-- `npm run typecheck` and `git diff --check` passed.
+- `git diff --check` passed. Correction from the hydration follow-up: the
+  original typecheck failure was masked by the subsequent diff command's exit
+  status. Two app test fixtures lacked the new memory-index methods. Those
+  fixtures are now complete and a standalone `npm run typecheck` exits zero;
+  the original claim that typecheck passed was incorrect.
 - The actual source-mode Cloudflare product runner with `--run-core
   --run-recording` passed **13 core cases** and **15 recording/privacy cases**.
   This executes real local Auth, workerd, D1, WebSocket, Queue and R2. It includes

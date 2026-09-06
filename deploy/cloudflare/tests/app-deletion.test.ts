@@ -143,6 +143,8 @@ function fakeVectorize() {
   return {
     upsert: vi.fn(async () => undefined),
     deleteByIds: vi.fn(async () => undefined),
+    getByIds: vi.fn(async () => []),
+    describe: vi.fn(async () => ({ processedUpToMutation: "fixture" })),
   };
 }
 
