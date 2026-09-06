@@ -56,6 +56,11 @@ Every transport digest is checked before model processing. Core standardizes
 the image and judges those exact bytes with the upstream privacy prompt and
 strict output schema. A client verdict cannot approve an image. Rejected or
 unreadable candidates are omitted; a failed approved-image write returns 503.
+JPEG/PNG processing uses Cloudflare Images to decode and resize the source;
+the final JPEG and thumbnail use the upstream encoder. EXIF orientation is
+applied and private metadata is removed. Transparency is discarded while keeping
+the RGB colors. Image retrieval reads the stored result and does not run another
+image transformation or model call.
 The successful result contains `attempt_id`, `outcome` (`committed` or
 `no_approved_frames`) and `frame_set`.
 

@@ -180,8 +180,13 @@ now owns the isolated `SCREEN_FRAMES` bucket, one-use approval receipts,
 revocable content capabilities and erasure. Core and Jobs receive a service
 binding only. Core and the writer share a dedicated signing key; Jobs can
 request cleanup through its request-bound internal assertion. The eight public
-screenshot routes remain blocked until Core adjudication, selection, public
-proxy and full business qualification are implemented and exercised.
+screenshot routes remain blocked pending hosted model access, the full request
+envelope, public Edge routing and business qualification. Screenshot processing
+now uses native Images for source decoding and resizing; Core keeps the upstream
+final JPEG/thumbnail encoder and exact-byte judge/approval contract. PNG alpha is
+discarded without a source-sized pixel allocation, preserving the original RGB
+colors. Native 64-megapixel and 20 MiB single-candidate evidence is recorded in
+[the codec verification](../../dev/unified-main/implementation-2026-09-05/screen-image-hosted-2026-09-06.md).
 
 Local development on Linux/macOS resolves the native executable from the locked
 `workerd` package export, then uses its official Pyodide bundle/package cache

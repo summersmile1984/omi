@@ -42,6 +42,10 @@ then implements original-prompt adjudication, approval minting and atomic surviv
 publication, with actual local PNG/D1/R2 execution and controlled inference.
 These eight route slots remain blocked pending hosted model access, supported-input
 memory qualification, Edge routing and full hosted business qualification.
+The [native screenshot codec verification](implementation-2026-09-05/screen-image-hosted-2026-09-06.md)
+now covers 64-megapixel RGB/RGBA inputs, single 20 MiB binary/JSON requests,
+dense inputs, original colors/orientation and exact downstream bytes. The full
+eight-large-candidate request remains unqualified; no route classification changed.
 
 | Method | Path                                                         |
 | ------ | ------------------------------------------------------------ |

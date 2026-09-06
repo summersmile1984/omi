@@ -54,7 +54,13 @@ class Images:
                 exif = Image.Exif()
                 exif[315] = 'PRIVATE_PROVIDER_METADATA'
                 encoded = BytesIO()
-                image.save(encoded, format='JPEG', quality=options['quality'], optimize=True, exif=exif)
+                image.save(
+                    encoded,
+                    format={'image/jpeg': 'JPEG', 'image/png': 'PNG'}[options['format']],
+                    quality=options.get('quality', 85),
+                    optimize=True,
+                    exif=exif,
+                )
                 if owner.after_output:
                     await owner.after_output()
 

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from screen_frame_adjudication_store import current, failure, publish, reserve
 from screen_frame_content import _encode, signing_secret
+from screen_frame_image import canonicalize_screen_frame
 from screen_frame_judge import JudgeFailure, judge
 from screen_frame_views import FENCE, ScreenshotRoute, _enabled, _response, owner
 from screen_frames_admission import (
@@ -22,7 +23,7 @@ from screen_frames_admission import (
     _request_fingerprint,
     _validate_capture_window,
 )
-from screen_frames_canonical import ScreenFrameCanonicalizationError, canonicalize_candidate
+from screen_frames_canonical import ScreenFrameCanonicalizationError
 from screen_frames_contract import ScreenFrameAdjudicationRequest
 from screen_frames_palette import compute_ground
 from screen_frames_policy import get_purpose_policy
@@ -34,7 +35,7 @@ router = APIRouter(route_class=ScreenshotRoute)
 async def available(env):
     if str(getattr(env, 'SCREEN_FRAME_EGRESS_ENABLED', '')).strip().lower() != 'true':
         return False
-    if getattr(env, 'AI', None) is None or getattr(env, 'SCREEN_FRAME_WRITER', None) is None:
+    if any(getattr(env, name, None) is None for name in ('AI', 'IMAGES', 'SCREEN_FRAME_WRITER')):
         return False
     try:
         signing_secret(env)
@@ -158,7 +159,9 @@ async def adjudicate(request: Request, body: ScreenFrameAdjudicationRequest, uid
         if not await current(env, attempt):
             raise failure('screen_frame_adjudication_cancelled', 409)
         try:
-            canonical = canonicalize_candidate(decode_and_verify_transport_digest(by_id[candidate.client_frame_id]))
+            canonical = await canonicalize_screen_frame(
+                env, decode_and_verify_transport_digest(by_id[candidate.client_frame_id])
+            )
         except ScreenFrameCanonicalizationError:
             continue
         try:

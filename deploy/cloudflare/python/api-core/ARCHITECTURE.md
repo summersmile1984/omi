@@ -69,8 +69,18 @@ staged without rewriting their behavior. Every candidate digest is checked befor
 the first model call; binary bytes are decoded again per candidate instead of
 retaining a second whole batch. Codec and judge failures reject that candidate;
 writer failures return 503 without a completed attempt. Global egress remains
-default off. It requires the explicit flag, isolated signer, AI binding and
+default off. It requires the explicit flag, isolated signer, AI/Images bindings and
 successful writer readiness before a candidate can leave Core.
+
+`screen_frame_image.py` delegates source JPEG/PNG decoding, EXIF orientation and
+bounded resizing to the native Images binding. Core reads headers without loading
+the source pixel plane. `screen_frame_png.py` removes metadata and alpha before
+that call, preserving the upstream discard-alpha RGB behavior, rather than the
+white compositing used by frame-request uploads. It streams filtered PNG rows,
+including 8/16-bit gray/RGB alpha and Adam7 passes, without unfiltering or allocating
+a source-sized canvas. The bounded PNG result is checked and stripped again, then
+the unchanged upstream canonicalizer creates the 1600-pixel quality-82 JPEG,
+480-pixel quality-75 thumbnail and exact-byte digest. No transform occurs on reads.
 
 `screen_frame_judge.py` sends the unchanged upstream privacy prompt and judgement
 schema through `AI.run('google/gemini-2.5-flash-lite', ...)`. Contradictory or
@@ -91,9 +101,12 @@ Core's entire screenshot pipeline has now run in local workerd with real PNG
 canonicalization, actual writer approval verification and real D1/R2. Inference
 was controlled and checked the original prompt hash; this is not model-quality
 or hosted-provider evidence. Edge routing and the eight inventory slots remain
-blocked until hosted model access, supported-input memory bounds and complete
-business qualification are resolved. The current upstream 64-megapixel codec
-limit must not be mistaken for proof that those images fit a hosted Worker.
+blocked until hosted model access, the complete multi-candidate request envelope
+and business qualification are resolved. Native hosted tests now prove single
+64-megapixel RGB/RGBA images, a 20 MiB file (including its JSON transport), dense
+RGB/RGBA inputs and eight 64-megapixel RGBA candidates. They do not prove eight simultaneous
+20 MiB candidates or the complete adjudication/D1/R2/model workflow. See the
+[codec verification](../../../../dev/unified-main/implementation-2026-09-05/screen-image-hosted-2026-09-06.md).
 
 `frame_request_routes.py` registers frame creation, status, pending delivery,
 state transitions and the JIT decision envelope in Core. The ordinary builder

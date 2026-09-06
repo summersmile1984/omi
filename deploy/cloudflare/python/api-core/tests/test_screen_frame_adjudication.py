@@ -27,6 +27,7 @@ from screen_frame_adjudication import router
 from screen_frame_views import router as views_router
 from screen_frames_prompt import _PRIVACY_PROMPT
 from test_screen_frame_views import Database
+from test_frame_image_transform import native_images
 
 PATH = '/v1/screen-frame-egress/adjudications'
 APPROVED = {
@@ -156,12 +157,13 @@ def body(*candidates):
 
 
 @pytest.fixture
-def target():
+def target(native_images):
     db, ai, secret = D1(), AI(), 'adjudication-screen-fixture-' * 3
     writer = Writer(db, secret)
     env = SimpleNamespace(
         APP_DB=db,
         AI=ai,
+        IMAGES=native_images,
         SCREEN_FRAME_WRITER=writer,
         SCREEN_FRAME_SIGNING_SECRET=secret,
         INTERNAL_ASSERTION_SECRET='internal-test',
@@ -212,6 +214,14 @@ def target():
 
 def state(target):
     return target.db.connection.execute("SELECT * FROM cf_screen_frame_sets WHERE uid = 'owner'").fetchone()
+
+
+def test_image_service_failure_cannot_authorize_storage(target):
+    target.env.IMAGES.failure = RuntimeError('native image service unavailable')
+    response = target.call(body(candidate()))
+    assert response.status_code == 200
+    assert response.json()['outcome'] == 'no_approved_frames'
+    assert target.ai.calls == [] and target.writer.calls == []
 
 
 def test_approved_pipeline_judges_and_writes_identical_canonical_bytes_and_replays_once(target):
