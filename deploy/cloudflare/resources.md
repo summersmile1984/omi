@@ -74,9 +74,11 @@ the temporary versus conversation-lifetime ownership boundary. The release
 adapter requires a seven-day object expiration rule on the temporary bucket,
 and rejects any enabled object-expiration rule on the permanent bucket. Jobs
 expires temporary metadata at its earlier deadline and erases pixels through
-durable multipart receipts. These planned bindings do not imply that the two
-new Eddy production buckets have been created; the previous 19-resource remote
-provisioning proof predates them and must be refreshed before deployment.
+durable multipart receipts. Eddy's 2026-09-06 provisioning created both buckets,
+bringing its actual data resources to 21. A separate read confirmed all seven
+storage policies after correcting the whole-bucket condition parser. Resource
+availability does not establish Worker deployment or product acceptance; see the
+[provisioning evidence](../../dev/unified-main/implementation-2026-09-05/frame-resource-provisioning-2026-09-06.md).
 
 ## Profile and routing
 

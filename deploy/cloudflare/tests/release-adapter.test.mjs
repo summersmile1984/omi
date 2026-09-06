@@ -498,6 +498,54 @@ describe("locked Wrangler release adapter", () => {
       "explicit positive whole-day"
     );
   });
+  it("observes bucket-wide expiry with the live API's omitted prefix without accepting changed scope", async () => {
+    const policy = {
+      kind: "r2",
+      name: "temporary-frames",
+      id: "expire-temporary-frames",
+      prefix: "",
+      seconds: 604800,
+      exclusive: true,
+    };
+    // Exact non-secret rule shape observed after the Eddy provisioning event
+    // on 2026-09-06; the locked Wrangler writer omits an empty prefix.
+    let conditions = {};
+    const adapter = fixture({
+      fetchImpl: async () =>
+        ok({
+          rules: [
+            {
+              id: policy.id,
+              enabled: true,
+              conditions,
+              deleteObjectsTransition: {
+                condition: { type: "Age", maxAge: 604800 },
+              },
+            },
+          ],
+        }),
+    });
+    expect(await adapter.observePolicy(policy)).toEqual({ status: "present" });
+    conditions = { prefix: "" };
+    expect(await adapter.observePolicy(policy)).toEqual({ status: "present" });
+    for (conditions of [
+      undefined,
+      null,
+      [],
+      { prefix: null },
+      { prefix: 0 },
+      { other: "unknown" },
+      { prefix: "images/" },
+    ]) {
+      await expect(adapter.observePolicy(policy)).rejects.toThrow(
+        "R2 lifecycle"
+      );
+    }
+    conditions = {};
+    await expect(
+      adapter.observePolicy({ ...policy, prefix: "images/" })
+    ).rejects.toThrow("owner differs");
+  });
   it("reads only the D1 migration ledger and refuses incomplete query envelopes", async () => {
     const fetchImpl = vi.fn(async (_url, options) => {
       const sql = JSON.parse(options.body).sql;

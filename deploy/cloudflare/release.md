@@ -135,6 +135,15 @@ D1 names must already match explicit inventory UUIDs. Asynchronous metadata
 creation may require later observation; a failed/unknown result never triggers
 an automatic duplicate mutation.
 
+R2 represents a whole-bucket lifecycle rule with `conditions: {}`; the locked
+Wrangler writer omits an empty `prefix`. Observation accepts that shape or an
+explicit empty string while rejecting missing/malformed conditions, additional
+conditions and a different nonempty prefix. Eddy's 2026-09-06 frame provisioning
+created both buckets and the seven-day rule before the old strict-prefix check
+rejected this valid API response. Keep that transaction as reconciliation
+evidence, reobserve the rules, and use a fresh candidate/journal; never replay
+the creation to repair an observation failure.
+
 Eddy's first provisioning attempt on 2026-09-05 created all 18 data resources,
 then stopped after the first metadata-index creation: the live API reported
 `indexType: "Number"`, although its [documented response](https://developers.cloudflare.com/api/resources/vectorize/subresources/indexes/subresources/metadata_index/methods/list/)

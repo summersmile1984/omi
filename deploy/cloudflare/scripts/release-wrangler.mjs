@@ -44,6 +44,21 @@ export function activeVersion(status) {
   return status.versions[0].version_id;
 }
 
+function lifecyclePrefix(conditions) {
+  if (
+    !conditions ||
+    typeof conditions !== "object" ||
+    Array.isArray(conditions) ||
+    Object.keys(conditions).some((key) => key !== "prefix")
+  )
+    throw new Error("R2 lifecycle conditions are invalid");
+  // Wrangler omits the prefix property for a rule covering the whole bucket.
+  const prefix = Object.hasOwn(conditions, "prefix") ? conditions.prefix : "";
+  if (typeof prefix !== "string")
+    throw new Error("R2 lifecycle conditions are invalid");
+  return prefix;
+}
+
 // This is the only release process/API owner. Subprocess and HTTP are injectable
 // for fault tests; the CLI always constructs this adapter with locked tools.
 export class WranglerReleaseAdapter {
@@ -315,7 +330,7 @@ export class WranglerReleaseAdapter {
     if (
       row &&
       (row.enabled !== true ||
-        row.conditions?.prefix !== policy.prefix ||
+        lifecyclePrefix(row.conditions) !== policy.prefix ||
         row.deleteObjectsTransition?.condition?.type !== "Age" ||
         row.deleteObjectsTransition.condition.maxAge !== policy.seconds)
     )
