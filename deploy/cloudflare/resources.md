@@ -13,28 +13,28 @@ Its account and database IDs are synthetic engineering fixtures. Replace them
 with explicit, reviewed IDs for a real plan; format validation does not establish
 that an ID exists remotely or belongs to the account.
 
-| Field | Contract |
-| --- | --- |
-| `schema_version` | `1` |
-| `brand`, `target`, `stage` | Must match the rendered brand/profile; target is `cloudflare`; stage is `local`, `beta`, or `production` |
-| `account_id` | Explicit 32-character account ID |
-| `routing` | `mode` is `local`, `custom_domains`, or `workers_dev`; `workers_subdomain` is explicit for workers.dev and otherwise null |
-| `allocation` | `new` derives all names; `existing` requires every physical name in `existing_names` |
-| `d1_ids` | Distinct explicit `auth` and `app` UUIDs |
-| `secret_refs` | Every Worker maps its required secret bindings to environment variable **names**, never values |
-| `existing_names` | Empty for a new allocation; complete `kind:role` mapping for an existing allocation |
-| `migration_lineage` | Explicit account cutover lineage label; no inference from upstream's staging label |
+| Field                      | Contract                                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `schema_version`           | `1`                                                                                                                       |
+| `brand`, `target`, `stage` | Must match the rendered brand/profile; target is `cloudflare`; stage is `local`, `beta`, or `production`                  |
+| `account_id`               | Explicit 32-character account ID                                                                                          |
+| `routing`                  | `mode` is `local`, `custom_domains`, or `workers_dev`; `workers_subdomain` is explicit for workers.dev and otherwise null |
+| `allocation`               | `new` derives all names; `existing` requires every physical name in `existing_names`                                      |
+| `d1_ids`                   | Distinct explicit `auth` and `app` UUIDs                                                                                  |
+| `secret_refs`              | Every Worker maps its required secret bindings to environment variable **names**, never values                            |
+| `existing_names`           | Empty for a new allocation; complete `kind:role` mapping for an existing allocation                                       |
+| `migration_lineage`        | Explicit account cutover lineage label; no inference from upstream's staging label                                        |
 
 New names derive from brand, stage and logical owner. Workers use
 `<brand>-cf-<role>-<stage>` (Web uses `<brand>-web-<stage>`); storage follows the
 same rule, with `-v1` on Vectorize names. D1, R2, Queue and Vectorize are separate
-Cloudflare namespaces. The complete plan includes eight Workers, two D1 databases,
-five R2 buckets, four queues, seven Vectorize indexes and two active Durable
-Object namespaces: 28 resource entries. Account-managed AI/Images bindings are
+Cloudflare namespaces. The complete plan includes nine Workers, two D1 databases,
+six R2 buckets, four queues, seven Vectorize indexes and two active Durable
+Object namespaces: 30 resource entries. Account-managed AI/Images bindings are
 listed separately in `platform_bindings`. Vectorize model/dimension metadata
 comes from the existing namespace manifest; no embedding model is changed.
 
-An existing allocation must list all 26 provisioned physical resource names;
+An existing allocation must list all 28 provisioned physical resource names;
 the two Durable Object namespace identities derive from their Worker/class.
 `resourceKeys()` in `scripts/resource-input.mjs` is the typed logical catalog.
 No prefix substitution guesses existing names. Existing templates' legacy and
@@ -60,6 +60,13 @@ tokens deliberately have no expiry, and replacing the key invalidates old links.
 The local product runner generates a separate disposable key and uses it only
 to exercise the real opt-out endpoint; it never sends an email.
 
+Core also requires its independent `REFERRAL_SIGNING_SECRET`. Screenshot approvals
+and content capabilities use `SCREEN_FRAME_SIGNING_SECRET`, with the same reference
+in Core and `screen-frame-writer`. That key must differ from the internal assertion
+key and every other private credential. The writer alone binds the `SCREEN_FRAMES`
+R2 bucket; Core signs approved bytes and proxies authorized content through its
+service binding. Provisioning the bucket and resolving these references does not
+enable screenshot egress or qualify its hosted model and input limits.
 
 ## Profile and routing
 
@@ -105,7 +112,7 @@ to their exact source directory. System directory aliases above the selected
 output root, such as macOS `/tmp`, remain usable. workers.dev requires a string
 subdomain; JSON nulls, booleans and numbers are not coerced into account names.
 
-The bundle contains `resource-plan.json`, eight `workers/<role>/wrangler.json`
+The bundle contains `resource-plan.json`, nine `workers/<role>/wrangler.json`
 files, two `migrations/<authority>.json` files, and `rollback-contract.json`.
 Source paths, aliases, Web assets and migration directories are absolute paths
 to the current checkout/build. Python configs also get owned `python_modules`
@@ -122,7 +129,8 @@ npm --prefix deploy/cloudflare run python -- api-core deploy --dry-run --config 
 npm --prefix deploy/cloudflare run python -- api-ai deploy --dry-run --config /tmp/brand-plan/workers/api-ai/wrangler.json
 ```
 
-Repeat the first command for `rate-limit`, `realtime`, `jobs`, `edge`, and `web`.
+Repeat the first command for `rate-limit`, `screen-frame-writer`, `realtime`,
+`jobs`, `edge`, and `web`.
 The Python entry retains its pinned tool/version/lock checks. An already-installed
 1.16.7 tool override is documented in the parent README; it is not proof of a
 successful fresh-machine install.
