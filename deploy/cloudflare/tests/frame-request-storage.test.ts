@@ -9,6 +9,19 @@ import type { JobsEnv } from "../workers/jobs/env";
 
 const databases: DatabaseSync[] = [];
 afterEach(() => databases.splice(0).forEach((db) => db.close()));
+
+// Static portability tripwire, not SQL behavioral coverage. The hosted
+// 2026-09-06 frame-flow migration failed with incomplete input despite SQLite
+// accepting it: https://github.com/cloudflare/workers-sdk/issues/4727.
+// The tests below and test_frame_request_pixels.py execute publication/erasure.
+it("keeps frame trigger CASE expressions parenthesized for remote D1", () => {
+  const migration = readFileSync(
+    new URL("../migrations/app/0168_frame_request_pixels.sql", import.meta.url),
+    "utf8"
+  );
+  expect(migration).not.toMatch(/(?:SELECT\s+|=\s*)CASE\b/i);
+});
+
 function fixture() {
   const db = new DatabaseSync(":memory:");
   databases.push(db);

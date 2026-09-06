@@ -129,6 +129,10 @@ Temporary and permanent bytes use separate `FRAME_REQUESTS_TEMPORARY` and
 permanent storage identifier resolves to exactly one live copy. One D1 statement
 publishes the object, changes request state, appends the conversation photo and
 sets the content/photo markers. Trigger failure rolls the whole publication back.
+CASE expressions in these triggers stay parenthesized because the remote D1
+query parser otherwise mistakes their END for the trigger terminator. Local
+SQLite success alone does not qualify migration transport; fresh remote Wrangler
+migrations passed after this [repair](../../../../dev/unified-main/implementation-2026-09-05/frame-d1-migration-2026-09-06.md).
 An ambiguous response re-reads the authoritative state instead of deleting live
 bytes; competing promotion copies return the winning request and queue their own
 unreferenced copies for erasure.

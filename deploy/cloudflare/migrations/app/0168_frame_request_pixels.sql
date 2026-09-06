@@ -53,28 +53,30 @@ CREATE TRIGGER cf_frame_objects_no_early_delete BEFORE DELETE ON cf_frame_object
 WHEN OLD.phase!='deleted'
 BEGIN SELECT RAISE(ABORT,'frame pixel erasure required'); END;
 
+-- Parenthesize CASE expressions: the remote D1 query parser otherwise treats
+-- CASE END as the trigger terminator (workers-sdk issue #4727).
 -- One statement publishes the object, request, photo and conversation markers.
 -- A failed state/quota/photo check rolls back the object's live transition too.
 CREATE TRIGGER cf_frame_objects_publish AFTER UPDATE OF phase ON cf_frame_objects
 WHEN NEW.phase='live'
 BEGIN
-  SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM cf_frame_requests f WHERE f.uid=NEW.uid AND f.request_id=NEW.request_id
+  SELECT (CASE WHEN NOT EXISTS (SELECT 1 FROM cf_frame_requests f WHERE f.uid=NEW.uid AND f.request_id=NEW.request_id
     AND f.account_generation=NEW.account_generation AND (
       (NEW.tier='temporary' AND f.state='claimed' AND f.expires_at>unixepoch()) OR
       (NEW.tier='permanent' AND f.state='uploaded' AND EXISTS (
         SELECT 1 FROM cf_conversations c WHERE c.uid=f.uid AND c.id=f.conversation_id))))
-    THEN RAISE(ABORT,'frame pixel publication changed') END;
-  SELECT CASE WHEN NEW.tier='temporary' AND NEW.byte_count + COALESCE((SELECT sum(byte_count)
+    THEN RAISE(ABORT,'frame pixel publication changed') END);
+  SELECT (CASE WHEN NEW.tier='temporary' AND NEW.byte_count + COALESCE((SELECT sum(byte_count)
     FROM cf_frame_requests WHERE uid=NEW.uid AND account_generation=NEW.account_generation
     AND device_id=(SELECT device_id FROM cf_frame_requests WHERE uid=NEW.uid AND request_id=NEW.request_id)
     AND state IN ('requested','claimed','uploaded') AND expires_at>unixepoch()),0)>52428800
-    THEN RAISE(ABORT,'frame request quota exceeded: bytes') END;
-  SELECT CASE WHEN NEW.tier='permanent' AND EXISTS (SELECT 1 FROM cf_conversations c,
+    THEN RAISE(ABORT,'frame request quota exceeded: bytes') END);
+  SELECT (CASE WHEN NEW.tier='permanent' AND EXISTS (SELECT 1 FROM cf_conversations c,
     json_each(c.photos_json) photo WHERE c.uid=NEW.uid AND c.id=(SELECT conversation_id
       FROM cf_frame_requests WHERE uid=NEW.uid AND request_id=NEW.request_id)
     AND json_extract(photo.value,'$.id')=NEW.request_id
     AND json_extract(photo.value,'$.storage_id') IS NOT NEW.storage_id)
-    THEN RAISE(ABORT,'conversation photo id is already used') END;
+    THEN RAISE(ABORT,'conversation photo id is already used') END);
   UPDATE cf_conversations SET photos_json=json_insert(photos_json,'$[#]',json_object(
     'id',NEW.request_id,'base64','','storage_id',NEW.storage_id,'content_type','image/jpeg',
     'description','Just-in-time frame evidence','discarded',json('false'),
@@ -85,12 +87,12 @@ BEGIN
     AND NOT EXISTS (SELECT 1 FROM json_each(photos_json) WHERE json_extract(value,'$.id')=NEW.request_id);
   UPDATE cf_conversations SET has_content=1,has_photos=1 WHERE NEW.tier='permanent'
     AND uid=NEW.uid AND id=(SELECT conversation_id FROM cf_frame_requests WHERE uid=NEW.uid AND request_id=NEW.request_id);
-  UPDATE cf_frame_requests SET state=CASE NEW.tier WHEN 'temporary' THEN 'uploaded' ELSE 'attached' END,
+  UPDATE cf_frame_requests SET state=(CASE NEW.tier WHEN 'temporary' THEN 'uploaded' ELSE 'attached' END),
     storage_id=NEW.storage_id,byte_count=NEW.byte_count,content_type='image/jpeg',
-    uploaded_at=CASE NEW.tier WHEN 'temporary' THEN unixepoch() ELSE uploaded_at END,
-    attached_at=CASE NEW.tier WHEN 'permanent' THEN unixepoch() ELSE NULL END,
-    expires_at=CASE NEW.tier WHEN 'permanent' THEN created_at ELSE expires_at END,
-    cleanup_state=CASE NEW.tier WHEN 'permanent' THEN 'permanent' ELSE 'not_required' END,
+    uploaded_at=(CASE NEW.tier WHEN 'temporary' THEN unixepoch() ELSE uploaded_at END),
+    attached_at=(CASE NEW.tier WHEN 'permanent' THEN unixepoch() ELSE NULL END),
+    expires_at=(CASE NEW.tier WHEN 'permanent' THEN created_at ELSE expires_at END),
+    cleanup_state=(CASE NEW.tier WHEN 'permanent' THEN 'permanent' ELSE 'not_required' END),
     cleanup_next_attempt_at=NULL WHERE uid=NEW.uid AND request_id=NEW.request_id;
 END;
 
@@ -98,7 +100,7 @@ CREATE TRIGGER cf_frame_pixel_metadata_guard BEFORE UPDATE OF storage_id,state,b
 WHEN NEW.state IN ('uploaded','attached') AND NOT EXISTS (
   SELECT 1 FROM cf_frame_objects o WHERE o.uid=NEW.uid AND o.request_id=NEW.request_id
     AND o.storage_id=NEW.storage_id AND o.phase='live' AND o.byte_count=NEW.byte_count
-    AND NEW.content_type='image/jpeg' AND o.tier=CASE NEW.state WHEN 'attached' THEN 'permanent' ELSE 'temporary' END)
+    AND NEW.content_type='image/jpeg' AND o.tier=(CASE NEW.state WHEN 'attached' THEN 'permanent' ELSE 'temporary' END))
 BEGIN SELECT RAISE(ABORT,'frame pixels were not published'); END;
 
 CREATE TRIGGER cf_frame_pixels_cancel AFTER UPDATE OF state,storage_id ON cf_frame_requests
