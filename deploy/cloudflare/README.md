@@ -2868,3 +2868,27 @@ against the actual D1 implementation. See the
 [client API guide](../../docs/doc/developer/ForkCloudflareJit.mdx).
 The [verification record](../../dev/unified-main/implementation-2026-09-05/jit-rollout-2026-09-06.md)
 distinguishes the hosted decision flow from the remaining trigger/ledger work.
+
+## Canonical memory apply rules
+
+`scripts/memory_kernel_sources.py` packages the original canonical memory models,
+apply engine, promotion/graph receipt rules and pure Short-term lifecycle into
+the normal Core build. It rewrites only the nine known modules' import names;
+unexpected upstream dependencies fail the build. Core tests consume the same
+projection, and release identity includes every source file. No generated copy
+is maintained in the repository and no default prompt is changed.
+
+The pure engine computes one complete apply result: memory items, graph
+assertions, operation receipt, next control head and projection/vector outbox.
+Its committed result is a proposed database bundle, not proof of persistence.
+It preserves generation/head conflicts, deterministic retry identities,
+content-mismatched replay rejection, deleted-source denial, restricted-content
+delete-only projection and receipt-gated Short-term promotion. Hosted Python
+Worker scenarios execute these exact rules with synthetic inputs; they do not
+exercise a new public API or a D1 transaction.
+
+D1 still needs the atomic apply owner and convergence of the existing intake,
+mutation, consolidation, privacy and projection writers. These prerequisites
+remain part of the history/revert and JIT route work; their inventory states are
+not changed by kernel packaging. See the
+[verification record](../../dev/unified-main/implementation-2026-09-05/memory-kernel-2026-09-06.md).

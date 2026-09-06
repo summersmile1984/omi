@@ -218,6 +218,14 @@ cleanup behavior and equivalent ownership for other projection families still
 require qualification; this remains a
 prerequisite to qualifying append-only ledger history and revert.
 
+The [native canonical apply-kernel verification](implementation-2026-09-05/memory-kernel-2026-09-06.md)
+now stages the unchanged upstream pure models and apply rules into Core. Thirteen
+hosted Python Worker scenarios preserve retry IDs, head/generation rejection,
+source privacy, restricted projections and promotion/graph receipts. This is an
+executable prerequisite, not a D1 commit owner or a history implementation. The
+existing writers must still converge on one atomic durable apply boundary before
+either ledger route or the remaining JIT snapshots/feedback can be qualified.
+
 | Method | Path                              |
 | ------ | --------------------------------- |
 | GET    | `/v3/memories/ledger-history`     |

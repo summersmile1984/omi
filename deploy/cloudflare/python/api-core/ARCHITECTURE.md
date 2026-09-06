@@ -7,6 +7,16 @@ APIs through the Worker fetch bridge. The route modules must stay async and
 must not import Firestore, Redis, thread pools, local persistent files, or
 process-lifetime network clients.
 
+The ordinary builder also stages nine `memory_kernel_*` modules from the upstream
+canonical apply models and pure Short-term lifecycle rules. Only import module
+names change; source text, validators, receipt hashes and decision rules retain
+their upstream owner. The same projector runs in Core's test setup, and each
+upstream source participates in frozen release identity. The staged kernel is
+persistence-free: a committed `ApplyResult` describes the complete item/graph/
+operation/head/outbox bundle; it does not mean a D1 transaction committed.
+Native Pyodide execution is qualified separately from the still-required D1
+apply adapter, writer convergence, lineage history and trigger/ledger APIs.
+
 The feedback source projector stages the upstream wire models, desktop rating
 contract and pure daily-report policy into both the ordinary build and tests.
 `feedback_store.py` appends events in the same D1 batch as each rating projection;

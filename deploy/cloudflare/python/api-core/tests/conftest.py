@@ -20,6 +20,9 @@ runpy.run_path(str(Path(__file__).parents[3] / 'scripts/developer_ask_sources.py
     Path(_screen_stage.name)
 )
 runpy.run_path(str(Path(__file__).parents[3] / 'scripts/share_email_sources.py'))['generate'](Path(_screen_stage.name))
+runpy.run_path(str(Path(__file__).parents[3] / 'scripts/memory_kernel_sources.py'))['generate'](
+    Path(_screen_stage.name)
+)
 
 
 def pytest_unconfigure(config):
