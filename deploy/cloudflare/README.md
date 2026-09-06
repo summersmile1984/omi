@@ -2430,7 +2430,9 @@ the Edge matcher. Limits and one-hour windows mirror
 available as staging Worker vars. The object serializes concurrent increments
 and persists the fixed window; a limiter dependency failure preserves the
 legacy first-party fail-open behavior and emits bounded `recordFallback`
-telemetry. The same Durable Object also exposes an internal-only `/reserve` →
+telemetry. Callers explicitly selecting `failClosed` receive 503 for both transport
+failures and malformed success responses; a partial `{ allowed: true }` reply is
+not an admission decision. The same Durable Object also exposes an internal-only `/reserve` →
 `/release` primitive for future reversible quota callers: each reservation gets
 a one-time token, release is atomic and idempotent, stale tokens cannot
 decrement a later window, and reservation storage is reclaimed by the window

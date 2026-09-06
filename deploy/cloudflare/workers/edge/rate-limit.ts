@@ -599,6 +599,20 @@ export async function enforceEdgeRateLimit(
     }
     const result = parseResult(await response.json());
     if (!result) {
+      if (options.failClosed) {
+        recordFallback({
+          component: "rate_limit",
+          from: "durable_object",
+          to: "none",
+          reason: "invalid_response",
+          outcome: "exhausted",
+          requestId,
+        });
+        return Response.json(
+          { detail: "Rate limit service unavailable. Try again shortly." },
+          { status: 503, headers: { "cache-control": "no-store" } },
+        );
+      }
       recordFallback({
         component: "rate_limit",
         from: "durable_object",
