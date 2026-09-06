@@ -29,8 +29,8 @@ reported as failures; the publisher does not upgrade the lock or disable TLS.
 Preparation runs the real backend route inventory, CF typecheck/full Vitest,
 Core/AI pytest, untouched Web checks and fork client/builder checks. It builds the
 same stage's Server OS and Cloudflare Moonshine Web artifacts, renders the CF3
-resource bundle, executes the two SQL fixtures, then performs eight source
-compilations and eight additional frozen `--no-bundle` dry-runs. The eight deploy
+resource bundle, executes the two SQL fixtures, then performs nine source
+compilations and nine additional frozen `--no-bundle` dry-runs. The nine deploy
 configurations reference only copied module/assets files. Python dependencies are
 prepared using the fixed Python entry; publication consumes those same frozen
 modules via the locked Wrangler runtime, with no package resolver at apply time.
@@ -69,10 +69,10 @@ schema compatibility still requires its executable harness. These are execution
 contracts rather than operator approval flags. The CLI reports absent fixed
 runner paths before remote apply/restore:
 
-| Owner | Required executable | Contract |
-| --- | --- | --- |
-| CF-4 | `deploy/cloudflare/contracts/qualify-product.mjs` | Actual enabled route/provider, identity, HTTP, WebSocket, MCP, share/object and persistence contracts, including error paths |
-| CI-1 | `contracts/deployment/qualify-dual-target.mjs` | Same candidate's Server OS/CF product conformance, including the known Tasks 422/400 divergence and platform/brand matrix ownership |
+| Owner           | Required executable                                    | Contract                                                                                                                                                                                                             |
+| --------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CF-4            | `deploy/cloudflare/contracts/qualify-product.mjs`      | Actual enabled route/provider, identity, HTTP, WebSocket, MCP, share/object and persistence contracts, including error paths                                                                                         |
+| CI-1            | `contracts/deployment/qualify-dual-target.mjs`         | Same candidate's Server OS/CF product conformance, including the known Tasks 422/400 divergence and platform/brand matrix ownership                                                                                  |
 | CF/schema owner | `deploy/cloudflare/contracts/qualify-prior-schema.mjs` | First-release absence/empty authority, frozen SQL execution and deployed catalog/ledger checks implemented; an existing prior Worker or restore phase is refused until retained-version compatibility is implemented |
 
 Each receives `{candidate_directory, candidate, observations}` on stdin and must execute its acceptance

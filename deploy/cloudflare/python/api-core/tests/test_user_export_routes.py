@@ -193,6 +193,24 @@ def test_export_includes_only_owned_realtime_turns_and_totals():
     assert 'uid' not in payload['realtime_turns'][0]
 
 
+def test_export_includes_owned_screenshot_settings_and_sets_without_upload_receipts():
+    env = make_env('export-secret')
+    _insert_fixtures(env)
+    for uid, conversation_id in [('export-user', 'conversation-1'), ('other-user', 'other-conversation')]:
+        env.APP_DB.connection.execute(
+            "INSERT INTO cf_screen_frame_sets(uid, conversation_id) VALUES (?, ?)", (uid, conversation_id)
+        )
+        env.APP_DB.connection.execute("INSERT INTO cf_screen_frame_settings(uid, enabled) VALUES (?, 0)", (uid,))
+    response = asyncio.run(export_user_data(FakeRequest(env, signed_headers('export-secret'))))
+    assert response.status_code == 200
+    payload = _body(response)
+    assert len(payload['conversation_screenshots']) == 1
+    assert payload['conversation_screenshots'][0]['conversation_id'] == 'conversation-1'
+    assert payload['conversation_screenshots'][0]['frames'] == []
+    assert payload['screenshot_settings'] == [{'enabled': 0}]
+    assert 'screen_frame_writes' not in payload and 'screen_frame_attempts' not in payload
+
+
 def test_export_is_authenticated_uid_scoped_and_preserves_user_visible_shape():
     secret = "export-secret"
     env = make_env(secret)

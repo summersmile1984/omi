@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 export const WORKERS = Object.freeze([
   "auth",
   "rate-limit",
+  "screen-frame-writer",
   "api-core",
   "api-ai",
   "realtime",
@@ -18,6 +19,7 @@ export const STORAGE_BINDINGS = Object.freeze({
     CONVERSATION_RECORDINGS: "conversation-recordings",
     SPEECH_PROFILES: "speech-profiles",
     DESKTOP_UPDATES: "desktop-updates",
+    SCREEN_FRAMES: "screen-frames",
   },
   vectorize: {
     CONVERSATION_VECTORS: "conversations",
@@ -41,9 +43,14 @@ export const REQUIRED_SECRETS = Object.freeze({
     "FAIR_USE_ADMIN_KEY",
     "LIFECYCLE_EMAIL_SIGNING_SECRET",
     "REFERRAL_SIGNING_SECRET",
+    "SCREEN_FRAME_SIGNING_SECRET",
     "INTERNAL_ASSERTION_SECRET",
   ],
   "api-ai": ["INTERNAL_ASSERTION_SECRET"],
+  "screen-frame-writer": [
+    "SCREEN_FRAME_SIGNING_SECRET",
+    "INTERNAL_ASSERTION_SECRET",
+  ],
   realtime: ["INTERNAL_ASSERTION_SECRET"],
   jobs: [
     "ADMIN_KEY",
@@ -68,7 +75,7 @@ export function canonical(value) {
     return Object.fromEntries(
       Object.keys(value)
         .sort()
-        .map((key) => [key, canonical(value[key])]),
+        .map((key) => [key, canonical(value[key])])
     );
   return value;
 }
@@ -77,7 +84,7 @@ export function digest(value) {
     .update(
       typeof value === "string" || Buffer.isBuffer(value)
         ? value
-        : JSON.stringify(canonical(value)),
+        : JSON.stringify(canonical(value))
     )
     .digest("hex");
 }
@@ -95,7 +102,7 @@ export function resourceKeys() {
   return [
     ...WORKERS.map((role) => `worker:${role}`),
     ...Object.entries(STORAGE_BINDINGS).flatMap(([kind, bindings]) =>
-      Object.values(bindings).map((role) => `${kind}:${role}`),
+      Object.values(bindings).map((role) => `${kind}:${role}`)
     ),
     "queue:jobs-dlq",
   ];
@@ -104,7 +111,7 @@ export function validateBrandRuntime(value, brandId) {
   exactKeys(
     value,
     ["brand_id", "display_name", "ai_persona_name"],
-    "brand runtime",
+    "brand runtime"
   );
   if (
     value.brand_id !== brandId ||
@@ -112,7 +119,7 @@ export function validateBrandRuntime(value, brandId) {
       (item) =>
         typeof item === "string" &&
         item.trim() &&
-        !/[\u0000-\u001f\u007f]/u.test(item),
+        !/[\u0000-\u001f\u007f]/u.test(item)
     ) ||
     !/^[a-z0-9-]+$/.test(value.brand_id)
   )
@@ -126,7 +133,7 @@ export function validateSupportEmail(value) {
     /[\u0000-\u001f\u007f]/u.test(value)
   )
     throw new Error(
-      "brand support contact must be an explicit plain email address",
+      "brand support contact must be an explicit plain email address"
     );
   return value;
 }
@@ -142,7 +149,7 @@ export function validateFirmwarePolicy(value, brand) {
       "release_asset_prefix",
       "github_releases_url",
     ],
-    "firmware policy",
+    "firmware policy"
   );
   if (
     value.schema_version !== 1 ||
@@ -153,16 +160,20 @@ export function validateFirmwarePolicy(value, brand) {
     !value.device_model_aliases.length ||
     value.device_model_aliases.length > 8 ||
     !value.device_model_aliases.every(
-      (item) => typeof item === "string" && item.trim(),
+      (item) => typeof item === "string" && item.trim()
     ) ||
-    new Set(value.device_model_aliases).size !== value.device_model_aliases.length ||
+    new Set(value.device_model_aliases).size !==
+      value.device_model_aliases.length ||
     value.device_model_aliases.includes(value.device_model) ||
     typeof value.release_tag_prefix !== "string" ||
     !/^[A-Za-z0-9_]+_v$/.test(value.release_tag_prefix) ||
-    value.release_asset_prefix !== value.release_tag_prefix.slice(0, -1) + "OTA_v" ||
+    value.release_asset_prefix !==
+      value.release_tag_prefix.slice(0, -1) + "OTA_v" ||
     typeof value.github_releases_url !== "string"
   )
-    throw new Error("firmware policy does not match the rendered brand identity");
+    throw new Error(
+      "firmware policy does not match the rendered brand identity"
+    );
   let url;
   try {
     url = new URL(value.github_releases_url);
@@ -196,7 +207,7 @@ export function validateResourceInput(input, projected) {
       "existing_names",
       "migration_lineage",
     ],
-    "resource inventory",
+    "resource inventory"
   );
   const { brand_id: brand, profile } = projected;
   validateBrandRuntime(projected.brand_runtime, brand);
@@ -213,7 +224,7 @@ export function validateResourceInput(input, projected) {
     profile.identity_provider !== "better_auth"
   ) {
     throw new Error(
-      "resource inventory and rendered brand/target/stage identity differ",
+      "resource inventory and rendered brand/target/stage identity differ"
     );
   }
   if (
@@ -225,7 +236,7 @@ export function validateResourceInput(input, projected) {
   exactKeys(input.d1_ids, ["auth", "app"], "D1 IDs");
   if (
     !Object.values(input.d1_ids).every(
-      (id) => typeof id === "string" && UUID.test(id),
+      (id) => typeof id === "string" && UUID.test(id)
     ) ||
     input.d1_ids.auth.toLowerCase() === input.d1_ids.app.toLowerCase()
   )
@@ -235,7 +246,7 @@ export function validateResourceInput(input, projected) {
   exactKeys(
     input.existing_names,
     input.allocation === "existing" ? resourceKeys() : [],
-    "existing resource names",
+    "existing resource names"
   );
   if (
     typeof input.migration_lineage !== "string" ||
@@ -244,33 +255,44 @@ export function validateResourceInput(input, projected) {
     throw new Error("explicit migration lineage is required");
   exactKeys(input.secret_refs, WORKERS, "secret mapping owners");
   const internal = new Set();
+  const screenFrame = new Set();
   const privateRefs = new Set();
   for (const role of WORKERS) {
     exactKeys(
       input.secret_refs[role],
       REQUIRED_SECRETS[role],
-      `${role} secret name mapping`,
+      `${role} secret name mapping`
     );
     for (const [binding, reference] of Object.entries(
-      input.secret_refs[role],
+      input.secret_refs[role]
     )) {
       if (typeof reference !== "string" || !REFERENCE.test(reference))
         throw new Error(
-          "secret mappings contain environment variable names, never secret values",
+          "secret mappings contain environment variable names, never secret values"
         );
       if (binding === "INTERNAL_ASSERTION_SECRET") internal.add(reference);
+      else if (binding === "SCREEN_FRAME_SIGNING_SECRET")
+        screenFrame.add(reference);
       else {
         if (privateRefs.has(reference))
           throw new Error(
-            "separate credential boundaries require distinct secret references",
+            "separate credential boundaries require distinct secret references"
           );
         privateRefs.add(reference);
       }
     }
   }
+  if (
+    screenFrame.size !== 1 ||
+    privateRefs.has([...screenFrame][0]) ||
+    internal.has([...screenFrame][0])
+  )
+    throw new Error(
+      "screen frame signer and writer require one isolated shared secret reference"
+    );
   if (internal.size !== 1 || privateRefs.has([...internal][0]))
     throw new Error(
-      "all internal assertions must use one shared reference isolated from other credentials",
+      "all internal assertions must use one shared reference isolated from other credentials"
     );
   exactKeys(input.routing, ["mode", "workers_subdomain"], "routing");
   if (
@@ -285,7 +307,7 @@ export function validateResourceInput(input, projected) {
       : input.routing.workers_subdomain !== null
   )
     throw new Error(
-      "workers.dev routing requires an explicit subdomain; other modes use null",
+      "workers.dev routing requires an explicit subdomain; other modes use null"
     );
   const names = {};
   for (const key of resourceKeys()) {
@@ -302,7 +324,7 @@ export function validateResourceInput(input, projected) {
       throw new Error(`invalid or overlong resource name: ${key}`);
   }
   const physical = resourceKeys().map(
-    (key) => `${key.split(":")[0]}:${names[key]}`,
+    (key) => `${key.split(":")[0]}:${names[key]}`
   );
   if (new Set(physical).size !== physical.length)
     throw new Error("resource names collide within a Cloudflare namespace");
@@ -325,11 +347,11 @@ export function validateResourceInput(input, projected) {
       url.pathname !== "/"
     )
       throw new Error(
-        `CF-4: ${key}_base_url mount paths are not yet qualified; an origin is required`,
+        `CF-4: ${key}_base_url mount paths are not yet qualified; an origin is required`
       );
     if (input.stage !== "local" && (url.protocol !== "https:" || url.port))
       throw new Error(
-        "Cloudflare remote origins require HTTPS without a custom port",
+        "Cloudflare remote origins require HTTPS without a custom port"
       );
     if (
       input.stage === "local" &&
@@ -339,7 +361,7 @@ export function validateResourceInput(input, projected) {
       throw new Error("local resource fixtures require loopback origins");
     if (ownership.has(url.origin) && ownership.get(url.origin) !== role)
       throw new Error(
-        "one public origin cannot route to different Worker owners",
+        "one public origin cannot route to different Worker owners"
       );
     ownership.set(url.origin, role);
     if (
@@ -350,7 +372,7 @@ export function validateResourceInput(input, projected) {
         }.workers.dev`
     )
       throw new Error(
-        `profile ${key} origin differs from its workers.dev allocation`,
+        `profile ${key} origin differs from its workers.dev allocation`
       );
     origins[key] = url.origin;
   }
@@ -362,21 +384,20 @@ export function assertDisjointPlans(plans) {
     const identity = `${plan.brand}/${plan.target}/${plan.stage}`;
     const keys = [
       ...plan.resources.map(
-        (entry) => `${plan.account_id}/${entry.kind}/${entry.name}`,
+        (entry) => `${plan.account_id}/${entry.kind}/${entry.name}`
       ),
       ...plan.migrations.map(
-        (entry) =>
-          `${plan.account_id}/d1-id/${entry.database_id.toLowerCase()}`,
+        (entry) => `${plan.account_id}/d1-id/${entry.database_id.toLowerCase()}`
       ),
       ...Object.values(plan.origins).map((origin) => `public-origin/${origin}`),
       ...Object.values(plan.secrets).flatMap((mapping) =>
-        Object.values(mapping).map((ref) => `secret-ref/${ref}`),
+        Object.values(mapping).map((ref) => `secret-ref/${ref}`)
       ),
     ];
     for (const key of new Set(keys)) {
       if (owned.has(key))
         throw new Error(
-          `resource ownership collision: ${identity} and ${owned.get(key)}`,
+          `resource ownership collision: ${identity} and ${owned.get(key)}`
         );
       owned.set(key, identity);
     }

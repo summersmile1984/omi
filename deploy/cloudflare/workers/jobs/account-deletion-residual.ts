@@ -1,4 +1,5 @@
 import type { JobsEnv } from "./env";
+import { screenFrameStorageState } from "./screen-frame-storage";
 
 type IdentityColumn =
   | "uid"
@@ -152,6 +153,10 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_realtime_usage", column: "uid" },
   { table: "cf_recording_deletion_intents", column: "uid" },
   { table: "cf_screen_activity", column: "uid" },
+  { table: "cf_screen_frame_settings", column: "uid" },
+  { table: "cf_screen_frame_sets", column: "uid" },
+  { table: "cf_screen_frame_attempts", column: "uid" },
+  { table: "cf_screen_frame_writes", column: "uid" },
   { table: "cf_creator_payment_profiles", column: "uid" },
   { table: "cf_stripe_connect_events", column: "uid_hint" },
   { table: "cf_stripe_customers", column: "uid" },
@@ -310,21 +315,32 @@ const PURGE_PRIORITY = Object.freeze([
 
 const PURGE_PRIORITY_SET = new Set<string>(PURGE_PRIORITY);
 
+// The independent writer must acknowledge R2 erasure before removing receipts.
+export const ACCOUNT_DELETION_WRITER_D1_SURFACES = Object.freeze([
+  { table: "cf_screen_frame_writes", column: "uid" },
+] satisfies readonly D1IdentitySurface[]);
+
 const PURGE_ORDER = Object.freeze([
   ...PURGE_PRIORITY,
   ...ACCOUNT_DELETION_D1_SURFACES.map(
-    ({ table, column }) => `${table}.${column}`,
-  ).filter((key) => !PURGE_PRIORITY_SET.has(key)),
+    ({ table, column }) => `${table}.${column}`
+  ).filter(
+    (key) =>
+      !PURGE_PRIORITY_SET.has(key) &&
+      !ACCOUNT_DELETION_WRITER_D1_SURFACES.some(
+        (surface) => `${surface.table}.${surface.column}` === key
+      )
+  ),
 ]);
 
 export const ACCOUNT_DELETION_D1_PURGE_SURFACES = Object.freeze(
   PURGE_ORDER.map((key) => {
     const surface = ACCOUNT_DELETION_D1_SURFACES.find(
-      ({ table, column }) => `${table}.${column}` === key,
+      ({ table, column }) => `${table}.${column}` === key
     );
     if (!surface) throw new Error(`unknown account deletion surface ${key}`);
     return surface;
-  }),
+  })
 );
 
 /** User-scoped object families currently stored in the shared ASSETS bucket. */
@@ -387,8 +403,10 @@ export async function readAccountProductResidual(
     | "CHAT_FILES"
     | "CONVERSATION_RECORDINGS"
     | "SPEECH_PROFILES"
+    | "SCREEN_FRAME_WRITER"
+    | "INTERNAL_ASSERTION_SECRET"
   >,
-  uid: string,
+  uid: string
 ): Promise<AccountProductResidual> {
   if (!validAccountDeletionUid(uid)) {
     throw new Error("invalid account deletion uid");
@@ -396,12 +414,19 @@ export async function readAccountProductResidual(
 
   const statements = ACCOUNT_DELETION_D1_SURFACES.map((surface) =>
     env.APP_DB.prepare(
-      `SELECT COUNT(*) AS count FROM ${surface.table} WHERE ${surface.column} = ?`,
-    ).bind(uid),
+      `SELECT COUNT(*) AS count FROM ${surface.table} WHERE ${surface.column} = ?`
+    ).bind(uid)
   );
   const [d1Results, r2Results] = await Promise.all([
     env.APP_DB.batch<{ count?: unknown }>(statements),
     Promise.all([
+      screenFrameStorageState(env, uid, "residual").then(
+        (value) =>
+          [
+            `screen-frames:${encodeURIComponent(uid)}/`,
+            value.empty ? 0 : 1,
+          ] as const
+      ),
       ...ACCOUNT_DELETION_R2_PREFIX_PATTERNS.map(async (pattern) => {
         const prefix = r2Prefix(pattern, uid);
         const listed = await env.ASSETS.list({ prefix, limit: 1 });
@@ -428,7 +453,7 @@ export async function readAccountProductResidual(
             `conversation-recordings:${prefix}`,
             listed.objects.length > 0 ? 1 : 0,
           ] as const;
-        },
+        }
       ),
       ...ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS.map(
         async (pattern) => {
@@ -441,7 +466,7 @@ export async function readAccountProductResidual(
             `speech-profiles:${prefix}`,
             listed.objects.length > 0 ? 1 : 0,
           ] as const;
-        },
+        }
       ),
     ]),
   ]);
@@ -458,7 +483,7 @@ export async function readAccountProductResidual(
       throw new Error("product residual query returned invalid rows");
     }
     d1[residualKey(ACCOUNT_DELETION_D1_SURFACES[index])] = databaseCount(
-      result.results[0]?.count,
+      result.results[0]?.count
     );
   }
   const r2 = Object.fromEntries(r2Results);

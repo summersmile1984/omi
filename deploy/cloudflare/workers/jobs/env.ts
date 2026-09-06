@@ -67,6 +67,7 @@ export type MemoryVectorizeBinding = VectorizeBinding & {
 export type JobsEnv = {
   AUTH: Fetcher;
   API_CORE?: Fetcher;
+  SCREEN_FRAME_WRITER?: Fetcher;
   APP_DB: D1Database;
   ASSETS: R2Bucket;
   /** Reviewed desktop release artifact mirror; absent until the bucket is provisioned. */

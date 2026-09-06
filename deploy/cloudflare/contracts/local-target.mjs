@@ -55,7 +55,7 @@ export function prepareLocalCache(output, env) {
   const stat = lstatSync(directory, { throwIfNoEntry: false });
   if (!stat?.isDirectory() || stat.isSymbolicLink())
     throw new Error(
-      "local Pyodide cache must be an existing ordinary directory",
+      "local Pyodide cache must be an existing ordinary directory"
     );
   env.CLOUDFLARE_PYODIDE_CACHE_DIR = directory;
   return {
@@ -144,7 +144,7 @@ export async function startLocalTarget({
               speaker: "SPEAKER_00",
               is_user: true,
             },
-          ]),
+          ])
         );
     });
   });
@@ -215,6 +215,7 @@ export async function startLocalTarget({
       INFERENCE_CONTROL_ORIGIN: inferenceControl.origin,
     };
     const assertionSecret = randomBytes(32).toString("hex"),
+      screenFrameSecret = randomBytes(32).toString("hex"),
       frozen = {},
       artifacts = {};
     const wrangler = resolve(root, "node_modules/wrangler/bin/wrangler.js");
@@ -230,8 +231,10 @@ export async function startLocalTarget({
           name,
           name === "INTERNAL_ASSERTION_SECRET"
             ? assertionSecret
+            : name === "SCREEN_FRAME_SIGNING_SECRET"
+            ? screenFrameSecret
             : randomBytes(32).toString("hex"),
-        ]),
+        ])
       );
       const values =
         Object.entries(secrets)
@@ -255,7 +258,7 @@ export async function startLocalTarget({
           symlinkSync(
             resolve(root, "python", role, "python_modules"),
             resolve(source, "python_modules"),
-            "dir",
+            "dir"
           );
           await command(`${role}-compile`, process.execPath, [
             resolve(root, "scripts/python-worker.mjs"),
@@ -330,7 +333,7 @@ export async function startLocalTarget({
         env: invocation.env,
         timeout: 3600000,
         stdio: ["ignore", runtimeFd, runtimeFd],
-      },
+      }
     );
     closeSync(runtimeFd);
     let spawnError;
@@ -348,7 +351,7 @@ export async function startLocalTarget({
         throw new Error("local workerd readiness deadline exceeded");
       if (
         readFileSync(runtimeLog, "utf8").includes(
-          `Ready on http://localhost:${port}`,
+          `Ready on http://localhost:${port}`
         )
       ) {
         try {
@@ -384,7 +387,7 @@ export async function startLocalTarget({
           env,
           timeout: 3600000,
           stdio: ["ignore", fd, fd],
-        },
+        }
       );
       closeSync(fd);
       webRuntimeDone = web.completion;
@@ -400,7 +403,7 @@ export async function startLocalTarget({
           throw new Error("local frozen Web readiness deadline exceeded");
         if (
           readFileSync(webLog, "utf8").includes(
-            `Ready on http://localhost:${webPort}`,
+            `Ready on http://localhost:${webPort}`
           )
         ) {
           const response = await fetch(`${webOrigin}/login`, {
@@ -436,14 +439,14 @@ export async function startLocalTarget({
         auth: fileTree(
           resolve(
             candidateInput?.migrationsRoot ?? resolve(root, "migrations"),
-            "auth",
-          ),
+            "auth"
+          )
         ),
         app: fileTree(
           resolve(
             candidateInput?.migrationsRoot ?? resolve(root, "migrations"),
-            "app",
-          ),
+            "app"
+          )
         ),
       },
       tools: {
@@ -452,9 +455,9 @@ export async function startLocalTarget({
           ["wrangler", "workerd"].map((name) => [
             name,
             JSON.parse(
-              readFileSync(resolve(root, `node_modules/${name}/package.json`)),
+              readFileSync(resolve(root, `node_modules/${name}/package.json`))
             ).version,
-          ]),
+          ])
         ),
       },
       locks: Object.fromEntries(
@@ -462,7 +465,7 @@ export async function startLocalTarget({
           "package-lock.json",
           "python/api-core/pylock.toml",
           "python/api-ai/pylock.toml",
-        ].map((path) => [path, digest(readFileSync(resolve(root, path)))]),
+        ].map((path) => [path, digest(readFileSync(resolve(root, path)))])
       ),
       artifacts,
       ...(candidateContext
@@ -501,7 +504,7 @@ export async function startLocalTarget({
     } catch (cleanup) {
       throw new AggregateError(
         [error, cleanup],
-        `${error.message}; local cleanup also failed`,
+        `${error.message}; local cleanup also failed`
       );
     }
     throw error;
@@ -537,7 +540,7 @@ if (
     const candidate =
       candidateDirectory &&
       JSON.parse(
-        readFileSync(resolve(candidateDirectory, "candidate.json"), "utf8"),
+        readFileSync(resolve(candidateDirectory, "candidate.json"), "utf8")
       );
     target = await startLocalTarget({
       output: values.output,
@@ -592,7 +595,7 @@ if (
     ) {
       await Promise.race([
         new Promise((resolve) =>
-          controller.signal.addEventListener("abort", resolve, { once: true }),
+          controller.signal.addEventListener("abort", resolve, { once: true })
         ),
         target.runtimeDone.then(() => {
           if (!controller.signal.aborted)

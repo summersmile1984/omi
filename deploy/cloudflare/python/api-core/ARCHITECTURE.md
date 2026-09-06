@@ -11,9 +11,13 @@ The build stages six `screen_frames_*` modules directly from the upstream
 screenshot contract owners. Pillow 11.3.0 supplies the unchanged canonicalizer
 and palette implementation in Pyodide. The staged privacy prompt is identical
 to the upstream prompt; there is no Cloudflare-specific prompt rewrite. These
-modules are a build prerequisite, not registered screenshot routes: the
-isolated writer, one-use approval and privacy/deletion storage boundaries are
-still required before the eight route slots can become owned.
+modules are a build prerequisite, not registered screenshot routes. The
+independent `screen-frame-writer` Worker now owns `SCREEN_FRAMES` R2 and one-use
+write receipts. Core receives only its service binding and the dedicated
+`SCREEN_FRAME_SIGNING_SECRET`. The export includes screenshot settings and
+visible sets; upload journals remain internal. Core adjudication, atomic survivor
+selection and the public content proxy still need implementation and business
+qualification before the eight route slots can become owned.
 
 `referral_routes.py` preserves the desktop `ref1` HMAC wire format using a
 dedicated `REFERRAL_SIGNING_SECRET`. Link and login destinations come from the

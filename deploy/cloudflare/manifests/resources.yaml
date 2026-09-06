@@ -28,6 +28,14 @@ resources:
     name: omi-cf-desktop-updates-staging
     owner: jobs
     environment: staging
+  - kind: r2
+    name: omi-cf-screen-frames-staging
+    owner: screen-frame-writer
+    environment: staging
+  - kind: worker
+    name: omi-cf-screen-frame-writer-staging
+    owner: screen-frame-writer
+    environment: staging
   - kind: worker
     name: omi-cf-edge-staging
     owner: edge

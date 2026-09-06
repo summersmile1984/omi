@@ -16,6 +16,8 @@ router = APIRouter()
 
 _EXPORT_QUERIES = (
     ("conversations", "cf_conversations", "created_at DESC, id DESC"),
+    ("conversation_screenshots", "cf_screen_frame_sets", "conversation_id"),
+    ("screenshot_settings", "cf_screen_frame_settings", "uid"),
     ("desktop_daily_usage", "cf_desktop_daily_usage", "date DESC, client_device_id DESC"),
     ("realtime_usage", "cf_realtime_usage", "usage_date DESC"),
     ("referral_claims", "cf_referral_claims", "claimed_at DESC"),
@@ -176,6 +178,8 @@ async def export_user_data(request: Request):
     payload = {
         "profile": profile,
         "conversations": sections.pop("conversations", []),
+        "conversation_screenshots": sections.pop("conversation_screenshots", []),
+        "screenshot_settings": sections.pop("screenshot_settings", []),
         "memories": sections.pop("memories", []),
         "people": sections.pop("people", []),
         "action_items": sections.pop("action_items", []),

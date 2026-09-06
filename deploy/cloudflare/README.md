@@ -12,7 +12,7 @@ known product gaps, and rollback criteria are defined in
 
 `deploy:staging` (profile stage `beta`) and `deploy:production` now prepare local,
 immutable candidates from the current Moonshine/Bun source. Both Server OS and
-Cloudflare Web artifacts, all eight Worker bundles, CF3 resource configurations,
+Cloudflare Web artifacts, all nine Worker bundles, CF3 resource configurations,
 SQL authorities and dependency locks are qualified before any remote mutation.
 These commands do not deploy. See [the release workflow](release.md) for exact
 inputs, qualification, remote apply, version ownership and recovery commands.
@@ -175,9 +175,13 @@ owners participate in the release source identity and the existing route CI
 lane, so an upstream change requires a fresh candidate and verification.
 Core pins Pillow 11.3.0 to the Pyodide 0.28.3 wheel and its SHA-256 in its own
 `pylock.toml`; `npm run python -- api-core sync` prepares it with the other
-dependencies. This establishes the image-processing build prerequisite only.
-The eight screenshot privacy routes remain blocked until approval, isolated
-R2 writing, sharing and deletion owners are implemented and exercised.
+dependencies. The independent [screenshot writer](workers/screen-frame-writer/README.md)
+now owns the isolated `SCREEN_FRAMES` bucket, one-use approval receipts,
+revocable content capabilities and erasure. Core and Jobs receive a service
+binding only. Core and the writer share a dedicated signing key; Jobs can
+request cleanup through its request-bound internal assertion. The eight public
+screenshot routes remain blocked until Core adjudication, selection, public
+proxy and full business qualification are implemented and exercised.
 
 Local development on Linux/macOS resolves the native executable from the locked
 `workerd` package export, then uses its official Pyodide bundle/package cache
@@ -253,7 +257,6 @@ persona. Both reject missing brand configuration before model/context work while
 keeping their existing provider-error behavior. The local contract exercises
 public app generation and goal creation/advice through real Core/AI/D1 and
 inference-only prompt echoes; remote vector retrieval quality is not qualified.
-
 
 `npm run resources -- --manifest /path/to/brand.json --inventory /path/to/resources.json --web-build /path/to/web-build --output /path/to/plan`
 renders the eight current Worker/Web configurations, both D1 migration authorities,
@@ -470,7 +473,7 @@ after signup; Jobs retains the authoritative deletion eligibility check and
 privacy stays reachable while ordinary traffic is fenced. A failed ownership
 read returns 503 before dispatching to Jobs.
 
-The current release workflow records exact prior versions for all eight Workers,
+The current release workflow records exact prior versions for all nine Workers,
 then verifies SQL history, applies additive migrations, deploys dependencies in
 the CF3-derived order, and verifies both public readiness envelopes plus the
 active version annotations. A failed or lost process response is reconciled with

@@ -28,7 +28,7 @@ const directories = [];
 afterEach(() =>
   directories
     .splice(0)
-    .forEach((path) => rmSync(path, { recursive: true, force: true })),
+    .forEach((path) => rmSync(path, { recursive: true, force: true }))
 );
 const inputs = {
   root,
@@ -56,7 +56,7 @@ const inputs = {
 };
 
 describe("disposable actual Cloudflare target", () => {
-  it("runs copied eight-owner artifacts with frozen SQL and rejects later payload drift", () => {
+  it("runs copied nine-owner artifacts with frozen SQL and rejects later payload drift", () => {
     const directory = mkdtempSync(resolve(tmpdir(), "cf-frozen-local-"));
     directories.push(directory);
     const source = resolve(directory, "candidate"),
@@ -85,7 +85,7 @@ describe("disposable actual Cloudflare target", () => {
       if (role === "api-core") {
         config.vars.BRAND_SUPPORT_EMAIL = inputs.supportEmail;
         config.vars.FIRMWARE_BRAND_POLICY_JSON = JSON.stringify(
-          inputs.firmwarePolicy,
+          inputs.firmwarePolicy
         );
       }
       if (role === "web") {
@@ -94,7 +94,7 @@ describe("disposable actual Cloudflare target", () => {
       }
       writeFileSync(
         resolve(bundle, "modules/frozen.js"),
-        `export default ${JSON.stringify(role)};`,
+        `export default ${JSON.stringify(role)};`
       );
       writeFileSync(resolve(bundle, "wrangler.json"), JSON.stringify(config));
       workers[role] = {
@@ -107,7 +107,7 @@ describe("disposable actual Cloudflare target", () => {
       mkdirSync(resolve(source, "sql", authority), { recursive: true });
       writeFileSync(
         resolve(source, "sql", authority, "0001.sql"),
-        "CREATE TABLE frozen (id TEXT);",
+        "CREATE TABLE frozen (id TEXT);"
       );
     }
     let verifyFailure;
@@ -132,39 +132,39 @@ describe("disposable actual Cloudflare target", () => {
       preservePolicy: false,
     });
     expect(copied.brandRuntime).toEqual(inputs.brandRuntime);
-    expect(Object.keys(projected.configs)).toHaveLength(9);
+    expect(Object.keys(projected.configs)).toHaveLength(WORKERS.length + 1);
     expect(projected.configs.web.assets.directory).toBe(
-      resolve(output, "workers/web/assets"),
+      resolve(output, "workers/web/assets")
     );
     expect(projected.configs.edge.main).toBe(
-      resolve(output, "workers/edge/modules/frozen.js"),
+      resolve(output, "workers/edge/modules/frozen.js")
     );
     expect(projected.configs.edge.base_dir).toBe(
-      resolve(output, "workers/edge/modules"),
+      resolve(output, "workers/edge/modules")
     );
     expect(projected.configs["api-core"].d1_databases[0].migrations_dir).toBe(
-      resolve(output, "sql/app"),
+      resolve(output, "sql/app")
     );
     expect(projected.configs.web.services[0].service).toBe(
-      projected.configs.edge.name,
+      projected.configs.edge.name
     );
     writeFileSync(
       resolve(output, "workers/edge/wrangler.json"),
-      JSON.stringify(projected.configs.edge),
+      JSON.stringify(projected.configs.edge)
     );
     writeFileSync(resolve(output, "workers/edge/.dev.vars"), "LOCAL=value\n");
     copied.verifyPayload();
     writeFileSync(resolve(output, "workers/web/assets/brand.svg"), "changed");
     expect(() => copied.verifyPayload()).toThrow(
-      "local frozen payload changed: web",
+      "local frozen payload changed: web"
     );
     writeFileSync(
       resolve(output, "workers/web/assets/brand.svg"),
-      "frozen-asset",
+      "frozen-asset"
     );
     writeFileSync(resolve(output, "sql/app/0001.sql"), "SELECT 1;");
     expect(() => copied.verifyPayload()).toThrow(
-      "local frozen SQL changed: app",
+      "local frozen SQL changed: app"
     );
     verifyFailure = "candidate source changed";
     expect(() => copied.verifyPayload()).toThrow(verifyFailure);
@@ -187,7 +187,7 @@ describe("disposable actual Cloudflare target", () => {
       localConfigs({ ...inputs, templates, preservePolicy: true });
       templates.edge.config.vars[key] = "true";
       expect(() =>
-        localConfigs({ ...inputs, templates, preservePolicy: true }),
+        localConfigs({ ...inputs, templates, preservePolicy: true })
       ).toThrow(`policy adapter required for ${key}`);
     }
   });
@@ -212,7 +212,7 @@ describe("disposable actual Cloudflare target", () => {
       });
       for (const role of ["edge", "realtime", "api-core"])
         expect(configs[role].vars.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED).toBe(
-          enabled,
+          enabled
         );
     }
   });
@@ -221,7 +221,7 @@ describe("disposable actual Cloudflare target", () => {
     directories.push(directory);
     for (const path of ["", " \t", null, true])
       expect(() =>
-        prepareLocalCache(directory, { CLOUDFLARE_PYODIDE_CACHE_DIR: path }),
+        prepareLocalCache(directory, { CLOUDFLARE_PYODIDE_CACHE_DIR: path })
       ).toThrow("nonempty path");
     const env = {};
     const cache = prepareLocalCache(directory, env);
@@ -235,46 +235,46 @@ describe("disposable actual Cloudflare target", () => {
     symlinkSync(resolve(directory, "missing"), broken);
     for (const path of [broken, resolve(directory, "missing")])
       expect(() =>
-        prepareLocalCache(directory, { CLOUDFLARE_PYODIDE_CACHE_DIR: path }),
+        prepareLocalCache(directory, { CLOUDFLARE_PYODIDE_CACHE_DIR: path })
       ).toThrow("ordinary directory");
   });
-  it("projects all seven production owners and isolates every storage and queue binding", () => {
+  it("projects all eight backend owners and isolates every storage and queue binding", () => {
     const { configs, origin } = localConfigs(inputs);
     expect(configs["api-core"].vars.BRAND_SUPPORT_EMAIL).toBe(
-      inputs.supportEmail,
+      inputs.supportEmail
     );
     expect(configs["api-core"].vars.PUBLIC_WEB_BASE_URL).toBe(inputs.webOrigin);
     expect(configs["api-core"].vars.PUBLIC_SHARE_BASE_URL).toBe(
-      inputs.shareOrigin,
+      inputs.shareOrigin
     );
     expect(
-      JSON.parse(configs["api-core"].vars.FIRMWARE_BRAND_POLICY_JSON),
+      JSON.parse(configs["api-core"].vars.FIRMWARE_BRAND_POLICY_JSON)
     ).toEqual(inputs.firmwarePolicy);
     expect(configs.auth.vars.ALLOWED_ORIGINS).toBe(inputs.webOrigin);
     expect(() => localConfigs({ ...inputs, supportEmail: undefined })).toThrow(
-      /support contact/,
+      /support contact/
     );
     expect(() =>
       localConfigs({
         ...inputs,
         shareOrigin: "https://remote.example.invalid",
-      }),
+      })
     ).toThrow(/share origin/);
     for (const role of ["api-core", "api-ai"])
       expect(JSON.parse(configs[role].vars.BRAND_RUNTIME_JSON)).toEqual(
-        inputs.brandRuntime,
+        inputs.brandRuntime
       );
     expect(() => localConfigs({ ...inputs, brandRuntime: undefined })).toThrow(
-      /brand runtime/,
+      /brand runtime/
     );
     expect(() =>
-      localConfigs({ ...inputs, firmwarePolicy: undefined }),
+      localConfigs({ ...inputs, firmwarePolicy: undefined })
     ).toThrow(/firmware policy/);
     expect(() =>
       localConfigs({
         ...inputs,
         brandRuntime: { ...inputs.brandRuntime, brand_id: "foreign" },
-      }),
+      })
     ).toThrow(/brand runtime/);
     expect(Object.keys(configs).sort()).toEqual([
       "api-ai",
@@ -285,6 +285,7 @@ describe("disposable actual Cloudflare target", () => {
       "provider",
       "rate-limit",
       "realtime",
+      "screen-frame-writer",
     ]);
     const names = new Set(Object.values(configs).map((config) => config.name));
     const databases = new Map();
@@ -323,16 +324,16 @@ describe("disposable actual Cloudflare target", () => {
     expect(new Set(databases.values()).size).toBe(2);
     expect(consumers.every((queue) => producers.has(queue))).toBe(true);
     expect(
-      configs.realtime.services.some((binding) => binding.binding === "AI"),
+      configs.realtime.services.some((binding) => binding.binding === "AI")
     ).toBe(false);
     expect(configs.realtime.vars.ASR_WS_URL).toBe("http://127.0.0.1:34001");
   });
   it("rejects unowned production binding drift and newly introduced runtime primitives", () => {
     expect(() => localConfigs({ ...inputs, brandId: null })).toThrow(
-      "invalid local brand",
+      "invalid local brand"
     );
     expect(() => localConfigs({ ...inputs, namespace: true })).toThrow(
-      "invalid local brand",
+      "invalid local brand"
     );
     const templates = readWorkerTemplates(root);
     templates.edge.config.services.push({
@@ -340,12 +341,12 @@ describe("disposable actual Cloudflare target", () => {
       service: "not-in-this-stack",
     });
     expect(() => localConfigs({ ...inputs, templates })).toThrow(
-      "unowned Worker",
+      "unowned Worker"
     );
     const changed = readWorkerTemplates(root);
     changed.edge.config.kv_namespaces = [{ binding: "REMOTE", id: "unowned" }];
     expect(() => localConfigs({ ...inputs, templates: changed })).toThrow(
-      "local adapter required",
+      "local adapter required"
     );
   });
   it("never adopts an existing output owner or a broken link", async () => {
@@ -353,14 +354,14 @@ describe("disposable actual Cloudflare target", () => {
     directories.push(directory);
     writeFileSync(resolve(directory, "retained"), "user-owned");
     await expect(startLocalTarget({ output: directory })).rejects.toThrow(
-      "fresh output owner",
+      "fresh output owner"
     );
     symlinkSync(resolve(directory, "missing"), resolve(directory, "broken"));
     await expect(
-      startLocalTarget({ output: resolve(directory, "broken") }),
+      startLocalTarget({ output: resolve(directory, "broken") })
     ).rejects.toThrow("fresh output owner");
     expect(readFileSync(resolve(directory, "retained"), "utf8")).toBe(
-      "user-owned",
+      "user-owned"
     );
   });
   it("cancels its actual process tree and closes admission to later commands", async () => {
@@ -372,8 +373,8 @@ describe("disposable actual Cloudflare target", () => {
         socket.once("data", (data) => {
           socket.destroy();
           resolve(Number(data));
-        }),
-      ),
+        })
+      )
     );
     const code = `const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'}); const socket=require('node:net').connect(${
       server.address().port
@@ -393,7 +394,7 @@ describe("disposable actual Cloudflare target", () => {
       } catch {}
       expect(!status || status.startsWith("Z")).toBe(true);
       expect(() =>
-        owner.start(process.execPath, ["-e", "process.exit(0)"]),
+        owner.start(process.execPath, ["-e", "process.exit(0)"])
       ).toThrow("cancelled");
     } finally {
       await owner.close();
@@ -406,7 +407,7 @@ describe("disposable actual Cloudflare target", () => {
       const result = await owner.run(
         process.execPath,
         ["-e", "setInterval(()=>{},1000)"],
-        { timeout: 100, stdio: "ignore" },
+        { timeout: 100, stdio: "ignore" }
       );
       expect(result).toMatchObject({
         status: null,
@@ -454,7 +455,7 @@ describe("disposable actual Cloudflare target", () => {
     const { child, completion } = owner.start(
       process.execPath,
       ["-e", "require('node:fs').writeSync(3,'actual control channel')"],
-      { stdio: ["ignore", "ignore", "ignore", "pipe"] },
+      { stdio: ["ignore", "ignore", "ignore", "pipe"] }
     );
     let control = "";
     child.stdio[3].on("data", (data) => (control += data));
@@ -482,7 +483,7 @@ describe("disposable actual Cloudflare target", () => {
       const result = await owner.run(
         process.execPath,
         ["-e", "process.exit(9)"],
-        { stdio: "ignore" },
+        { stdio: "ignore" }
       );
       expect(result).toMatchObject({
         status: null,

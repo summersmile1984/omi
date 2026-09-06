@@ -7,59 +7,63 @@
   "workers_dev": false,
   "preview_urls": false,
   "ai": {
-    "binding": "AI",
+    "binding": "AI"
   },
   "vectorize": [
     { "binding": "MEMORY_VECTORS", "index_name": "omi-cf-memories-v2" },
     {
       "binding": "ACTION_ITEM_VECTORS",
-      "index_name": "omi-cf-action-items-v2",
+      "index_name": "omi-cf-action-items-v2"
     },
     {
       "binding": "CONVERSATION_VECTORS",
-      "index_name": "omi-cf-conversations-v2",
+      "index_name": "omi-cf-conversations-v2"
     },
     {
       "binding": "TRANSCRIPT_CHUNK_VECTORS",
-      "index_name": "omi-cf-transcript-chunks-v2",
+      "index_name": "omi-cf-transcript-chunks-v2"
     },
     { "binding": "X_POST_VECTORS", "index_name": "omi-cf-x-posts-v2" },
     { "binding": "WORKSTREAM_VECTORS", "index_name": "omi-cf-workstreams-v1" },
     {
       "binding": "SCREEN_ACTIVITY_VECTORS",
-      "index_name": "omi-cf-screen-activity-v1",
-    },
+      "index_name": "omi-cf-screen-activity-v1"
+    }
   ],
   "queues": {
-    "producers": [{ "binding": "JOBS", "queue": "omi-cf-jobs-staging" }],
+    "producers": [{ "binding": "JOBS", "queue": "omi-cf-jobs-staging" }]
   },
   "services": [
     {
-      "binding": "AUTH",
-      "service": "omi-cf-auth-staging",
+      "binding": "SCREEN_FRAME_WRITER",
+      "service": "omi-cf-screen-frame-writer-staging"
     },
+    {
+      "binding": "AUTH",
+      "service": "omi-cf-auth-staging"
+    }
   ],
   "d1_databases": [
     {
       "binding": "APP_DB",
       "database_name": "omi-cf-app-staging",
       "database_id": "995078e7-d4f2-4efd-ad81-22f85ccaf1c8",
-      "migrations_dir": "../../migrations/app",
-    },
+      "migrations_dir": "../../migrations/app"
+    }
   ],
   "r2_buckets": [
     {
       "binding": "ASSETS",
-      "bucket_name": "omi-cf-staging",
+      "bucket_name": "omi-cf-staging"
     },
     {
       "binding": "CONVERSATION_RECORDINGS",
-      "bucket_name": "omi-cf-conversation-recordings-staging",
+      "bucket_name": "omi-cf-conversation-recordings-staging"
     },
     {
       "binding": "SPEECH_PROFILES",
-      "bucket_name": "omi-cf-speech-profiles-staging",
-    },
+      "bucket_name": "omi-cf-speech-profiles-staging"
+    }
   ],
   "vars": {
     "BRAND_SUPPORT_EMAIL": "help@omi.me",
@@ -86,6 +90,6 @@
     "TRIAL_LENGTH_SECONDS": "259200",
     "WORKERS_AI_INTEGRATION_MODEL": "@cf/meta/llama-3.2-3b-instruct",
     "WORKERS_AI_ASR_MODEL": "@cf/openai/whisper-large-v3-turbo",
-    "WORKERS_AI_VECTOR_MODEL": "@cf/baai/bge-m3",
-  },
+    "WORKERS_AI_VECTOR_MODEL": "@cf/baai/bge-m3"
+  }
 }
