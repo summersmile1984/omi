@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 586 have Worker owners and 33 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 594 have Worker owners and 25 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -72,8 +72,11 @@ with separate temporary/permanent buckets. A real local Core/Jobs/R2 flow now
 passes. Both production buckets and retention policies have since been
 provisioned. The [hosted image repair](implementation-2026-09-05/frame-image-hosted-runtime-2026-09-06.md)
 proves the supported file/pixel envelope through the production multipart and
-native Images helpers. All eight slots remain blocked pending public Edge
-routing and complete authenticated storage/deployment acceptance.
+native Images helpers. The [authenticated hosted flow](implementation-2026-09-05/frame-public-hosted-2026-09-06.md)
+now verifies actual Edge/Auth/Core/D1/R2 creation, upload, private reads, promotion,
+revocation and cleanup with synthetic accounts. These eight slots are staging-owned
+with the upstream read/write/upload rate limits. Complete product deployment and
+the separate JIT trigger/memory families remain required.
 
 | Method | Path                                                          |
 | ------ | ------------------------------------------------------------- |

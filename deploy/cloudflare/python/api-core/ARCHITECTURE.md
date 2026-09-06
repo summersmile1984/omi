@@ -149,12 +149,17 @@ after the R2 fetch. Both read paths stream authorized bytes with no-store.
 
 A real local workerd run exercised PNG upload, temporary reads, concurrent
 promotion, conversation photo reads, deletion and the actual Jobs cleanup against
-two local R2 buckets. The public Edge family remains blocked pending supported-input
-hosted memory/CPU qualification, new bucket provisioning and complete deployment
-acceptance. Reusing the upstream canonicalizer source does not guarantee
-byte-identical JPEG encodings across native and WASM image-library builds; storage
-integrity is checked against the canonical bytes produced by the active runtime.
-No JIT memory/trigger family was promoted by implementing its image transport.
+two local R2 buckets. The supported-input envelope subsequently passed hosted
+native Images qualification. All eight public Edge routes now use the existing
+Better Auth/account admission proxy and upstream hourly per-account limits
+(read 120, write 120, upload 30). The authenticated hosted flow passed 35 HTTP
+requests for creation, upload, private reads, promotion, revocation and actual
+cleanup against isolated D1/R2. Its client read the public account control and
+carried the current generation, rather than assuming the legacy default 0.
+[The evidence and fixture boundaries](../../../../dev/unified-main/implementation-2026-09-05/frame-public-hosted-2026-09-06.md)
+distinguish this storage family from full deployment, desktop capture, scheduled
+cleanup and JIT memory/trigger qualification. JPEG encoding is runtime-specific;
+stored and served bytes are checked against that runtime's canonical output.
 
 `referral_routes.py` preserves the desktop `ref1` HMAC wire format using a
 dedicated `REFERRAL_SIGNING_SECRET`. Link and login destinations come from the

@@ -3,11 +3,11 @@ title: "Cloudflare frame requests"
 description: "Frame request metadata and client lifecycle in the Cloudflare target"
 ---
 
-The frame-request API is under development in the Cloudflare target. Core
-implements metadata, image upload, promotion, private reads and cleanup. Public
-routing remains unavailable until the hosted resource/input limits and complete
-deployment are qualified. The implementation is not evidence of a live
-production service.
+Core implements frame metadata, image upload, promotion, private reads and
+cleanup. The eight public routes use Edge's Better Auth verification, account
+cutover checks and per-account rate limits: 120 reads, 120 writes and 30 uploads
+per hour. The route inventory is staging-only; this is not evidence of a live
+production service or complete JIT processing.
 
 Create a request with `POST /v1/frame-requests`, supplying `device_id` and
 `dedupe_key`. Optional fields are `account_generation` (default 0),
@@ -16,6 +16,13 @@ an opaque request identifier and returns `request` plus `deduplicated`.
 The lifetime is bounded to six days. Repeating a live logical request returns
 its original identifier even after the minute bucket changes. Retrying after a
 terminal state creates a new identifier and increments `attempt_number`.
+
+For an authenticated client, read `GET /v1/account/cutover/control` and carry its
+`account_generation` through creation, polling, state, upload, promotion and
+temporary reads. The default `0` is for a legacy account with no cutover record;
+a newly bootstrapped Cloudflare account has generation `1`. Sending a stale
+generation returns 404. The current JIT rollout must also permit work. Missing
+rollout and an enabled deployment kill switch retain their upstream denial.
 
 Poll `GET /v1/frame-requests/pending` with `device_id`, `account_generation` and
 an optional `limit` from 1 to 32. Only that device's unexpired requested records

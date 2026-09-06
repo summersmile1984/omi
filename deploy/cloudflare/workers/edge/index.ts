@@ -2091,6 +2091,20 @@ app.get("/v1/conversations/:conversationId", proxyAuthenticatedCore);
 app.delete("/v1/conversations/:conversationId", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/photos", proxyAuthenticatedCore);
 app.get(
+  "/v1/conversations/:conversationId/photos/:photoId/image",
+  proxyAuthenticatedCore
+);
+app.get("/v1/frame-requests/pending", proxyAuthenticatedCore);
+app.get("/v1/frame-requests/status/:requestId", proxyAuthenticatedCore);
+app.get(
+  "/v1/frame-requests/temporary/:requestId/image",
+  proxyAuthenticatedCore
+);
+app.post("/v1/frame-requests", proxyAuthenticatedCore);
+app.post("/v1/frame-requests/:requestId/state", proxyAuthenticatedCore);
+app.post("/v1/frame-requests/:requestId/upload", proxyAuthenticatedCore);
+app.post("/v1/frame-requests/:requestId/promote", proxyAuthenticatedCore);
+app.get(
   "/v1/conversations/:conversationId/transcripts",
   proxyAuthenticatedCore,
 );

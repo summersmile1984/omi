@@ -309,8 +309,8 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
   after a new backend route leaves it `unclassified` and fails the fork route
-  gate. The current inventory contains 619 backend route identities: 583 have
-  Cloudflare staging owners, 36 are blocked with planned owners and missing
+  gate. The current inventory contains 619 backend route identities: 594 have
+  Cloudflare staging owners, 25 are blocked with planned owners and missing
   contracts in [the CF-4 ledger](../../dev/unified-main/09-cloudflare-route-migrations.md),
   and 0 remain `legacy-owned`. This is a coverage classification, not a
   complete Cloudflare product qualification. Edge directly serves

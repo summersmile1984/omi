@@ -404,6 +404,9 @@ families:
     target_owner: rate-limit
     migration_state: staging-partial
     migrated_policies:
+      - frame_requests:read
+      - frame_requests:write
+      - frame_requests:upload
       - action_items:write
       - apps:generate_app
       - apps:generate_description
@@ -449,6 +452,14 @@ families:
       - tts:synthesize
       - gemini:proxy
     migrated_routes:
+      - GET /v1/conversations/:conversationId/photos/:photoId/image
+      - GET /v1/frame-requests/pending
+      - GET /v1/frame-requests/status/:requestId
+      - GET /v1/frame-requests/temporary/:requestId/image
+      - POST /v1/frame-requests
+      - POST /v1/frame-requests/:requestId/promote
+      - POST /v1/frame-requests/:requestId/state
+      - POST /v1/frame-requests/:requestId/upload
       - DELETE /v1/dev/user/action-items/{action_item_id}
       - DELETE /v1/dev/user/conversations/{conversation_id}
       - DELETE /v1/dev/user/goals/{goal_id}

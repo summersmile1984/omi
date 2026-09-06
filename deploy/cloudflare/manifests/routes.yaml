@@ -1,6 +1,94 @@
 version: 1
 routes:
   - method: GET
+    path: /v1/conversations/:conversationId/photos/:photoId/image
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do, r2-frame-requests-temporary, r2-frame-requests]
+    rate_limit_policy: frame_requests:read
+    protocol: http
+    rollout: staging-only
+    rollback: restore-qualified-prior-version
+  - method: GET
+    path: /v1/frame-requests/pending
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: frame_requests:read
+    protocol: http
+    rollout: staging-only
+    rollback: restore-qualified-prior-version
+  - method: GET
+    path: /v1/frame-requests/status/:requestId
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: frame_requests:read
+    protocol: http
+    rollout: staging-only
+    rollback: restore-qualified-prior-version
+  - method: GET
+    path: /v1/frame-requests/temporary/:requestId/image
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do, r2-frame-requests-temporary, r2-frame-requests]
+    rate_limit_policy: frame_requests:read
+    protocol: http
+    rollout: staging-only
+    rollback: restore-qualified-prior-version
+  - method: POST
+    path: /v1/frame-requests
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: frame_requests:write
+    protocol: http
+    rollout: staging-only
+    rollback: restore-qualified-prior-version
+  - method: POST
+    path: /v1/frame-requests/:requestId/promote
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do, r2-frame-requests-temporary, r2-frame-requests]
+    rate_limit_policy: frame_requests:write
+    protocol: http
+    rollout: staging-only
+    rollback: restore-qualified-prior-version
+  - method: POST
+    path: /v1/frame-requests/:requestId/state
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do]
+    rate_limit_policy: frame_requests:write
+    protocol: http
+    rollout: staging-only
+    rollback: restore-qualified-prior-version
+  - method: POST
+    path: /v1/frame-requests/:requestId/upload
+    owner: api-core
+    runtime: python-worker
+    target_runtime: python-worker
+    auth_authority: better-auth
+    dependencies: [d1-app, rate-limit-do, r2-frame-requests-temporary, r2-frame-requests, images-binding]
+    rate_limit_policy: frame_requests:upload
+    protocol: http
+    rollout: staging-only
+    rollback: restore-qualified-prior-version
+  - method: GET
     path: /r/{code}
     owner: api-core
     runtime: python-worker

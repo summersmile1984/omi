@@ -17,6 +17,21 @@ export type EdgeRateLimitPolicy = {
 };
 
 export const EDGE_RATE_LIMIT_POLICIES = {
+  "frame_requests:read": {
+    name: "frame_requests:read",
+    maxRequests: 120,
+    windowSeconds: 3600,
+  },
+  "frame_requests:write": {
+    name: "frame_requests:write",
+    maxRequests: 120,
+    windowSeconds: 3600,
+  },
+  "frame_requests:upload": {
+    name: "frame_requests:upload",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
   "users:desktop_usage_daily": {
     name: "users:desktop_usage_daily",
     maxRequests: 600,
@@ -425,6 +440,22 @@ export function edgeRateLimitPolicyForRequest(
   const normalizedMethod = method.toUpperCase();
   const exact = EXACT_ROUTE_POLICIES.get(`${normalizedMethod} ${path}`);
   if (exact) return exact;
+
+  if (
+    normalizedMethod === "GET" &&
+    (/^\/v1\/frame-requests\/(?:pending|status\/[^/]+|temporary\/[^/]+\/image)$/.test(
+      path
+    ) ||
+      /^\/v1\/conversations\/[^/]+\/photos\/[^/]+\/image$/.test(path))
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["frame_requests:read"];
+  }
+  if (normalizedMethod === "POST") {
+    if (/^\/v1\/frame-requests\/[^/]+\/upload$/.test(path))
+      return EDGE_RATE_LIMIT_POLICIES["frame_requests:upload"];
+    if (/^\/v1\/frame-requests(?:\/[^/]+\/(?:state|promote))?$/.test(path))
+      return EDGE_RATE_LIMIT_POLICIES["frame_requests:write"];
+  }
 
   if (
     normalizedMethod === "POST" &&
