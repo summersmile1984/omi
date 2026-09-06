@@ -11,13 +11,35 @@ The build stages six `screen_frames_*` modules directly from the upstream
 screenshot contract owners. Pillow 11.3.0 supplies the unchanged canonicalizer
 and palette implementation in Pyodide. The staged privacy prompt is identical
 to the upstream prompt; there is no Cloudflare-specific prompt rewrite. These
-modules are a build prerequisite, not registered screenshot routes. The
+modules are projected into both the ordinary build and the CPython test runner. The
 independent `screen-frame-writer` Worker now owns `SCREEN_FRAMES` R2 and one-use
 write receipts. Core receives only its service binding and the dedicated
 `SCREEN_FRAME_SIGNING_SECRET`. The export includes screenshot settings and
-visible sets; upload journals remain internal. Core adjudication, atomic survivor
-selection and the public content proxy still need implementation and business
-qualification before the eight route slots can become owned.
+visible sets; upload journals remain internal.
+
+`screen_frame_views.py` registers the seven settings/read/sharing/delete routes
+in Core. The staged upstream types and selection function own their wire shape,
+banner threshold and strip order. Deletes increment revision and cancellation
+epoch in one D1 mutation; per-frame deletion compares both counters before
+publishing, so a concurrent removal cannot be restored. The database transitions
+removed receipts to cleanup; the isolated writer retries physical R2 erasure.
+Setting disable hides retained frames and cancels pending writes. Sharing changes
+do not bump revision. Public reads resolve the established unique share index
+and return an empty set for unavailable/private/disabled subjects.
+
+`screen_frame_content.py` issues only scoped read capabilities using the admitted
+API origin. Its public content proxy forwards only the token to the writer and
+streams the response without buffering the image. Reader cancellation propagates
+on disconnect. The writer checks live D1 state after R2 fetch, revoking old URLs
+when the subject/frame is removed, sharing is withdrawn or screenshots are disabled.
+All successful responses use no-store. Malformed stored frames are omitted with
+the shared sanitized fallback event; missing legacy palette uses the upstream
+neutral colors. Invalid signing configuration fails the entire read with 503.
+
+These are Core prerequisites: Edge routing and the eight route inventory slots
+remain blocked until adjudication, approval minting, atomic publication and full
+hosted business qualification are implemented. Native local workerd evidence
+uses pre-seeded approved receipts/bytes and does not qualify AI adjudication.
 
 `referral_routes.py` preserves the desktop `ref1` HMAC wire format using a
 dedicated `REFERRAL_SIGNING_SECRET`. Link and login destinations come from the

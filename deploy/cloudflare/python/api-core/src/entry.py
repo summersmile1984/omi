@@ -41,6 +41,8 @@ from score_routes import router as score_router
 from focus_routes import router as focus_router
 from advice_routes import router as advice_router
 from screen_activity_routes import router as screen_activity_router
+from screen_frame_content import router as screen_frame_content_router
+from screen_frame_views import router as screen_frame_views_router
 from calendar_onboarding_routes import router as calendar_onboarding_router
 from calendar_meeting_routes import router as calendar_meeting_router
 from apple_health_routes import router as apple_health_router
@@ -109,6 +111,8 @@ app.include_router(score_router)
 app.include_router(focus_router)
 app.include_router(advice_router)
 app.include_router(screen_activity_router)
+app.include_router(screen_frame_content_router)
+app.include_router(screen_frame_views_router)
 app.include_router(calendar_onboarding_router)
 app.include_router(calendar_meeting_router)
 app.include_router(apple_health_router)

@@ -1,0 +1,49 @@
+---
+title: "Cloudflare meeting screenshots"
+description: "Screenshot display, settings and revocation for clients using the Cloudflare target"
+---
+
+The screenshot API is under development in the Cloudflare target. Core implements
+the read and revocation operations below; the public Edge route family remains
+unavailable until candidate adjudication and the complete workflow are qualified.
+Do not use these implementation results as evidence of a live deployment.
+
+An authenticated `GET /v1/screen-frame-egress/settings` returns
+`meeting_note_screenshots_enabled`, which defaults to true for existing accounts
+without a settings record. PATCH the same route with that boolean to change it.
+Disabling screenshots hides retained images on owner and shared views and makes
+existing image URLs unavailable. Enabling it restores retained images.
+
+`GET /v1/conversations/{conversation_id}/screenshots` returns the owner's frame
+set: `revision`, nullable `banner`, up to six `strip` frames and nullable
+`adjudicated_at`. Use `adjudicated_at` to determine whether candidate evaluation
+already ran; a zero revision alone does not mean it has never run.
+
+Each frame includes `content_url`, `thumbnail_url`, `url_expires_at`, caption,
+labels, dimensions and server-derived background colors. Image URLs last at most
+one hour and are rechecked against current privacy state on every read. Treat
+them as opaque capabilities and obtain fresh URLs by reloading the frame set.
+Responses are not cacheable.
+
+PATCH `/v1/conversations/{conversation_id}/screenshot-sharing` with
+`{"enabled": false}` to withdraw screenshot sharing. This leaves the conversation's
+other sharing state and the screenshot revision unchanged. Shared screenshot URLs
+then become unavailable; owner URLs remain usable when screenshots are enabled.
+
+The unauthenticated
+`GET /v1/conversations/{conversation_id}/shared/screenshots` returns an empty set
+when the conversation is missing, private, no longer shared or screenshots are
+disabled. Those cases all return 200. Public lookup uses the existing unique
+conversation share owner.
+
+DELETE `/v1/conversations/{conversation_id}/screenshots/{frame_id}` removes one
+frame and may promote another already-approved survivor to banner. Deleting a
+missing frame returns 404. DELETE `/v1/conversations/{conversation_id}/screenshots`
+removes the whole set, including when it is already empty. Both return the
+updated set and increment its revision. Removed image URLs become unavailable
+immediately after the committed mutation; physical object cleanup is retried by
+the storage service. Deletion preserves `adjudicated_at`.
+
+Client-supplied verdicts cannot approve an image. The separate candidate
+adjudication endpoint must be implemented before this route family can be
+enabled for deployment.

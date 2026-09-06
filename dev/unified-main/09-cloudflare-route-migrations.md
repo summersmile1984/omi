@@ -33,9 +33,12 @@ stages the unchanged upstream image processing, wire types and privacy prompt.
 It proves local Pyodide image execution. The subsequent
 [storage boundary verification](implementation-2026-09-05/screen-frame-storage-2026-09-06.md)
 adds the independent R2 writer, one-use approval verification, revocable content
-reads and account erasure. These eight route slots remain blocked pending Core
-adjudication, approval minting, survivor publication, public routing and full
-hosted business qualification.
+reads and account erasure. The subsequent
+[Core screenshot views verification](implementation-2026-09-05/screen-frame-views-2026-09-06.md)
+adds settings, owner/public reads, sharing revocation, concurrent-safe deletion
+and the streaming content proxy in Core. These eight route slots remain blocked
+pending Core adjudication, approval minting, survivor publication, Edge routing
+and full hosted business qualification.
 
 | Method | Path                                                         |
 | ------ | ------------------------------------------------------------ |
