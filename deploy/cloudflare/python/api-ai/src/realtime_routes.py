@@ -11,13 +11,15 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, StrictInt, StrictStr, ValidationError
+from pydantic import BaseModel, Field, StrictInt, StrictStr, ValidationError
 
 from internal_auth import decode_context
+from chat_quota import free_quota_detail, question_reservation_statement, trial_paywall_applies
 
 try:
     from workers import fetch as worker_fetch
@@ -43,6 +45,7 @@ class MintRequest(BaseModel):
 class UsageReport(BaseModel):
     provider: StrictStr
     model: StrictStr = ""
+    turn_id: StrictStr = Field(default="", max_length=1024)
     input_text_tokens: StrictInt = 0
     input_audio_tokens: StrictInt = 0
     input_cached_tokens: StrictInt = 0
@@ -264,23 +267,34 @@ def _token_count(value: int) -> int:
 
 
 def _usage_cost(report: UsageReport) -> float:
-    provider = report.provider.lower()
+    provider = report.provider.strip().lower()
     if provider in {"workers-ai", "cloudflare-workers-ai"}:
         # Native Realtime usage is metered by the DO's speech-duration source;
         # this legacy token-shaped endpoint must not invent an external cost.
-        rates = (0.0, 0.0, 0.0, 0.0, 0.0)
+        return 0.0
     elif provider == "openai":
-        rates = (4.0, 32.0, 0.4, 24.0, 64.0)
+        rates = (4_000_000, 32_000_000, 400_000, 400_000, 24_000_000, 64_000_000)
     else:
-        rates = (0.75, 3.0, 0.075, 4.5, 12.0)
+        rates = (750_000, 3_000_000, 750_000, 3_000_000, 4_500_000, 12_000_000)
+    # Match upstream client_reported_turn: cache is a subset of the modality
+    # counts, attributed text first. Gemini Live publishes no cache discount.
+    text = _token_count(report.input_text_tokens)
+    audio = _token_count(report.input_audio_tokens)
+    cached = _token_count(report.input_cached_tokens)
+    cached_text = min(cached, text)
+    cached_audio = min(cached - cached_text, audio)
     values = (
-        _token_count(report.input_text_tokens),
-        _token_count(report.input_audio_tokens),
-        _token_count(report.input_cached_tokens),
+        text - cached_text,
+        audio - cached_audio,
+        cached_text,
+        cached_audio,
         _token_count(report.output_text_tokens),
         _token_count(report.output_audio_tokens),
     )
-    return sum(value * rate for value, rate in zip(values, rates)) / 1_000_000
+    # Integer micro-USD rate cards and half-up rounding match the server's
+    # realtime_turn_cost_micro_usd; binary float/banker's rounding does not.
+    micros = (sum(value * rate for value, rate in zip(values, rates)) + 500_000) // 1_000_000
+    return micros / 1_000_000
 
 
 @router.post("/v2/realtime/usage", status_code=204)
@@ -310,36 +324,84 @@ async def report_realtime_usage(request: Request):
         return Response(status_code=204)
     database = getattr(request.scope["env"], "APP_DB", None)
     if database is None:
-        return Response(status_code=204)
+        return Response(status_code=502)
+    env = request.scope["env"]
+    uid = str(context["uid"])
+    managed = provider in {"openai", "gemini"}
+    provider = provider if managed else "workers-ai"
+    # Managed hub turns and native speech metadata are different meters. Both
+    # native aliases share one identity; the two hub providers share another.
+    prefix = "realtime_hub:" if managed else "realtime_speech:"
+    identity = hashlib.sha256(report.turn_id.encode()).hexdigest() if report.turn_id else "legacy:" + uuid.uuid4().hex
+    key = prefix + identity
+    model = (OPENAI_REALTIME_MODEL if provider == "openai" else GEMINI_LIVE_MODEL) if managed else ""
     now = int(time.time())
-    usage_date = time.strftime("%Y-%m-%d", time.gmtime(now))
     cost_micros = int(round(_usage_cost(report) * 1_000_000))
     try:
-        await database.prepare(
-            "INSERT INTO cf_realtime_usage "
-            "(uid, usage_date, input_text_tokens, input_audio_tokens, input_cached_tokens, output_text_tokens, "
-            "output_audio_tokens, total_tokens, cost_micros, call_count, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?) "
-            "ON CONFLICT(uid, usage_date) DO UPDATE SET "
-            "input_text_tokens = input_text_tokens + excluded.input_text_tokens, "
-            "input_audio_tokens = input_audio_tokens + excluded.input_audio_tokens, "
-            "input_cached_tokens = input_cached_tokens + excluded.input_cached_tokens, "
-            "output_text_tokens = output_text_tokens + excluded.output_text_tokens, "
-            "output_audio_tokens = output_audio_tokens + excluded.output_audio_tokens, "
-            "total_tokens = total_tokens + excluded.total_tokens, cost_micros = cost_micros + excluded.cost_micros, "
-            "call_count = call_count + 1, updated_at = excluded.updated_at"
-        ).bind(
-            str(context["uid"]),
-            usage_date,
-            _token_count(report.input_text_tokens),
-            _token_count(report.input_audio_tokens),
-            cached,
-            _token_count(report.output_text_tokens),
-            _token_count(report.output_audio_tokens),
-            total,
-            cost_micros,
-            now,
-        ).run()
+        statements = []
+        if managed:
+            statements.append(
+                question_reservation_statement(
+                    env,
+                    uid=uid,
+                    idempotency_key=key,
+                    message_id=identity,
+                    chat_session_id=None,
+                    platform="desktop",
+                    account_created_at=context.get("accountCreatedAt"),
+                    has_byok_keys=False,
+                    occurred_at=now,
+                    source="desktop_realtime_turn",
+                )
+            )
+        statements.append(
+            database.prepare(
+                "INSERT INTO cf_realtime_usage_events "
+                "(uid, idempotency_key, provider, model, input_text_tokens, input_audio_tokens, input_cached_tokens, "
+                "output_text_tokens, output_audio_tokens, total_tokens, cost_micros, occurred_at) "
+                "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ? = 1 OR EXISTS ("
+                "SELECT 1 FROM cf_chat_quota_events WHERE uid = ? AND idempotency_key = ? "
+                "AND source = 'desktop_realtime_turn') ON CONFLICT(uid, idempotency_key) DO NOTHING"
+            ).bind(
+                uid,
+                key,
+                provider,
+                model,
+                _token_count(report.input_text_tokens),
+                _token_count(report.input_audio_tokens),
+                cached,
+                _token_count(report.output_text_tokens),
+                _token_count(report.output_audio_tokens),
+                total,
+                cost_micros,
+                now,
+                int(not managed),
+                uid,
+                key,
+            )
+        )
+        await database.batch(statements)
+        receipt = (
+            await database.prepare(
+                "SELECT 1 AS recorded FROM cf_realtime_usage_events WHERE uid = ? AND idempotency_key = ?"
+            )
+            .bind(uid, key)
+            .first()
+        )
+        if not isinstance(receipt, dict):
+            if not managed:
+                raise RuntimeError("native usage receipt unavailable")
+            detail = await free_quota_detail(
+                env,
+                uid,
+                force_exhausted=trial_paywall_applies(
+                    env,
+                    platform="desktop",
+                    account_created_at=context.get("accountCreatedAt"),
+                    has_byok_keys=False,
+                ),
+            )
+            return JSONResponse({"detail": detail}, status_code=402, headers={"cache-control": "no-store"})
     except Exception:
         return Response(status_code=502)
     return Response(status_code=204)

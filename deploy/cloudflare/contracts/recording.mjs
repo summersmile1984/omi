@@ -373,6 +373,40 @@ try {
   owner.token = (
     await request("auth", "/api/auth/token", 200, { token: owner.session })
   ).data.token;
+  await caseOf("recording.realtime-usage-idempotent-cost-and-export", async () => {
+    const before = await request("api", "/v1/users/me/llm-usage/total", 200, { token: owner.token });
+    const quota = await request("api", "/v1/users/me/usage-quota", 200, { token: owner.token });
+    const body = {
+      provider: "openai", model: "caller-cannot-select-rates", turn_id: randomUUID(),
+      input_text_tokens: 100, input_cached_tokens: 40,
+    };
+    await request("api", "/v2/realtime/usage", 401, { method: "POST", body, bytes: true });
+    await Promise.all(Array.from({ length: 4 }, () => request("api", "/v2/realtime/usage", 204, {
+      token: owner.token, method: "POST", body, bytes: true,
+    })));
+    await request("api", "/v2/realtime/usage", 204, {
+      token: owner.token, method: "POST", body: { ...body, input_text_tokens: 200 }, bytes: true,
+    });
+    const after = await request("api", "/v1/users/me/llm-usage/total", 200, { token: owner.token });
+    require(Math.abs(after.data.total_cost_usd - before.data.total_cost_usd - 0.000256) < 1e-9,
+      "realtime retry or cached input changed the charged cost");
+    const used = await request("api", "/v1/users/me/usage-quota", 200, { token: owner.token });
+    require(used.data.used === quota.data.used + 1, "one realtime turn did not consume exactly one question");
+    await Promise.all(["workers-ai", "cloudflare-workers-ai"].map((provider) =>
+      request("api", "/v2/realtime/usage", 204, {
+        token: owner.token, method: "POST", body: { ...body, provider }, bytes: true,
+      })));
+    const nativeQuota = await request("api", "/v1/users/me/usage-quota", 200, { token: owner.token });
+    require(nativeQuota.data.used === used.data.used, "native speech metadata charged a chat question");
+    const exported = await request("api", "/v1/users/export", 200, { token: owner.token });
+    require(exported.data.realtime_turns.length === 2, "realtime turn receipts were duplicated or missing");
+    const managed = exported.data.realtime_turns.find((row) => row.provider === "openai");
+    require(managed?.cost_micros === 256 && managed?.input_text_tokens === 100 &&
+      managed?.model === "gpt-realtime-2" && !managed?.idempotency_key.includes(body.turn_id),
+      "realtime receipt did not preserve the first normalized report");
+    const otherExport = await request("api", "/v1/users/export", 200, { token: other.token });
+    require(otherExport.data.realtime_turns.length === 0, "realtime usage crossed account ownership");
+  });
   await caseOf("recording.desktop-daily-usage-concurrent-maxima", async () => {
     const data = {
       date: new Date().toISOString().slice(0, 10),

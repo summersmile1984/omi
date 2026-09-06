@@ -44,6 +44,11 @@ locked Wrangler/workerd, then executes:
   Auth identity columns, and R2 object keys must reach zero. The short-lived App
   tombstone and durable Auth revocation fence remain by design. This checks
   logical R2 deletion, not physical disk reclamation or hosted Vectorize erasure.
+  The same lane submits concurrent synthetic realtime usage reports through
+  public HTTP, verifies one quota increment and cached-input cost, checks that
+  native speech aliases do not charge a chat question, then exports and erases
+  the actual D1 turn receipts. It does not open an OpenAI/Gemini session or
+  call those providers; these are client-reported accounting contracts.
   The inspector never seeds state or runs a deletion processor. This is not the
   full dual-target recording matrix.
   The local provider includes deterministic embedding output and a transient

@@ -173,6 +173,26 @@ def _body(response):
     return json.loads(response.body.decode())
 
 
+def test_export_includes_only_owned_realtime_turns_and_totals():
+    secret = 'export-secret'
+    env = make_env(secret)
+    for uid, tokens in [('export-user', 10), ('other-user', 20)]:
+        env.APP_DB.connection.execute(
+            "INSERT INTO cf_realtime_usage_events "
+            "(uid, idempotency_key, provider, model, input_text_tokens, input_audio_tokens, input_cached_tokens, "
+            "output_text_tokens, output_audio_tokens, total_tokens, cost_micros, occurred_at) "
+            "VALUES (?, 'hashed-turn', 'workers-ai', '', ?, 0, 0, 0, 0, ?, 0, 1)",
+            (uid, tokens, tokens),
+        )
+    env.APP_DB.connection.commit()
+    response = asyncio.run(export_user_data(FakeRequest(env, signed_headers(secret))))
+    assert response.status_code == 200
+    payload = _body(response)
+    assert len(payload['realtime_turns']) == 1 and len(payload['realtime_usage']) == 1
+    assert payload['realtime_turns'][0]['total_tokens'] == payload['realtime_usage'][0]['total_tokens'] == 10
+    assert 'uid' not in payload['realtime_turns'][0]
+
+
 def test_export_is_authenticated_uid_scoped_and_preserves_user_visible_shape():
     secret = "export-secret"
     env = make_env(secret)

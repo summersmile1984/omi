@@ -211,6 +211,13 @@ this route can be marked owned. The target profile's
 the token-request entry point (CLIENT-1); this is a retained delivery obligation,
 not a permanent removal of the user's live-model goal.
 
+The reachable `/v2/realtime/usage` accounting path now uses an immutable
+UID/turn receipt and one D1 transaction for quota, daily counters and desktop
+cost. Retries retain the first report, cached input is priced as a subset,
+missing storage fails, and export/account deletion include the new receipts.
+This repairs client-reported accounting; it does not prove a native interactive
+provider, observed wire usage, cancellation or the session-mint contract above.
+
 <a id="cf4-desktop-daily-writes"></a>
 ## CF-4: desktop daily writes
 

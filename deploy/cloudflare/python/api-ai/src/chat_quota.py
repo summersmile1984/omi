@@ -52,7 +52,7 @@ def trial_paywall_applies(
     return current - account_created_at > duration
 
 
-async def reserve_chat_question(
+def question_reservation_statement(
     env: object,
     *,
     uid: str,
@@ -64,7 +64,7 @@ async def reserve_chat_question(
     has_byok_keys: bool = False,
     occurred_at: int | None = None,
     source: str = "v2_messages",
-) -> bool:
+) -> object:
     """Reserve one question atomically; only Free is hard-capped.
 
     The conditional INSERT is one D1 statement so concurrent request handlers
@@ -84,7 +84,7 @@ async def reserve_chat_question(
         has_byok_keys=has_byok_keys,
         now=now,
     )
-    await database.prepare(
+    return database.prepare(
         "INSERT OR IGNORE INTO cf_chat_quota_events "
         "(uid, idempotency_key, source, message_id, chat_session_id, platform, occurred_at) "
         "SELECT ?, ?, ?, ?, ?, ?, ? WHERE "
@@ -107,7 +107,36 @@ async def reserve_chat_question(
         start,
         end,
         limit,
+    )
+
+
+async def reserve_chat_question(
+    env: object,
+    *,
+    uid: str,
+    idempotency_key: str,
+    message_id: str,
+    chat_session_id: str | None,
+    platform: str | None,
+    account_created_at: int | None = None,
+    has_byok_keys: bool = False,
+    occurred_at: int | None = None,
+    source: str = "v2_messages",
+) -> bool:
+    """Reserve a question and read the committed admission result."""
+    await question_reservation_statement(
+        env,
+        uid=uid,
+        idempotency_key=idempotency_key,
+        message_id=message_id,
+        chat_session_id=chat_session_id,
+        platform=platform,
+        account_created_at=account_created_at,
+        has_byok_keys=has_byok_keys,
+        occurred_at=occurred_at,
+        source=source,
     ).run()
+    database = env.APP_DB
     row = (
         await database.prepare("SELECT 1 AS reserved FROM cf_chat_quota_events WHERE uid = ? AND idempotency_key = ?")
         .bind(uid, idempotency_key)
@@ -250,6 +279,7 @@ __all__ = [
     "free_quota_detail",
     "provider_cost_usd",
     "provider_usage",
+    "question_reservation_statement",
     "reserve_chat_question",
     "reserve_stateless_chat_question",
     "settle_failed_question",
