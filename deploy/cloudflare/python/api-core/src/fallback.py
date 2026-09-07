@@ -20,6 +20,7 @@ def record_fallback(
         "auth_worker",
         "canonical_consolidation",
         "recurrence_signal",
+        "candidate_integration",
         "recurrence_inbox",
         "workers_ai",
         "transcript_vectorize",
@@ -30,6 +31,7 @@ def record_fallback(
     allowed_to = {
         "canonical_consolidation_retry",
         "recurrence_inbox_retry",
+        "candidate_integration_retry",
         "canonical_consolidation_review",
         "canonical_consolidation_quarantine",
         "metadata_only",

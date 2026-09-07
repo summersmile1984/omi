@@ -1,3 +1,11 @@
+import type { Message, MessageBatch } from "@cloudflare/workers-types";
+import jobs from "../workers/jobs/index";
+import type { JobMessage } from "../workers/jobs/env";
+import {
+  processCandidateIntegrationMessage,
+  reconcileCandidateIntegrations,
+} from "../workers/jobs/candidate-integrations";
+import { verifyRequestAuthContext } from "../workers/shared/auth-context";
 import { readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
@@ -607,5 +615,320 @@ describe("task integration routes", () => {
     expect(new Headers(taskCall?.init?.headers).get("authorization")).toBe(
       "Bearer refreshed-access",
     );
+  });
+});
+
+describe("accepted Candidate integration delivery", () => {
+  function message(): Message<JobMessage> {
+    return {
+      id: "delivery-1",
+      timestamp: new Date(),
+      attempts: 1,
+      body: {
+        uid: "task-user",
+        jobId: "candidate-1",
+        kind: "candidate_integration",
+        payload: { account_generation: 0, lease_token: "a".repeat(32) },
+      },
+      ack: vi.fn(),
+      retry: vi.fn(),
+    } as unknown as Message<JobMessage>;
+  }
+  async function connected(
+    platform: string,
+    configuration: Record<string, string> = {},
+  ) {
+    const value = environment();
+    value.env.INTERNAL_ASSERTION_SECRET = "integration-test-secret";
+    const app = testApp(value.env, {
+      fetchImpl: value.external.fetchImpl,
+      now: () => 5000,
+    });
+    expect(
+      (
+        await app.request(`/v1/task-integrations/${platform}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            connected: true,
+            access_token: "provider-token",
+            ...configuration,
+          }),
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await app.request("/v1/task-integrations/default", {
+          method: "PUT",
+          body: JSON.stringify({ app_key: platform }),
+        })
+      ).status,
+    ).toBe(200);
+    return { ...value, app };
+  }
+  function processor(
+    env: JobsEnv,
+    prepare: Record<string, unknown> = {
+      status: "ready",
+      task: {
+        id: "task-1",
+        description: "Ship the report",
+        due_at: "2026-09-09T10:00:00Z",
+        exported: false,
+      },
+    },
+  ) {
+    const calls: Array<Record<string, unknown>> = [];
+    env.API_CORE = {
+      fetch: vi.fn(async (request: Request) => {
+        const auth = await verifyRequestAuthContext(
+          request,
+          "api-core",
+          env.INTERNAL_ASSERTION_SECRET,
+        );
+        expect(auth?.uid).toBe("task-user");
+        expect(auth?.authority).toBe("internal");
+        expect(new URL(request.url).pathname).toBe(
+          "/internal/candidates/integrations",
+        );
+        const body = (await request.json()) as Record<string, unknown>;
+        calls.push(body);
+        return Response.json(
+          body.action === "prepare"
+            ? prepare
+            : { status: body.succeeded ? "completed" : "failed" },
+        );
+      }),
+    } as unknown as Fetcher;
+    return calls;
+  }
+  it.each([
+    ["todoist", {}, "todoist-task"],
+    ["asana", { workspace_gid: "workspace-1" }, "asana-task"],
+    ["google_tasks", { default_list_id: "google-list" }, "google-task"],
+    ["clickup", { list_id: "list-1" }, "clickup-task"],
+  ] as const)(
+    "dispatches %s through its existing encrypted provider owner",
+    async (platform, configuration, externalId) => {
+      const t = await connected(platform, configuration);
+      const calls = processor(t.env);
+      const m = message();
+      await processCandidateIntegrationMessage(m, t.env, {
+        fetchImpl: t.external.fetchImpl,
+        now: () => 5000,
+      });
+      expect(m.ack).toHaveBeenCalledOnce();
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toMatchObject({
+        action: "settle",
+        platform,
+        succeeded: true,
+        external_id: externalId,
+      });
+      expect(t.external.fetchImpl).toHaveBeenCalledOnce();
+      const init = t.external.fetchImpl.mock.calls[0][1];
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(init?.signal?.aborted).toBe(false);
+    },
+  );
+  it("preserves a canonical 4096-character task instead of applying the manual form limit", async () => {
+    const t = await connected("asana", { workspace_gid: "workspace-1" });
+    const title = "Report " + "x".repeat(4089);
+    processor(t.env, {
+      status: "ready",
+      task: { id: "task-1", description: title, due_at: null, exported: false },
+    });
+    await processCandidateIntegrationMessage(message(), t.env, {
+      fetchImpl: t.external.fetchImpl,
+      now: () => 5000,
+    });
+    expect(
+      JSON.parse(String(t.external.fetchImpl.mock.calls[0][1]?.body)),
+    ).toMatchObject({ data: { name: title } });
+  });
+  it("acknowledges an obsolete lease without an external write", async () => {
+    const t = await connected("todoist");
+    const calls = processor(t.env, { status: "obsolete" });
+    const m = message();
+    await processCandidateIntegrationMessage(m, t.env, {
+      fetchImpl: t.external.fetchImpl,
+    });
+    expect(m.ack).toHaveBeenCalledOnce();
+    expect(calls).toHaveLength(1);
+    expect(t.external.calls).toHaveLength(0);
+  });
+  it.each([false, true])(
+    "completes no-default/already-exported work without duplicating tasks (%s)",
+    async (exported) => {
+      const t = exported ? await connected("todoist") : environment();
+      t.env.INTERNAL_ASSERTION_SECRET = "integration-test-secret";
+      const calls = processor(t.env, {
+        status: "ready",
+        task: {
+          id: "task-1",
+          description: "Already done",
+          due_at: null,
+          exported,
+        },
+      });
+      const m = message();
+      await processCandidateIntegrationMessage(m, t.env, {
+        fetchImpl: t.external.fetchImpl,
+      });
+      expect(calls[1]).toMatchObject({ action: "settle", succeeded: true });
+      expect(t.external.calls).toHaveLength(0);
+    },
+  );
+  it("persists provider failure before acknowledging transport", async () => {
+    const t = await connected("todoist");
+    const calls = processor(t.env);
+    const m = message();
+    await processCandidateIntegrationMessage(m, t.env, {
+      fetchImpl: async () =>
+        Response.json(
+          { error: "controlled provider failure" },
+          { status: 503 },
+        ),
+    });
+    expect(calls[1]).toMatchObject({ succeeded: false, external_id: null });
+    expect(m.ack).toHaveBeenCalledOnce();
+  });
+  it("does not call provider or acknowledge when Core preparation is unavailable", async () => {
+    const t = await connected("todoist");
+    processor(t.env);
+    vi.mocked(t.env.API_CORE!.fetch).mockResolvedValue(
+      Response.json({ error: "unavailable" }, { status: 503 }),
+    );
+    const m = message();
+    await expect(
+      processCandidateIntegrationMessage(m, t.env, {
+        fetchImpl: t.external.fetchImpl,
+      }),
+    ).rejects.toThrow("processor unavailable");
+    expect(m.ack).not.toHaveBeenCalled();
+    expect(t.external.calls).toHaveLength(0);
+  });
+  it("does not report Apple Reminders success when push credentials are unavailable", async () => {
+    const t = await connected("apple_reminders");
+    const calls = processor(t.env, {
+      status: "ready",
+      task: {
+        id: "task-1",
+        description: "Reminder",
+        due_at: null,
+        exported: false,
+      },
+      push: { tag: "sync-tag", data: { type: "apple_reminders_sync" } },
+    });
+    const m = message();
+    await processCandidateIntegrationMessage(m, t.env);
+    expect(calls[1]).toMatchObject({
+      succeeded: false,
+      platform: "apple_reminders",
+    });
+    expect(m.ack).toHaveBeenCalledOnce();
+  });
+  it("reconciles eligible owned outboxes, preserves leases/backoff and recovers other users after failure", async () => {
+    const t = environment();
+    t.env.INTERNAL_ASSERTION_SECRET = "integration-test-secret";
+    const now = Date.now();
+    const date = (offset: number) => new Date(now + offset).toISOString();
+    function seed(
+      uid: string,
+      status: string,
+      extra: Record<string, unknown> = {},
+    ) {
+      const db = t.database.database;
+      db.prepare(
+        "INSERT INTO cf_candidate_write_guard(uid,account_generation,integrations_json) VALUES (?,0,?)",
+      ).run(uid, JSON.stringify([{ id: "candidate-1", before: null }]));
+      db.prepare(
+        "INSERT INTO cf_candidate_integration_outbox(uid,outbox_id,record_json) VALUES (?,?,?)",
+      ).run(
+        uid,
+        "candidate-1",
+        JSON.stringify({
+          outbox_id: "candidate-1",
+          candidate_id: "candidate-1",
+          task_id: "task-1",
+          account_generation: 0,
+          status,
+          updated_at: date(-1000),
+          ...extra,
+        }),
+      );
+      db.prepare("DELETE FROM cf_candidate_write_guard WHERE uid=?").run(uid);
+    }
+    seed("a", "pending");
+    seed("b", "processing", { claimed_at: date(-300_000) });
+    seed("backoff", "failed", { available_at: date(30_000) });
+    seed("leased", "processing", { claimed_at: date(0) });
+    seed("deleted", "pending");
+    seed("old", "pending");
+    seed("done", "completed");
+    t.database.database.exec(
+      "INSERT INTO cf_account_cutover(uid,account_generation,updated_at) VALUES ('old',1,1);INSERT INTO cf_account_deletion_tombstones(uid,completed_at,expires_at) VALUES ('deleted',1,9999999999)",
+    );
+    const calls: string[] = [];
+    t.env.API_CORE = {
+      fetch: vi.fn(async (request: Request) => {
+        const auth = await verifyRequestAuthContext(
+          request,
+          "api-core",
+          t.env.INTERNAL_ASSERTION_SECRET,
+        );
+        calls.push(auth!.uid);
+        expect(await request.json()).toEqual({
+          outbox_id: "candidate-1",
+          account_generation: 0,
+          action: "schedule",
+        });
+        return Response.json(
+          { scheduled: true },
+          { status: auth!.uid === "a" ? 503 : 200 },
+        );
+      }),
+    } as unknown as Fetcher;
+    await expect(reconcileCandidateIntegrations(t.env, now)).rejects.toThrow(
+      "scheduling unavailable",
+    );
+    expect(calls).toEqual(["a", "b"]);
+  });
+  it("wires actual Jobs queue dispatch and the existing replayable DLQ", async () => {
+    const t = environment();
+    t.env.INTERNAL_ASSERTION_SECRET = "integration-test-secret";
+    const calls = processor(t.env);
+    const m = message();
+    await jobs.queue(
+      {
+        queue: "eddy-jobs-production",
+        messages: [m],
+      } as unknown as MessageBatch<JobMessage>,
+      t.env,
+    );
+    expect(calls[1]).toMatchObject({
+      action: "settle",
+      platform: null,
+      succeeded: true,
+    });
+    expect(m.ack).toHaveBeenCalledOnce();
+    const dead = message();
+    await jobs.queue(
+      {
+        queue: "omi-cf-jobs-dlq-production",
+        messages: [dead],
+      } as unknown as MessageBatch<JobMessage>,
+      t.env,
+    );
+    expect(dead.ack).toHaveBeenCalledOnce();
+    expect(
+      t.database.database
+        .prepare("SELECT kind,status,invalid_reason FROM cf_queue_dlq_messages")
+        .get(),
+    ).toEqual({
+      kind: "candidate_integration",
+      status: "captured",
+      invalid_reason: null,
+    });
   });
 });

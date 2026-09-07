@@ -2909,8 +2909,12 @@ storage failures leave no partial batch. The existing durable dispatcher now
 connects scheduled execution, whole-source message sizing and source leases.
 Migration 0188 also commits recurrence inbox receipts with memory results;
 Jobs/Cron consumes them with the unchanged upstream qualification and Candidate
-identity. These local integrations do not establish hosted model/product
-qualification. Other intake families and complete default-read alignment remain
+identity. Accepted Candidates now dispatch their durable integration outbox
+through Core leases and existing Jobs task/FCM adapters. Cloud export flags and
+delivery receipts are atomic; Apple device confirmation remains separate from
+push delivery. The original retry policy and existing Cron recover failures.
+See [integration evidence](../../dev/unified-main/implementation-2026-09-05/canonical-integrations-2026-09-08.md).
+These local integrations do not establish hosted model/product qualification. Other intake families and complete default-read alignment remain
 required. `memory_consolidation_llm.py` now connects the unchanged upstream
 messages to Workers AI and the validated apply owner. It records actual model
 usage and does not substitute a route after errors. The model override is

@@ -80,3 +80,27 @@ Account erasure and generation changes exclude stale receipts. The existing DLQ
 registry includes task_recurrence, and deletion residual/purge inventories include
 the inbox. Tests cover the real Jobs queue, schema, signed boundary and recovery;
 no hosted recurrence delivery has yet been accepted.
+
+
+`candidate-integrations.ts` connects the accepted Candidate outbox to the existing
+task integration and Firebase owners. Core owns all leases and receipt/task
+mutations. Jobs reuses encrypted credentials, refresh and API mapping for Todoist,
+Asana, Google Tasks and ClickUp. The provider function accepts normalized tasks;
+the manual form retains its 500-character limit while canonical tasks preserve
+their original 4,096-character description. Provider requests have a 10-second
+abort deadline, including body consumption. Apple Reminders uses data-only FCM
+with the original items/legacy fields and collapse tag, background APNs priority
+5 and content-available. Missing credentials, no registered device, oversized
+payload or failed push never count as successful Apple delivery. Firebase's
+existing service-account setting remains its credential owner.
+
+The existing Queue/DLQ and five-minute Cron include candidate_integration. Cron
+scans at most 50 eligible receipts across owners and continues after one owner's
+service failure. Generation changes and erasure suppress stale work. A settled
+application failure acknowledges transport and waits for D1 backoff; Core service
+failure retains Queue recovery. External APIs cannot share D1 atomicity: provider
+success followed by a crash before settlement can be retried after lease expiry.
+The upstream provider APIs have no universal idempotency contract; this work does
+not claim globally exactly-once external creation. Local provider/FCM transports
+are controlled in tests; hosted credentials and native device acceptance remain
+release qualification work.

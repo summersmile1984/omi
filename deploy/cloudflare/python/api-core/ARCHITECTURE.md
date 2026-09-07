@@ -1101,9 +1101,27 @@ remain distinct events despite the legacy physical uniqueness index. Historical
 request-only receipts retain their bytes and identity. Owner export now includes
 outcomes without internal hashes; existing account deletion purges them.
 
-These handlers are wired locally; workflow control is still closed. The integration drain endpoint
-returns 503 until a real dispatcher exists. Other legacy writers, hosted/runtime
-verification and release qualification remain unfinished.
+`candidate_integrations.py` now owns accepted-task integration leases and settlement.
+Acceptance commits the original task/outbox first, then claims and sends a JOBS
+message. The public drain returns the count actually queued, with the original
+generation header and 1–500 limit. Lost hints remain in D1; the existing Cron
+reclaims expired 300-second leases. A prepare transaction permits one external
+invocation per lease. Concurrent or replayed messages cannot start it twice.
+The original queue policy is projected unchanged: five failed attempts with
+30-second exponential backoff capped at 1,800 seconds. Cron runs every five
+minutes, so readiness is a lower bound, not an exact dispatch time.
+
+Jobs calls the signed `/internal/candidates/integrations` endpoint for scheduling,
+preparation and settlement. Assertions bind uid, internal authority, audience,
+method and the encoded path. Cloud service success commits task export metadata
+and the outbox receipt together under existing Candidate snapshot/deletion guards.
+Apple preparation marks sync_requested and uses the original payload/tag builder;
+push success completes delivery but device sync-batch confirmation owns exported.
+No default prompt, model, schema or external task data is changed by deployment.
+
+These handlers are wired locally; workflow control is still closed. Other legacy
+writers, hosted/runtime verification and release qualification remain unfinished.
+See the [integration evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-integrations-2026-09-08.md).
 Migrations 0183–0188 are local drafts. See the
 [Candidate evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-candidates-2026-09-08.md)
 and [recommendation evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-recommendations-2026-09-08.md).

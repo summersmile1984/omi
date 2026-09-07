@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { drainNotifications } from "../workers/jobs/firebase-messaging";
+import {
+  drainNotifications,
+  sendAppleRemindersSync,
+} from "../workers/jobs/firebase-messaging";
 
 type Outbox = {
   notification_id: string;
@@ -183,4 +186,86 @@ describe("fair-use Firebase outbox", () => {
     expect(fake.row.not_before).toBeGreaterThan(now);
     expect(fake.row.last_error).toBe("firebase delivery unavailable");
   });
+});
+
+it("sends the original Apple Reminders data as a silent device push", async () => {
+  const fake = messagingDatabase(2_000_000_000);
+  const calls: Array<Record<string, unknown>> = [];
+  const push = {
+    tag: "original-collapse",
+    data: {
+      type: "apple_reminders_sync",
+      items: '[{"id":"task-1","description":"Report","due_at":""}]',
+      action_item_id: "task-1",
+      description: "Report",
+      due_at: "",
+    },
+  };
+  const delivered = await sendAppleRemindersSync(
+    {
+      APP_DB: fake.database,
+      FIREBASE_SERVICE_ACCOUNT_JSON: credentials,
+    } as never,
+    "user-1",
+    push,
+    {
+      accessToken: async () => "access-token",
+      fetcher: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push(JSON.parse(String(init?.body)));
+        return Response.json({ name: "messages/1" });
+      }) as typeof fetch,
+    },
+  );
+  expect(delivered).toBe(true);
+  expect(calls).toEqual([
+    {
+      message: {
+        token: "fcm-token-1",
+        data: push.data,
+        android: { priority: "high", collapse_key: push.tag },
+        apns: {
+          headers: {
+            "apns-priority": "5",
+            "apns-push-type": "background",
+            "apns-collapse-id": push.tag,
+          },
+          payload: { aps: { "content-available": 1 } },
+        },
+      },
+    },
+  ]);
+});
+
+it("does not claim Apple sync succeeded when no device accepted the push", async () => {
+  const fake = messagingDatabase(2_000_000_000);
+  const env = {
+    APP_DB: fake.database,
+    FIREBASE_SERVICE_ACCOUNT_JSON: credentials,
+  } as never;
+  const push = { tag: "sync", data: { type: "apple_reminders_sync" } };
+  expect(
+    await sendAppleRemindersSync(env, "user-1", push, {
+      accessToken: async () => "token",
+      fetcher: async () =>
+        Response.json({ error: "UNREGISTERED" }, { status: 404 }),
+    }),
+  ).toBe(false);
+  expect(fake.tokens.size).toBe(0);
+  expect(await sendAppleRemindersSync(env, "user-1", push)).toBe(false);
+});
+
+it("does not acknowledge an oversized reminder payload after silently discarding its data", async () => {
+  const fake = messagingDatabase(2_000_000_000);
+  const delivered = await sendAppleRemindersSync(
+    {
+      APP_DB: fake.database,
+      FIREBASE_SERVICE_ACCOUNT_JSON: credentials,
+    } as never,
+    "user-1",
+    {
+      tag: "sync",
+      data: { type: "apple_reminders_sync", items: "x".repeat(16_001) },
+    },
+  );
+  expect(delivered).toBe(false);
 });

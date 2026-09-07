@@ -9,6 +9,7 @@ import candidate_kernel_policy as policy
 import candidate_kernel_workflow as workflow
 from candidate_resolve import resolution_receipt
 from vector_search import vector_outbox_statement
+from candidate_integrations import schedule_after_accept
 
 
 async def validate_relationships(tx, *, goal_id, workstream_id, allow_ended_goal=False):
@@ -196,9 +197,11 @@ async def accept_candidate(env, uid, candidate_id, *, generation, expected_task_
     current = now or datetime.now(timezone.utc)
     for attempt in range(3):
         try:
-            return await _accept(
+            receipt = await _accept(
                 env, uid, candidate_id, generation=generation, expected_task_links=expected_task_links, now=current
             )
+            await schedule_after_accept(env, uid, generation, candidate_id)
+            return receipt
         except CandidateSnapshotChanged:
             if attempt == 2:
                 raise

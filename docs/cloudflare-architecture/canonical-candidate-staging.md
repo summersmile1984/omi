@@ -53,7 +53,7 @@ cd deploy/cloudflare
 node node_modules/vitest/vitest.mjs run
 ```
 
-Workflow control remains closed. External integration dispatch still needs convergence; the integration drain API returns 503. This local work has not been deployed or verified through
+Workflow control remains closed. Accepted-task integration dispatch now connects Core leases/receipts, Jobs provider adapters and Apple device confirmation; the drain API reports actual scheduled deliveries. This local work has not been deployed or verified through
 Eddy's macOS UI and is not production release qualification. Detailed local
 results are in the [Candidate evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-candidates-2026-09-08.md)
 [recommendation evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-recommendations-2026-09-08.md),
@@ -61,3 +61,5 @@ results are in the [Candidate evidence note](../../dev/unified-main/implementati
 and [outcome evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-outcomes-2026-09-08.md).
 
 The [recurrence evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-recurrence-2026-09-08.md) covers the local memory-to-Candidate handoff.
+
+The [integration evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-integrations-2026-09-08.md) covers accepted-task delivery, original retries, export atomicity and Apple Reminders device confirmation.

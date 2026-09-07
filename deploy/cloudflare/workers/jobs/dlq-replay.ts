@@ -77,6 +77,7 @@ const JOB_KINDS: ReadonlySet<JobMessage["kind"]> = new Set([
   "audio_merge_legacy",
   "task_intelligence_evaluate",
   "task_recurrence",
+  "candidate_integration",
   "wrapped_generate",
   "hume_webhook",
   "limitless_import",

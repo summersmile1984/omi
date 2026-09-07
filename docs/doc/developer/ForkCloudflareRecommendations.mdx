@@ -72,6 +72,16 @@ Completed receipts never reopen. Export and account deletion include the inbox.
 These paths are locally verified with controlled model output; hosted recurrence
 processing and macOS acceptance remain unverified.
 
-External integration execution remains incomplete. The
-integration drain endpoint is unavailable. Local route coverage therefore does
-not establish production release qualification.
+Accepted task/workstream Candidates now schedule their existing integration
+outbox. Jobs reuses the Todoist, Asana, Google Tasks and ClickUp provider adapters;
+Apple Reminders receives the original silent-push payload and confirms export
+through the existing device sync-batch endpoint. Cloud task export flags and
+delivery receipts commit together. The public integration drain reports tasks
+actually queued, not tasks already exported. Current-generation checks, 300-second
+leases, one dispatch start per lease, original five-attempt/backoff policy and the
+existing Cron/DLQ provide recovery. A remote success before a crash can still be
+ambiguous until local settlement; D1 cannot transact with a third-party API.
+
+These paths are locally exercised through actual HTTP/SQL and controlled provider
+transports. Workflow enablement, hosted provider/device verification and full
+production release qualification remain unfinished.

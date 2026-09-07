@@ -156,11 +156,19 @@ async def migrate_staged_candidates(request: Request):
 
 @router.post('/v1/candidates/integrations/drain')
 async def drain_candidate_integrations(request: Request):
-    if not context(request):
+    principal = context(request)
+    if not principal:
         return JSONResponse({'error': 'unauthorized'}, status_code=401)
-    # The pending outbox is durable; this route must not acknowledge a dispatch
-    # until the actual Jobs integration owner is connected.
-    return JSONResponse({'detail': 'Candidate integration dispatcher unavailable'}, status_code=503)
+    try:
+        from candidate_integrations import drain
+
+        limit = int(request.query_params.get('limit', '100'))
+        if not 1 <= limit <= 500:
+            raise ValueError('limit')
+        count = await drain(request.scope['env'], principal['uid'], generation_header(request), limit)
+        return JSONResponse({'scheduled': count})
+    except Exception as error:
+        return error_response(error)
 
 
 @router.post('/v1/candidates/{candidate_id}/accept')

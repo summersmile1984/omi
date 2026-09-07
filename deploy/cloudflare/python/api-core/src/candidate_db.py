@@ -29,6 +29,10 @@ _FLAT_TABLES = {
 }
 _TASK_PATCH = frozenset(
     {
+        'sync_requested',
+        'exported',
+        'export_platform',
+        'export_date',
         'capture_confidence',
         'ownership_confidence',
         'provenance',

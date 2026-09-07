@@ -17,6 +17,7 @@ from recurrence_sources import recurrence_sources
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULES = {
+    'utils.durable_queue_policy': 'integration_queue_policy',
     'models.memory_apply': 'memory_kernel_apply',
     'models.memory_admission': 'memory_kernel_admission',
     'models.memory_contracts': 'memory_kernel_contracts',
@@ -72,6 +73,12 @@ def generate(output: Path) -> None:
     outputs.update(candidate_sources())
     outputs.update(recommendation_sources())
     outputs.update(recurrence_sources())
+    outputs['integration_kernel.py'] = (
+        'import hashlib\nimport json\nfrom typing import Any,Dict,List,Optional,Tuple\n'
+        'from integration_queue_policy import QueuePolicy\n'
+        + selected_nodes('backend/database/candidate_integration_outbox.py', {'CANDIDATE_INTEGRATION_POLICY'})
+        + selected_nodes('backend/utils/notifications.py', {'_generate_tag', '_build_apple_reminders_sync_message'})
+    )
     outputs['memory_kernel_intake.py'] = (
         'from enum import Enum\nfrom typing import Any, Dict\n'
         + selected_nodes('backend/models/memories.py', {'SubjectAttribution'})
