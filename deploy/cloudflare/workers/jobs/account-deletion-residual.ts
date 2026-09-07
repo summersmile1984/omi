@@ -132,6 +132,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_memory_outbox", column: "uid" },
   { table: "cf_memory_operations", column: "uid" },
   { table: "cf_memory_commits", column: "uid" },
+  { table: "cf_memory_consolidation_attempts", column: "uid" },
   { table: "cf_memory_apply_control", column: "uid" },
   { table: "cf_memory_privacy_receipts", column: "uid" },
   { table: "cf_memory_privacy_apply_guard", column: "uid" },

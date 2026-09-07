@@ -18,6 +18,7 @@ def record_fallback(
     allowed_components = {"auth", "llm", "other"}
     allowed_from = {
         "auth_worker",
+        "canonical_consolidation",
         "workers_ai",
         "transcript_vectorize",
         "share_recipients_proposed",
@@ -25,6 +26,9 @@ def record_fallback(
         "none",
     }
     allowed_to = {
+        "canonical_consolidation_retry",
+        "canonical_consolidation_review",
+        "canonical_consolidation_quarantine",
         "metadata_only",
         "system_default",
         "summary_vectorize",

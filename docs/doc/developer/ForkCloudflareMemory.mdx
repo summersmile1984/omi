@@ -148,8 +148,15 @@ reply is validated after ordinary generation; the adapter adds no provider
 sources leave the memories pending. This invocation does not alter the default
 prompt or require a tokenizer download. See the [model verification record](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md).
 
-The adapter does not yet enable scheduled consolidation. Candidate retrieval,
-provider-window batch sizing, leases/retries and recurrence handoff remain unfinished;
+Migration 0180 adds durable consolidation attempts. The batch runner uses the
+original three-attempt limit, 10-minute task lease, terminal review and quarantine
+policy. A retry is isolated from fresh batch work; delayed index admission refunds
+its attempt and persists a five-second retry time. Successful memory application
+and retry cleanup share one transaction, which also rejects expired or replaced
+task ownership. Account erasure includes these non-content operational records.
+
+The adapter does not yet enable scheduled consolidation. Provider-window batch
+sizing, fair scanning, dispatcher wiring and recurrence handoff remain unfinished;
 recurrence-bearing batches are rejected before writes until their workflow owner
 is connected. Normalization for other intake families and default-read alignment also remain
 required. No default prompt was changed. See the

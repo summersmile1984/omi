@@ -153,8 +153,23 @@ not change the business ledger JSON. Account deletion can still retract mappings
 hint; it must not spend a model failure attempt or select a business route. Proofs
 are checked again after retrieval without advancing them. Native intake creates
 the canonical control row; an unmaterialized control is not maintenance-ready.
-This is not yet an enabled maintenance job. Retry leases, provider-window batch
-sizing, scheduler wiring and recurrence-to-workflow handoff remain unfinished.
+`memory_consolidation_runner.py` owns one bounded leased batch. `memory_consolidation_leases.py` and migration 0180 store the original non-content retry state
+per exact source revision/hash.
+Attempts retain the upstream three-attempt budget and 600-second lease; retry
+sources are isolated and remaining input is returned to the dispatcher. Index
+waits refund the attempt and persist a five-second due time. A generation fence
+invalidates lease ownership without resetting that exact source's retry budget.
+
+The last failure uses the original terminal-review decision, then its quarantine
+route if review persistence fails. A recovered third attempt only leases terminal
+settlement and cannot call the model again. Both terminal writes failing leaves
+three-attempt work retryable for settlement. Apply validates ownership before
+inference and in the D1 transaction, and clears successful attempts or stores
+terminal state atomically with the canonical write. Source deletion and account
+erasure purge operational state. This is not yet an enabled maintenance job:
+provider-window batch sizing, fair scanning/cursors, scheduler wiring and
+recurrence-to-workflow handoff remain unfinished.
+Batch retry evidence: [hosted recovery trial](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-retry-2026-09-07.md).
 See the [index admission record](../../../../dev/unified-main/implementation-2026-09-05/memory-index-readiness-2026-09-07.md).
 A batch with recurrence signals
 fails before writing while that handoff is absent. Native new intake, content

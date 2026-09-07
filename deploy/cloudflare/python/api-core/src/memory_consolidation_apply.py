@@ -18,6 +18,7 @@ from memory_apply_intake import (
     encoded,
     load_memory_control,
 )
+from memory_consolidation_leases import settlement_statements, verify_consolidation_leases
 from memory_consolidation_policy import consolidation_route_patch, required_processing_patch
 from memory_kernel_apply import ApplyStatus, apply_long_term_patch_transaction
 from memory_kernel_consolidation import (
@@ -27,6 +28,8 @@ from memory_kernel_consolidation import (
     ConsolidationContext,
     _processed_from_consolidation_decision,
     _validate_agent_batch,
+    _terminal_review_decision,
+    MAX_CONSOLIDATION_FAILURE_ATTEMPTS,
     is_pending_required_processing,
     _is_prompt_eligible_rejection,
     bound_rejected_memory_examples,
@@ -157,7 +160,14 @@ async def _hydrate_context(env, context, generation):
 
 
 async def apply_consolidation_batch(
-    env, context: ConsolidationContext, batch: ConsolidationAgentBatch, *, run_id: str, now
+    env,
+    context: ConsolidationContext,
+    batch: ConsolidationAgentBatch,
+    *,
+    run_id: str,
+    now,
+    leases=(),
+    terminal_status=None
 ):
     """Apply normalization, routes, supersession, graphs and reviews atomically.
 
@@ -172,9 +182,20 @@ async def apply_consolidation_batch(
         {item.memory_id for item in context.pending_items}
     ) != len(context.pending_items):
         raise ValueError('invalid consolidation batch size or identity')
+    if terminal_status is not None:
+        if (
+            terminal_status not in {'terminal_review', 'quarantined'}
+            or len(leases) != 1
+            or len(context.pending_items) != 1
+            or leases[0].state.attempt_count != MAX_CONSOLIDATION_FAILURE_ATTEMPTS
+            or batch.recurrence_signals
+            or batch.decisions != [_terminal_review_decision(context.pending_items[0])]
+        ):
+            raise ValueError('invalid consolidation terminal settlement')
     batch = ConsolidationAgentBatch.model_validate(batch.model_dump())
     prior, initial_control = await load_memory_control(env, context.uid)
     rows, items, current_context = await _hydrate_context(env, context, initial_control.account_generation)
+    await verify_consolidation_leases(env, leases, current_context.pending_items, initial_control)
     error = _validate_agent_batch(current_context, batch)
     if error is None:
         error = validate_duplicate_creates(
@@ -212,7 +233,9 @@ async def apply_consolidation_batch(
             operation, patch = required_processing_patch(source, processed, control, now)
             plan(source, operation, patch)
             source = items[source.memory_id]
-        operation, patch = consolidation_route_patch(source, decision, control, run_id, now)
+        operation, patch = consolidation_route_patch(
+            source, decision, control, run_id, now, quarantine=terminal_status == 'quarantined'
+        )
         plan(source, operation, patch)
 
     db, uid = env.APP_DB, context.uid
@@ -233,7 +256,7 @@ async def apply_consolidation_batch(
     statements = [
         db.prepare(
             'INSERT INTO cf_memory_apply_guard (uid, expected_control_json, account_generation, '
-            'new_ids_json, operation_ids_json, expected_items_json) VALUES (?, ?, ?, ?, ?, ?)'
+            'new_ids_json, operation_ids_json, expected_items_json, consolidation_claims_json) VALUES (?, ?, ?, ?, ?, ?, ?)'
         ).bind(
             uid,
             prior,
@@ -241,6 +264,7 @@ async def apply_consolidation_batch(
             '[]',
             encoded([result.operation.operation_id for _, result in steps]),
             encoded(expected),
+            encoded([lease.claim() for lease in leases]),
         )
     ]
     columns = sorted((set(MODEL_COLUMNS.values()) | {'canonical_metadata_json'}) - {'uid', 'id'})
@@ -282,6 +306,7 @@ async def apply_consolidation_batch(
         for table, values in records.items():
             statements.extend(_insert_rows(db, table, values))
         statements.append(control_statement(db, uid, result.control_state))
+    statements.extend(settlement_statements(db, leases, terminal_status=terminal_status, now=now))
     statements.append(db.prepare('DELETE FROM cf_memory_apply_guard WHERE uid = ?').bind(uid))
     await db.batch(statements)
     for memory_id in sorted(changed_ids):
