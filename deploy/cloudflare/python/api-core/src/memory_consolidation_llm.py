@@ -23,7 +23,7 @@ from synthesis_routes import _rpc_mapping, _structured_json
 DEFAULT_CONSOLIDATION_MODEL = '@cf/qwen/qwen3.8-27b'
 MAX_INPUT_BYTES = 110_000
 MAX_OUTPUT_BYTES = 256_000
-MODEL_TIMEOUT_SECONDS = 90
+MODEL_TIMEOUT_SECONDS = 180
 
 # Verbatim format-instructions text from langchain-core==1.3.3 (MIT), matching
 # backend/requirements.txt. The original model prompt is staged from its owner.
@@ -100,22 +100,17 @@ async def _record_usage(env, uid, model, result):
 async def _infer(env, context):
     messages = model_messages(context)
     model = getattr(env, 'WORKERS_AI_MEMORY_CONSOLIDATION_MODEL', DEFAULT_CONSOLIDATION_MODEL)
+    # Match upstream invoke(messages) followed by Pydantic validation. Adding
+    # provider JSON-mode constraints changed the observed Qwen completion.
     try:
         response = await asyncio.wait_for(
             env.AI.run(
                 model,
                 {
                     'messages': messages,
-                    'response_format': {
-                        'type': 'json_schema',
-                        'json_schema': {
-                            'name': 'ConsolidationAgentBatch',
-                            'schema': deepcopy(CONSOLIDATION_OUTPUT_SCHEMA),
-                        },
-                    },
                     'max_completion_tokens': 8192,
                     'n': 1,
-                    'reasoning_effort': 'low',
+                    'reasoning_effort': 'medium',
                     'temperature': 0,
                 },
             ),

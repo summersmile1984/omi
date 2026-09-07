@@ -141,7 +141,9 @@ The Cloudflare model adapter preserves the original consolidation prompt and
 output schema and invokes Workers AI before the guarded D1 apply. Its optional
 `WORKERS_AI_MEMORY_CONSOLIDATION_MODEL` setting defaults to
 `@cf/qwen/qwen3.8-27b`; an override must support the same Chat Completions
-request and response contract. Usage is reported under the
+request and response contract. The original prompt requests JSON, and the
+reply is validated after ordinary generation; the adapter adds no provider
+`response_format`. Usage is reported under the
 `memory_consolidation` feature. Failed calls, malformed decisions or stale
 sources leave the memories pending. This invocation does not alter the default
 prompt or require a tokenizer download. See the [model verification record](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md).

@@ -2913,8 +2913,9 @@ messages to Workers AI and the validated apply owner. It records actual model
 usage and does not substitute a route after errors. The model override is
 `WORKERS_AI_MEMORY_CONSOLIDATION_MODEL`, defaulting to
 `@cf/qwen/qwen3.8-27b`. Overrides require its Chat Completions contract
-(named JSON Schema, one completed assistant choice). Input/output byte bounds and a 90-second
-timeout protect the bridge, while provider token-window failures remain pending.
+(ordinary messages and one completed assistant choice). JSON is validated after
+generation, as in upstream; no provider `response_format` is added. Input/output
+byte bounds and a 180-second timeout protect the bridge, while provider token-window failures remain pending.
 See the [model invocation verification](../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md). Native POSTs
 now use the upstream required-processing metadata, preserve source attribution
 and remain pending until a real processor receipt; their initial vector work

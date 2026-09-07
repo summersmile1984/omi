@@ -27,8 +27,7 @@ The first hosted Qwen observation measured a 10,469-byte prefix instead of
 unconstrained arguments dictionary. The backend's Pydantic 2.11.10 and local
 Core 2.13.5 emitted it. The original full schema is now frozen in
 `deploy/cloudflare/contracts/consolidation-output-schema.json` and staged as
-`memory_kernel_consolidation_schema.py`; the formatter and provider use copies
-of that same data. Existing component tests compare it to the upstream model
+`memory_kernel_consolidation_schema.py`; the formatter uses a copy of that data. Existing component tests compare it to the upstream model
 and reproduce the observed older-runtime emission. Schema snapshot SHA-256:
 `341d2a62a9ee254f7bffe8d05e11e09be9b7ec81ec8cefbf33e3974420283321`.
 
@@ -37,13 +36,16 @@ cache-breakpoint metadata is not a Workers AI request parameter; the text and
 message boundary remain identical. The default model is
 `@cf/qwen/qwen3.8-27b`, configurable through
 `WORKERS_AI_MEMORY_CONSOLIDATION_MODEL`. Its [documented context window](https://developers.cloudflare.com/workers-ai/models/qwen3.8-27b/)
-is 262,144 tokens. The selected model's official API schema was read through
-`GET /accounts/{account_id}/ai/models/schema?model=@cf/qwen/qwen3.8-27b`. It
-requires the Chat Completions named wrapper
-`response_format.json_schema = {name, schema}`, rather than a bare schema.
-The adapter uses `max_completion_tokens=8192`, `n=1`, `reasoning_effort=low`,
-temperature zero and a
-90-second timeout. Only a single `stop` choice's assistant `message.content`
+is 262,144 tokens. The original `_invoke_consolidation_llm` calls ordinary
+`invoke(messages)` and parses/validates the JSON reply afterwards. The CF
+adapter now preserves that generation contract: it adds no `response_format`.
+The original schema remains in the unchanged system prompt, and the original
+Pydantic and business validators remain the write boundary.
+
+Calls use `max_completion_tokens=8192`, `n=1`, `reasoning_effort=medium`,
+temperature zero and a 180-second timeout. The deadline accommodates the
+observed 111.50-second valid duplicate response; the earlier 90-second deadline
+could not accept it. Only a single `stop` choice's assistant `message.content`
 is parsed; refusal, truncation, extra choices or reasoning-only content fails
 without applying decisions. Overrides must support this same wire contract.
 
@@ -59,7 +61,39 @@ operation instead of recording invented token counts. Inference already consumed
 by a malformed output or stale-source rejection remains counted. No raw model
 payload, source content or provider exception is added to telemetry.
 
-## Verification
+## Generation contract correction — 2026-09-07
+
+The previous CF adapter added provider JSON-schema mode even though the original
+Server invocation did not. The fixed medium-reasoning replay with that parameter
+returned a promote decision without required normalization fields. A paired
+request preserved the entire saved request, removing only `response_format`;
+its completed reply contained the required fields. This supports removing the
+adapter-added mode and preserving the upstream generation contract. A related
+[Qwen issue report](https://github.com/QwenLM/Qwen/issues/2329) describes
+reasoning/final-output divergence with response_format on another provider;
+it is corroborating context, not proof of Cloudflare internals.
+
+A predeclared four-call set then ran the unchanged prompt over real Qwen REST
+responses through current Core validation/apply and local SQL-backed native
+routes: primary promote/reject passed, and three duplicate trials produced
+**archive, promote, archive**. All outcomes were retained; the set **failed**.
+Elapsed times were 35.81, 111.50, 53.22 and 32.63 seconds. Candidate IDs and their
+0.8 scores were fixture-controlled. This proves neither hosted candidate
+retrieval nor reliable duplicate policy; the semantic failure remains open.
+No replacement decisions, prompt edits, retries or best-of selection were used.
+The observed trial parameters are now the runtime invocation parameters.
+
+The generation-contract regression failed twice before the code correction
+(`2 failed, 17 passed`), because the actual AI payload contained response_format.
+The full original-schema equality guard remains and now lives alongside prompt
+fidelity checks, independently of provider generation options. The final complete
+Core run passed **969 tests**, one existing Starlette deprecation warning, in
+281.78 seconds. Log: `eddy-qwen-generation-core-20260907.log`. The ordinary
+provider/SQL suite is still in the existing local/CI Core lane. Pinned formatting
+and diff whitespace checks passed. No upstream source or default prompt changed. Private request/response and
+journal evidence is under `consolidation-generation-20260907/`.
+
+## Earlier hosted verification (commit 8d1a3a21fd)
 
 The selected Qwen model is reachable and the primary memory path passed, but
 **the duplicate-memory business qualification failed**. This is not a full
@@ -101,8 +135,8 @@ production qualification.
   Both returned completed assistant JSON with real reported token usage.
 - Run finished at `2026-09-07T10:31:44.631Z` with failure status. All four owned
   Workers and both D1 databases were observed absent after cleanup. Result
-  SHA-256: `00c62559806e598799600288ca4e8d1febf9a5e295a4a23ccdd2477492c28b07`. Current invocation source is
-  byte-identical to the deployed staged module. Evidence is retained privately
+  SHA-256: `00c62559806e598799600288ca4e8d1febf9a5e295a4a23ccdd2477492c28b07`. The invocation source at commit `8d1a3a21fd` is
+  byte-identical to that deployed staged module. Evidence is retained privately
   under `$CODEX_HOME/eddy-production/consolidation-qwen-evidence-20260907.json`
   and `consolidation-qwen-hosted-20260907-c/`.
 
@@ -112,9 +146,9 @@ instead of the returned Chat Completions `choices` (not a model-capability
 finding). Qwen run A hit an unpublished Worker-domain 404 before inference;
 run B reached the model but exceeded the 90-second deadline and exposed the
 runtime schema difference. Those inputs stayed pending without fabricated
-routes, and all owned resources were cleaned up. The final selected version
-uses the reviewed Chat Completions contract, frozen original schema and low
-reasoning effort; it still needs duplicate-policy qualification.
+routes, and all owned resources were cleaned up. That earlier version used the named JSON Schema request, frozen original schema
+and low reasoning effort. The generation-contract correction above supersedes
+those invocation parameters; duplicate-policy qualification remains incomplete.
 
 ## Remaining production work
 

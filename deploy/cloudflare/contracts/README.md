@@ -3,7 +3,8 @@
 `consolidation-output-schema.json` is the original backend
 `ConsolidationAgentBatch.model_json_schema()` captured with its pinned
 Pydantic 2.11.10. The memory projector stages it as data for both the unchanged
-prompt formatter and Qwen's named JSON Schema request. This avoids the observed
+prompt formatter. Qwen receives the original text request and its JSON reply
+is validated afterwards, as in the upstream invocation. This avoids the observed
 Pydantic 2.10 omission of `arguments.additionalProperties: true` rewriting the
 system prompt. Core's existing local/CI suite checks schema equality against the
 current upstream model and byte equality against the original LangChain 1.3.3

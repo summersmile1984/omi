@@ -110,9 +110,11 @@ the current upstream model and tests the observed older-runtime difference.
 No tokenizer, vocabulary download or LangChain runtime is added to Core.
 `WORKERS_AI_MEMORY_CONSOLIDATION_MODEL` defaults to
 `@cf/qwen/qwen3.8-27b`. Overrides must support the same Chat Completions
-contract: a named `response_format.json_schema.schema`, `max_completion_tokens`,
-and one `choices[].message.content` response. Calls use low reasoning effort, temperature zero, at
-most 8,192 completion tokens and a 90-second timeout. Truncated completions,
+contract: ordinary messages, `max_completion_tokens`, and one completed
+`choices[].message.content` response. As in upstream, the schema is part of the
+original prompt and the reply is validated afterwards; no `response_format`
+is added by the adapter. Calls use medium reasoning effort, temperature zero,
+at most 8,192 completion tokens and a 180-second timeout. Truncated completions,
 refusals, multiple choices and reasoning-only output cannot reach apply. Input/output bridge
 budgets are 110,000 / 256,000 UTF-8 bytes; these are not a token-window guarantee.
 The source/owner/control is validated before provider disclosure and rehydrated

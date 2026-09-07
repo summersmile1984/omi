@@ -57,6 +57,7 @@ def execute(database, snapshot, provider):
 @pytest.mark.parametrize('older_runtime_schema', [False, True])
 def test_original_default_prompt_schema_and_sensitive_context_are_preserved(target, monkeypatch, older_runtime_schema):
     monkeypatch.delenv('MEMORY_BELIEF_MODEL_ENABLED', raising=False)
+    assert llm.CONSOLIDATION_OUTPUT_SCHEMA == policy.ConsolidationAgentBatch.model_json_schema()
     if older_runtime_schema:
         # Actual hosted Pydantic 2.10 omits this unconstrained-dict property;
         # backend 2.11 emits it, changing the otherwise unchanged prompt text.
@@ -105,16 +106,13 @@ def test_one_model_response_drives_all_four_real_apply_routes_and_usage(target, 
     assert len(provider.calls) == 1
     model, payload = provider.calls[0]
     assert model == '@cf/qwen/qwen3.8-27b'
-    assert payload['response_format'] == {
-        'type': 'json_schema',
-        'json_schema': {
-            'name': 'ConsolidationAgentBatch',
-            'schema': policy.ConsolidationAgentBatch.model_json_schema(),
-        },
-    }
+    # Original _invoke_consolidation_llm calls invoke(messages); its parser
+    # validates afterwards. The hosted Qwen regression exposed decoder drift
+    # when the adapter added response_format despite that contract.
+    assert 'response_format' not in payload
     assert len(payload['messages']) == 2 and payload['temperature'] == 0
     assert payload['max_completion_tokens'] == 8192 and payload['n'] == 1
-    assert payload['reasoning_effort'] == 'low'
+    assert payload['reasoning_effort'] == 'medium'
     for key, route in zip(ids, ['promote', 'archive', 'review', 'reject']):
         item = read_item(database.row(key))
         assert item.promotion['route'] == route
