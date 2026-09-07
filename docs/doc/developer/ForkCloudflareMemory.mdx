@@ -35,6 +35,16 @@ are absent from API memory objects and exports; clients do not provide them.
 Replacing the secret requires a coordinated rekey migration. Receipt admission
 does not by itself complete the public canonical deletion workflow.
 
+Migration 0175 adds canonical deletion preparation: complete-lineage selection,
+transaction-time account/head/item checks, content scrubbing, a new privacy
+commit and sealed deletion receipts. A content-free cleanup inventory survives
+provider failures. A private D1 transaction probe verifies preparation and
+rollback, but public DELETE routes have not yet switched to this owner.
+Historical erasure and provider cleanup/finalization still block that switch.
+The new legal-hold/destructive gate authority is server-owned; no user request
+may create a hold or choose an operation token. It currently protects this
+preparation owner only, rather than all Cloudflare deletion families.
+
 Migration 0173 moves native `PATCH /v3/memories/{id}` content corrections into
 the same transaction as the operation receipt, commit/head and pending index
 work. Corrected content returns to pending Short-term and clears the previous

@@ -209,7 +209,7 @@ def _insert_rows(db, table, rows, *, restore_intake_text=False):
         yield db.prepare(sql).bind('[' + ','.join(parts) + ']')
 
 
-async def load_memory_control(env, uid):
+async def read_memory_control(env, uid):
     db = env.APP_DB
     snapshot = (
         await db.prepare(
@@ -238,6 +238,11 @@ async def load_memory_control(env, uid):
     )
     if control.uid != uid or control.account_generation != snapshot['generation']:
         raise ValueError('memory_apply_generation_changed')
+    return prior, control
+
+
+async def load_memory_control(env, uid):
+    prior, control = await read_memory_control(env, uid)
     require_writer_admitted(control, MemoryWriterClass.user)
     return prior, control
 

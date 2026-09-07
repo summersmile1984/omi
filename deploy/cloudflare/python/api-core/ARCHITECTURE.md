@@ -7,7 +7,7 @@ APIs through the Worker fetch bridge. The route modules must stay async and
 must not import Firestore, Redis, thread pools, local persistent files, or
 process-lifetime network clients.
 
-The ordinary builder also stages nine `memory_kernel_*` modules from the upstream
+The ordinary builder also stages eleven `memory_kernel_*` modules from the upstream
 canonical apply models and pure Short-term lifecycle rules. Only import module
 names change; source text, validators, receipt hashes and decision rules retain
 their upstream owner. The same projector runs in Core's test setup, and each
@@ -36,6 +36,26 @@ renamed or have their key replaced. Unrelated legacy rows need no backfill;
 fresh creation always supplies a key. Export excludes it. Canonical privacy
 apply still owns lineage scrubbing, receipt sealing and finalization; the
 receipt infrastructure alone is not public deletion authority.
+
+`memory_privacy_apply.py` now prepares that canonical deletion in D1. Migration
+0175 adds the complete-lineage SQL view, a transaction-only admission guard and
+content-free retry inventory. It checks the authoritative account/head, item
+revision/metadata and the entire lineage again at commit, including incoming
+aliases from creators that have not yet joined the canonical journal. The
+original scrubbers clear item semantics, the transaction rotates the privacy
+head, and HMAC receipts seal only after row/journal/outbox writes. A late failure
+rolls the whole preparation back. No provider deletion or success acknowledgement
+is implied by returning the inventory.
+
+The new server-owned legal-hold and destructive-operation gate tables follow
+`backend/database/legal_holds.py`: absent legacy hold state permits acquisition;
+an active trusted hold blocks it, and another live owner excludes acquisition
+for six hours. Hold placement and acquisition contend in the same D1 authority.
+Payment locks and writer-transition pauses do not block an admitted privacy
+scrub. These tables are currently integrated only into canonical memory
+preparation, not every Cloudflare destructive workflow. Public DELETE routing,
+provider cleanup coordination, historical record erasure and tombstone/inventory
+finalization remain to be connected before deployment qualification.
 
 `cf_memories` remains the item authority. Its existing physical columns hold
 content, evidence and lifecycle fields; `canonical_metadata_json` holds only
