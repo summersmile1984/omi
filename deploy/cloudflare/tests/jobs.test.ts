@@ -654,7 +654,7 @@ describe("jobs scheduled cleanup", () => {
           all: async () => ({ results: [] }), // No pending memory privacy requests in this asset fixture.
           bind: (...args: unknown[]) => ({
             all: async () =>
-              sql.includes("cf_vector_projection") || sql.includes("cf_memory_vector_artifacts")
+              !sql.includes("FROM cf_asset_cleanup_tasks")
                 ? { results: [] }
                 : {
                     results: [...tasks].map(([storage_key, task]) => ({

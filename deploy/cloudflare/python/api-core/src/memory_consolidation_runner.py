@@ -147,9 +147,18 @@ async def run_consolidation_batch(env, uid, memory_ids, *, run_id):
         .bind(uid, encoded(ids))
         .all()
     )['results']
-    items = {row['id']: read_item(row) for row in rows}
+    items = {}
+    for row in rows:
+        try:
+            items[row['id']] = read_item(row)
+        except (ValueError, TypeError) as error:
+            result.outcomes[row['id']] = 'unreadable_source'
+            result.errors.append('source:read_' + type(error).__name__)
+            _telemetry('retry')
     eligible = []
     for key in ids:
+        if key in result.outcomes:
+            continue
         item = items.get(key)
         if item is None or not _is_promotable_for_consolidation(item, now=instant()):
             result.outcomes[key] = 'not_pending'
@@ -157,14 +166,26 @@ async def run_consolidation_batch(env, uid, memory_ids, *, run_id):
             eligible.append(item)
     selected = []
     for item in eligible:
-        prior = await read_retry_state(env, item, control)
+        try:
+            prior = await read_retry_state(env, item, control)
+        except (ValueError, TypeError) as error:
+            # Preserve the malformed row and block the cycle watermark, while
+            # allowing unrelated sources past it. Storage outages propagate.
+            result.outcomes[item.memory_id] = 'unreadable_retry_state'
+            result.errors.append('retry_state:read_' + type(error).__name__)
+            _telemetry('retry')
+            continue
         if prior and selected:
             break
         selected.append((item, prior))
         if prior:
             break
     result.selected = tuple(item.memory_id for item, _ in selected)
-    result.remaining = tuple(item.memory_id for item in eligible if item.memory_id not in result.selected)
+    result.remaining = tuple(
+        item.memory_id
+        for item in eligible
+        if item.memory_id not in result.selected and item.memory_id not in result.outcomes
+    )
     claims = []
     try:
         for item, prior in selected:

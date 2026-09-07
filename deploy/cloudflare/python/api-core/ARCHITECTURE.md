@@ -166,9 +166,27 @@ settlement and cannot call the model again. Both terminal writes failing leaves
 three-attempt work retryable for settlement. Apply validates ownership before
 inference and in the D1 transaction, and clears successful attempts or stores
 terminal state atomically with the canonical write. Source deletion and account
-erasure purge operational state. This is not yet an enabled maintenance job:
-provider-window batch sizing, fair scanning/cursors, scheduler wiring and
-recurrence-to-workflow handoff remain unfinished.
+erasure purge operational state. Malformed source/retry rows retain their data
+and block the cycle watermark without starving healthy sources; storage outages
+propagate without acknowledging progress.
+
+Migration 0181 records an account's dirty sequence in the same transaction as
+source insertion, update or deletion. `memory_consolidation_dispatch.py` claims
+one 15-minute account lease, selects at most 20 source IDs plus one lookahead,
+and persists the original scan cursor between invocations. A cycle captures its
+starting sequence: backdated intake arriving behind the cursor remains dirty
+for the next cycle. Only a complete unblocked cycle acknowledges that sequence;
+an applied unblocked cycle advances the original maintenance watermark. Cursor
+and watermark share an account/head/generation/lease-guarded D1 transaction.
+The migration seeds existing principals; absent controls use the existing genesis
+constructor without fabricated business commits or backfill receipts.
+
+`memory_consolidation_routes.py` admits only the signed, method/path/audience-bound
+internal Jobs request at `POST /internal/memory/consolidation`. UID comes from the
+assertion; the body supplies only account generation. The existing Jobs cron
+finds due D1 work and Queue messages resume it, including recovery after a lost
+send. Provider-window batch sizing and recurrence-to-workflow handoff remain
+unfinished; this wiring alone is not full production qualification.
 Batch retry evidence: [hosted recovery trial](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-retry-2026-09-07.md).
 See the [index admission record](../../../../dev/unified-main/implementation-2026-09-05/memory-index-readiness-2026-09-07.md).
 A batch with recurrence signals

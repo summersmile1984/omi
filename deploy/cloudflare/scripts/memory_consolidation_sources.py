@@ -63,6 +63,7 @@ def consolidation_sources():
             'MAX_CONSOLIDATION_FAILURE_ATTEMPTS',
             'CONSOLIDATION_RETRY_STATE_SCHEMA_VERSION',
             'ConsolidationRetryState',
+            'ConsolidationScanCursor',
             '_coerce_aware_utc',
             '_is_promotable_for_consolidation',
             '_safe_consolidation_failure_code',

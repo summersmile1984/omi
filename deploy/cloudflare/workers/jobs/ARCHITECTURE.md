@@ -54,3 +54,18 @@ in the Worker configuration and resource renderer; adding a bucket or service
 requires updating that ownership graph and the applicable cleanup/export tests.
 The existing route and product CI lanes exercise these modules through their
 production functions and isolated actual Workers runtime.
+
+`memory-consolidation.ts` connects the existing five-minute cron and JOBS Queue
+with Core's signed internal consolidation dispatcher. D1 owns the account scan
+and source-attempt state; messages contain only UID and account-generation hints.
+Continuation sends a new delayed delivery before acknowledging the current one,
+so healthy multi-page scans do not consume the Queue's three-retry budget. Failed
+sends retain delivery recovery and are also rediscovered from D1. Generation
+changes and account erasure make stale messages ineligible. The ordinary DLQ
+capture/replay registry accepts this job kind.
+
+Within the configured ten-message batch, consolidation calls overlap across
+accounts; D1 still serializes the same account. Other job kinds retain their
+sequential processing. Provider/model failure settlement remains in Core, not
+in Queue retry counters. This dispatcher does not complete the remaining
+provider-window planner or recurrence-to-workflow integration.

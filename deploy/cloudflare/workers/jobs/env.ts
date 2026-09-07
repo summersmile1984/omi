@@ -10,6 +10,7 @@ export type JobMessage = {
     | "legacy_audio_rebuild"
     | "vector_project"
     | "memory_privacy_cleanup"
+    | "memory_consolidate"
     | "account_delete"
     | "recording_delete"
     | "app_delete"

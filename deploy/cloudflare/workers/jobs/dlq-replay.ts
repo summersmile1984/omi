@@ -81,6 +81,7 @@ const JOB_KINDS: ReadonlySet<JobMessage["kind"]> = new Set([
   "limitless_import",
   "chat_assistant_poll",
   "memory_short_term_lifecycle",
+  "memory_consolidate",
   "desktop_release_artifact_mirror",
   "windows_release_artifact_mirror",
 ]);

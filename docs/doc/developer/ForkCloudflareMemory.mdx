@@ -155,8 +155,15 @@ its attempt and persists a five-second retry time. Successful memory application
 and retry cleanup share one transaction, which also rejects expired or replaced
 task ownership. Account erasure includes these non-content operational records.
 
-The adapter does not yet enable scheduled consolidation. Provider-window batch
-sizing, fair scanning, dispatcher wiring and recurrence handoff remain unfinished;
+Migration 0181 connects consolidation to the existing Jobs cron and Queue. Memory
+writes atomically register pending work; Core processes bounded pages and stores
+scan progress between deliveries. Intake arriving during a scan remains pending
+for the next cycle, including captures with older timestamps. Queue continuation
+uses a new delivery, so a scan can exceed three pages without exhausting message
+retries. An internal signed request binds the account and generation to Core.
+Existing accounts are included; no client setting is required.
+
+Provider-window batch sizing and recurrence handoff remain unfinished;
 recurrence-bearing batches are rejected before writes until their workflow owner
 is connected. Normalization for other intake families and default-read alignment also remain
 required. No default prompt was changed. See the
@@ -287,6 +294,6 @@ preference, rejected fiction and archived the duplicate using a retrieved score
 of 1. Normalization receipts, graph/default reads and account isolation passed.
 The probe waited about 28 seconds for Vectorize visibility before the duplicate
 call. Query-readiness admission is now implemented in the production context
-owner; durable retry invocation, scheduling and recurrence handoff remain
-unfinished. These isolated trials are not a production release qualification.
+owner; durable retry invocation and scheduling are implemented. Recurrence
+handoff and provider-window sizing remain unfinished. These isolated trials are not a production release qualification.
 Detailed evidence: [context trial](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-context-2026-09-07.md).
