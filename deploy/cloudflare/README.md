@@ -338,6 +338,11 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   uses immutable vector IDs, and compares the canonical revision at publication.
   Account erasure waits for in-flight writers and observed external cleanup;
   accepting an asynchronous delete request does not clear its journal.
+  Individual memory deletion tasks now retain their exact projection outbox
+  until that memory's artifacts through the observed revision have drained.
+  Queue delivery retries while cleanup is pending; other sources, owners and
+  newer revisions do not delay that completion or lose their mappings. See the
+  [hosted deletion verification](../../dev/unified-main/implementation-2026-09-05/memory-vector-delete-2026-09-07.md).
   The [memory write contract](../../docs/doc/developer/ForkCloudflareMemory.mdx)
   describes the implemented boundary and remaining external-index qualification.
 - `manifests/r2-namespaces.yaml` records every legacy `BUCKET_*` binding, object

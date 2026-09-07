@@ -482,10 +482,9 @@ async function deleteVectorGroups(
 async function deleteProjection(
   env: JobsEnv,
   row: VectorProjectionOutboxRow,
-): Promise<void> {
+): Promise<boolean> {
   if (row.source_kind === "memory") {
-    await retractMemoryVectors(env, row.uid, row.source_id, row.desired_version, row.operation);
-    return;
+    return retractMemoryVectors(env, row.uid, row.source_id, row.desired_version, row.operation);
   }
   const state = await existingState(
     env,
@@ -516,6 +515,7 @@ async function deleteProjection(
       row.operation,
     ),
   ]);
+  return true;
 }
 
 async function upsertProjection(
@@ -668,8 +668,7 @@ export async function processVectorProjection(
     if (deletion) return false;
     const source = await sourceDocuments(env, row.uid, kind, row.source_id);
     if (row.operation === "delete" || source === null) {
-      await deleteProjection(env, { ...row, source_kind: kind });
-      return true;
+      return await deleteProjection(env, { ...row, source_kind: kind });
     }
     await upsertProjection(env, { ...row, source_kind: kind }, source);
     return true;
@@ -970,7 +969,7 @@ export async function purgeAccountVectorProjections(
   await env.APP_DB.prepare(
     "DELETE FROM cf_vector_projection_state WHERE uid = ? AND projection_kind = 'memory'",
   ).bind(uid).run();
-  const memoryPending = await cleanupMemoryVectors(env, uid);
+  const memoryPending = await cleanupMemoryVectors(env, { uid });
   if (memoryPending) return memoryPending;
   const result = await env.APP_DB.prepare(
     `SELECT projection_kind, sub_id, vector_id

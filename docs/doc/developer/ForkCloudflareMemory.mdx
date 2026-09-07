@@ -82,6 +82,15 @@ processed deletion receipt. It does not infer completion from local timestamps
 or from acceptance of an asynchronous mutation. Account erasure remains pending
 until the journal is empty. Hosted cleanup latency still requires qualification.
 
+Individual memory projection deletion tasks also retain their exact outbox
+record until the artifact owner confirms cleanup. Queue delivery retries while
+an eligible writer or external deletion is pending. The check covers only the
+owner, memory and revisions through the task's observed revision; unrelated
+memories and newer publications remain independent. This acknowledges the
+projection task, not complete canonical privacy deletion: the public deletion
+transaction and history finalization still require migration to the shared
+canonical apply owner.
+
 Full-migration ASGI/SQLite regressions cover admission races, same-second edits,
 transaction rollback, upgrade state and cascade deletion. The existing product
 lane runs real local Auth, Workers, D1, Queue and R2 through public HTTP/WebSocket

@@ -21,6 +21,7 @@ type Artifact = {
   observed_present: number;
   delete_mutation: string | null;
 };
+type CleanupScope = { uid: string; source?: { id: string; throughRevision: number } };
 function mutationId(result: unknown): string {
   const value = (result as { mutationId?: unknown } | null)?.mutationId;
   if (typeof value !== "string" || !value) {
@@ -114,27 +115,35 @@ export async function retractMemoryVectors(
   sourceId: string,
   revision: number,
   operation: string,
-): Promise<void> {
+): Promise<boolean> {
   // An old delete can only retire mappings up through its observed revision.
   // External IDs are subsequently deleted by the artifact owner, never by
   // source ID or by a stale snapshot of the current publication.
-  await env.APP_DB.batch([
-    env.APP_DB.prepare(
-      `DELETE FROM cf_vector_projection_state
-       WHERE uid = ? AND source_id = ? AND projection_kind = 'memory'
-         AND source_version <= ?`,
-    ).bind(uid, sourceId, revision),
-    env.APP_DB.prepare(
-      `DELETE FROM cf_vector_projection_outbox
-       WHERE uid = ? AND source_kind = 'memory' AND source_id = ?
-         AND desired_version = ? AND operation = ?`,
-    ).bind(uid, sourceId, revision, operation),
-  ]);
+  await env.APP_DB.prepare(
+    `DELETE FROM cf_vector_projection_state
+     WHERE uid = ? AND source_id = ? AND projection_kind = 'memory'
+       AND source_version <= ?`,
+  ).bind(uid, sourceId, revision).run();
+  const pending = await cleanupMemoryVectors(env, { uid, source: { id: sourceId, throughRevision: revision } });
+  if (pending) return false;
+  // Keep the exact outbox work durable until every eligible writer has drained
+  // and the artifact owner has observed the external deletion. A newer source
+  // revision is independent and must not be removed or delay this receipt.
+  await env.APP_DB.prepare(
+    `DELETE FROM cf_vector_projection_outbox
+     WHERE uid = ? AND source_kind = 'memory' AND source_id = ?
+       AND desired_version = ? AND operation = ?`,
+  ).bind(uid, sourceId, revision, operation).run();
+  return true;
 }
 
-export async function cleanupMemoryVectors(env: JobsEnv, uid?: string): Promise<number> {
-  const owner = uid === undefined ? "" : " AND uid = ?";
-  const owners = uid === undefined ? [] : [uid];
+export async function cleanupMemoryVectors(env: JobsEnv, scope?: CleanupScope): Promise<number> {
+  let owner = scope === undefined ? "" : " AND uid = ?";
+  const owners: Array<string | number> = scope === undefined ? [] : [scope.uid];
+  if (scope?.source) {
+    owner += " AND source_id = ? AND source_version <= ?";
+    owners.push(scope.source.id, scope.source.throughRevision);
+  }
   await env.APP_DB.prepare(
     `UPDATE cf_memory_vector_artifacts SET retired = 1
      WHERE retired = 0${owner}
@@ -176,7 +185,7 @@ export async function cleanupMemoryVectors(env: JobsEnv, uid?: string): Promise<
   }
   const pending = await env.APP_DB.prepare(
     `SELECT COUNT(*) AS count FROM cf_memory_vector_artifacts
-     WHERE 1 = 1${owner}${uid === undefined ? " AND retired = 1" : ""}`,
+     WHERE 1 = 1${owner}${scope === undefined ? " AND retired = 1" : ""}`,
   ).bind(...owners).first<{ count: number }>();
   return Number(pending?.count || 0);
 }
