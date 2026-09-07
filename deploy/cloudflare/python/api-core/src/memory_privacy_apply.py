@@ -20,6 +20,7 @@ from memory_apply_intake import (
 )
 from memory_privacy_plan import build_privacy_result
 from memory_privacy_receipts import privacy_receipt_id
+from memory_review_store import CanonicalReviewResolution
 
 LINEAGE_SQL = '''WITH RECURSIVE lineage(id) AS (
   SELECT value FROM json_each(?)
@@ -81,7 +82,9 @@ async def lineage_ids(db, uid, requested_ids):
     return found
 
 
-async def prepare_privacy_deletion(env, uid, requested_ids, now, *, expand_lineages=True):
+async def prepare_privacy_deletion(
+    env, uid, requested_ids, now, *, expand_lineages=True, review_resolution: CanonicalReviewResolution | None = None
+):
     if (
         not isinstance(uid, str)
         or not uid
@@ -91,6 +94,8 @@ async def prepare_privacy_deletion(env, uid, requested_ids, now, *, expand_linea
         or any(not isinstance(value, str) or not value or len(value) > 256 for value in requested_ids)
     ):
         raise ValueError('invalid privacy deletion identities')
+    if review_resolution is not None and requested_ids != [review_resolution.review['fact_id']]:
+        raise ValueError('invalid review privacy target')
     requested_ids = sorted(requested_ids)
     requested_json = encoded(requested_ids)
     db = env.APP_DB
@@ -114,12 +119,20 @@ async def prepare_privacy_deletion(env, uid, requested_ids, now, *, expand_linea
         item = read_item(row)
         if item.account_generation != control.account_generation:
             raise ValueError('memory_apply_generation_changed')
+        if review_resolution is not None and memory_id == review_resolution.review['fact_id']:
+            review_resolution.validate(item)
         items.append(item)
         expected.append({key: row[key] for key in EXPECTED_FIELDS})
         # Do not retain a second copy of plaintext while building scrubbed rows.
         stored.append({'uid': uid, 'id': memory_id, 'privacy_receipt_id': privacy_receipt_id(env, uid, memory_id)})
     token = secrets.token_hex(32)
-    result = build_privacy_result(control, items, epoch_nonce=token, now=datetime.fromtimestamp(now, timezone.utc))
+    result = build_privacy_result(
+        control,
+        items,
+        epoch_nonce=token,
+        now=datetime.fromtimestamp(now, timezone.utc),
+        reason='canonical_review_' + review_resolution.decision if review_resolution else 'explicit_memory_deletion',
+    )
     items.clear()
     for index, tombstone in enumerate(result.memory_items):
         stored[index] = _stored_item(stored[index], tombstone)
@@ -145,6 +158,8 @@ async def prepare_privacy_deletion(env, uid, requested_ids, now, *, expand_linea
         ).bind(uid, token, prior, control.account_generation, requested_json, encoded(expected), int(expand_lineages)),
         *_insert_rows(db, 'cf_memory_privacy_deletions', [inventory]),
     ]
+    if review_resolution is not None:
+        statements.append(review_resolution.admission(db, uid))
     columns = sorted(
         (
             set(MODEL_COLUMNS.values())
@@ -173,6 +188,8 @@ async def prepare_privacy_deletion(env, uid, requested_ids, now, *, expand_linea
     for table, values in records.items():
         statements.extend(_insert_rows(db, table, values))
     statements.append(control_statement(db, uid, result.control_state))
+    if review_resolution is not None:
+        statements.extend(review_resolution.resolution_statements(db, uid, result.control_state.head_commit_id, now))
     # Seal last: every later update, including trigger updates, is denied by the
     # receipt fence. All row, journal and projection mutations precede sealing.
     statements.extend(

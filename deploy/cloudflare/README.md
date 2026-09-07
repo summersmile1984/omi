@@ -2939,7 +2939,7 @@ Worker scenarios execute these exact rules with synthetic inputs; they do not
 exercise a new public API or a D1 transaction.
 
 D1 native single/batch memory intake now persists the upstream apply result,
-operation receipt, commit/head, pending kernel outbox, usage and review work in
+operation receipt, commit/head, pending kernel outbox and usage work in
 one guarded batch (migration 0172). Existing item columns remain authoritative;
 the added JSON column contains only model fields without physical columns.
 Whole internal replay is idempotent, and stale account/control state aborts the
@@ -2975,7 +2975,18 @@ privacy/account erasure include this graph store. Concurrent target deletion
 rejects a review with 503 and no feedback/history write. See the
 [product-field verification record](../../dev/unified-main/implementation-2026-09-05/memory-product-mutation-2026-09-07.md).
 
-The other intake and mutation families, review-queue resolution, consolidation,
+Canonical review resolution now joins the same apply/privacy owners (0178).
+Accept/correct return the reviewed candidate to pending Short-term without
+invalidating its conflict peers. Reject and timeout/drop complete canonical
+privacy erasure; pending provider cleanup returns 503 and resumes through the
+existing durable inventory. Reads and transactions require the exact canonical
+commit, revision, hash and consolidation review route. Historical timestamp
+rows are stale projections; native intake no longer manufactures review
+candidates from structural conflicts. Producing real canonical review decisions
+still depends on the unfinished consolidation owner. See the
+[review-resolution verification record](../../dev/unified-main/implementation-2026-09-05/memory-review-canonical-2026-09-07.md).
+
+The other intake and mutation families, consolidation,
 source-deletion and projection writers still
 need to converge on this transaction owner. History/revert and JIT require that
 complete authority; their inventory states are unchanged. See the

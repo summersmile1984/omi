@@ -39,6 +39,7 @@ def build_privacy_result(
     *,
     epoch_nonce: str,
     now: datetime,
+    reason: str = 'explicit_memory_deletion',
 ) -> ApplyResult:
     """Use the original scrubbers and content-free privacy commit identity.
 
@@ -55,7 +56,8 @@ def build_privacy_result(
     if any(item.uid != control.uid or item.status == MemoryItemStatus.tombstoned for item in items):
         raise ValueError('privacy item authority changed')
     ordered = sorted(items, key=lambda item: item.memory_id)
-    reason = 'explicit_memory_deletion'
+    if reason not in {'explicit_memory_deletion', 'canonical_review_reject', 'canonical_review_drop'}:
+        raise ValueError('invalid memory privacy reason')
     operation = MemoryOperation.new(
         uid=control.uid,
         operation_type=MemoryOperationType.deletion,

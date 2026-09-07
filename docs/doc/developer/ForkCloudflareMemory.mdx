@@ -92,9 +92,25 @@ storage for these user mutations, not consolidation or shared graph-query
 convergence. See the
 [product-mutation verification record](../../../dev/unified-main/implementation-2026-09-05/memory-product-mutation-2026-09-07.md).
 
+Review-queue resolution also shares canonical apply and privacy deletion.
+Acceptance and correction return the candidate to pending Short-term; they do
+not invalidate conflict peers or grant promotion. A correction's target ID is
+audit metadata for this canonical route. Rejection and low-confidence timeout
+remove the candidate's canonical lineage and derived history. While provider
+cleanup remains pending, resolution returns 503 `memory_cleanup_pending` with
+`Retry-After: 2`; a retry resumes cleanup before acknowledging completion.
+
+Review source identity is its actual commit, item revision, content hash and
+consolidation `review` route. Historical timestamp-based rows become stale and
+cannot write. Native intake no longer derives review decisions from conflicting
+fields; the canonical consolidation producer remains unfinished. Completed
+privacy erasure removes its review projection, so subsequent retrieval returns
+404. Accepted/corrected decisions remain redacted and replay without a new
+commit. [Verification record](../../../dev/unified-main/implementation-2026-09-05/memory-review-canonical-2026-09-07.md).
+
 The user export includes owned operations, commits and graph assertions under
 `memory_ledger_data`. These native intake and user-mutation records do not
-yet constitute complete history for other writers, review-queue resolution,
+yet constitute complete history for other writers,
 source deletion or consolidation. History/revert and JIT
 remain unqualified until every writer shares the same authority.
 

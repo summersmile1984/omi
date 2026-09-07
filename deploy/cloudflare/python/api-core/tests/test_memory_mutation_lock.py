@@ -247,19 +247,22 @@ def test_locked_memory_retains_privacy_delete_and_account_erasure(target):
     assert database.row(account_memory) is None
 
 
-@pytest.mark.parametrize('decision', ['accept', 'reject', 'correct'])
+@pytest.mark.parametrize('decision', ['accept', 'correct'])
 @pytest.mark.parametrize('lock_timing', ['before_read', 'before_write'])
 def test_review_resolution_rolls_back_all_memory_rows_and_receipt(target, decision, lock_timing):
     database, request, create = target
     common = {'category': 'system', 'predicate': 'resides_in', 'subject_entity_id': 'user'}
     previous = create(content='Lives in NYC', arguments={'location': 'NYC'}, veracity=0.9, **common)
     candidate = create(content='Lives in SF', arguments={'location': 'SF'}, veracity=0.4, **common)
+    from test_memory_review_routes import seed_review
+
+    seed_review(database, candidate, [previous], locked=lock_timing == 'before_read')
     page = request('GET', '/v3/memories/review-queue')
     assert page.status_code == 200, page.text
     item = page.json()[0]
     assert item['fact_id'] == candidate and previous in item['conflict_with']
-    # Accept mutates the candidate first; denial on the second row must roll it back.
-    locked_id = previous if decision == 'accept' else candidate
+    # Canonical accept/correct only mutate the reviewed candidate.
+    locked_id = candidate
     expected = {}
 
     def lock():
@@ -267,7 +270,7 @@ def test_review_resolution_rolls_back_all_memory_rows_and_receipt(target, decisi
         expected.update(rows={key: database.row(key) for key in (previous, candidate)}, effects=database.side_effects())
 
     if lock_timing == 'before_read':
-        lock()
+        expected.update(rows={key: database.row(key) for key in (previous, candidate)}, effects=database.side_effects())
     else:
         database.before_write = lock
     body = {'decision': decision}

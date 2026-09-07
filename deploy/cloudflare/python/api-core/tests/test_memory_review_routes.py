@@ -1,205 +1,350 @@
+"""Canonical review source/decision contracts from the original upstream owner.
+
+Expected policies come from canonical_memory_adapter.resolve_canonical_memory_review
+and memory_apply_store's source/read/write contracts, not the retired D1 heuristic.
+The consolidation decision is controlled input; public HTTP resolution is real.
+"""
+
+import ast
 import asyncio
-import base64
+import copy
+from datetime import datetime, timezone
 import hashlib
-import hmac
 import json
 from pathlib import Path
+import runpy
 import sqlite3
 import sys
+from types import SimpleNamespace
+from typing import Any, Dict, Optional, Tuple, cast
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+import pytest
 
-from memory_review_routes import (  # noqa: E402
-    get_memory_review_item,
-    list_memory_review_queue,
-    resolve_memory_review_item,
-)
-from memory_routes import create_memory  # noqa: E402
+sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
+from memory_apply_item import read_item
+from memory_apply_mutation import apply_user_memory_mutation
+from memory_kernel_admission import REQUIRED_PROCESSOR_ID, REQUIRED_PROCESSOR_VERSION
+from memory_kernel_item import MemoryItem, MemoryLayer
+from memory_kernel_short_term_lifecycle import default_short_term_expiry
+from memory_review_policy import review_resolution_patch
+from test_memory_mutation_lock import target  # noqa: F401
+from test_memory_privacy_delete import artifact
 
-
-class FakeStatement:
-    def __init__(self, connection, sql):
-        self.connection = connection
-        self.sql = sql
-        self.args = ()
-
-    def bind(self, *args):
-        self.args = args
-        return self
-
-    async def first(self):
-        row = self.connection.execute(self.sql, self.args).fetchone()
-        return dict(row) if row is not None else None
-
-    async def all(self):
-        rows = self.connection.execute(self.sql, self.args).fetchall()
-        return {"results": [dict(row) for row in rows]}
-
-    async def run(self):
-        cursor = self.connection.execute(self.sql, self.args)
-        self.connection.commit()
-        return {"meta": {"changes": cursor.rowcount}}
+ROOT = Path(__file__).parents[5]
 
 
-class FakeDb:
-    def __init__(self):
-        self.connection = sqlite3.connect(":memory:")
-        self.connection.row_factory = sqlite3.Row
-        migration_dir = Path(__file__).parents[3] / "migrations/app"
-        for path in sorted(migration_dir.glob('*.sql')):
-            self.connection.executescript(path.read_text())
+def seed_review(database, memory_id, conflicts=(), *, uid='owner', locked=False):
+    """Represent a prior admitted consolidation review, not an intake heuristic."""
 
-    def prepare(self, sql):
-        return FakeStatement(self.connection, sql)
+    async def send(_):
+        pass
 
-    async def batch(self, statements):
-        self.connection.execute("BEGIN")
-        try:
-            for statement in statements:
-                self.connection.execute(statement.sql, statement.args)
-            self.connection.commit()
-        except Exception:
-            self.connection.rollback()
-            raise
+    env = SimpleNamespace(APP_DB=database, JOBS=SimpleNamespace(send=send))
+
+    def patch(item, now):
+        return {}, {'promotion_audit': {**(item.promotion or {}), 'route': 'review'}}, {}
+
+    asyncio.run(
+        apply_user_memory_mutation(
+            env,
+            uid,
+            memory_id,
+            int(datetime.now(timezone.utc).timestamp()),
+            kind='test_prior_consolidation',
+            build_patch=patch,
+        )
+    )
+    if locked:
+        database.lock(memory_id)
+    item = read_item(database.row(memory_id))
+    build = runpy.run_path(str(ROOT / 'backend/models/memory_review.py'))['build_memory_review_conflict']
+    review = build(
+        fact={'id': memory_id, 'content': item.content, 'veracity': 0.8},
+        conflict_with=list(conflicts),
+        authority='canonical_memory',
+        source_commit_id=item.ledger_commit_id,
+        source_item_revision=item.item_revision,
+        source_content_hash=item.content_hash,
+    )
+    record = {'uid': uid}
+    for key, value in review.items():
+        if isinstance(value, (dict, list)):
+            record[key + '_json'] = json.dumps(value)
+        elif isinstance(value, datetime):
+            record[key] = int(value.timestamp())
+        else:
+            record[key] = value
+    database.connection.execute(
+        'INSERT INTO cf_memory_review_queue (' + ', '.join(record) + ') VALUES (' + ','.join('?' for _ in record) + ')',
+        list(record.values()),
+    )
+    return review
 
 
-class FakeRequest:
-    async def stream(self):
-        yield await self.body()
-
-    def __init__(self, env, headers, query=None, body=None):
-        self.scope = {"env": env}
-        self.headers = headers
-        self.query_params = query or {}
-        self._body = body
-
-    async def body(self):
-        return json.dumps(self._body if self._body is not None else {}).encode()
-
-
-def signed_headers(secret: str, uid: str = "review-user"):
-    raw = json.dumps(
-        {"uid": uid, "authority": "better-auth", "requestId": "review-test"},
-        separators=(",", ":"),
-    ).encode()
-    encoded = base64.urlsafe_b64encode(raw).decode().rstrip("=")
-    signature = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest()
+def journal(database):
     return {
-        "x-omi-auth-context": encoded,
-        "x-omi-internal-signature": base64.urlsafe_b64encode(signature).decode().rstrip("="),
+        table: [dict(row) for row in database.connection.execute('SELECT * FROM ' + table)]
+        for table in (
+            'cf_memories',
+            'cf_memory_operations',
+            'cf_memory_commits',
+            'cf_memory_apply_control',
+            'cf_memory_outbox',
+            'cf_memory_review_queue',
+            'cf_memory_review_apply_guard',
+            'cf_memory_privacy_deletions',
+            'cf_memory_privacy_receipts',
+            'cf_destructive_operation_gates',
+        )
     }
 
 
-def make_env(secret: str):
-    return type(
-        "Env",
-        (),
-        {
-            "APP_DB": FakeDb(),
-            "INTERNAL_ASSERTION_SECRET": secret,
-            "MEMORY_PRIVACY_SECRET": "memory-privacy-tests-secret-32-bytes",
-        },
-    )()
-
-
-def create(env, secret: str, *, content: str, arguments: dict[str, object], veracity: float):
-    result = asyncio.run(
-        create_memory(
-            FakeRequest(
-                env,
-                signed_headers(secret),
-                body={
-                    "content": content,
-                    "category": "system",
-                    "predicate": "resides_in",
-                    "arguments": arguments,
-                    "subject_entity_id": "user",
-                    "veracity": veracity,
-                },
-            )
-        )
+def resolve(request, review, decision='accept', **values):
+    return request(
+        'POST', '/v3/memories/review-queue/' + review['review_id'] + '/resolve', body={'decision': decision, **values}
     )
-    assert isinstance(result, dict), getattr(result, 'body', None)
-    return result
 
 
-def test_review_queue_is_produced_from_structural_d1_conflict_and_is_uid_scoped():
-    secret = "review-secret"
-    env = make_env(secret)
-    create(env, secret, content="Lives in NYC", arguments={"location": "NYC"}, veracity=0.9)
-    candidate = create(env, secret, content="Lives in SF", arguments={"location": "SF"}, veracity=0.4)
+def test_intake_cannot_replace_consolidation_with_a_structural_conflict(target):
+    database, request, create = target
+    for city in ['NYC', 'SF']:
+        create(
+            content='Lives in ' + city, predicate='resides_in', arguments={'location': city}, subject_entity_id='user'
+        )
+    assert request('GET', '/v3/memories/review-queue').json() == []
+    assert database.connection.execute('SELECT count(*) FROM cf_memory_review_queue').fetchone()[0] == 0
 
-    page = asyncio.run(list_memory_review_queue(FakeRequest(env, signed_headers(secret))))
-    assert len(page) == 1
-    item = page[0]
-    assert item["fact_id"] == candidate["id"]
-    assert item["conflict_with"]
-    assert item["candidate"]["content"] == "Lives in SF"
-    assert item["authority"] == "canonical_memory"
-    assert item["permitted_uses"] == ["answers_with_disclaimer"]
-    assert asyncio.run(list_memory_review_queue(FakeRequest(env, {}))).status_code == 401
+
+def test_queue_checks_owner_and_canonical_source_instead_of_timestamp(target):
+    database, request, create = target
+    memory_id = create(content='A candidate')
+    review = seed_review(database, memory_id)
+    assert request('GET', '/v3/memories/review-queue', uid='other').json() == []
+    assert request('GET', '/v3/memories/review-queue?limit=501').status_code == 400
     assert (
-        asyncio.run(list_memory_review_queue(FakeRequest(env, signed_headers(secret), {"limit": "501"}))).status_code
-        == 400
+        request('GET', '/v3/memories/review-queue').json()[0]['source_item_revision']
+        == database.row(memory_id)['item_revision']
     )
+    before = database.row(memory_id)
+    # Same-second edits still revoke review ownership through revision/head.
+    assert request('PATCH', '/v3/memories/' + memory_id + '/baseline?value=true').status_code == 200
+    assert database.row(memory_id)['item_revision'] == before['item_revision'] + 1
+    response = resolve(request, review)
+    assert response.status_code == 200 and response.json()['status'] == 'stale_review'
+    assert response.json()['item']['candidate'] == {}
+    assert request('GET', '/v3/memories/review-queue').json() == []
 
 
-def test_review_queue_source_projection_tombstones_changed_candidate():
-    secret = "review-secret"
-    env = make_env(secret)
-    create(env, secret, content="Lives in NYC", arguments={"location": "NYC"}, veracity=0.9)
-    candidate = create(env, secret, content="Lives in SF", arguments={"location": "SF"}, veracity=0.4)
-    item = asyncio.run(list_memory_review_queue(FakeRequest(env, signed_headers(secret))))[0]
-    env.APP_DB.connection.execute(
-        "UPDATE cf_memories SET content = 'Lives in LA', updated_at = updated_at + 1 WHERE uid = ? AND id = ?",
-        ("review-user", candidate["id"]),
+def test_historical_timestamp_queue_is_readable_but_cannot_mutate_a_memory(target):
+    database, request, create = target
+    memory_id = create()
+    review = seed_review(database, memory_id)
+    database.connection.execute(
+        "UPDATE cf_memory_review_queue SET source_commit_id='d1-memory:legacy',source_item_revision=?",
+        (database.row(memory_id)['updated_at'],),
     )
-    env.APP_DB.connection.commit()
-
-    assert asyncio.run(list_memory_review_queue(FakeRequest(env, signed_headers(secret)))) == []
-    projected = asyncio.run(get_memory_review_item(FakeRequest(env, signed_headers(secret)), item["review_id"]))
-    assert projected["status"] == "tombstoned"
-    assert projected["candidate"] == {"id": candidate["id"]}
-    assert projected["permitted_uses"] == []
+    before = database.row(memory_id)
+    assert resolve(request, review).json()['status'] == 'stale_review'
+    assert database.row(memory_id) == before
 
 
-def test_review_queue_accept_resolves_candidate_and_invalidates_conflict():
-    secret = "review-secret"
-    env = make_env(secret)
-    old = create(env, secret, content="Lives in NYC", arguments={"location": "NYC"}, veracity=0.9)
-    create(env, secret, content="Lives in SF", arguments={"location": "SF"}, veracity=0.4)
-    item = asyncio.run(list_memory_review_queue(FakeRequest(env, signed_headers(secret))))[0]
+@pytest.mark.parametrize(
+    'decision,correction',
+    [
+        ('accept', None),
+        ('correct', {'content': 'Corrected', 'arg_changes': {'location': 'LA'}, 'target_fact_id': 'unrelated'}),
+    ],
+)
+def test_resolution_returns_pending_short_term_and_preserves_conflicts(target, decision, correction):
+    database, request, create = target
+    other = create(content='Preserved conflict')
+    memory_id = create(content='Original candidate', arguments={'retained': True})
+    review = seed_review(database, memory_id, [other])
+    prior, conflict = database.row(memory_id), database.row(other)
+    before = journal(database)
+    response = resolve(request, review, decision, correction=correction, reason='User review')
+    assert response.status_code == 200, response.text
+    body = response.json()
+    item = read_item(database.row(memory_id))
+    assert body['status'] == 'resolved' and body['item']['status'] == 'accepted'
+    assert body['commit']['commit_id'] == item.ledger_commit_id
+    assert body['correction'] is None and body['item']['candidate'] == {} and body['item']['permitted_uses'] == []
+    assert body['item']['source_content_hash'] is None
+    assert item.item_revision == prior['item_revision'] + 1 and item.tier == MemoryLayer.short_term
+    assert item.processing_state.value == 'pending' and item.promotion['processing_status'] == 'pending_processing'
+    assert item.promotion['review_decision'] == decision and 'route' not in item.promotion
+    assert item.content == ('Corrected' if decision == 'correct' else prior['content'])
+    if decision == 'correct':
+        assert item.arguments == {'retained': True, 'location': 'LA'}
+    assert database.row(other) == conflict
+    after = journal(database)
+    assert len(after['cf_memory_operations']) == len(before['cf_memory_operations']) + 1
+    assert len(after['cf_memory_commits']) == len(before['cf_memory_commits']) + 1
+    assert after['cf_memory_review_apply_guard'] == []
+    assert resolve(request, review).json()['status'] == 'already_resolved'
+    assert journal(database) == after
 
-    invalid = asyncio.run(
-        resolve_memory_review_item(
-            FakeRequest(env, signed_headers(secret), body={"decision": "unknown"}), item["review_id"]
-        )
+
+@pytest.mark.parametrize(
+    'decision,correction',
+    [
+        ('accept', {'content': 'Not permitted'}),
+        ('correct', {}),
+        ('correct', {'arg_changes': []}),
+        ('correct', {'content': ''}),
+    ],
+)
+def test_invalid_resolution_has_no_writes(target, decision, correction):
+    database, request, create = target
+    review = seed_review(database, create())
+    before = journal(database)
+    assert resolve(request, review, decision, correction=correction).status_code == 400
+    assert journal(database) == before
+
+
+@pytest.mark.parametrize('decision', ['reject', 'timeout'])
+def test_reject_and_zero_confidence_timeout_erase_candidate_even_when_locked(target, decision):
+    database, request, create = target
+    other = create(content='Retained conflict')
+    memory_id = create(content='Private review content')
+    review = seed_review(database, memory_id, [other], locked=True)
+    before = database.row(other)
+    response = resolve(request, review, decision, current_veracity=0.0, reason='Private reason')
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['decision'] == ('reject' if decision == 'reject' else 'drop')
+    assert body['item']['candidate'] == {} and body['item']['reason'] == 'canonical_review_' + body['decision']
+    assert database.row(memory_id) is None and database.row(other) == before
+    assert database.connection.execute('SELECT count(*) FROM cf_memory_review_queue').fetchone()[0] == 0
+    assert 'Private review content' not in json.dumps(journal(database))
+    assert 'Private reason' not in json.dumps(journal(database))
+
+
+def test_review_rejection_waits_for_observed_provider_erasure_on_retry(target):
+    database, request, create = target
+    memory_id = create()
+    review = seed_review(database, memory_id)
+    artifact(database, 'owner', memory_id)
+    response = resolve(request, review, 'reject')
+    assert response.status_code == 503 and response.json()['error'] == 'memory_cleanup_pending'
+    assert database.row(memory_id)['content'] is None
+    before = journal(database)
+    assert resolve(request, review, 'reject').status_code == 503
+    assert journal(database) == before
+    database.connection.execute('DELETE FROM cf_memory_vector_artifacts')
+    response = resolve(request, review, 'reject')
+    assert response.status_code == 200 and response.json()['status'] == 'already_resolved'
+    assert database.row(memory_id) is None
+    assert database.connection.execute('SELECT count(*) FROM cf_memory_privacy_deletions').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('decision', ['accept', 'reject'])
+def test_late_resolution_write_failure_rolls_back_item_head_and_privacy(target, decision):
+    database, request, create = target
+    review = seed_review(database, create())
+    database.connection.execute(
+        "CREATE TRIGGER fail_review BEFORE UPDATE ON cf_memory_review_queue WHEN NEW.decision IS NOT NULL BEGIN SELECT RAISE(ABORT,'injected resolution failure'); END"
     )
-    assert invalid.status_code == 400
+    before = journal(database)
+    assert resolve(request, review, decision).status_code == 503
+    assert journal(database) == before
 
-    resolved = asyncio.run(
-        resolve_memory_review_item(
-            FakeRequest(
-                env,
-                signed_headers(secret),
-                body={"decision": "accept", "reason": "new evidence"},
+
+def test_queue_race_cannot_commit_a_second_decision(target):
+    database, request, create = target
+    review = seed_review(database, create())
+    expected = {}
+
+    def change():
+        database.connection.execute("UPDATE cf_memory_review_queue SET status='accepted',decision='accept'")
+        expected.update(journal(database))
+
+    database.before_write = change
+    assert resolve(request, review, 'reject').json()['status'] == 'already_resolved'
+    assert journal(database) == expected
+
+
+@pytest.mark.parametrize(
+    'decision,correction',
+    [
+        ('accept', None),
+        ('correct', {'arg_changes': {'city': 'SF'}}),
+        ('correct', {'content': 'Updated', 'target_fact_id': 'audit-only'}),
+    ],
+)
+def test_accept_and_correct_patch_matches_original_upstream_function(target, decision, correction):
+    database, _, create = target
+    memory_id = create()
+    review = seed_review(database, memory_id)
+    item = read_item(database.row(memory_id))
+    now = datetime.now(timezone.utc)
+    captured = {}
+
+    def apply(uid, memory_id, **options):
+        captured['patch'] = options['build_patch'](item, now)
+        return item, item
+
+    source = ROOT / 'backend/utils/memory/canonical_memory_adapter.py'
+    module = ast.parse(source.read_text())
+    names = {'resolve_canonical_memory_review', '_clear_settled_promotion_route'}
+    nodes = [n for n in module.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    settled = next(
+        n
+        for n in module.body
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == '_SETTLED_PROMOTION_FIELDS' for t in n.targets)
+    )
+    client = SimpleNamespace(
+        document=lambda _: SimpleNamespace(get=lambda: SimpleNamespace(exists=True, to_dict=lambda: item.model_dump()))
+    )
+    scope = dict(
+        Any=Any,
+        Dict=Dict,
+        Optional=Optional,
+        Tuple=Tuple,
+        cast=cast,
+        Payload=Dict[str, Any],
+        MemoryItem=MemoryItem,
+        MemoryLayer=MemoryLayer,
+        datetime=datetime,
+        copy=copy,
+        hashlib=hashlib,
+        MemoryCollections=lambda **_: SimpleNamespace(memory_items='items'),
+        _snapshot_payload=lambda s: s.to_dict(),
+        CanonicalReviewResolution=lambda **kw: SimpleNamespace(**kw),
+        _apply_canonical_user_mutation=apply,
+        CanonicalReviewResolutionConflict=RuntimeError,
+        invalidate_kg_for_memory_retraction=lambda *a, **k: None,
+        REQUIRED_PROMOTION_STATUS_PENDING='pending',
+        REQUIRED_PROCESSING_STATUS_PENDING='pending_processing',
+        REQUIRED_PROCESSOR_ID=REQUIRED_PROCESSOR_ID,
+        REQUIRED_PROCESSOR_VERSION=REQUIRED_PROCESSOR_VERSION,
+        default_short_term_expiry=default_short_term_expiry,
+    )
+    exec(compile(ast.Module(body=[settled, *nodes], type_ignores=[]), str(source), 'exec'), scope)
+    scope['resolve_canonical_memory_review'](
+        'owner', memory_id, review_id=review['review_id'], decision=decision, correction=correction, db_client=client
+    )
+    logical, patch, _ = review_resolution_patch(
+        item, now, review_id=review['review_id'], decision=decision, correction=correction
+    )
+    assert (logical, patch) == captured['patch']
+
+
+def test_review_guard_requires_the_enclosing_canonical_transaction(target):
+    database, _, create = target
+    review = seed_review(database, create())
+    with pytest.raises(sqlite3.IntegrityError, match='memory_review_apply_required'):
+        database.connection.execute(
+            'INSERT INTO cf_memory_review_apply_guard(uid,review_id,memory_id,decision,source_commit_id,source_item_revision,source_content_hash) VALUES (?,?,?,?,?,?,?)',
+            (
+                'owner',
+                review['review_id'],
+                review['fact_id'],
+                'accept',
+                review['source_commit_id'],
+                review['source_item_revision'],
+                review['source_content_hash'],
             ),
-            item["review_id"],
         )
-    )
-    assert resolved["status"] == "resolved"
-    assert resolved["decision"] == "accept"
-    assert resolved["commit"]["commit_id"].startswith("d1-review:")
-    assert resolved["item"]["status"] == "accepted"
-    old_row = env.APP_DB.connection.execute(
-        "SELECT invalid_at, superseded_by FROM cf_memories WHERE uid = ? AND id = ?",
-        ("review-user", old["id"]),
-    ).fetchone()
-    assert old_row[0] is not None
-    assert old_row[1] == item["fact_id"]
-    retry = asyncio.run(
-        resolve_memory_review_item(
-            FakeRequest(env, signed_headers(secret), body={"decision": "accept"}), item["review_id"]
-        )
-    )
-    assert retry["status"] == "already_resolved"
+    assert database.connection.execute('SELECT count(*) FROM cf_memory_review_apply_guard').fetchone()[0] == 0

@@ -31,7 +31,8 @@ pending kernel outbox events and `cf_memory_apply_control`; the older
 `cf_memory_control` remains the archive-capability projection. The transaction
 checks the captured control JSON, actual account generation (including an
 unmigrated account's generation zero), deletion fences and fresh item/operation
-identities before inserting anything. Usage and review work share that batch.
+identities before inserting anything. Usage work shares that batch. Intake
+does not infer consolidation review decisions from structural field conflicts.
 An exact whole internal retry is a no-op; mixed retries and stale authority are
 rejected. Public POSTs still allocate their IDs on the server.
 
@@ -133,7 +134,7 @@ Operations and commits are included in the owner's `memory_ledger_data` export;
 all five added tables participate in account erasure and deletion write fences.
 
 This is the native intake adapter, not complete ledger authority. Other intake
-families, non-native edits, review-queue resolution, source deletion, consolidation and graph projections
+families, non-native edits, source deletion, consolidation and graph projections
 and projection consumers must still converge before history/revert or JIT can
 expose a complete canonical head. The existing vector publication outbox still
 drives Jobs; a pending kernel outbox event is not a delivered index watermark.
@@ -494,15 +495,34 @@ not a historical backfill or production-cutover claim, and the Edge/backend
 manifests keep it staging-owned until those separately scoped operations are
 approved.
 
-`memory_review_routes.py` owns the D1 `cf_memory_review_queue` projection for
-canonical memory conflicts. The `/v3/memories/review-queue*` endpoints are
-uid-scoped behind Edge Better Auth, and canonical memory create/batch writes
-append conflict rows in the same D1 batch. Reads verify the source
-`updated_at` revision and SHA-256 content hash; changed or missing sources are
-redacted and tombstoned. Resolution applies candidate/conflict mutations and
-the queue state atomically, with deterministic commit IDs for idempotent
-retries. MCP/developer memories that are already marked reviewed do not enter
-this queue.
+`memory_review_routes.py` projects `cf_memory_review_queue` against the original
+canonical source contract: current commit, item revision, content hash and
+`promotion.route = review`. Timestamp-based historical rows cannot authorize a
+mutation and become redacted stale reviews when read. Native create/batch no
+longer infers review authority from a structural conflict. Canonical
+consolidation must produce the review decision; that producer remains part of
+the unfinished consolidation convergence.
+
+`memory_review_store.py` supplies a typed transaction participant to ordinary
+apply and privacy preparation. Migration 0178 rechecks the exact source and
+pending queue state inside the appropriate account/item transaction, then
+requires a redacted decision with the committed control head before completion.
+Accept/correct follow `resolve_canonical_memory_review`: return the candidate
+to pending Short-term, retain conflict memories and audit `target_fact_id`
+without changing that other item. Correction merges arguments and uses the
+original promotion-reset policy. No acceptance grants graph/promotion admission.
+
+Reject and low-veracity timeout/drop use canonical privacy deletion, including
+lineages, legal holds, provider observation and history erasure. A valid source
+may be rejected while payment-locked. A lock or other edit that changed its
+source revision makes an older review stale. Pending provider cleanup returns
+503 `memory_cleanup_pending` and `Retry-After: 2`; retry and Jobs use the same
+durable inventory. No completed response precedes final erasure. Privacy
+finalization removes the derived review row, so later GET/resolve returns 404,
+as upstream purge does. Accepted/corrected retries return `already_resolved`
+without another mutation. Resolutions retain no candidate text, source hash or
+correction payload in the queue; fixed empty storage sentinels support its
+existing NOT NULL schema and project as null on the wire.
 
 `knowledge_graph_routes.py` derives both released graph read shapes directly
 from eligible long-term `cf_memories` rows; D1 remains the only authority and

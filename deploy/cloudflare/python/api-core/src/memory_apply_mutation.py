@@ -18,6 +18,7 @@ from memory_kernel_contracts import deterministic_contract_id
 from memory_kernel_item import MemoryItem
 from memory_kernel_operations import MemoryOperation, MemoryOperationType
 from memory_kernel_promotion import MemoryGraphAssertion
+from memory_review_store import CanonicalReviewResolution
 from vector_search import publish_vector_projection
 
 PRODUCT_COLUMNS = {
@@ -32,7 +33,17 @@ PRODUCT_COLUMNS = {
 }
 
 
-async def apply_user_memory_mutation(env, uid, memory_id, now, *, kind, build_patch, extra_statements=()):
+async def apply_user_memory_mutation(
+    env,
+    uid,
+    memory_id,
+    now,
+    *,
+    kind,
+    build_patch,
+    extra_statements=(),
+    review_resolution: CanonicalReviewResolution | None = None,
+):
     """False is an absent target; receipts, graph, feedback and row commit together."""
     db = env.APP_DB
     prior, control = await load_memory_control(env, uid)
@@ -49,6 +60,8 @@ async def apply_user_memory_mutation(env, uid, memory_id, now, *, kind, build_pa
     if row['is_locked']:
         raise ValueError('memory_locked_for_mutation')
     item = read_item(row)
+    if review_resolution is not None:
+        review_resolution.validate(item)
     if item.uid != uid or item.account_generation != control.account_generation or item.source_state.value != 'active':
         raise ValueError('memory_apply_generation_or_source_changed')
     # Legacy product columns remain the read authority until their writer is
@@ -135,6 +148,8 @@ async def apply_user_memory_mutation(env, uid, memory_id, now, *, kind, build_pa
             'new_ids_json, operation_ids_json, expected_items_json) VALUES (?, ?, ?, ?, ?, ?)'
         ).bind(uid, prior, control.account_generation, '[]', encoded([operation.operation_id]), encoded([expected]))
     ]
+    if review_resolution is not None:
+        statements.append(review_resolution.admission(db, uid))
     columns = sorted((set(MODEL_COLUMNS.values()) | {'canonical_metadata_json'} | set(physical)) - {'uid', 'id'})
     statements.append(
         db.prepare(
@@ -164,6 +179,12 @@ async def apply_user_memory_mutation(env, uid, memory_id, now, *, kind, build_pa
     for table, values in records.items():
         statements.extend(_insert_rows(db, table, values))
     statements.append(control_statement(db, uid, result.control_state))
+    if review_resolution is not None:
+        statements.extend(
+            review_resolution.resolution_statements(
+                db, uid, result.control_state.head_commit_id, int(instant.timestamp())
+            )
+        )
     statements.append(db.prepare('DELETE FROM cf_memory_apply_guard WHERE uid = ?').bind(uid))
     await db.batch(statements)
     await publish_vector_projection(env, uid=uid, source_kind='memory', source_id=memory_id)
