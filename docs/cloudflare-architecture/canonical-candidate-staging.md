@@ -53,8 +53,9 @@ cd deploy/cloudflare
 node node_modules/vitest/vitest.mjs run
 ```
 
-Workflow control remains closed. Accepted-task integration dispatch now connects Core leases/receipts, Jobs provider adapters and Apple device confirmation; the drain API reports actual scheduled deliveries. This local work has not been deployed or verified through
-Eddy's macOS UI and is not production release qualification. Detailed local
+Workflow control now projects the upstream universal capability with D1 account generation and fail-closed erasure/storage behavior. Accepted-task integration dispatch now connects Core leases/receipts, Jobs provider adapters and Apple device confirmation; the drain API reports actual scheduled deliveries. The Core/Jobs Candidate/control path passed isolated hosted verification with
+real D1 and Queue delivery; it has not been accepted through Eddy's macOS UI and
+is not production release qualification. Detailed local
 results are in the [Candidate evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-candidates-2026-09-08.md)
 [recommendation evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-recommendations-2026-09-08.md),
 [snapshot evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-device-snapshots-2026-09-08.md),
@@ -63,3 +64,5 @@ and [outcome evidence note](../../dev/unified-main/implementation-2026-09-05/can
 The [recurrence evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-recurrence-2026-09-08.md) covers the local memory-to-Candidate handoff.
 
 The [integration evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-integrations-2026-09-08.md) covers accepted-task delivery, original retries, export atomicity and Apple Reminders device confirmation.
+
+The [control and hosted entry evidence](../../dev/unified-main/implementation-2026-09-05/canonical-control-2026-09-08.md) records universal capability, real Queue delivery, generation/erasure tests and owned-resource cleanup.

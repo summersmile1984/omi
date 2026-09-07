@@ -1119,8 +1119,19 @@ Apple preparation marks sync_requested and uses the original payload/tag builder
 push success completes delivery but device sync-batch confirmation owns exported.
 No default prompt, model, schema or external task data is changed by deployment.
 
-These handlers are wired locally; workflow control is still closed. Other legacy
-writers, hosted/runtime verification and release qualification remain unfinished.
+`candidate_control_routes.py` projects the unchanged upstream universal rollout
+from the same D1 generation/deletion owner used by Candidate writes. The ordinary
+projector stages `candidate_kernel_rollout.py` without changing its policy.
+Healthy authenticated accounts receive read/Chat-first capability and their
+current generation; unmigrated accounts use zero without creating metadata.
+Unavailable or erasing accounts retain the original off/zero/false response with
+bounded fallback telemetry. Client headers and historical UI flags are not
+authority. No additional control table, rollout gate or prompt change is added.
+
+Actual hosted Core/Jobs Candidate/control and no-default integration delivery
+have passed through the unmodified ASGI/Queue entrypoints. Remaining legacy
+writers/readers, live providers/devices and release qualification are unfinished.
+See the [control verification](../../../../dev/unified-main/implementation-2026-09-05/canonical-control-2026-09-08.md).
 See the [integration evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-integrations-2026-09-08.md).
 Migrations 0183–0188 are local drafts. See the
 [Candidate evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-candidates-2026-09-08.md)

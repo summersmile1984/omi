@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 
 from candidate_routes import router
+from candidate_control_routes import router as control_router
 from task_intelligence_routes import router as intelligence_router
 from action_item_routes import router as task_router, batch_router as task_batch_router
 from workstream_routes import router as workstream_router
@@ -34,6 +35,7 @@ def api(env):
     env.INTERNAL_ASSERTION_SECRET = 'candidate-api-test-secret'
     app = FastAPI()
     for value in (
+        control_router,
         router,
         intelligence_router,
         task_batch_router,

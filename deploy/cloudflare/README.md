@@ -2909,7 +2909,10 @@ storage failures leave no partial batch. The existing durable dispatcher now
 connects scheduled execution, whole-source message sizing and source leases.
 Migration 0188 also commits recurrence inbox receipts with memory results;
 Jobs/Cron consumes them with the unchanged upstream qualification and Candidate
-identity. Accepted Candidates now dispatch their durable integration outbox
+identity. Candidate workflow control now projects the original universal task
+capability and the actual D1 account generation. The mounted Core/Jobs entrypoints
+passed isolated hosted control, generation/erasure and Queue receipt validation;
+see [control evidence](../../dev/unified-main/implementation-2026-09-05/canonical-control-2026-09-08.md). Accepted Candidates now dispatch their durable integration outbox
 through Core leases and existing Jobs task/FCM adapters. Cloud export flags and
 delivery receipts are atomic; Apple device confirmation remains separate from
 push delivery. The original retry policy and existing Cron recover failures.

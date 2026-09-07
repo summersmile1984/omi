@@ -17,6 +17,7 @@ from recurrence_sources import recurrence_sources
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULES = {
+    'utils.task_intelligence.rollout': 'candidate_kernel_rollout',
     'utils.durable_queue_policy': 'integration_queue_policy',
     'models.memory_apply': 'memory_kernel_apply',
     'models.memory_admission': 'memory_kernel_admission',

@@ -3,9 +3,15 @@ title: 'Cloudflare Candidates and recommendations'
 description: 'Canonical proposals, recommendation feedback and D1 transactions in the fork target'
 ---
 
-This is local integration work. Migrations 0183–0188 and the new recommendation
-path have not been deployed or accepted through Eddy macOS. Workflow control
-remains off.
+The Candidate/control path has been exercised in isolated hosted Core/Jobs
+Workers with the complete App migration chain. `/v1/candidates/control` now uses
+the unchanged upstream universal capability rule and D1's authoritative account
+generation. Unmigrated authenticated users receive generation zero with canonical
+read/Chat-first capability; client headers cannot select another generation.
+Unavailable storage or erasure fences retain the original off response. No new
+rollout flag, duplicate control store or read-time backfill is introduced.
+This is not production publication or Eddy macOS acceptance; recommendation
+model/provider and full release qualification remain unfinished.
 
 `/v1/candidates` and `/v1/staged-tasks` share the original Candidate lifecycle.
 Acceptance stores its task or workstream, workflow event, decision and pending
@@ -83,5 +89,7 @@ existing Cron/DLQ provide recovery. A remote success before a crash can still be
 ambiguous until local settlement; D1 cannot transact with a third-party API.
 
 These paths are locally exercised through actual HTTP/SQL and controlled provider
-transports. Workflow enablement, hosted provider/device verification and full
-production release qualification remain unfinished.
+transports. Hosted Core/Jobs delivery additionally passed the no-default-service
+branch with real Queue dispatch and one-attempt receipts. Public login,
+third-party providers, native devices and full production release qualification
+remain unfinished.
