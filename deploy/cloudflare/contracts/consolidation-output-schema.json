@@ -1,0 +1,402 @@
+{
+  "$defs": {
+    "CanonicalRecurrenceSignal": {
+      "additionalProperties": false,
+      "description": "A repeated unresolved open loop observed during canonical consolidation.\n\nThe memory domain may emit this evidence contract, but it never writes a\nCandidate or workstream. Workflow owns qualification and mutation.",
+      "properties": {
+        "signal_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Signal Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "objective": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "title": "Objective",
+          "type": "string"
+        },
+        "anchor_task_description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Anchor Task Description",
+          "type": "string"
+        },
+        "occurrence_count": {
+          "minimum": 1,
+          "title": "Occurrence Count",
+          "type": "integer"
+        },
+        "distinct_day_count": {
+          "minimum": 1,
+          "title": "Distinct Day Count",
+          "type": "integer"
+        },
+        "unresolved": {
+          "title": "Unresolved",
+          "type": "boolean"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "first_seen_at": {
+          "format": "date-time",
+          "title": "First Seen At",
+          "type": "string"
+        },
+        "last_seen_at": {
+          "format": "date-time",
+          "title": "Last Seen At",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "title": "Evidence Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "signal_id",
+        "title",
+        "objective",
+        "anchor_task_description",
+        "occurrence_count",
+        "distinct_day_count",
+        "unresolved",
+        "confidence",
+        "first_seen_at",
+        "last_seen_at",
+        "evidence_refs"
+      ],
+      "title": "CanonicalRecurrenceSignal",
+      "type": "object"
+    },
+    "ConsolidationAgentDecision": {
+      "description": "One total, item-addressed L2 route for a pending Short-term memory.",
+      "properties": {
+        "source_memory_id": {
+          "description": "Pending memory_id this decision settles",
+          "title": "Source Memory Id",
+          "type": "string"
+        },
+        "route": {
+          "enum": [
+            "promote",
+            "archive",
+            "review",
+            "reject"
+          ],
+          "title": "Route",
+          "type": "string"
+        },
+        "reconciliation": {
+          "default": "create",
+          "enum": [
+            "create",
+            "replace",
+            "merge",
+            "duplicate",
+            "keep_both"
+          ],
+          "title": "Reconciliation",
+          "type": "string"
+        },
+        "target_memory_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Existing memory used for duplicate/replace/merge reasoning",
+          "title": "Target Memory Id"
+        },
+        "supersedes": {
+          "description": "Active memory_ids replaced by this source",
+          "items": {
+            "type": "string"
+          },
+          "title": "Supersedes",
+          "type": "array"
+        },
+        "memory_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Memory Text"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "subject_entity_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Subject Entity Id"
+        },
+        "predicate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Predicate"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "relationship_to_user": {
+          "default": "unclear",
+          "enum": [
+            "self",
+            "owned_work",
+            "adopted",
+            "asking_about",
+            "encountered",
+            "other_speaker",
+            "unclear"
+          ],
+          "title": "Relationship To User",
+          "type": "string"
+        },
+        "aboutness": {
+          "default": "unclear",
+          "enum": [
+            "primary_user",
+            "user_owned_project",
+            "user_relationship",
+            "third_party",
+            "unclear"
+          ],
+          "title": "Aboutness",
+          "type": "string"
+        },
+        "basis_for_memory": {
+          "default": "weak_or_none",
+          "enum": [
+            "explicit",
+            "recurring",
+            "inferred_pattern",
+            "weak_or_none"
+          ],
+          "title": "Basis For Memory",
+          "type": "string"
+        },
+        "confidence": {
+          "default": "medium",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "rationale": {
+          "default": "",
+          "title": "Rationale",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_memory_id",
+        "route"
+      ],
+      "title": "ConsolidationAgentDecision",
+      "type": "object"
+    },
+    "EvidenceKind": {
+      "enum": [
+        "conversation",
+        "memory_item",
+        "workstream_event",
+        "artifact",
+        "chat_message",
+        "local_screen",
+        "external"
+      ],
+      "title": "EvidenceKind",
+      "type": "string"
+    },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/EvidenceKind"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "scope": {
+          "$ref": "#/$defs/EvidenceScope"
+        },
+        "device_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device Id"
+        },
+        "excerpt_hash": {
+          "anyOf": [
+            {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Excerpt Hash"
+        },
+        "transcript_segment_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Transcript Segment Ids"
+        },
+        "start_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Seconds"
+        },
+        "end_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Seconds"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "scope"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
+    "EvidenceScope": {
+      "enum": [
+        "canonical",
+        "device_local"
+      ],
+      "title": "EvidenceScope",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "decisions": {
+      "items": {
+        "$ref": "#/$defs/ConsolidationAgentDecision"
+      },
+      "title": "Decisions",
+      "type": "array"
+    },
+    "recurrence_signals": {
+      "items": {
+        "$ref": "#/$defs/CanonicalRecurrenceSignal"
+      },
+      "title": "Recurrence Signals",
+      "type": "array"
+    },
+    "reasoning": {
+      "default": "",
+      "title": "Reasoning",
+      "type": "string"
+    }
+  },
+  "title": "ConsolidationAgentBatch",
+  "type": "object"
+}

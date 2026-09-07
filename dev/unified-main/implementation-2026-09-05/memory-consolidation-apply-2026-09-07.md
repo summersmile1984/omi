@@ -80,8 +80,10 @@ part of this test. This is not production-release qualification.
 ## Remaining delivery work
 
 This module is not wired to a production scheduler or public mutation endpoint.
-Candidate retrieval, real model calls, retry leases and the recurrence workflow
-handoff still need owners. Recurrence-bearing batches currently fail before any
+At this step candidate retrieval, real model calls, retry leases and the
+recurrence workflow handoff still needed owners. The [model invocation follow-up](memory-consolidation-llm-2026-09-07.md)
+connects the original messages to Workers AI and this apply transaction;
+candidate retrieval, sizing, leases, scheduling and recurrence remain open. Recurrence-bearing batches currently fail before any
 write; signals are not silently lost. At this step native POST still created
 processed Short-term items without the required-normalization marker. The
 [native intake follow-up](native-memory-normalization-2026-09-07.md) corrects that

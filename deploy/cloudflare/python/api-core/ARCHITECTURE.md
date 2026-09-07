@@ -99,9 +99,32 @@ An old context cannot issue a second route. Returned items use the actual stored
 JSON and integer-second timestamp representation. Provider publication is a
 post-commit hint backed by the existing durable projection outbox.
 
-This is the consolidation persistence adapter, not an enabled maintenance job.
-Candidate retrieval, the actual LLM call, leases/retries, scheduler wiring and
-recurrence-to-workflow handoff remain unfinished. A batch with recurrence signals
+`memory_consolidation_llm.py` now supplies the Workers AI invocation owner.
+It stages the original prompt, bounded context formatter and message constructor;
+its schema-format text matches the backend's pinned LangChain 1.3.3. The model
+receives separate system/user text messages with the full original schema.
+The original backend JSON Schema is frozen in
+`contracts/consolidation-output-schema.json` and staged as data; runtime Pydantic
+versions cannot rewrite the default prompt. The component suite compares it to
+the current upstream model and tests the observed older-runtime difference.
+No tokenizer, vocabulary download or LangChain runtime is added to Core.
+`WORKERS_AI_MEMORY_CONSOLIDATION_MODEL` defaults to
+`@cf/qwen/qwen3.8-27b`. Overrides must support the same Chat Completions
+contract: a named `response_format.json_schema.schema`, `max_completion_tokens`,
+and one `choices[].message.content` response. Calls use low reasoning effort, temperature zero, at
+most 8,192 completion tokens and a 90-second timeout. Truncated completions,
+refusals, multiple choices and reasoning-only output cannot reach apply. Input/output bridge
+budgets are 110,000 / 256,000 UTF-8 bytes; these are not a token-window guarantee.
+The source/owner/control is validated before provider disclosure and rehydrated
+again for apply. Provider usage is recorded in `cf_llm_usage_daily` under
+`memory_consolidation`; invalid/missing usage or output prevents apply. Errors
+retain pending work and do not synthesize a route or switch providers. The
+caller supplies a hydrated context and run identity; no public or unleased
+background trigger is registered. See the [model invocation record](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md).
+
+This is not yet an enabled maintenance job. Candidate retrieval, retry leases,
+provider-window batch sizing, scheduler wiring and recurrence-to-workflow handoff
+remain unfinished. A batch with recurrence signals
 fails before writing while that handoff is absent. Native new intake, content
 correction and review acceptance now carry the required-normalization marker.
 Other intake families and the complete default-read policy must be qualified before enabling automatic

@@ -2893,8 +2893,10 @@ apply engine, promotion/graph receipt rules, pure Short-term lifecycle and
 canonical lineage resolution into the normal Core build. It rewrites only the
 explicitly mapped modules' import names;
 unexpected upstream dependencies fail the build. Core tests consume the same
-projection, and release identity includes every source file. No generated copy
-is maintained in the repository and no default prompt is changed.
+projection, and release identity includes every source file. No generated Python
+copy is maintained in the repository. The original consolidation JSON Schema is
+a frozen data contract so runtime Pydantic versions cannot change the prompt;
+tests compare it to the upstream model. No default prompt is changed.
 
 `memory_consolidation_sources.py`, called by the same projector, selects the
 upstream L2 decision schemas, complete-batch validation, source-attribution
@@ -2904,8 +2906,16 @@ supersession, graph assertions, deterministic review records and the complete
 journal/outbox chain in one guarded batch. Its patch builders are compared
 against the original upstream persistence requests. Source/head races or late
 storage failures leave no partial batch. This adapter does not yet enable
-scheduled model execution; candidate retrieval, leases, recurrence handoff and
-other intake families and default-read alignment remain required. Native POSTs
+scheduled model execution; candidate retrieval, provider-window batch sizing,
+leases, recurrence handoff, other intake families and default-read alignment
+remain required. `memory_consolidation_llm.py` now connects the unchanged upstream
+messages to Workers AI and the validated apply owner. It records actual model
+usage and does not substitute a route after errors. The model override is
+`WORKERS_AI_MEMORY_CONSOLIDATION_MODEL`, defaulting to
+`@cf/qwen/qwen3.8-27b`. Overrides require its Chat Completions contract
+(named JSON Schema, one completed assistant choice). Input/output byte bounds and a 90-second
+timeout protect the bridge, while provider token-window failures remain pending.
+See the [model invocation verification](../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md). Native POSTs
 now use the upstream required-processing metadata, preserve source attribution
 and remain pending until a real processor receipt; their initial vector work
 is delete-only. The 1 MB body cap and stable internal retry identity remain in

@@ -137,8 +137,17 @@ source or candidate change requires fresh planning; storage failure rolls back
 the whole batch. Review records use the original deterministic source-bound
 builder and are consumable by the existing public review API.
 
+The Cloudflare model adapter preserves the original consolidation prompt and
+output schema and invokes Workers AI before the guarded D1 apply. Its optional
+`WORKERS_AI_MEMORY_CONSOLIDATION_MODEL` setting defaults to
+`@cf/qwen/qwen3.8-27b`; an override must support the same Chat Completions
+request and response contract. Usage is reported under the
+`memory_consolidation` feature. Failed calls, malformed decisions or stale
+sources leave the memories pending. This invocation does not alter the default
+prompt or require a tokenizer download. See the [model verification record](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md).
+
 The adapter does not yet enable scheduled consolidation. Candidate retrieval,
-real model invocation, leases/retries and recurrence handoff remain unfinished;
+provider-window batch sizing, leases/retries and recurrence handoff remain unfinished;
 recurrence-bearing batches are rejected before writes until their workflow owner
 is connected. Normalization for other intake families and default-read alignment also remain
 required. No default prompt was changed. See the

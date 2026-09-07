@@ -1,5 +1,16 @@
 # Disposable Cloudflare product contracts
 
+`consolidation-output-schema.json` is the original backend
+`ConsolidationAgentBatch.model_json_schema()` captured with its pinned
+Pydantic 2.11.10. The memory projector stages it as data for both the unchanged
+prompt formatter and Qwen's named JSON Schema request. This avoids the observed
+Pydantic 2.10 omission of `arguments.additionalProperties: true` rewriting the
+system prompt. Core's existing local/CI suite checks schema equality against the
+current upstream model and byte equality against the original LangChain 1.3.3
+prefix. When upstream changes the schema, review and regenerate both the data
+contract and the original-parser prefix fixture from that owner; do not edit
+field descriptions or defaults independently here.
+
 `bash deploy/cloudflare/ci/product.sh` is the fork manifest's **local and CI**
 entry. Install the existing npm lock with `npm ci --prefix deploy/cloudflare`
 and have `uvx` available; `scripts/python-worker.mjs` installs/checks pinned

@@ -1,6 +1,8 @@
 """Stage upstream consolidation decisions and normalization policy without I/O."""
 
-from screen_frame_sources import selected_nodes
+import json
+
+from screen_frame_sources import selected_nodes, source
 
 
 def consolidation_sources():
@@ -9,7 +11,7 @@ def consolidation_sources():
         'import hashlib, json, os, re\n'
         'from datetime import datetime, timezone\n'
         'from dataclasses import dataclass, field\n'
-        'from typing import Any, Dict, List, Literal, Mapping, Optional, Set\n'
+        'from typing import Any, Dict, List, Literal, Mapping, Optional, Set, cast\n'
         'from pydantic import BaseModel, Field, field_validator, model_validator\n'
         'from memory_kernel_item import (MemoryItem, MemoryItemStatus, MemoryLayer, '
         'ProcessingState, RESTRICTED_SENSITIVITY_LABELS, effective_short_term_expiry)\n'
@@ -48,6 +50,33 @@ def consolidation_sources():
         'backend/utils/memory/canonical_consolidation.py',
         {
             'CONSOLIDATION_BY',
+            'CONSOLIDATION_CONTEXT_MEMORY_CONTENT_MAX_CHARS',
+            'CONSOLIDATION_CONTEXT_CANDIDATE_CONTENT_MAX_CHARS',
+            'CONSOLIDATION_CONTEXT_EVIDENCE_QUOTES_MAX_COUNT',
+            'CONSOLIDATION_CONTEXT_EVIDENCE_QUOTE_MAX_CHARS',
+            'CONSOLIDATION_CONTEXT_EVIDENCE_IDS_MAX_COUNT',
+            'CONSOLIDATION_CONTEXT_EVIDENCE_SOURCE_IDS_MAX_COUNT',
+            'CONSOLIDATION_CONTEXT_QUOTE_FIELDS_MAX_COUNT',
+            'CONSOLIDATION_CONTEXT_QUOTE_COLLECTION_MAX_COUNT',
+            'CONSOLIDATION_CONTEXT_QUOTE_MAX_DEPTH',
+            'CONSOLIDATION_CONTEXT_ARGUMENTS_MAX_CHARS',
+            'CONSOLIDATION_CONTEXT_PROMOTION_MAX_CHARS',
+            'CONSOLIDATION_CONTEXT_METADATA_TEXT_MAX_CHARS',
+            'CONSOLIDATION_CONTEXT_METADATA_COLLECTION_MAX_COUNT',
+            'CONSOLIDATION_CONTEXT_METADATA_MAX_DEPTH',
+            'CONSOLIDATION_CONTEXT_CANDIDATES_PER_ANCHOR_MAX_COUNT',
+            'CONSOLIDATION_CONTEXT_REDACTED_TEXT',
+            'CONSOLIDATION_CONTEXT_TRUNCATION_SUFFIX',
+            'CONSOLIDATION_AGENT_PROMPT',
+            'CONSOLIDATION_CACHE_KEY',
+            '_has_restricted_sensitivity',
+            '_truncate_context_text',
+            '_bounded_json_value',
+            '_bounded_quote_value',
+            '_bounded_metadata',
+            '_bounded_evidence_quotes',
+            'format_consolidation_llm_context',
+            'build_consolidation_llm_messages',
             'Payload',
             '_empty_candidate_map',
             '_empty_str_list',
@@ -72,4 +101,14 @@ def consolidation_sources():
             '_bind_required_promote_memory_text',
         },
     )
-    return {'memory_kernel_consolidation.py': common + normalization + belief + feedback + consolidation}
+    cache = selected_nodes(
+        'backend/utils/llm/prompt_cache.py',
+        {'EXPLICIT_CACHE_MINIMUM_TOKENS', 'EXPLICIT_CACHE_MINIMUM_CHARACTERS', 'has_cacheable_prefix'},
+    )
+    # Freeze the original backend parser's schema text across Pydantic versions.
+    # The Core suite compares this data contract to the current upstream model.
+    schema = json.loads(source('deploy/cloudflare/contracts/consolidation-output-schema.json'))
+    return {
+        'memory_kernel_consolidation.py': common + normalization + belief + feedback + cache + consolidation,
+        'memory_kernel_consolidation_schema.py': 'CONSOLIDATION_OUTPUT_SCHEMA = ' + repr(schema) + '\n',
+    }
