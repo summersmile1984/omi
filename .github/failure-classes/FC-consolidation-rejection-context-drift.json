@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "FC-consolidation-rejection-context-drift",
+  "violated_contract": "Canonical owner-rejection context includes eligible hidden records and normalized bounded text. The old Cloudflare hydrator required every record to be active and compared bounded feedback to unbounded raw content, rejecting a valid upstream context. Replaying the original hydrator against the new hidden/long-feedback regression fails with source_changed.",
+  "canonical_prevention": "Stage the original rejection eligibility/text-bound functions and use them for collection and final rehydration. Keep hidden feedback separate from active candidates/pending items, preserve source timestamps and ownership fences, and test the real native review plus SQL context path.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/python/api-core/src/memory_consolidation_context.py",
+    "deploy/cloudflare/python/api-core/src/memory_consolidation_apply.py",
+    "deploy/cloudflare/python/api-core/tests/test_memory_consolidation_context.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/python/api-core/src/memory_consolidation*.py"
+  ],
+  "status": "open"
+}

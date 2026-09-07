@@ -121,12 +121,26 @@ The source/owner/control is validated before provider disclosure and rehydrated
 again for apply. Provider usage is recorded in `cf_llm_usage_daily` under
 `memory_consolidation`; invalid/missing usage or output prevents apply. Errors
 retain pending work and do not synthesize a route or switch providers. The
-caller supplies a hydrated context and run identity; no public or unleased
-background trigger is registered. See the [model invocation record](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md).
+leased caller can supply UID/source IDs to `consolidate_pending_with_llm`;
+`memory_consolidation_context.py` then queries BGE-M3/Vectorize and uses the
+existing canonical D1 vector hydration owner. The lower-level invocation still
+accepts a verified context. No public or unleased background trigger is registered. See the [model invocation record](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md).
 
-This is not yet an enabled maintenance job. Candidate retrieval, retry leases,
+The context owner searches complete sources in 3,500-character overlapping
+embedding windows, ranks results before the existing 100-ID hydration budget,
+and preserves real scores for up to eight candidates per source. Account/source
+state is fenced before disclosure and rechecked after retrieval. Owner-rejected
+examples use the original 24-row scan, eight-example/180-character bounds,
+sensitivity exclusion and active/hidden eligibility. Rehydration compares the
+same bounded feedback text, while hidden rows remain ineligible as ordinary
+candidates or pending sources. A feedback read failure retains pending work.
+
+This is not yet an enabled maintenance job. Index visibility admission, retry leases,
 provider-window batch sizing, scheduler wiring and recurrence-to-workflow handoff
-remain unfinished. A batch with recurrence signals
+remain unfinished. The hosted context trial observed an approximately 28-second
+indexing delay after successful vector publication; its private probe waited for
+visibility before the second LLM call. Production must own this wait before
+using an empty result as consolidation context. A batch with recurrence signals
 fails before writing while that handoff is absent. Native new intake, content
 correction and review acceptance now carry the required-normalization marker.
 Other intake families and the complete default-read policy must be qualified before enabling automatic

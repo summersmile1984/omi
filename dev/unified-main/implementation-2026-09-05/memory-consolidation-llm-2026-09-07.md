@@ -153,7 +153,7 @@ those invocation parameters; duplicate-policy qualification remains incomplete.
 ## Remaining production work
 
 The inference owner takes a hydrated context and a run identity; it does not
-register a public or unleased background trigger. Duplicate-policy fidelity, candidate retrieval, retry
+register a public or unleased background trigger. Semantic duplicate-policy fidelity, index-visibility admission, retry
 leases, scheduler wiring, token-window batch planning, recurrence handoff and
 remaining reader/writer/outbox convergence must be completed before automatic
 maintenance and full CF-4/CI-1 qualification. The shared default prompt and
@@ -211,3 +211,8 @@ Verification (private directory `consolidation-admission-20260907`):
 This closes the observed exact-duplicate *write admission* defect. Semantic
 paraphrase quality, real Vectorize retrieval and the CF durable retry/scheduler
 remain unqualified; the earlier failed live trials stay failed evidence.
+
+Candidate retrieval is now implemented and separately exercised with real hosted
+BGE-M3/Vectorize/Qwen. See [the context trial](memory-consolidation-context-2026-09-07.md).
+Its successful duplicate call waited for the asynchronous index to become visible;
+this does not close the production scheduler/readiness/retry requirement.

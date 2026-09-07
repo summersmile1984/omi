@@ -9,9 +9,9 @@ def consolidation_sources():
     common = (
         'from __future__ import annotations\n'
         'import hashlib, json, os, re\n'
-        'from datetime import datetime, timezone\n'
+        'from datetime import datetime, timedelta, timezone\n'
         'from dataclasses import dataclass, field\n'
-        'from typing import Any, Dict, List, Literal, Mapping, Optional, Set, cast\n'
+        'from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Set, Tuple, cast\n'
         'from pydantic import BaseModel, Field, field_validator, model_validator\n'
         'from memory_kernel_item import (MemoryItem, MemoryItemStatus, MemoryLayer, '
         'ProcessingState, RESTRICTED_SENSITIVITY_LABELS, effective_short_term_expiry)\n'
@@ -44,7 +44,16 @@ def consolidation_sources():
     )
     feedback = selected_nodes(
         'backend/utils/memory/rejected_memory_feedback.py',
-        {'RejectedMemoryFeedback'},
+        {
+            'RejectedMemoryFeedback',
+            'REJECTED_MEMORY_FEEDBACK_QUERY_LIMIT',
+            'REJECTED_MEMORY_FEEDBACK_SCAN_LIMIT',
+            'REJECTED_MEMORY_FEEDBACK_ITEM_MAX_CHARS',
+            'REJECTED_MEMORY_FEEDBACK_TOTAL_MAX_CHARS',
+            'REJECTED_MEMORY_FEEDBACK_MAX_AGE',
+            'bound_rejected_memory_examples',
+            '_is_prompt_eligible_rejection',
+        },
     )
     consolidation = selected_nodes(
         'backend/utils/memory/canonical_consolidation.py',

@@ -252,3 +252,21 @@ The Server retains original retry bookkeeping. Cloudflare raises its existing
 apply-skipped result; its durable retry/scheduling workflow is still unfinished.
 This does not infer equivalence from similarity scores, truncated prompts or
 paraphrases. Default prompts and original upstream source remain unchanged.
+
+### Consolidation candidate retrieval
+
+`consolidate_pending_with_llm` now reads bounded source IDs under their owner,
+queries real BGE-M3/Vectorize, reuses the canonical D1 freshness/visibility
+hydrator, then invokes the unchanged Qwen prompt and applies the complete batch.
+Long input is searched through overlapping windows, including its tail. A source
+or account change prevents inference; rejected-owner examples retain upstream
+text bounds and hidden-state eligibility without exposing restricted examples.
+
+The 2026-09-07 isolated hosted trial used the actual Jobs vector publisher and
+Core candidate lookup with no injected IDs or scores. Real Qwen promoted a user
+preference, rejected fiction and archived the duplicate using a retrieved score
+of 1. Normalization receipts, graph/default reads and account isolation passed.
+The probe waited about 28 seconds for Vectorize visibility before the duplicate
+call. Production indexing admission, durable retries, scheduling and recurrence
+handoff remain unfinished; this is not a production release qualification.
+Detailed evidence: [context trial](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-context-2026-09-07.md).

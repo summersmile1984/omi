@@ -6,6 +6,7 @@ content or supplies a replacement decision when the model fails.
 """
 
 from dataclasses import replace
+from datetime import datetime, timezone
 
 from memory_apply_item import read_item
 from memory_apply_intake import (
@@ -27,6 +28,9 @@ from memory_kernel_consolidation import (
     _processed_from_consolidation_decision,
     _validate_agent_batch,
     is_pending_required_processing,
+    _is_prompt_eligible_rejection,
+    bound_rejected_memory_examples,
+    REJECTED_MEMORY_FEEDBACK_MAX_AGE,
 )
 from memory_kernel_duplicate_admission import MemoryIdentity, validate_duplicate_creates
 from memory_kernel_item import MemoryItem
@@ -87,7 +91,7 @@ async def _hydrate_context(env, context, generation):
     result = (
         await env.APP_DB.prepare(
             'SELECT * FROM cf_memories WHERE uid = ? AND id IN (SELECT value FROM json_each(?)) '
-            "AND status = 'active' AND source_state = 'active' AND deleted_at IS NULL AND invalid_at IS NULL "
+            "AND status IN ('active', 'hidden') AND source_state = 'active' AND deleted_at IS NULL AND invalid_at IS NULL "
             'AND superseded_by IS NULL AND account_generation = ?'
         )
         .bind(context.uid, encoded(sorted(identifiers)), generation)
@@ -101,8 +105,10 @@ async def _hydrate_context(env, context, generation):
         actual = items[expected.memory_id]
         if expected.uid != context.uid or actual.model_dump(mode='json') != expected.model_dump(mode='json'):
             raise ConsolidationApplySkipped('memory_consolidation_source_changed')
-        if actual.tier.value != 'short_term' or (
-            actual.processing_state.value != 'processed' and not is_pending_required_processing(actual)
+        if (
+            actual.status.value != 'active'
+            or actual.tier.value != 'short_term'
+            or (actual.processing_state.value != 'processed' and not is_pending_required_processing(actual))
         ):
             raise ConsolidationApplySkipped('memory_consolidation_source_not_pending')
     candidates = {}
@@ -112,6 +118,8 @@ async def _hydrate_context(env, context, generation):
         candidates[anchor] = []
         for previous in values:
             item = items[previous.memory_id]
+            if item.status.value != 'active':
+                raise ConsolidationApplySkipped('memory_consolidation_candidate_changed')
             current = ConsolidationCandidate(
                 anchor_memory_id=anchor,
                 memory_id=item.memory_id,
@@ -130,9 +138,11 @@ async def _hydrate_context(env, context, generation):
     for feedback in context.owner_rejected_examples:
         item = items[feedback.memory_id]
         if (
-            item.content != feedback.content
+            not _is_prompt_eligible_rejection(
+                item, uid=context.uid, cutoff=datetime.now(timezone.utc) - REJECTED_MEMORY_FEEDBACK_MAX_AGE
+            )
+            or bound_rejected_memory_examples([item.content]) != (feedback.content,)
             or item.updated_at != feedback.updated_at
-            or (item.promotion or {}).get('user_review') is not False
         ):
             raise ConsolidationApplySkipped('memory_consolidation_feedback_changed')
     return (
