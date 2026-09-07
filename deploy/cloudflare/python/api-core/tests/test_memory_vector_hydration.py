@@ -20,6 +20,7 @@ def setup_memory():
         MEMORY_VECTORS=FakeVectorIndex(),
     )
     memory = create(env, 'memory-secret', content='Original coffee preference')
+    db.seed_pre_normalization_snapshot(memory['id'])
     return db, env, memory
 
 
@@ -113,6 +114,8 @@ def test_overfetch_filters_before_limit_and_does_not_count_duplicates_as_missing
     db, env, first = setup_memory()
     second = create(env, 'memory-secret', content='Second valid preference')
     locked = create(env, 'memory-secret', content='Locked private preference')
+    for memory in (second, locked):
+        db.seed_pre_normalization_snapshot(memory['id'])
     for memory, vector_id in [(first, 'a' * 64), (first, 'b' * 64), (second, 'c' * 64), (locked, 'd' * 64)]:
         project(db, memory['id'], vector_id)
     db.connection.execute('UPDATE cf_memories SET is_locked = 1 WHERE id = ?', (locked['id'],))

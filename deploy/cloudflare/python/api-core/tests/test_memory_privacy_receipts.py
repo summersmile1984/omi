@@ -81,7 +81,7 @@ def test_missing_or_short_secret_cannot_create_an_unfenced_memory(database, secr
     from memory_apply_intake import create_native_memories
 
     with pytest.raises(ValueError, match='secret is unavailable'):
-        asyncio.run(create_native_memories(env, 'owner', rows(), []))
+        asyncio.run(create_native_memories(env, 'owner', rows(), [], source_surface='v3_batch'))
     assert all(not values for values in state(database).values())
 
 

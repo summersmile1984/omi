@@ -89,13 +89,24 @@ def execute(database, snapshot, *decisions):
 
 
 @pytest.mark.parametrize('route', ['promote', 'archive', 'review', 'reject'])
-@pytest.mark.parametrize('required', [False, True])
-def test_l2_route_commits_normalization_receipt_graph_or_review_and_is_readable(target, route, required):
+@pytest.mark.parametrize('source', ['new', 'edited', 'historical_processed'])
+def test_l2_route_commits_normalization_receipt_graph_or_review_and_is_readable(target, route, source):
     database, request, create = target
     memory_id = create(content='I prefer jasmine tea')
-    if required:
+    if source == 'edited':
         response = request('PATCH', '/v3/memories/' + memory_id, body={'value': 'I now prefer jasmine tea'})
         assert response.status_code == 200, response.text
+    elif source == 'historical_processed':
+        # Controlled prior-native schema shape, observed before normalization
+        # alignment: no required marker and no fabricated processing receipt.
+        # These existing rows remain processable without a bulk backfill.
+        database.connection.execute(
+            "UPDATE cf_memories SET processing_state='processed', canonical_metadata_json="
+            "json_set(canonical_metadata_json,'$.promotion',json_object('intake_payload_digest',"
+            "json_extract(canonical_metadata_json,'$.promotion.intake_payload_digest'))) WHERE id=?",
+            (memory_id,),
+        )
+    required = source != 'historical_processed'
     snapshot = context(database, memory_id)
     original = snapshot.pending_items[0]
     assert policy.is_pending_required_processing(original) == required

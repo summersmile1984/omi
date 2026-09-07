@@ -61,6 +61,11 @@ def project(module: str) -> str:
 def generate(output: Path) -> None:
     outputs = {target + '.py': project(module) for module, target in MODULES.items()}
     outputs.update(consolidation_sources())
+    outputs['memory_kernel_intake.py'] = (
+        'from enum import Enum\nfrom typing import Any, Dict\n'
+        + selected_nodes('backend/models/memories.py', {'SubjectAttribution'})
+        + selected_nodes('backend/utils/memory/canonical_memory_adapter.py', {'_product_metadata_from_payload'})
+    )
     outputs['memory_kernel_privacy.py'] = (
         'from __future__ import annotations\n'
         'from datetime import datetime\nfrom typing import List\n'

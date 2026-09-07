@@ -2905,7 +2905,11 @@ journal/outbox chain in one guarded batch. Its patch builders are compared
 against the original upstream persistence requests. Source/head races or late
 storage failures leave no partial batch. This adapter does not yet enable
 scheduled model execution; candidate retrieval, leases, recurrence handoff and
-intake/default-read alignment remain required. See the
+other intake families and default-read alignment remain required. Native POSTs
+now use the upstream required-processing metadata, preserve source attribution
+and remain pending until a real processor receipt; their initial vector work
+is delete-only. The 1 MB body cap and stable internal retry identity remain in
+force. See the [native intake verification](../../dev/unified-main/implementation-2026-09-05/native-memory-normalization-2026-09-07.md) and
 [consolidation verification record](../../dev/unified-main/implementation-2026-09-05/memory-consolidation-apply-2026-09-07.md).
 
 The same builder selects the three original privacy scrubber/event function

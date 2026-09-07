@@ -53,7 +53,12 @@ def test_all_explicit_intake_starts_short_term_with_atomic_projection(target, ca
         "SELECT * FROM cf_vector_projection_outbox WHERE uid = ? AND source_kind = 'memory' AND source_id = ?",
         (row['uid'], row['id']),
     ).fetchone()
-    assert outbox['operation'] == 'upsert'
+    # Native explicit submissions follow MemoryService.create_external_memory:
+    # required_processing_payload makes raw intake pending. The original
+    # memory_apply kernel emits delete-only projections until L2 admits it.
+    native = path.startswith('/v3/')
+    assert row['processing_state'] == ('pending' if native else 'processed')
+    assert outbox['operation'] == ('delete' if native else 'upsert')
     assert outbox['desired_version'] == row['item_revision']
 
 

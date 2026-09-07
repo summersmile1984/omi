@@ -6,6 +6,7 @@ Hosted D1 execution is qualified separately; these tests perform no network IO.
 """
 
 import asyncio
+from datetime import datetime, timedelta
 import hashlib
 import json
 from pathlib import Path
@@ -63,6 +64,7 @@ def apply(database, values, extra=()):
             values[0]['uid'],
             values,
             list(extra),
+            source_surface='v3_batch',
         )
     )
 
@@ -131,10 +133,18 @@ def test_http_batch_commits_items_receipts_head_evidence_and_outbox_together(tar
     assert len(snapshot['cf_usage_sources']) == 2
 
 
-def test_exact_retry_is_noop_but_changed_metadata_or_mixed_retry_cannot_overwrite(database):
+def test_exact_retry_is_noop_but_changed_metadata_or_mixed_retry_cannot_overwrite(database, monkeypatch):
     values = rows()
     apply(database, values)
     before = state(database)
+    import memory_kernel_required_promotion
+
+    class LaterClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(days=1)
+
+    monkeypatch.setattr(memory_kernel_required_promotion, 'datetime', LaterClock)
     apply(database, values)
     assert state(database) == before
     changed = [{**row, 'tags_json': '["changed"]'} for row in values]
@@ -143,6 +153,55 @@ def test_exact_retry_is_noop_but_changed_metadata_or_mixed_retry_cannot_overwrit
     with pytest.raises(ValueError, match='memory_apply_partial_replay'):
         apply(database, [values[0], {**values[1], 'id': 'fresh'}])
     assert state(database) == before
+
+
+@pytest.mark.parametrize(
+    'path,category,surface',
+    [
+        ('/v3/memories', 'manual', 'v3_manual'),
+        ('/v3/memories', 'interesting', 'v3_api'),
+        ('/v3/memories/batch', 'manual', 'v3_batch'),
+        ('/v3/memories/batch', 'interesting', 'v3_batch'),
+    ],
+)
+def test_native_intake_requires_a_real_processor_receipt_and_preserves_source(target, path, category, surface):
+    database, request, _ = target
+    content = 'Alex prefers jasmine tea 中文 🌊'
+    submitted = {
+        'content': content,
+        'category': category,
+        'tags': ['source-test'],
+        'subject_entity_id': 'person:alex',
+        'subject_attribution': 'third_party',
+        'processing_state': 'processed',
+        'promotion': {'required': False, 'processing_receipt': {'processor_id': 'client-invented'}},
+    }
+    response = request('POST', path, body={'memories': [submitted]} if path.endswith('/batch') else submitted)
+    assert response.status_code == 200, response.text
+    row = dict(database.connection.execute('SELECT * FROM cf_memories').fetchone())
+    from memory_apply_item import read_item
+
+    item = read_item(row)
+    promotion = item.promotion
+    assert item.tier.value == 'short_term' and item.processing_state.value == 'pending'
+    assert item.user_asserted == (category == 'manual')
+    assert promotion['required'] is True and promotion['processing_status'] == 'pending_processing'
+    assert promotion['processor_id'] == 'canonical_required_memory'
+    assert 'processing_receipt' not in promotion and 'admission_receipt' not in promotion
+    assert promotion['source_surface'] == surface
+    assert promotion['source_attribution'] == {'subject_attribution': 'third_party', 'subject_entity_id': 'person:alex'}
+    assert promotion['category'] == category and promotion['tags'] == ['source-test']
+    submission = promotion['submission']
+    assert submission['submission_id'] == item.memory_id and submission['source_surface'] == surface
+    assert submission['source_id'] == item.memory_id
+    assert submission['content_hash'] == hashlib.sha256(content.encode()).hexdigest()
+    assert int(datetime.fromisoformat(submission['submitted_at']).timestamp()) == row['created_at']
+    assert item.content == content and not item.graph_ready
+    assert request('GET', '/v3/memories').json()[0]['content'] == content
+    events = database.connection.execute('SELECT event_json FROM cf_memory_outbox').fetchall()
+    assert len(events) == 2 and all(json.loads(event[0])['payload']['action'] == 'delete' for event in events)
+    assert database.connection.execute('SELECT operation FROM cf_vector_projection_outbox').fetchone()[0] == 'delete'
+    assert database.connection.execute('SELECT count(*) FROM cf_memory_graph_assertions').fetchone()[0] == 0
 
 
 def test_same_target_ids_are_isolated_by_authenticated_uid(database):

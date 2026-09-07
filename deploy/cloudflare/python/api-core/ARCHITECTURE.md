@@ -36,6 +36,18 @@ does not infer consolidation review decisions from structural field conflicts.
 An exact whole internal retry is a no-op; mixed retries and stale authority are
 rejected. Public POSTs still allocate their IDs on the server.
 
+Native single and batch intake now use the unchanged upstream
+`required_processing_payload` and `_product_metadata_from_payload` helpers.
+They enter pending Short-term with an owned processor/submission identity and
+conserved source attribution; client-supplied processing or promotion fields
+cannot grant admission. The route supplies `v3_manual`, `v3_api` or `v3_batch`
+and the already-captured acceptance timestamp keeps preparation/retry identity
+stable. Raw content remains readable through the native list, while vector
+publication stays delete-only until processing is actually receipted. No model
+call occurs in the POST and no default prompt changes. Existing processed rows
+retain their state; this is not a bulk backfill. See the
+[normalization verification record](../../../../dev/unified-main/implementation-2026-09-05/native-memory-normalization-2026-09-07.md).
+
 `memory_apply_mutation.py` is the ordinary native user-mutation transaction
 owner. Content correction, visibility, review votes, read/dismiss and baseline
 all persist their item, operation, commit, control head and outbox together.
@@ -77,10 +89,9 @@ post-commit hint backed by the existing durable projection outbox.
 This is the consolidation persistence adapter, not an enabled maintenance job.
 Candidate retrieval, the actual LLM call, leases/retries, scheduler wiring and
 recurrence-to-workflow handoff remain unfinished. A batch with recurrence signals
-fails before writing while that handoff is absent. Native new intake currently
-enters processed Short-term without the upstream required-normalization marker;
-content correction and review acceptance do carry that marker. Intake alignment
-and the complete default-read policy must be qualified before enabling automatic
+fails before writing while that handoff is absent. Native new intake, content
+correction and review acceptance now carry the required-normalization marker.
+Other intake families and the complete default-read policy must be qualified before enabling automatic
 consolidation. See the [verification record](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-apply-2026-09-07.md).
 
 Review feedback immediately follows the guarded item UPDATE in the same batch.

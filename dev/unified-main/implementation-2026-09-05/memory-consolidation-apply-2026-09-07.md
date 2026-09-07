@@ -82,10 +82,11 @@ part of this test. This is not production-release qualification.
 This module is not wired to a production scheduler or public mutation endpoint.
 Candidate retrieval, real model calls, retry leases and the recurrence workflow
 handoff still need owners. Recurrence-bearing batches currently fail before any
-write; signals are not silently lost. Native POST currently creates processed
-Short-term items without the required-normalization marker. The existing content
-edit and review-acceptance paths do create required-pending items, and both forms
-are tested here. Intake alignment and default list/read filtering remain required
+write; signals are not silently lost. At this step native POST still created
+processed Short-term items without the required-normalization marker. The
+[native intake follow-up](native-memory-normalization-2026-09-07.md) corrects that
+boundary; existing processed snapshots and new pending inputs are both tested.
+Other intake families and default list/read filtering remain required
 before enabling automatic consolidation. Shared graph projection and complete
 kernel-outbox consumption remain part of writer convergence. This work alone
 does not qualify production deployment, history/revert or JIT.

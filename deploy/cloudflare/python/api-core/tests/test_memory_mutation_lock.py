@@ -6,6 +6,7 @@ does not replace business handlers or the database admission decision.
 """
 
 import asyncio
+import json
 from pathlib import Path
 import sqlite3
 import sys
@@ -83,6 +84,19 @@ class Database:
     def row(self, memory_id):
         row = self.connection.execute('SELECT * FROM cf_memories WHERE id = ?', (memory_id,)).fetchone()
         return dict(row) if row else None
+
+    def seed_pre_normalization_snapshot(self, memory_id):
+        """Controlled native row shape persisted before required-marker adoption.
+
+        Vector tests need an already-processed source, not a raw current POST.
+        This fixture does not alter runtime admission or manufacture a receipt.
+        """
+        metadata = json.loads(self.row(memory_id)['canonical_metadata_json'])
+        metadata['promotion'] = {'intake_payload_digest': metadata['promotion']['intake_payload_digest']}
+        self.connection.execute(
+            "UPDATE cf_memories SET processing_state='processed',canonical_metadata_json=? WHERE id=?",
+            (json.dumps(metadata), memory_id),
+        )
 
     def lock(self, memory_id):
         self.connection.execute('UPDATE cf_memories SET is_locked = 1 WHERE id = ?', (memory_id,))
@@ -319,14 +333,20 @@ def test_projection_failure_rolls_back_the_business_edit_and_revision(target):
     assert database.side_effects() == effects
 
 
-def test_lock_unlock_and_privacy_delete_coalesce_to_the_latest_revision(target):
+@pytest.mark.parametrize('processed', [False, True])
+def test_lock_unlock_and_privacy_delete_coalesce_to_the_latest_revision(target, processed):
     database, request, create = target
     memory_id = create()
+    if processed:
+        database.seed_pre_normalization_snapshot(memory_id)
     before = database.row(memory_id)['item_revision']
     database.lock(memory_id)
     assert database.side_effects()['cf_vector_projection_outbox'][0]['operation'] == 'delete'
     database.connection.execute('UPDATE cf_memories SET is_locked = 0 WHERE id = ?', (memory_id,))
-    assert database.side_effects()['cf_vector_projection_outbox'][0]['operation'] == 'upsert'
+    # Unlock restores eligibility only after processing; it cannot normalize raw intake.
+    assert database.side_effects()['cf_vector_projection_outbox'][0]['operation'] == (
+        'upsert' if processed else 'delete'
+    )
     database.connection.executescript('''
         CREATE TABLE deletion_revision_observation(revision INTEGER);
         CREATE TRIGGER observe_deletion_revision BEFORE DELETE ON cf_memories

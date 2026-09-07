@@ -247,6 +247,7 @@ def test_vector_memory_search_uses_vectorize_candidates_and_d1_hydration():
 
     env.APP_DB = Database()
     memory = create(env, secret, content="Coffee before vector search", category="manual")
+    env.APP_DB.seed_pre_normalization_snapshot(memory["id"])
     env.APP_DB.connection.execute(
         "INSERT INTO cf_vector_projection_state "
         "(uid, projection_kind, source_id, sub_id, vector_id, source_version, model, updated_at) "

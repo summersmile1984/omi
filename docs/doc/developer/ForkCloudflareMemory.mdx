@@ -14,7 +14,16 @@ implementation and qualification requirement.
 
 With migration 0172, native `POST /v3/memories` and
 `POST /v3/memories/batch` persist memory content, evidence, operation receipts,
-commit records and pending index work atomically with usage and review work.
+commit records and pending index work atomically with usage. Both routes now
+store raw submissions as pending Short-term using the upstream required-processing
+contract. They preserve content and source attribution, assign the correct
+single/batch source surface, and wait for a real normalization receipt before
+vector publication. The acceptance timestamp remains stable across internal
+retries. Client-authored promotion/processing fields cannot skip this step.
+Existing processed data remains readable without a bulk backfill. The current
+native list still shows pending submissions immediately; creating a memory does
+not invoke a model. [Verification](../../../dev/unified-main/implementation-2026-09-05/native-memory-normalization-2026-09-07.md).
+
 The batch request remains `{"memories": [...]}`, with at most 100 memories
 and a **1,000,000-byte UTF-8 request body**, including the JSON envelope and
 metadata. The single-memory content limit remains 50,000 characters. Larger
@@ -121,7 +130,7 @@ builder and are consumable by the existing public review API.
 The adapter does not yet enable scheduled consolidation. Candidate retrieval,
 real model invocation, leases/retries and recurrence handoff remain unfinished;
 recurrence-bearing batches are rejected before writes until their workflow owner
-is connected. Native intake normalization and default-read alignment also remain
+is connected. Normalization for other intake families and default-read alignment also remain
 required. No default prompt was changed. See the
 [consolidation verification record](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-apply-2026-09-07.md).
 

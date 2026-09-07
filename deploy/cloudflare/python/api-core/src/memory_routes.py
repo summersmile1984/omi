@@ -915,7 +915,13 @@ async def create_memory(request: Request):
             memories_created=1,
             updated_at=now,
         )
-        await create_native_memories(env, uid, [intake_row], [usage_statement])
+        await create_native_memories(
+            env,
+            uid,
+            [intake_row],
+            [usage_statement],
+            source_surface='v3_manual' if intake_row['manually_added'] else 'v3_api',
+        )
         row = await _first_active(env, uid, memory_id)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
@@ -971,7 +977,7 @@ async def create_memories_batch(request: Request):
             ).bind(uid, ids_json)
         )
     try:
-        await create_native_memories(env, uid, rows, statements)
+        await create_native_memories(env, uid, rows, statements, source_surface='v3_batch')
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
     return {"memories": [_response(row) for row in rows], "created_count": len(rows)}

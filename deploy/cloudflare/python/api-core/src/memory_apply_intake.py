@@ -21,7 +21,9 @@ from memory_kernel_apply import (
     require_writer_admitted,
 )
 from memory_kernel_evidence import ArtifactPreservationState, MemoryEvidence
+from memory_kernel_intake import _product_metadata_from_payload
 from memory_kernel_operations import MemoryOperation, MemoryOperationStatus, MemoryOperationType
+from memory_kernel_required_promotion import required_processing_payload
 from memory_kernel_short_term_lifecycle import default_short_term_expiry
 from memory_privacy_receipts import privacy_receipt_id
 
@@ -85,7 +87,7 @@ def _instant(value):
     return datetime.fromtimestamp(value, timezone.utc).isoformat()
 
 
-def _operation(control, row):
+def _operation(control, row, source_surface):
     memory_id, content = row['id'], row['content']
     source_version = hashlib.sha256(content.encode()).hexdigest()
     evidence = MemoryEvidence(
@@ -96,6 +98,21 @@ def _operation(control, row):
         content_hash=source_version,
         artifact_preservation=ArtifactPreservationState.preserved,
     )
+    submission = required_processing_payload(
+        {
+            **row,
+            'tags': json.loads(row['tags_json']),
+            'evidence': [evidence.model_dump(mode='json')],
+            'promotion': {
+                'intake_payload_digest': hashlib.sha256(encoded(row).encode()).hexdigest(),
+                **_product_metadata_from_payload({**row, 'tags': json.loads(row['tags_json'])}),
+            },
+        },
+        source_surface=source_surface,
+    )
+    # The route already captured server acceptance time. Reuse it for retry
+    # identity rather than introducing a new clock value on every preparation.
+    submission['promotion']['submission']['submitted_at'] = _instant(row['created_at'])
     patch = {
         'patch_id': 'native_' + memory_id,
         'packet_id': memory_id,
@@ -118,7 +135,7 @@ def _operation(control, row):
         'captured_at': _instant(row['valid_at']),
         'updated_at': _instant(row['updated_at']),
         'expires_at': default_short_term_expiry(datetime.fromtimestamp(row['valid_at'], timezone.utc)).isoformat(),
-        'promotion': {'intake_payload_digest': hashlib.sha256(encoded(row).encode()).hexdigest()},
+        'promotion': submission['promotion'],
     }
     # Product metadata also participates in retry identity, even though its
     # physical columns are not part of the upstream canonical MemoryItem.
@@ -166,8 +183,8 @@ def _stored_item(row, item):
     return stored
 
 
-def _operation_identity(control, row):
-    operation, _ = _operation(control, row)
+def _operation_identity(control, row, source_surface):
+    operation, _ = _operation(control, row, source_surface)
     return operation.operation_id, operation.logical_payload_digest
 
 
@@ -308,13 +325,15 @@ def append_journal_records(records, uid, result, control, now, *, omit_intake_te
         )
 
 
-async def create_native_memories(env, uid, rows, extra_statements):
+async def create_native_memories(env, uid, rows, extra_statements, *, source_surface):
     """The native single/batch routes supply validated rows and owned side effects.
 
     Admission is rechecked inside the same transaction as every result write.
     A transient CAS conflict is returned to the caller rather than silently
     rebasing an accepted user operation against an unobserved generation.
     """
+    if source_surface not in {'v3_manual', 'v3_api', 'v3_batch'}:
+        raise ValueError('invalid native memory source surface')
     if not rows or len(rows) > 100 or len({row['id'] for row in rows}) != len(rows):
         raise ValueError('invalid native memory batch')
     for row in rows:
@@ -322,7 +341,7 @@ async def create_native_memories(env, uid, rows, extra_statements):
             raise ValueError('invalid native memory authority')
     db = env.APP_DB
     prior, control = await load_memory_control(env, uid)
-    identities = [_operation_identity(control, row) for row in rows]
+    identities = [_operation_identity(control, row, source_surface) for row in rows]
     operations = (
         await db.prepare(
             'SELECT operation_id, operation_json FROM cf_memory_operations '
@@ -386,7 +405,7 @@ async def create_native_memories(env, uid, rows, extra_statements):
     def item_records():
         nonlocal control
         for row, expected_identity in zip(rows, identities):
-            operation, patch = _operation(control, row)
+            operation, patch = _operation(control, row, source_surface)
             if (operation.operation_id, operation.logical_payload_digest) != expected_identity:
                 raise ValueError('native intake operation identity changed')
             result = apply_long_term_patch_transaction(control_state=control, operation=operation, patch_payload=patch)
