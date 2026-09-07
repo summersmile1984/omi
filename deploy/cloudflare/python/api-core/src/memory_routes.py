@@ -25,6 +25,7 @@ from feedback_contract import FeedbackSurface, FeedbackTargetKind
 from feedback_store import feedback_event_statement
 from memory_mutation_errors import memory_mutation_error
 from memory_apply_intake import create_native_memories
+from memory_apply_edit import edit_native_memory
 from account_routes import usage_source_statement
 from memory_review_routes import build_review_queue_statements
 from memory_vector_hydration import hydrate_memory_vectors
@@ -1108,12 +1109,8 @@ async def update_memory_content(request: Request, memory_id: str):
     uid = str(context["uid"])
     env = request.scope["env"]
     try:
-        if await _first_active(env, uid, memory_id) is None:
+        if not await edit_native_memory(env, uid, memory_id, update.value, int(time.time())):
             return JSONResponse({"error": "memory not found"}, status_code=404)
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET content = ?, edited = 1, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(update.value, int(time.time()), uid, memory_id).run()
     except Exception as error:
         return memory_mutation_error(error)
     return {"status": "ok"}

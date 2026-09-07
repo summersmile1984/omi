@@ -2907,6 +2907,19 @@ by encoded bytes and count before writing; Electron's item-count-only importer
 still needs that adaptation. Each accepted request remains one independent
 atomic transaction.
 
+Native content PATCH now uses that same journal/control writer. Migration 0173
+adds target revision/metadata/ownership admission to its transaction guard.
+The unchanged apply engine returns corrected content to pending Short-term,
+clears graph admission and emits delete-only projection work until processing
+readmits it. The current paid-plan lock, account/source generation and closed
+record checks remain enforced before commit. Pre-journal rows are projected
+read-only and adopted at their existing IDs in the correction transaction;
+no synthetic historical commit is persisted. An explicit correction records
+its real commit, operation and outbox atomically without charging new intake.
+The patch policy is behaviorally compared against the original upstream
+`update_canonical_memory_content` implementation. See the
+[content-edit verification record](../../dev/unified-main/implementation-2026-09-05/memory-apply-edit-2026-09-07.md).
+
 The other intake, mutation, consolidation, privacy and projection writers still
 need to converge on this transaction owner. History/revert and JIT require that
 complete authority; their inventory states are unchanged. See the

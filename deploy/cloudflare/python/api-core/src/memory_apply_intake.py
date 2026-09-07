@@ -170,14 +170,14 @@ def _operation_identity(control, row):
     return operation.operation_id, operation.logical_payload_digest
 
 
-def _insert_rows(db, table, rows):
+def _insert_rows(db, table, rows, *, restore_intake_text=False):
     remaining = iter(rows)
     first = next(remaining, None)
     if first is None:
         return
     columns = sorted(first)
     expressions = {key: f"json_extract(source.value, '$.{key}')" for key in columns}
-    if table == 'cf_memory_operations':
+    if restore_intake_text:
         # The item was inserted earlier in this same guarded batch. Transport
         # its text once, then restore the exact complete receipt in D1. A
         # missing owned item deliberately produces invalid JSON and aborts.
@@ -208,18 +208,7 @@ def _insert_rows(db, table, rows):
         yield db.prepare(sql).bind('[' + ','.join(parts) + ']')
 
 
-async def create_native_memories(env, uid, rows, extra_statements):
-    """The native single/batch routes supply validated rows and owned side effects.
-
-    Admission is rechecked inside the same transaction as every result write.
-    A transient CAS conflict is returned to the caller rather than silently
-    rebasing an accepted user operation against an unobserved generation.
-    """
-    if not rows or len(rows) > 100 or len({row['id'] for row in rows}) != len(rows):
-        raise ValueError('invalid native memory batch')
-    for row in rows:
-        if set(row) - INTAKE_COLUMNS or row['uid'] != uid or row['memory_tier'] != 'short_term':
-            raise ValueError('invalid native memory authority')
+async def load_memory_control(env, uid):
     db = env.APP_DB
     snapshot = (
         await db.prepare(
@@ -249,6 +238,84 @@ async def create_native_memories(env, uid, rows, extra_statements):
     if control.uid != uid or control.account_generation != snapshot['generation']:
         raise ValueError('memory_apply_generation_changed')
     require_writer_admitted(control, MemoryWriterClass.user)
+    return prior, control
+
+
+def control_statement(db, uid, control):
+    return db.prepare(
+        'INSERT INTO cf_memory_apply_control '
+        '(uid, head_commit_id, account_generation, source_generation, commit_sequence, control_json) '
+        'VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(uid) DO UPDATE SET head_commit_id = excluded.head_commit_id, '
+        'account_generation = excluded.account_generation, source_generation = excluded.source_generation, '
+        'commit_sequence = excluded.commit_sequence, control_json = excluded.control_json'
+    ).bind(
+        uid,
+        control.head_commit_id,
+        control.account_generation,
+        control.source_generation,
+        control.commit_sequence,
+        control.model_dump_json(),
+    )
+
+
+def append_journal_records(records, uid, result, control, now, *, omit_intake_text=False):
+    receipt = result.operation.model_dump(mode='json')
+    if omit_intake_text and receipt['logical_payload'].pop('memory_text') != result.memory_items[0].content:
+        raise ValueError('native intake receipt does not match the committed item')
+    records['cf_memory_operations'].append(
+        {
+            'uid': uid,
+            'operation_id': result.operation.operation_id,
+            'logical_payload_digest': result.operation.logical_payload_digest,
+            'operation_json': encoded(receipt),
+            'created_at': now,
+        }
+    )
+    records['cf_memory_commits'].append(
+        {
+            'uid': uid,
+            'commit_id': result.control_state.head_commit_id,
+            'parent_commit_id': control.head_commit_id,
+            'commit_sequence': result.control_state.commit_sequence,
+            'account_generation': control.account_generation,
+            'source_generation': control.source_generation,
+            'operation_id': result.operation.operation_id,
+            'memory_ids_json': encoded(result.operation.committed_memory_item_ids),
+            'outbox_ids_json': encoded(result.operation.committed_outbox_event_ids),
+            'created_at': now,
+        }
+    )
+    for event in result.outbox_events:
+        records['cf_memory_outbox'].append(
+            {
+                'uid': uid,
+                'event_id': event.event_id,
+                'event_type': event.event_type.value,
+                'status': event.status.value,
+                'memory_id': event.memory_id,
+                'commit_id': event.commit_id,
+                'commit_sequence': event.commit_sequence,
+                'account_generation': event.account_generation,
+                'event_json': event.model_dump_json(),
+                'available_at': int(event.available_at.timestamp()),
+            }
+        )
+
+
+async def create_native_memories(env, uid, rows, extra_statements):
+    """The native single/batch routes supply validated rows and owned side effects.
+
+    Admission is rechecked inside the same transaction as every result write.
+    A transient CAS conflict is returned to the caller rather than silently
+    rebasing an accepted user operation against an unobserved generation.
+    """
+    if not rows or len(rows) > 100 or len({row['id'] for row in rows}) != len(rows):
+        raise ValueError('invalid native memory batch')
+    for row in rows:
+        if set(row) - INTAKE_COLUMNS or row['uid'] != uid or row['memory_tier'] != 'short_term':
+            raise ValueError('invalid native memory authority')
+    db = env.APP_DB
+    prior, control = await load_memory_control(env, uid)
     identities = [_operation_identity(control, row) for row in rows]
     operations = (
         await db.prepare(
@@ -320,47 +387,7 @@ async def create_native_memories(env, uid, rows, extra_statements):
             if result.status != ApplyStatus.committed or len(result.memory_items) != 1 or result.graph_assertions:
                 raise ValueError('native memory apply was not admitted: ' + str(result.reason))
             item = result.memory_items[0]
-            receipt = result.operation.model_dump(mode='json')
-            if receipt['logical_payload'].pop('memory_text') != item.content:
-                raise ValueError('native intake receipt does not match the committed item')
-            records['cf_memory_operations'].append(
-                {
-                    'uid': uid,
-                    'operation_id': result.operation.operation_id,
-                    'logical_payload_digest': result.operation.logical_payload_digest,
-                    'operation_json': encoded(receipt),
-                    'created_at': row['created_at'],
-                }
-            )
-            records['cf_memory_commits'].append(
-                {
-                    'uid': uid,
-                    'commit_id': result.control_state.head_commit_id,
-                    'parent_commit_id': control.head_commit_id,
-                    'commit_sequence': result.control_state.commit_sequence,
-                    'account_generation': control.account_generation,
-                    'source_generation': control.source_generation,
-                    'operation_id': operation.operation_id,
-                    'memory_ids_json': encoded(result.operation.committed_memory_item_ids),
-                    'outbox_ids_json': encoded(result.operation.committed_outbox_event_ids),
-                    'created_at': row['created_at'],
-                }
-            )
-            for event in result.outbox_events:
-                records['cf_memory_outbox'].append(
-                    {
-                        'uid': uid,
-                        'event_id': event.event_id,
-                        'event_type': event.event_type.value,
-                        'status': event.status.value,
-                        'memory_id': event.memory_id,
-                        'commit_id': event.commit_id,
-                        'commit_sequence': event.commit_sequence,
-                        'account_generation': event.account_generation,
-                        'event_json': event.model_dump_json(),
-                        'available_at': int(event.available_at.timestamp()),
-                    }
-                )
+            append_journal_records(records, uid, result, control, row['created_at'], omit_intake_text=True)
             control = result.control_state
             yield _stored_item(row, item)
 
@@ -368,26 +395,11 @@ async def create_native_memories(env, uid, rows, extra_statements):
     # until the atomic batch. Receipts carry no duplicate text in transport.
     statements.extend(_insert_rows(db, 'cf_memories', item_records()))
     for table, values in records.items():
-        statements.extend(_insert_rows(db, table, values))
+        statements.extend(_insert_rows(db, table, values, restore_intake_text=table == 'cf_memory_operations'))
         # D1 statements own their serialized bindings now. Do not retain a
         # second full operation payload while the SDK serializes the batch.
         values.clear()
-    statements.append(
-        db.prepare(
-            'INSERT INTO cf_memory_apply_control '
-            '(uid, head_commit_id, account_generation, source_generation, commit_sequence, control_json) '
-            'VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(uid) DO UPDATE SET head_commit_id = excluded.head_commit_id, '
-            'account_generation = excluded.account_generation, source_generation = excluded.source_generation, '
-            'commit_sequence = excluded.commit_sequence, control_json = excluded.control_json'
-        ).bind(
-            uid,
-            control.head_commit_id,
-            control.account_generation,
-            control.source_generation,
-            control.commit_sequence,
-            control.model_dump_json(),
-        )
-    )
+    statements.append(control_statement(db, uid, control))
     statements.extend(extra_statements)
     statements.append(db.prepare('DELETE FROM cf_memory_apply_guard WHERE uid = ?').bind(uid))
     await db.batch(statements)

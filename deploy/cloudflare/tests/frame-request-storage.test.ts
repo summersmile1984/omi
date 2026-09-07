@@ -15,7 +15,11 @@ afterEach(() => databases.splice(0).forEach((db) => db.close()));
 // accepting it: https://github.com/cloudflare/workers-sdk/issues/4727. Native
 // memory apply migration 0172 reproduced that same failure later that day.
 // The tests below and test_frame_request_pixels.py execute publication/erasure.
-it.each(["0168_frame_request_pixels.sql", "0172_memory_apply_intake.sql"])(
+it.each([
+  "0168_frame_request_pixels.sql",
+  "0172_memory_apply_intake.sql",
+  "0173_memory_apply_edit.sql",
+])(
   "keeps trigger CASE expressions parenthesized for remote D1 in %s",
   (file) => {
     const migration = readFileSync(

@@ -290,7 +290,10 @@ def test_same_second_edits_advance_canonical_revision_and_projection_work(target
         outbox = database.side_effects()['cf_vector_projection_outbox']
         assert len(outbox) == 1
         assert outbox[0]['desired_version'] == current['item_revision']
-        assert outbox[0]['operation'] == 'upsert'
+        # Upstream update_canonical_memory_content returns corrections to
+        # pending Short-term; INV-MEM-4 requires re-admission before projection.
+        assert current['processing_state'] == 'pending'
+        assert outbox[0]['operation'] == 'delete'
 
 
 def test_projection_failure_rolls_back_the_business_edit_and_revision(target):

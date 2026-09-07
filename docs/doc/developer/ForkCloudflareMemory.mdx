@@ -6,7 +6,8 @@ description: 'Canonical write admission and durable projection work in the fork 
 The isolated Cloudflare target owns memory rows in App D1 `cf_memories`.
 New native, MCP and Developer memory intake starts in Short-term, including
 manual memories and batches. `category`, `manually_added` and `durability` do
-not grant Long-term admission. Existing Long-term records retain their tier.
+not grant Long-term admission. Existing Long-term records retain their tier
+until an explicit content correction or another canonical lifecycle action.
 The shared Server/Cloudflare HTTP contract verifies creation, persisted tier,
 editing and deletion; full canonical consolidation remains a separate
 implementation and qualification requirement.
@@ -26,9 +27,19 @@ A failed transaction returns 503 without a partial
 batch. Repeating a public POST allocates new IDs; this API does not accept a
 client-authored operation or ledger head.
 
+Migration 0173 moves native `PATCH /v3/memories/{id}` content corrections into
+the same transaction as the operation receipt, commit/head and pending index
+work. Corrected content returns to pending Short-term and clears the previous
+graph admission, following the upstream correction policy. Old vector mappings
+are revoked while the revised content awaits processing. Pre-journal memories
+are adopted in place when edited; their IDs and capture provenance are retained.
+Closed or superseded records cannot be reopened by this endpoint. Locks return
+402; concurrent target/head/generation changes and failed writes return 503
+without a partial correction.
+
 The user export includes owned operation and commit records under
-`memory_ledger_data`. These intake records do not yet constitute complete
-history for edits, source deletion or consolidation. History/revert and JIT
+`memory_ledger_data`. These native intake and content-correction records do not
+yet constitute complete history for other mutations, source deletion or consolidation. History/revert and JIT
 remain unqualified until every writer shares the same authority.
 
 Migration 0161 enforces the current row's paid-plan lock inside interactive
