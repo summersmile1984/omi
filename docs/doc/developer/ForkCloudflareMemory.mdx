@@ -20,6 +20,8 @@ metadata. The single-memory content limit remains 50,000 characters. Larger
 requests return HTTP 413 with `error: "memory_batch_too_large"`, `max_bytes`
 and `max_memories`, without writing any items. Clients must split imports by
 both encoded size and item count; each request is a separate transaction.
+The macOS fork importer does this automatically for the Cloudflare target,
+while retaining per-batch success/failure counts and account-switch protection.
 A failed transaction returns 503 without a partial
 batch. Repeating a public POST allocates new IDs; this API does not accept a
 client-authored operation or ledger head.

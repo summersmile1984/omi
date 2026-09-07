@@ -301,6 +301,48 @@ extension Bundle { static let resourceBundle = Bundle.main }
             stage(self.manifest, "cloudflare", "omi-auth-contract", ROOT / "native-stage-output")
         self.assertFalse((ROOT / "native-stage-output").exists())
 
+    def test_staged_memory_import_executes_byte_bounded_batches_and_per_batch_outcomes(self):
+        source = self.output / "Desktop/Sources"
+        importer = (source / "Onboarding/OnboardingImportEvidenceService.swift").read_text()
+        importer = importer[importer.index("enum OnboardingMemoryBatchImportService {") :]
+        models = (source / "Services/APIClient/APIClient+Memories.swift").read_text()
+        models = models[
+            models.index("struct MemoryBatchItem: Encodable {") : models.index(
+                "struct ImportEvidenceBatch: Encodable {"
+            )
+        ]
+        transport = source / "Services/OmiHTTPTransport.swift"
+        left, right = declarations(transport)["makeEncoder()"][0]
+        encoder = (
+            "struct OmiHTTPTransport { static let isoFractional = ISO8601DateFormatter()\n"
+            + transport.read_bytes()[left:right].decode()
+            + "\n}"
+        )
+        template = (ROOT / "desktop/macos/fork/Tests/memory_batch_import_probe.swift").read_text()
+        for marker, content in (
+            ("ACTUAL_PRODUCTION_ENCODER", encoder),
+            ("ACTUAL_PRODUCTION_MODELS", models),
+            ("ACTUAL_STAGED_IMPORT", importer),
+        ):
+            template = template.replace("/* " + marker + " */", content)
+        probe = self.directory / "memory-import-probe.swift"
+        probe.write_text(template)
+        binary = self.directory / "memory-import-probe"
+        subprocess.run(
+            [
+                "xcrun",
+                "swiftc",
+                "-parse-as-library",
+                str(source / "ForkNative/NativeMemoryBatching.swift"),
+                str(probe),
+                "-o",
+                str(binary),
+            ],
+            check=True,
+        )
+        result = subprocess.run([str(binary)], capture_output=True, text=True, check=True)
+        self.assertIn("both targets passed", result.stdout)
+
     def test_published_or_non_named_artifacts_are_not_admitted_by_local_package(self):
         for target, name in [("omi_cloud", "omi-auth-contract"), ("cloudflare", "Omi"), ("cloudflare", "../Omi")]:
             with self.assertRaises(ValueError):

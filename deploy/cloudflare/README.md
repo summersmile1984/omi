@@ -2902,9 +2902,10 @@ Cloudflare native batches accept at most 100 items and 1,000,000 UTF-8 request
 bytes, including JSON and metadata; the per-item content limit remains 50,000
 characters. Edge bounds the body before Python and Core checks it again.
 Oversize returns 413 with `memory_batch_too_large`, `max_bytes` and
-`max_memories`, with no writes. Larger imports need client-side byte-aware
-batching; item-count-only callers have not yet been adapted. Each accepted
-request remains one independent atomic transaction.
+`max_memories`, with no writes. The macOS fork import consumer now plans requests
+by encoded bytes and count before writing; Electron's item-count-only importer
+still needs that adaptation. Each accepted request remains one independent
+atomic transaction.
 
 The other intake, mutation, consolidation, privacy and projection writers still
 need to converge on this transaction owner. History/revert and JIT require that

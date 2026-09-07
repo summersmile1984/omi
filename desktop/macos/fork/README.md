@@ -65,6 +65,23 @@ Changed owners require review of the current upstream behavior and an explicit
 upstream auth cleanup and API/WS callers stay in the staged app. `stage-manifest.json`
 records source owner hashes and every staged Swift source hash.
 
+The native memory importer stages one reviewed `OnboardingMemoryBatchImportService.save`
+declaration. For Cloudflare, `NativeMemoryBatching` plans requests of at most
+100 items and 1,000,000 bytes using the actual memory wire model and the HTTP
+transport's encoder, including metadata, JSON envelope and escaped Unicode.
+The Server OS target retains its 100-item grouping. Planning finishes before
+any write. An individually oversized item increments the failed count without
+discarding its neighbors. Each emitted group remains one ordinary API call;
+the existing per-batch saved/failed counters, retry policy and account/session
+fences remain owned by the importer. No successful batch is replayed merely
+because a later batch failed. The low-level API does not secretly split calls.
+
+The existing native identity lane runs the planner's Swift tests and compiles
+and executes the actual staged importer, wire models and encoder with a
+controlled API seam. It checks complete ordered delivery, encoded byte limits,
+partial failures, oversized-item isolation, account switching and both targets.
+It is separate from full-app compilation, real HTTP integration and UI evidence.
+
 The same manifest `icon_master`, `logo_light` and `logo_dark` inputs pass the
 shared bounded static-PNG validator before staging replaces any resource. The
 platform generator derives the existing Dock, menu-bar and `herologo` resource

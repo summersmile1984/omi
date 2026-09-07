@@ -74,6 +74,34 @@ FIREBASE_START = "    // Initialize Firebase (skipped for local harness"
 FIREBASE_END = "    // Initialize analytics (PostHog)"
 
 
+def stage_memory_batching(source: Path, owners: dict[str, str]) -> None:
+    path = source / "Onboarding/OnboardingImportEvidenceService.swift"
+    signature = "save(_:logPrefix:authorizationSnapshot:apiClient:sleep:)"
+    matches = declarations(path).get(signature, [])
+    if len(matches) != 1:
+        raise ValueError("Native memory import owner is ambiguous")
+    left, right = matches[0]
+    method = path.read_bytes()[left:right].decode()
+    old = "let chunks = memories.chunked(maxSize: APIClient.memoriesBatchMaxSize)"
+    if method.count(old) != 1 or method.count("var failed = 0") != 1:
+        raise ValueError("Native memory batch planning owner changed")
+    method = method.replace(
+        old,
+        '''let plan: NativeMemoryBatchPlan<MemoryBatchItem>
+    do {
+      plan = try NativeMemoryBatching.plan(
+        memories, maxCount: APIClient.memoriesBatchMaxSize,
+        maxBytes: ForkDesktopBuild.profile.target == "cloudflare" ? NativeMemoryBatching.cloudflareMaxBytes : nil,
+        encoder: OmiHTTPTransport.makeEncoder())
+    } catch {
+      log("Memory import: unable to encode batch requests")
+      return (0, memories.count)
+    }
+    let chunks = plan.batches''',
+    ).replace("var failed = 0", "var failed = plan.rejectedCount")
+    rewrite_functions(path, {signature: method}, owners)
+
+
 def application_identity(manifest: dict, app_name: str, deployment_stage: str, distribution: str) -> str:
     identities = manifest["identifiers"]
     if deployment_stage not in ("local", "beta", "production"):
@@ -135,6 +163,7 @@ def stage(
         shutil.copy2(path, generated / path.name)
     for path in (FORK / "overlays").glob("ForkNative*.swift"):
         shutil.copy2(path, generated / path.name)
+    stage_memory_batching(source, owners)
     for name in ("SignInView.swift", "DesktopBackendEnvironment.swift"):
         verify_owner(name, (source / name).read_bytes(), owners)
         shutil.copy2(FORK / "overlays" / name, source / name)

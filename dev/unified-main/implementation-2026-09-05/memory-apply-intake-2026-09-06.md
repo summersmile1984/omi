@@ -123,9 +123,10 @@ folder; they are not production deployments.
 
 The smaller request contract is a deliberate user-directed product limit,
 not an assertion that the 8 MB memory issue was repaired. Larger imports must
-be divided into independent requests. Current macOS and Electron native batch
-callers primarily split by item count; their byte-aware batching remains client
-integration work. No content is silently truncated and a rejected request is
+be divided into independent requests. At this checkpoint macOS and Electron
+native batch callers split only by item count. The subsequent macOS adapter
+now plans encoded byte sizes; Electron integration remains open. No content is
+silently truncated and a rejected request is
 not partially committed. No automatic replay of successful earlier batches is
 introduced.
 
