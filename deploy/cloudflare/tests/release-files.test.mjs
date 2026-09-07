@@ -56,6 +56,7 @@ function fixture() {
   );
   mkdirSync(resolve(root, "backend/utils/retrieval"), { recursive: true });
   mkdirSync(resolve(root, "backend/utils/memory"), { recursive: true });
+  mkdirSync(resolve(root, "backend/database"), { recursive: true });
   for (const path of [
     "backend/routers/frame_requests.py",
     "backend/models/frame_request.py",
@@ -63,6 +64,8 @@ function fixture() {
     "backend/utils/retrieval/frame_request_storage.py",
     "backend/utils/jit_rollout.py",
     "backend/utils/memory/canonical_memory_adapter.py",
+    "backend/utils/memory/canonical_lineage.py",
+    "backend/database/memory_apply_store.py",
   ])
     writeFileSync(resolve(root, path), "CONTRACT = 1\n");
   git("add", ".");
@@ -91,7 +94,7 @@ function fixture() {
   return { root, directory, candidate };
 }
 describe("immutable release inputs and output ownership", () => {
-  it("binds upstream screenshot, frame-request, JIT and memory correction policy bytes to the source digest", () => {
+  it("binds upstream screenshot, frame-request, JIT and memory correction/privacy policy bytes to the source digest", () => {
     const f = fixture();
     for (const path of [
       "backend/routers/frame_requests.py",
@@ -100,6 +103,8 @@ describe("immutable release inputs and output ownership", () => {
       "backend/utils/retrieval/frame_request_storage.py",
       "backend/utils/jit_rollout.py",
       "backend/utils/memory/canonical_memory_adapter.py",
+      "backend/utils/memory/canonical_lineage.py",
+      "backend/database/memory_apply_store.py",
       "backend/models/screen_frame.py",
       "backend/routers/screen_frames.py",
       "backend/utils/screen_frames/judge.py",

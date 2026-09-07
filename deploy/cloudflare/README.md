@@ -2877,11 +2877,24 @@ distinguishes the hosted decision flow from the remaining trigger/ledger work.
 ## Canonical memory apply rules
 
 `scripts/memory_kernel_sources.py` packages the original canonical memory models,
-apply engine, promotion/graph receipt rules and pure Short-term lifecycle into
-the normal Core build. It rewrites only the nine known modules' import names;
+apply engine, promotion/graph receipt rules, pure Short-term lifecycle and
+canonical lineage resolution into the normal Core build. It rewrites only the
+ten known modules' import names;
 unexpected upstream dependencies fail the build. Core tests consume the same
 projection, and release identity includes every source file. No generated copy
 is maintained in the repository and no default prompt is changed.
+
+The same builder selects the three original privacy scrubber/event function
+bodies from `backend/database/memory_apply_store.py` into a separate pure module;
+no Firestore client or persistence adapter is staged. `memory_privacy_plan.py`
+uses those functions to prepare complete semantic/provenance tombstones and
+content-free deletion operations, privacy epoch heads and delete-only outboxes.
+The original lineage resolver includes incoming aliases, cycles and missing
+survivors, retaining tombstones in retry inventories. This is a proposed apply
+result, not a deletion acknowledgement: the caller still needs transaction
+admission, opaque anti-resurrection receipts, physical provider cleanup and
+history finalization. Public deletion handlers have not been migrated by this
+step. See the [privacy-rule verification record](../../dev/unified-main/implementation-2026-09-05/memory-privacy-rules-2026-09-07.md).
 
 The pure engine computes one complete apply result: memory items, graph
 assertions, operation receipt, next control head and projection/vector outbox.

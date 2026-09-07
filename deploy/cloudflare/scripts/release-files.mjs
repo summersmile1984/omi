@@ -104,6 +104,8 @@ export function sourceIdentity(root) {
         "backend/models/memory_evidence.py",
         "backend/utils/memory/short_term_lifecycle.py",
         "backend/utils/memory/canonical_memory_adapter.py",
+        "backend/utils/memory/canonical_lineage.py",
+        "backend/database/memory_apply_store.py",
         "backend/utils/llm/chat.py",
         "backend/utils/llms/memory.py",
         "backend/routers/chat_sessions.py",

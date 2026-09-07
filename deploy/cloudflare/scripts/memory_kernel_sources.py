@@ -6,6 +6,10 @@ from __future__ import annotations
 import argparse
 import ast
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent))
+from screen_frame_sources import selected_nodes
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULES = {
@@ -18,6 +22,7 @@ MODULES = {
     'models.product_memory': 'memory_kernel_item',
     'models.memory_evidence': 'memory_kernel_evidence',
     'utils.memory.short_term_lifecycle': 'memory_kernel_short_term_lifecycle',
+    'utils.memory.canonical_lineage': 'memory_kernel_lineage',
 }
 
 
@@ -48,6 +53,19 @@ def project(module: str) -> str:
 
 def generate(output: Path) -> None:
     outputs = {target + '.py': project(module) for module, target in MODULES.items()}
+    outputs['memory_kernel_privacy.py'] = (
+        'from __future__ import annotations\n'
+        'from datetime import datetime\nfrom typing import List\n'
+        'from memory_kernel_apply import MemoryControlState, MemoryOutboxEvent, MemoryOutboxEventType\n'
+        'from memory_kernel_contracts import deterministic_contract_id\n'
+        'from memory_kernel_evidence import (MemoryEvidence, ArtifactPreservationState, SourceState, '
+        'SourceStateReason, ProvenanceVisibility, RedactionStatus)\n'
+        'from memory_kernel_item import MemoryItem, MemoryItemStatus, MemoryKind, MemorySubjectScope\n\n'
+        + selected_nodes(
+            'backend/database/memory_apply_store.py',
+            {'_privacy_tombstoned_evidence', '_privacy_tombstoned_memory_item', '_privacy_delete_events'},
+        )
+    )
     for name, content in outputs.items():
         compile(content, name, 'exec')
         if (output / name).exists() or (output / name).is_symlink():
