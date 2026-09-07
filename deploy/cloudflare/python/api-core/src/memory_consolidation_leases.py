@@ -45,6 +45,7 @@ class ConsolidationLease:
     account_generation: int
     source_generation: int
     retry_id: str
+    newly_created: bool = False
 
     def key(self):
         return (self.state.uid, self.retry_id, self.account_generation, self.source_generation)
@@ -173,7 +174,14 @@ async def claim_consolidation_attempt(env, item, *, owner, now=None, terminal=Fa
     if claimed['meta']['changes'] != 1:
         return previous, False
     return (
-        ConsolidationLease(state, payload, control.account_generation, control.source_generation, retry_id(item)),
+        ConsolidationLease(
+            state,
+            payload,
+            control.account_generation,
+            control.source_generation,
+            retry_id(item),
+            newly_created=previous is None,
+        ),
         True,
     )
 
@@ -230,6 +238,31 @@ async def release_consolidation_attempt(env, lease, *, error, now=None, deferred
     if result['meta']['changes'] != 1:
         raise ConsolidationLeaseChanged('memory_consolidation_lease_changed')
     return state
+
+
+async def release_unused_consolidation_attempt(env, lease):
+    """Return a planning reservation without creating a failed source attempt.
+
+    Only a row inserted by this exact claim can be removed. A prior retry keeps
+    its budget and failure reason; expired/replaced ownership is never refunded.
+    """
+    if not lease.newly_created:
+        await release_consolidation_attempt(env, lease, error=lease.state.last_error_code, deferred=True)
+        return
+    result = (
+        await env.APP_DB.prepare(
+            'DELETE FROM cf_memory_consolidation_attempts '
+            'WHERE uid=? AND retry_id=? AND account_generation=? AND source_generation=? AND state_json=? '
+            "AND lease_until>unixepoch() AND json_extract(state_json,'$.status')='in_progress' "
+            'AND EXISTS (SELECT 1 FROM cf_memory_apply_control c WHERE c.uid=cf_memory_consolidation_attempts.uid '
+            'AND c.account_generation=cf_memory_consolidation_attempts.account_generation '
+            'AND c.source_generation=cf_memory_consolidation_attempts.source_generation)'
+        )
+        .bind(*lease.key(), lease.state_json)
+        .run()
+    )
+    if result['meta']['changes'] != 1:
+        raise ConsolidationLeaseChanged('memory_consolidation_lease_changed')
 
 
 def settlement_statements(db, leases, *, terminal_status, now):

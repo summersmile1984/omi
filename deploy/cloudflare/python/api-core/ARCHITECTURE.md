@@ -131,10 +131,10 @@ The source/owner/control is validated before provider disclosure and rehydrated
 again for apply. Provider usage is recorded in `cf_llm_usage_daily` under
 `memory_consolidation`; invalid/missing usage or output prevents apply. Errors
 retain pending work and do not synthesize a route or switch providers. The
-leased caller can supply UID/source IDs to `consolidate_pending_with_llm`;
-`memory_consolidation_context.py` then queries BGE-M3/Vectorize and uses the
-existing canonical D1 vector hydration owner. The lower-level invocation still
-accepts a verified context. No public or unleased background trigger is registered. See the [model invocation record](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md).
+leased runner passes UID/source IDs through `memory_consolidation_planning.py`;
+`memory_consolidation_context.py` queries BGE-M3/Vectorize and uses the existing
+canonical D1 vector hydration owner. `consolidate_with_llm` accepts the selected,
+verified context. No public or unleased background trigger is registered. See the [model invocation record](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md).
 
 The context owner searches complete sources in 3,500-character overlapping
 embedding windows, ranks results before the existing 100-ID hydration budget,
@@ -170,6 +170,21 @@ sources are isolated and remaining input is returned to the dispatcher. Index
 waits refund the attempt and persist a five-second due time. A generation fence
 invalidates lease ownership without resetting that exact source's retry budget.
 
+The planner measures the actual unchanged system/user message bytes against
+the existing 110,000-byte limit. An oversized batch is reduced to a fitting
+whole-source prefix; every reduction regathers candidate/feedback context and
+rechecks index dependencies. No additional content truncation, tokenizer,
+candidate-limit reduction, model call or prompt edit is used to fit a batch.
+Only the selected prefix enters the single inference/apply invocation; ordered
+remaining IDs resume through the existing durable dispatcher. Unused fresh
+reservations are deleted under their exact, unexpired lease and generation CAS,
+so batch sizing does not create zero-attempt retries that isolate every source.
+Existing retry reservations retain their previous failure budget. A single
+source still exceeding the message limit follows the original three-failure
+terminal-review lifecycle without invoking Qwen, rather than deferring forever.
+This is a byte-admission limit, not an exact model-token-window guarantee.
+See the [batch-planning regression record](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-planning-2026-09-07.md).
+
 The last failure uses the original terminal-review decision, then its quarantine
 route if review persistence fails. A recovered third attempt only leases terminal
 settlement and cannot call the model again. Both terminal writes failing leaves
@@ -195,7 +210,7 @@ constructor without fabricated business commits or backfill receipts.
 internal Jobs request at `POST /internal/memory/consolidation`. UID comes from the
 assertion; the body supplies only account generation. The existing Jobs cron
 finds due D1 work and Queue messages resume it, including recovery after a lost
-send. Provider-window batch sizing and recurrence-to-workflow handoff remain
+send. Recurrence-to-workflow handoff remains
 unfinished; this wiring alone is not full production qualification.
 Batch retry evidence: [hosted recovery trial](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-retry-2026-09-07.md).
 See the [index admission record](../../../../dev/unified-main/implementation-2026-09-05/memory-index-readiness-2026-09-07.md).

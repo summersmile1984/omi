@@ -1091,10 +1091,14 @@
           Vectorize 与 Durable Objects，不和 legacy Google/Firebase 生产环境合流，也没有切换官方域名。
         </p>
         <p class="masthead__lede">
-          <strong>Eddy 当前状态（2026-09-05 21:43）：生产尚未发布。</strong>
-          本页记录的是 2026-09-01 的 omi-cf 生产环境。重新读取确认 8 个 Eddy
-          Worker 均不存在， 两份 Eddy D1 只有系统表；本页图表和历史验收不能作为
-          Eddy 的生产证据。
+          <strong>Eddy 当前状态（2026-09-07）：生产交付尚未完成。</strong>
+          本页记录的是 2026-09-01 的 omi-cf 生产环境，图表和历史验收不能作为 Eddy 的生产证据。
+          当前记忆调度与有界重试已做隔离云端验证；超限拆批与只读反例校验修复仅完成本地回归，
+          Core 1024 项、Workers 1006 项通过。默认提示词和指定 Qwen 模型保持不变。
+          记忆转任务交接、17 个未通过交付验收的接口、整体部署及 macOS 生产端验收仍未完成。
+          <a href="../../dev/unified-main/implementation-2026-09-05/memory-consolidation-planning-2026-09-07.md"
+            >查看本轮修复与验证边界</a>。
+
           <a
             href="../../dev/unified-main/implementation-2026-09-05/eddy-cloudflare-release-verification.md"
             >查看 Eddy 验收核对</a

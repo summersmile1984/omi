@@ -17,7 +17,6 @@ from fallback import record_fallback
 from memory_apply_intake import load_memory_control
 from memory_consolidation_apply import MAX_CONSOLIDATION_BATCH_ITEMS, _hydrate_context, apply_consolidation_batch
 from memory_kernel_consolidation import ConsolidationAgentBatch, build_consolidation_llm_messages
-from memory_consolidation_context import gather_consolidation_context
 from memory_consolidation_leases import verify_consolidation_leases
 from memory_kernel_consolidation_schema import CONSOLIDATION_OUTPUT_SCHEMA
 from synthesis_routes import _rpc_mapping, _structured_json
@@ -153,14 +152,6 @@ async def _infer(env, context):
             component='llm', from_mode='workers_ai', to_mode='none', reason='malformed_doc', outcome='exhausted'
         )
         raise ConsolidationInferenceError('output_failed') from error
-
-
-async def consolidate_pending_with_llm(env, uid, memory_ids, *, run_id, leases=()):
-    """Caller-owned leased work: retrieve authoritative candidates before inference."""
-    if not isinstance(run_id, str) or not run_id.strip():
-        raise ValueError('invalid consolidation run')
-    context = await gather_consolidation_context(env, uid, memory_ids)
-    return await consolidate_with_llm(env, context, run_id=run_id, leases=leases)
 
 
 async def consolidate_with_llm(env, context, *, run_id, leases=()):

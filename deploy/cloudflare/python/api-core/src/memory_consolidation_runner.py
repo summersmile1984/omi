@@ -18,8 +18,10 @@ from memory_consolidation_leases import (
     instant,
     read_retry_state,
     release_consolidation_attempt,
+    release_unused_consolidation_attempt,
 )
-from memory_consolidation_llm import ConsolidationInferenceError, consolidate_pending_with_llm
+from memory_consolidation_llm import ConsolidationInferenceError, consolidate_with_llm
+from memory_consolidation_planning import plan_consolidation_batch
 from memory_kernel_consolidation import (
     ConsolidationAgentBatch,
     ConsolidationApplySkipped,
@@ -50,7 +52,6 @@ def _error_code(error):
 
 def _deferred(error):
     return isinstance(error, (ConsolidationIndexPending, ConsolidationLeaseChanged)) or str(error) in {
-        'input_too_large',
         'authority_changed',
         'memory_consolidation_authority_changed',
         'memory_consolidation_source_changed',
@@ -212,11 +213,18 @@ async def run_consolidation_batch(env, uid, memory_ids, *, run_id):
     if not claims:
         return result
     try:
+        plan = await plan_consolidation_batch(env, uid, [lease.state.memory_id for lease in claims])
+        unused = set(plan.remaining)
+        result.selected = tuple(key for key in result.selected if key not in unused)
+        result.remaining = tuple(key for key in ids if key in unused or key in result.remaining)
+        for lease in tuple(claims):
+            if lease.state.memory_id in unused:
+                await release_unused_consolidation_attempt(env, lease)
+                claims.remove(lease)
         result.applied.update(
-            await consolidate_pending_with_llm(
+            await consolidate_with_llm(
                 env,
-                uid,
-                [lease.state.memory_id for lease in claims],
+                plan.context,
                 run_id=run_id,
                 leases=tuple(claims),
             )

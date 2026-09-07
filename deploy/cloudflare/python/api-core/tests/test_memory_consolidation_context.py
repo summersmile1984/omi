@@ -14,12 +14,17 @@ sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 from memory_apply_item import read_item
 from memory_apply_edit import edit_native_memory
 from memory_consolidation_context import gather_consolidation_context, embedding_windows
-from memory_consolidation_llm import consolidate_pending_with_llm, model_messages
+from memory_consolidation_llm import consolidate_with_llm, model_messages
 from memory_kernel_consolidation import ConsolidationApplySkipped, bound_rejected_memory_examples
 from vector_search import VECTOR_MODEL, vector_namespace
 from test_memory_consolidation_apply import context, decision, environment, execute
 from test_memory_mutation_lock import target
 from test_memory_review_routes import journal
+
+
+async def invoke_context(env, uid, ids, *, run_id):
+    context = await gather_consolidation_context(env, uid, ids)
+    return await consolidate_with_llm(env, context, run_id=run_id)
 
 
 class Index:
@@ -109,7 +114,7 @@ def test_retrieval_and_model_route_join_native_source_and_real_sql_apply(target)
     outcome = decision(pending, 'archive', reconciliation='duplicate', target_memory_id=old)
     env = services(database, output={'decisions': [outcome.model_dump(mode='json')]})
     env.MEMORY_VECTORS.matches = [{'id': 'a' * 64, 'score': 0.94}]
-    result = asyncio.run(consolidate_pending_with_llm(env, 'owner', [source], run_id='actual-context'))
+    result = asyncio.run(invoke_context(env, 'owner', [source], run_id='actual-context'))
     assert result[source].promotion['route'] == 'archive'
     assert [model for model, payload in env.AI.calls] == [VECTOR_MODEL, '@cf/qwen/qwen3.8-27b']
     assert env.MEMORY_VECTORS.calls == [
@@ -205,7 +210,7 @@ def test_context_failure_never_calls_model_or_applies_a_business_route(target, f
         'foreign_source': 'source_changed',
     }[fault]
     with pytest.raises(ConsolidationApplySkipped, match=expected):
-        asyncio.run(consolidate_pending_with_llm(env, uid, [source], run_id='fault-case'))
+        asyncio.run(invoke_context(env, uid, [source], run_id='fault-case'))
     assert all(model == VECTOR_MODEL for model, payload in env.AI.calls)
     assert read_item(database.row(source)).tier.value == 'short_term'
     if fault != 'source_changed':

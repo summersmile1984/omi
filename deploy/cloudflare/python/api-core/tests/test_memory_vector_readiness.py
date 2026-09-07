@@ -11,8 +11,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 
 from memory_apply_item import read_item
 from memory_vector_readiness import ConsolidationIndexPending, ensure_memory_index_ready
-from memory_consolidation_llm import consolidate_pending_with_llm
-from test_memory_consolidation_context import services, long_term, project
+from test_memory_consolidation_context import services, long_term, project, invoke_context
 from test_memory_consolidation_apply import decision
 from test_memory_mutation_lock import target
 from test_memory_review_routes import journal
@@ -30,11 +29,11 @@ def test_indexing_wait_never_calls_ai_or_spends_a_business_decision_then_resumes
     before = journal(database)
     for _ in range(2):
         with pytest.raises(ConsolidationIndexPending):
-            asyncio.run(consolidate_pending_with_llm(env, 'owner', [source], run_id='waiting-run'))
+            asyncio.run(invoke_context(env, 'owner', [source], run_id='waiting-run'))
     assert env.AI.calls == [] and journal(database) == before
     assert read_item(database.row(source)).processing_state.value == 'pending'
     env.MEMORY_VECTORS.visible = True
-    result = asyncio.run(consolidate_pending_with_llm(env, 'owner', [source], run_id='waiting-run'))
+    result = asyncio.run(invoke_context(env, 'owner', [source], run_id='waiting-run'))
     assert result[source].promotion['route'] == 'archive'
     assert len(env.AI.calls) == 2
     assert [row['id'] for row in request('GET', '/v3/memories').json()] == [old]
@@ -107,7 +106,7 @@ def test_mapping_change_during_retrieval_invalidates_even_a_completed_replacemen
     env.MEMORY_VECTORS.matches = []
     before = journal(database)
     with pytest.raises(ConsolidationIndexPending, match='index_changed'):
-        asyncio.run(consolidate_pending_with_llm(env, 'owner', [source], run_id='replacement'))
+        asyncio.run(invoke_context(env, 'owner', [source], run_id='replacement'))
     before['cf_memory_apply_control'][0]['projection_sequence'] += 2
     assert len(env.AI.calls) == 1 and journal(database) == before
 
@@ -134,7 +133,7 @@ def test_invalid_or_revoked_query_proof_keeps_source_pending(target, fault):
     env.MEMORY_VECTORS.queryById = query
     before = journal(database)
     with pytest.raises(ConsolidationIndexPending):
-        asyncio.run(consolidate_pending_with_llm(env, 'owner', [source], run_id='invalid-proof'))
+        asyncio.run(invoke_context(env, 'owner', [source], run_id='invalid-proof'))
     if fault == 'retracted':
         before['cf_memory_apply_control'][0]['projection_sequence'] += 1
     assert env.AI.calls == [] and journal(database) == before
