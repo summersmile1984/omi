@@ -44,6 +44,7 @@ _EXPORT_QUERIES = (
     ("task_interventions", "cf_task_interventions", "created_at DESC, intervention_id"),
     ("task_feedback", "cf_task_feedback", "created_at DESC, feedback_id"),
     ("task_outcomes", "cf_task_outcomes", "occurred_at DESC, outcome_id"),
+    ("task_recurrence_inbox", "cf_task_recurrence_inbox", "updated_at DESC, receipt_id"),
     ("task_attention_overrides", "cf_task_attention_overrides", "expires_at DESC, override_id"),
     ("task_context_snapshots", "cf_task_context_snapshots", "generated_at DESC, scope_key"),
     ("task_open_loop_snapshots", "cf_task_open_loop_snapshots", "generated_at DESC, scope_key"),
@@ -111,7 +112,7 @@ async def _rows(env: object, table: str, order_by: str, uid: str) -> list[dict[s
     values = result.get("results", []) if isinstance(result, dict) else []
     if table in {"cf_task_context_snapshots", "cf_task_open_loop_snapshots"}:
         return [json.loads(row["payload_json"]) for row in values if isinstance(row, dict)]
-    if table in {"cf_candidates", "cf_task_attention_overrides"}:
+    if table in {"cf_candidates", "cf_task_attention_overrides", "cf_task_recurrence_inbox"}:
         return [json.loads(row["record_json"]) for row in values if isinstance(row, dict)]
     if table == "cf_task_outcomes":
         from recommendation_outcomes import outcome_record

@@ -67,5 +67,16 @@ capture/replay registry accepts this job kind.
 Within the configured ten-message batch, consolidation calls overlap across
 accounts; D1 still serializes the same account. Other job kinds retain their
 sequential processing. Provider/model failure settlement remains in Core, not
-in Queue retry counters. This dispatcher does not complete the remaining
-provider-window planner or recurrence-to-workflow integration.
+in Queue retry counters. The Core planner keeps whole source items within the
+provider message budget; this does not prove hosted model acceptance.
+
+`task-recurrence.ts` shares the existing JOBS queue and five-minute reconciliation
+lane. It reads the pending, current-generation receipt from cf_task_recurrence_inbox,
+then signs a method/path/audience-bound internal Core request. Core owns original
+qualification, Candidate identity and receipt settlement. A completed response
+acks delivery; service failure retries. Cron scans at most 50 pending receipts,
+continues other owners after a send failure and rediscovers lost initial hints.
+Account erasure and generation changes exclude stale receipts. The existing DLQ
+registry includes task_recurrence, and deletion residual/purge inventories include
+the inbox. Tests cover the real Jobs queue, schema, signed boundary and recovery;
+no hosted recurrence delivery has yet been accepted.

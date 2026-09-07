@@ -210,12 +210,32 @@ constructor without fabricated business commits or backfill receipts.
 internal Jobs request at `POST /internal/memory/consolidation`. UID comes from the
 assertion; the body supplies only account generation. The existing Jobs cron
 finds due D1 work and Queue messages resume it, including recovery after a lost
-send. Recurrence-to-workflow handoff remains
-unfinished; this wiring alone is not full production qualification.
+send. The recurrence handoff below now persists with the memory batch; this
+local wiring alone is not full production qualification.
 Batch retry evidence: [hosted recovery trial](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-retry-2026-09-07.md).
 See the [index admission record](../../../../dev/unified-main/implementation-2026-09-05/memory-index-readiness-2026-09-07.md).
-A batch with recurrence signals
-fails before writing while that handoff is absent. Native new intake, content
+`recurrence_inbox.py` now adds the original RecurrenceInboxReceipt to the same
+D1 batch as memory results and lease settlement. CandidateTransaction exposes
+its prepared guarded statements so this composition does not create another
+transaction implementation. Failed handoff rolls back memory; a concurrent
+first receipt defers the batch and preserves the first proposal. Migration 0188
+keeps that signal immutable and prevents completed receipts from reopening.
+
+`recurrence_sources.py` projects the original consumption function, threshold
+constants, proposal constructor and stable identities. Only its control read
+and Candidate creation call become async storage calls. Qualification remains
+unresolved, at least two occurrences on two distinct days and confidence >= 0.7;
+proposal ownership confidence stays 0.5. Consumption creates a pending canonical
+Candidate, never an automatically accepted task/workstream. The ordinary
+idempotency owner recovers if Candidate creation commits before receipt ack.
+
+Jobs receives only UID/receipt hints after commit. The existing five-minute Cron
+rediscovers pending inbox entries if sending fails. Its internal signed
+`POST /internal/task-intelligence/recurrence` supplies the receipt ID and account
+generation; user assertions cannot invoke it. Completed, foreign, stale and
+erased receipts cannot create fresh work. Queue failures preserve the inbox;
+the existing DLQ can capture/replay the new task_recurrence job kind. Export and
+account deletion include owned receipt data. See the [recurrence verification](../../../../dev/unified-main/implementation-2026-09-05/canonical-recurrence-2026-09-08.md). Native new intake, content
 correction and review acceptance now carry the required-normalization marker.
 Other intake families and the complete default-read policy must be qualified before enabling automatic
 consolidation. See the [verification record](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-apply-2026-09-07.md).
@@ -1082,9 +1102,9 @@ request-only receipts retain their bytes and identity. Owner export now includes
 outcomes without internal hashes; existing account deletion purges them.
 
 These handlers are wired locally; workflow control is still closed. The integration drain endpoint
-returns 503 until a real dispatcher exists. Recurrence handoff, other legacy
-writers, hosted/runtime verification and release qualification remain unfinished.
-Migrations 0183–0187 are local drafts. See the
+returns 503 until a real dispatcher exists. Other legacy writers, hosted/runtime
+verification and release qualification remain unfinished.
+Migrations 0183–0188 are local drafts. See the
 [Candidate evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-candidates-2026-09-08.md)
 and [recommendation evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-recommendations-2026-09-08.md).
 

@@ -17,6 +17,7 @@ from task_intelligence_routes import router as intelligence_router
 from action_item_routes import router as task_router
 from workstream_routes import router as workstream_router
 from recommendation_routes import router as recommendation_router
+from recurrence_routes import router as recurrence_router
 from staged_candidate_routes import router as staged_router
 from user_export_routes import router as export_router
 from candidate_read import list_candidates
@@ -39,6 +40,7 @@ def api(env):
         export_router,
         staged_router,
         recommendation_router,
+        recurrence_router,
     ):
         app.include_router(value)
 

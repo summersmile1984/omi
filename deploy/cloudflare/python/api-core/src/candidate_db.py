@@ -13,6 +13,7 @@ _TABLES = {
     'attention': ('cf_task_attention_overrides', 'override_id'),
     'recommendations': ('cf_task_recommendation_heads', 'head_id'),
     'snapshot_receipts': ('cf_task_snapshot_receipts', 'receipt_id'),
+    'recurrences': ('cf_task_recurrence_inbox', 'receipt_id'),
 }
 _FLAT_TABLES = {
     'tasks': ('cf_action_items', 'id'),
@@ -194,7 +195,8 @@ class CandidateTransaction:
             ).bind(*physical.values(), self.uid, key)
         )
 
-    async def commit(self):
+    def prepared_batch(self):
+        """Allow domain owners to include this guarded write in a larger D1 batch."""
         groups = tuple(self.observed)
         snapshots = [
             encoded([{'id': key, 'before': before} for key, before in self.observed[group].items()]) for group in groups
@@ -207,8 +209,11 @@ class CandidateTransaction:
             + ')'
         ).bind(self.uid, self.generation, *snapshots)
         clear = self.db.prepare('DELETE FROM cf_candidate_write_guard WHERE uid=?').bind(self.uid)
+        return [guard, *self.statements, clear]
+
+    async def commit(self):
         try:
-            await self.db.batch([guard, *self.statements, clear])
+            await self.db.batch(self.prepared_batch())
         except Exception as error:
             if 'candidate_generation_changed' in str(error) or 'account deletion fence' in str(error):
                 raise CandidateGenerationMismatchError('account generation changed') from error

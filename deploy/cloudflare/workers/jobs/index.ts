@@ -1,3 +1,4 @@
+import { processTaskRecurrenceMessage, reconcileTaskRecurrence } from "./task-recurrence";
 import { processMemoryConsolidationMessage, reconcileMemoryConsolidation } from "./memory-consolidation";
 import { processMemoryPrivacyMessage, reconcileMemoryPrivacyDeletions } from "./memory-privacy-cleanup";
 import { cleanupExpiredMemoryPrivacyReceipts } from "./memory-privacy";
@@ -1061,6 +1062,10 @@ async function processJobMessage(
     await processWrappedJobMessage(message, env);
     return;
   }
+  if (message.body.kind === "task_recurrence") {
+    await processTaskRecurrenceMessage(message, env);
+    return;
+  }
   if (message.body.kind === "task_intelligence_evaluate") {
     await processTaskIntelligenceMessage(message, env);
     return;
@@ -1296,6 +1301,7 @@ export default {
       reconcileConversationFinalizations(env, now),
       reconcileConversationMerges(env, now),
       reconcileTaskIntelligenceJobs(env, now),
+      reconcileTaskRecurrence(env),
       reconcileAppOwnerMigrationJobs(env, now),
       reconcileXConnections(env, now),
       cleanupExpiredTaskIntegrationOAuthStates(env, now),

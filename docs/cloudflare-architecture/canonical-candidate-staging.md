@@ -41,7 +41,11 @@ owner. Migration 0187 applies the original outcome-to-source relationship policy
 Candidate result tasks/workstreams and related artifacts can receive attribution;
 unrelated subjects or mismatched result codes cannot. Source state and outcome
 receipt share one generation-fenced batch. Retries retain the first record, and
-owner export/deletion include outcomes. All five migrations are local drafts. Existing component runners discover the tests:
+owner export/deletion include outcomes. Migration 0188 persists recurrence signals
+with memory results and supplies the original workflow inbox consumer through
+Jobs/Cron. First proposals and Candidate identities survive retries; original
+thresholds and ownership confidence remain unchanged. All six migrations are
+local drafts. Existing component runners discover the tests:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 deploy/cloudflare/python/api-core/.venv/bin/python -m pytest -q -p no:cacheprovider deploy/cloudflare/python/api-core/tests
@@ -49,10 +53,11 @@ cd deploy/cloudflare
 node node_modules/vitest/vitest.mjs run
 ```
 
-Workflow control remains closed. Recurrence handoff and
-external integration dispatch still need convergence; the integration drain API returns 503. This local work has not been deployed or verified through
+Workflow control remains closed. External integration dispatch still needs convergence; the integration drain API returns 503. This local work has not been deployed or verified through
 Eddy's macOS UI and is not production release qualification. Detailed local
 results are in the [Candidate evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-candidates-2026-09-08.md)
 [recommendation evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-recommendations-2026-09-08.md),
 [snapshot evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-device-snapshots-2026-09-08.md),
 and [outcome evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-outcomes-2026-09-08.md).
+
+The [recurrence evidence note](../../dev/unified-main/implementation-2026-09-05/canonical-recurrence-2026-09-08.md) covers the local memory-to-Candidate handoff.

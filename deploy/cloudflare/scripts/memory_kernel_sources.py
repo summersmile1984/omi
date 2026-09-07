@@ -13,6 +13,7 @@ from screen_frame_sources import selected_nodes
 from memory_consolidation_sources import consolidation_sources
 from candidate_kernel_sources import candidate_sources
 from recommendation_sources import recommendation_sources
+from recurrence_sources import recurrence_sources
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULES = {
@@ -70,6 +71,7 @@ def generate(output: Path) -> None:
     outputs.update(consolidation_sources())
     outputs.update(candidate_sources())
     outputs.update(recommendation_sources())
+    outputs.update(recurrence_sources())
     outputs['memory_kernel_intake.py'] = (
         'from enum import Enum\nfrom typing import Any, Dict\n'
         + selected_nodes('backend/models/memories.py', {'SubjectAttribution'})

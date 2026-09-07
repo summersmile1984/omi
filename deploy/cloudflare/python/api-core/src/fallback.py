@@ -19,6 +19,8 @@ def record_fallback(
     allowed_from = {
         "auth_worker",
         "canonical_consolidation",
+        "recurrence_signal",
+        "recurrence_inbox",
         "workers_ai",
         "transcript_vectorize",
         "share_recipients_proposed",
@@ -27,6 +29,7 @@ def record_fallback(
     }
     allowed_to = {
         "canonical_consolidation_retry",
+        "recurrence_inbox_retry",
         "canonical_consolidation_review",
         "canonical_consolidation_quarantine",
         "metadata_only",
@@ -36,7 +39,7 @@ def record_fallback(
         "conservative_no_action",
         "none",
     }
-    allowed_reasons = {"dependency_unavailable", "malformed_doc", "auth", "other"}
+    allowed_reasons = {"dependency_unavailable", "malformed_doc", "auth", "other", "enqueue_failed"}
     allowed_outcomes = {"recovered", "degraded", "exhausted"}
     print(
         json.dumps(

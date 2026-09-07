@@ -39,6 +39,7 @@ from memory_kernel_duplicate_admission import MemoryIdentity, validate_duplicate
 from memory_kernel_item import MemoryItem
 from memory_kernel_review import build_memory_review_conflict
 from vector_search import publish_vector_projection
+from recurrence_inbox import plan_handoff, publish_hints
 
 MAX_CONSOLIDATION_BATCH_ITEMS = 20
 
@@ -203,8 +204,9 @@ async def apply_consolidation_batch(
         )
     if error is not None:
         raise ConsolidationApplySkipped(error)
-    if batch.recurrence_signals:
-        raise ConsolidationApplySkipped('memory_recurrence_handoff_unavailable')
+    recurrence_tx, recurrence_receipts = await plan_handoff(
+        env, context.uid, initial_control.account_generation, batch.recurrence_signals, timestamp=now
+    )
 
     control = initial_control
     steps = []
@@ -311,9 +313,17 @@ async def apply_consolidation_batch(
         for table, values in records.items():
             statements.extend(_insert_rows(db, table, values))
         statements.append(control_statement(db, uid, result.control_state))
+    if recurrence_tx is not None:
+        statements.extend(recurrence_tx.prepared_batch())
     statements.extend(settlement_statements(db, leases, terminal_status=terminal_status, now=now))
     statements.append(db.prepare('DELETE FROM cf_memory_apply_guard WHERE uid = ?').bind(uid))
-    await db.batch(statements)
+    try:
+        await db.batch(statements)
+    except Exception as error:
+        if "candidate_snapshot_changed" in str(error):
+            raise ConsolidationApplySkipped("memory_consolidation_recurrence_changed") from error
+        raise
+    await publish_hints(env, uid, recurrence_receipts)
     for memory_id in sorted(changed_ids):
         await publish_vector_projection(env, uid=uid, source_kind='memory', source_id=memory_id)
     # Return the stored representation: physical timestamps are integer seconds

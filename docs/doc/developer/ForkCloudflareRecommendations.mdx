@@ -3,7 +3,7 @@ title: 'Cloudflare Candidates and recommendations'
 description: 'Canonical proposals, recommendation feedback and D1 transactions in the fork target'
 ---
 
-This is local integration work. Migrations 0183–0187 and the new recommendation
+This is local integration work. Migrations 0183–0188 and the new recommendation
 path have not been deployed or accepted through Eddy macOS. Workflow control
 remains off.
 
@@ -59,6 +59,19 @@ request-only receipts remain readable. Export includes owned outcomes without
 internal metadata; account deletion removes them. These paths are locally tested,
 not yet accepted through hosted Python Workers or Eddy macOS.
 
-Recurrence handoff and external integration execution remain incomplete. The
+Memory recurrence signals now persist with the corresponding memory results in
+one D1 transaction. The first signal stays fixed through retries. The unchanged
+upstream policy requires an unresolved loop, two occurrences on two days and
+confidence of at least 0.7. It creates a pending workstream Candidate with
+ownership confidence 0.5; acceptance remains a separate user action.
+
+The existing Jobs queue and Cron consume durable receipts through an internal
+signed Core endpoint. A failed queue hint cannot lose the signal, and a failed
+receipt acknowledgement after Candidate creation cannot create a duplicate.
+Completed receipts never reopen. Export and account deletion include the inbox.
+These paths are locally verified with controlled model output; hosted recurrence
+processing and macOS acceptance remain unverified.
+
+External integration execution remains incomplete. The
 integration drain endpoint is unavailable. Local route coverage therefore does
 not establish production release qualification.

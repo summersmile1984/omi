@@ -2905,10 +2905,13 @@ conservation and normalization/promotion receipt rules. The D1 adapter in
 supersession, graph assertions, deterministic review records and the complete
 journal/outbox chain in one guarded batch. Its patch builders are compared
 against the original upstream persistence requests. Source/head races or late
-storage failures leave no partial batch. This adapter does not yet enable
-scheduled model execution; candidate retrieval, provider-window batch sizing,
-leases, recurrence handoff, other intake families and default-read alignment
-remain required. `memory_consolidation_llm.py` now connects the unchanged upstream
+storage failures leave no partial batch. The existing durable dispatcher now
+connects scheduled execution, whole-source message sizing and source leases.
+Migration 0188 also commits recurrence inbox receipts with memory results;
+Jobs/Cron consumes them with the unchanged upstream qualification and Candidate
+identity. These local integrations do not establish hosted model/product
+qualification. Other intake families and complete default-read alignment remain
+required. `memory_consolidation_llm.py` now connects the unchanged upstream
 messages to Workers AI and the validated apply owner. It records actual model
 usage and does not substitute a route after errors. The model override is
 `WORKERS_AI_MEMORY_CONSOLIDATION_MODEL`, defaulting to

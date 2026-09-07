@@ -58,6 +58,7 @@ def _deferred(error):
         'memory_consolidation_source_not_pending',
         'memory_consolidation_candidate_changed',
         'memory_consolidation_feedback_changed',
+        'memory_consolidation_recurrence_changed',
     }
 
 
