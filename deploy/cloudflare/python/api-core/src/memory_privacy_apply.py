@@ -8,7 +8,7 @@ owner and finalizer must still establish erasure before a caller acknowledges.
 from datetime import datetime, timezone
 import secrets
 
-from memory_apply_edit import read_item
+from memory_apply_item import read_item
 from memory_apply_intake import (
     MODEL_COLUMNS,
     _insert_rows,

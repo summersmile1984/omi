@@ -267,9 +267,20 @@ def test_late_memory_review_cannot_append_after_target_deletion():
         created = await h.request('POST', '/v3/memories', body={'content': 'Memory'})
         memory_id = created.json()['id']
         h.db.before_batch = lambda: h.db.connection.execute('DELETE FROM cf_memories WHERE id=?', (memory_id,))
+
+        def journal():
+            return {
+                table: h.db.connection.execute('SELECT * FROM ' + table).fetchall()
+                for table in ('cf_memory_operations', 'cf_memory_commits', 'cf_memory_apply_control')
+            }
+
+        before = journal()
         response = await h.request('POST', f'/v3/memories/{memory_id}/review?value=false')
-        assert response.status_code == 200
+        # Canonical apply rechecks its captured target inside the transaction;
+        # a concurrent deletion cannot be acknowledged as a successful review.
+        assert response.status_code == 503
         assert h.events() == []
+        assert journal() == before
 
     asyncio.run(scenario())
 

@@ -16,7 +16,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 
-from memory_apply_edit import content_edit_patch, read_item
+from memory_apply_edit import content_edit_patch
+from memory_apply_item import read_item
 from memory_kernel_admission import REQUIRED_PROCESSOR_ID, REQUIRED_PROCESSOR_VERSION
 from memory_kernel_item import MemoryItem, MemoryLayer
 from memory_kernel_operations import MemoryOperation

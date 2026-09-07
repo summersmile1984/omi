@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 
-from memory_apply_edit import read_item
+from memory_apply_item import read_item
 from memory_privacy_apply import lineage_ids, prepare_privacy_deletion
 from memory_privacy_plan import privacy_lineage_ids
 from test_memory_apply_intake import apply, database, rows, state  # noqa: F401

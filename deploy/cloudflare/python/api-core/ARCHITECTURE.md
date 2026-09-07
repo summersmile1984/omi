@@ -27,6 +27,32 @@ identities before inserting anything. Usage and review work share that batch.
 An exact whole internal retry is a no-op; mixed retries and stale authority are
 rejected. Public POSTs still allocate their IDs on the server.
 
+`memory_apply_mutation.py` is the ordinary native user-mutation transaction
+owner. Content correction, visibility, review votes, read/dismiss and baseline
+all persist their item, operation, commit, control head and outbox together.
+`memory_apply_item.py` owns the historical item projection; all former callers
+use it directly. Existing physical product fields are imported into upstream
+promotion metadata before a mutation, so updating one flag retains the others.
+`memory_apply_edit.py` and `memory_product_mutation.py` supply the corresponding
+upstream policies. Positive review does not grant promotion or processor
+admission. Belief-model policy is the upstream default-off behavior of this
+target; opt-in belief processing remains part of ledger/JIT convergence.
+
+Migration 0177 stores the original `MemoryGraphAssertion` produced when an
+ordinary mutation refreshes a graph-backed Long-term item. Only a transaction
+guard that admits that exact uid/item/generation may insert it; the assertion
+must match the new revision, content hash, graph plan and commit. Item changes
+revoke the preceding assertion, and the new one shares the item transaction.
+Privacy preparation and physical/account deletion remove it; owner export
+includes it in `memory_ledger_data`. Shared graph aggregation and consolidation
+still need to converge on this assertion owner. This table does not introduce
+a public promotion shortcut.
+
+Review feedback immediately follows the guarded item UPDATE in the same batch.
+A target deleted concurrently returns 503 with no new feedback or journal
+entry. After commit, the existing Queue hint wakes vector projection; Queue
+failure retains durable outbox work for scheduled reconciliation.
+
 `memory_privacy_receipts.py` computes the original uid/item HMAC with a dedicated
 `MEMORY_PRIVACY_SECRET`, shared only with Jobs. All Core creators persist this
 storage-only key. Migration 0174 admits null content only in a deleted tombstone,
@@ -99,7 +125,7 @@ Operations and commits are included in the owner's `memory_ledger_data` export;
 all five added tables participate in account erasure and deletion write fences.
 
 This is the native intake adapter, not complete ledger authority. Other intake
-families, non-native edits/review, source deletion, consolidation, graph assertions
+families, non-native edits, review-queue resolution, source deletion, consolidation and graph projections
 and projection consumers must still converge before history/revert or JIT can
 expose a complete canonical head. The existing vector publication outbox still
 drives Jobs; a pending kernel outbox event is not a delivered index watermark.

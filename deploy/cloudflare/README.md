@@ -2966,7 +2966,17 @@ The patch policy is behaviorally compared against the original upstream
 `update_canonical_memory_content` implementation. See the
 [content-edit verification record](../../dev/unified-main/implementation-2026-09-05/memory-apply-edit-2026-09-07.md).
 
-The other intake, mutation, consolidation, source-deletion and projection writers still
+The same ordinary mutation owner now handles native visibility, review votes,
+read/dismiss and baseline changes. Product fields, journal/head, review feedback
+and projection work commit together. Existing graph-backed Long-term updates
+also refresh their upstream graph assertion in the guarded batch (0177); only
+the admitted uid/item/revision may publish that assertion. Owner export and
+privacy/account erasure include this graph store. Concurrent target deletion
+rejects a review with 503 and no feedback/history write. See the
+[product-field verification record](../../dev/unified-main/implementation-2026-09-05/memory-product-mutation-2026-09-07.md).
+
+The other intake and mutation families, review-queue resolution, consolidation,
+source-deletion and projection writers still
 need to converge on this transaction owner. History/revert and JIT require that
 complete authority; their inventory states are unchanged. See the
 [kernel verification](../../dev/unified-main/implementation-2026-09-05/memory-kernel-2026-09-06.md)

@@ -513,6 +513,33 @@ try {
       { token: owner.token, method: "POST", body: {} },
     );
   });
+  await caseOf("recording.memory-product-fields-share-canonical-history", async () => {
+    const before = await request("api", "/v1/users/export", 200, { token: owner.token });
+    const memory = before.data.memories.find((row) => row.content.includes("prefers concise updates"));
+    require(memory, "recording memory missing before product-field updates");
+    const path = `/v3/memories/${memory.id}`;
+    for (const [suffix, method, body] of [
+      ["/visibility?value=public", "PATCH"],
+      ["/review?value=false", "POST"],
+      ["/read", "PATCH", { is_read: true, is_dismissed: true }],
+      ["/baseline?value=true", "PATCH"],
+    ]) await request("api", path + suffix, 200, { token: owner.token, method, body });
+    const after = await request("api", "/v1/users/export", 200, { token: owner.token });
+    const updated = after.data.memories.find((row) => row.id === memory.id);
+    require(updated?.content === memory.content && updated.item_revision === memory.item_revision + 4,
+      "product updates changed content or skipped the canonical revision");
+    require(updated.visibility === "public" && updated.user_review === 0 && updated.is_read === 1 &&
+      updated.is_dismissed === 1 && updated.is_baseline === 1, "product fields were not persisted");
+    const promotion = updated.canonical_metadata?.promotion;
+    require(promotion?.user_review === false && promotion.is_read === true && promotion.is_dismissed === true &&
+      promotion.is_baseline === true, "physical product state diverged from canonical history");
+    require(after.data.memory_ledger_data.memory_operations.length === before.data.memory_ledger_data.memory_operations.length + 4 &&
+      after.data.memory_ledger_data.memory_commits.length === before.data.memory_ledger_data.memory_commits.length + 4,
+      "product mutation omitted its operation or commit");
+    const rejected = await request("api", "/memory/vector/search?query=concise&limit=10", 200, { token: owner.token });
+    require(rejected.data.items.every((row) => row.id !== memory.id), "rejected memory remained searchable");
+    await request("api", path + "/review?value=true", 200, { token: owner.token, method: "POST" });
+  });
   // Finish recap coverage while the derived memory is processed, then verify
   // explicit correction revokes its index eligibility. Both contracts remain asserted.
   await caseOf("recording.memory-vector-search-fences-old-revisions", async () => {

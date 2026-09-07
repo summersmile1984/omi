@@ -27,6 +27,7 @@ from feedback_store import feedback_event_statement
 from memory_mutation_errors import memory_mutation_error
 from memory_apply_intake import create_native_memories
 from memory_apply_edit import edit_native_memory
+from memory_product_mutation import mutate_visibility, mutate_review, mutate_product_fields
 from account_routes import usage_source_statement
 from memory_review_routes import build_review_queue_statements
 from memory_vector_hydration import hydrate_memory_vectors
@@ -338,18 +339,6 @@ async def _first_active(env: object, uid: str, memory_id: str) -> dict[str, obje
         .first()
     )
     return row if isinstance(row, dict) else None
-
-
-async def _mutable_memory(env: object, uid: str, memory_id: str) -> dict[str, object] | JSONResponse:
-    row = await _first_active(env, uid, memory_id)
-    if row is None:
-        return JSONResponse({"error": "memory not found"}, status_code=404)
-    if _bool(row.get("is_locked")):
-        return JSONResponse(
-            {"error": "A paid plan is required to access this memory."},
-            status_code=402,
-        )
-    return row
 
 
 def _query_value(request: Request, name: str) -> str | None:
@@ -1105,12 +1094,8 @@ async def update_memory_visibility(request: Request, memory_id: str):
     uid = str(context["uid"])
     env = request.scope["env"]
     try:
-        if await _first_active(env, uid, memory_id) is None:
+        if not await mutate_visibility(env, uid, memory_id, raw_value, int(time.time())):
             return JSONResponse({"error": "memory not found"}, status_code=404)
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET visibility = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(raw_value, int(time.time()), uid, memory_id).run()
     except Exception as error:
         return memory_mutation_error(error)
     return {"status": "ok"}
@@ -1128,25 +1113,17 @@ async def review_memory(request: Request, memory_id: str):
     env = request.scope["env"]
     value = raw_value == "true"
     try:
-        if await _first_active(env, uid, memory_id) is None:
-            return JSONResponse({"error": "memory not found"}, status_code=404)
-        await env.APP_DB.batch(
-            [
-                env.APP_DB.prepare(
-                    "UPDATE cf_memories SET reviewed = 1, user_review = ?, updated_at = ? "
-                    "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-                ).bind(int(value), int(time.time()), uid, memory_id),
-                feedback_event_statement(
-                    env,
-                    uid,
-                    memory_id,
-                    1 if value else -1,
-                    surface=FeedbackSurface.memory,
-                    target_kind=FeedbackTargetKind.memory,
-                    after_mutation=True,
-                ),
-            ]
+        feedback = feedback_event_statement(
+            env,
+            uid,
+            memory_id,
+            1 if value else -1,
+            surface=FeedbackSurface.memory,
+            target_kind=FeedbackTargetKind.memory,
+            after_mutation=True,
         )
+        if not await mutate_review(env, uid, memory_id, value, int(time.time()), feedback=feedback):
+            return JSONResponse({"error": "memory not found"}, status_code=404)
     except Exception as error:
         return memory_mutation_error(error)
     return {"status": "ok"}
@@ -1168,25 +1145,9 @@ async def update_memory_read_status(request: Request, memory_id: str):
     uid = str(context["uid"])
     env = request.scope["env"]
     try:
-        existing = await _mutable_memory(env, uid, memory_id)
-        if isinstance(existing, JSONResponse):
-            return existing
-        assignments: list[str] = []
-        values: list[object] = []
-        if update.is_read is not None:
-            assignments.append("is_read = ?")
-            values.append(int(update.is_read))
-        if update.is_dismissed is not None:
-            assignments.append("is_dismissed = ?")
-            values.append(int(update.is_dismissed))
-        now = int(time.time())
-        assignments.append("updated_at = ?")
-        values.extend((now, uid, memory_id))
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET "
-            + ", ".join(assignments)
-            + " WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(*values).run()
+        values = update.model_dump(exclude_none=True)
+        if not await mutate_product_fields(env, uid, memory_id, values, int(time.time())):
+            return JSONResponse({"error": "memory not found"}, status_code=404)
         updated = await _first_active(env, uid, memory_id)
         if not isinstance(updated, dict):
             return JSONResponse({"error": "memory not found"}, status_code=404)
@@ -1210,13 +1171,8 @@ async def update_memory_baseline(request: Request, memory_id: str):
     uid = str(context["uid"])
     env = request.scope["env"]
     try:
-        existing = await _mutable_memory(env, uid, memory_id)
-        if isinstance(existing, JSONResponse):
-            return existing
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET is_baseline = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(int(value), int(time.time()), uid, memory_id).run()
+        if not await mutate_product_fields(env, uid, memory_id, {'is_baseline': value}, int(time.time())):
+            return JSONResponse({"error": "memory not found"}, status_code=404)
     except Exception as error:
         return memory_mutation_error(error)
     return {"status": "ok"}

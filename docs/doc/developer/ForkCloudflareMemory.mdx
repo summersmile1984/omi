@@ -76,9 +76,26 @@ Closed or superseded records cannot be reopened by this endpoint. Locks return
 402; concurrent target/head/generation changes and failed writes return 503
 without a partial correction.
 
-The user export includes owned operation and commit records under
-`memory_ledger_data`. These native intake and content-correction records do not
-yet constitute complete history for other mutations, source deletion or consolidation. History/revert and JIT
+Native visibility, review votes, read/dismiss and baseline changes also use the
+canonical mutation transaction. They retain their existing request and response
+shapes, paid-lock admission and owner isolation. A concurrent target/head change
+returns 503 without a partial item, journal or feedback update. Product metadata
+changes preserve content and tier; a positive vote does not promote a pending
+memory. Review rejection/reacceptance follows the original processing-status
+policy. Belief processing remains at the target's default-off setting.
+
+Migration 0177 persists an existing graph-backed Long-term memory's refreshed
+graph assertion in that same transaction. The exact current item revision and
+admitted target guard must authorize the assertion. It is included in owner
+export and removed by memory privacy/account erasure. This completes graph
+storage for these user mutations, not consolidation or shared graph-query
+convergence. See the
+[product-mutation verification record](../../../dev/unified-main/implementation-2026-09-05/memory-product-mutation-2026-09-07.md).
+
+The user export includes owned operations, commits and graph assertions under
+`memory_ledger_data`. These native intake and user-mutation records do not
+yet constitute complete history for other writers, review-queue resolution,
+source deletion or consolidation. History/revert and JIT
 remain unqualified until every writer shares the same authority.
 
 Migration 0161 enforces the current row's paid-plan lock inside interactive
