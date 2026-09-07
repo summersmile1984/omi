@@ -603,6 +603,48 @@ describe("Cloudflare account deletion workflow", () => {
       seedCloudflareAccount(state.database);
       seedMemoryApplyJournal(state.database, "deletion-user");
       seedMemoryApplyJournal(state.database, "other-user");
+      // Candidate payloads exercise the real deletion owner after schema admission.
+      for (const uid of ["deletion-user", "other-user"]) {
+        const generation = state.database.row<{ generation: number }>(
+          "SELECT COALESCE((SELECT account_generation FROM cf_account_cutover WHERE uid=?),0) AS generation", uid,
+        )!.generation;
+        const expected = JSON.stringify([{ id: "candidate-fixture", before: null }]);
+        state.database.database.prepare(
+          "INSERT INTO cf_candidate_write_guard(uid,account_generation,candidates_json,aliases_json,claims_json,integrations_json,attention_json,recommendations_json,snapshot_receipts_json) VALUES (?,?,?,?,?,?,?,?,?)",
+        ).run(uid, generation, expected, expected, expected, expected, expected, expected, expected);
+        const candidate = {
+          candidate_id: "candidate-fixture", subject_kind: "task", proposed_action: "create",
+          task_change: { description: "Owned suggestion", owner: "unknown" },
+          capture_confidence: 0.8, ownership_confidence: 0.8,
+          evidence_refs: [{ kind: "memory_item", id: "owned-source", scope: "canonical" }],
+          source_surface: "chat", account_generation: generation, idempotency_key: "candidate-fixture",
+          status: "accepted", result_task_id: "owned-task", resolution_reason: "accepted",
+          created_at: "2026-08-28T00:00:00Z", resolved_at: "2026-08-28T00:00:01Z",
+        };
+        state.database.database.prepare("INSERT INTO cf_candidates(uid,candidate_id,record_json) VALUES (?,?,?)")
+          .run(uid, "candidate-fixture", JSON.stringify(candidate));
+        for (const [table, key] of [["cf_candidate_aliases", "key_hash"], ["cf_candidate_claims", "semantic_id"]]) {
+          state.database.database.prepare(`INSERT INTO ${table}(uid,${key},record_json) VALUES (?,?,?)`)
+            .run(uid, "candidate-fixture", JSON.stringify({ account_generation: generation, candidate_id: "candidate-fixture" }));
+        }
+        state.database.database.prepare("INSERT INTO cf_candidate_integration_outbox(uid,outbox_id,record_json) VALUES (?,?,?)")
+          .run(uid, "candidate-fixture", JSON.stringify({
+            outbox_id: "candidate-fixture", candidate_id: "candidate-fixture", task_id: "owned-task",
+            account_generation: generation, status: "pending", attempt_count: 0,
+            created_at: "2026-08-28T00:00:01Z", updated_at: "2026-08-28T00:00:01Z",
+          }));
+        state.database.database.prepare("INSERT INTO cf_task_attention_overrides(uid,override_id,record_json) VALUES (?,?,?)")
+          .run(uid, "candidate-fixture", JSON.stringify({
+            override_id: "candidate-fixture", account_generation: generation, dedupe_key: "candidate-fixture",
+            feedback_id: "owned-feedback", action: "later", created_at: "2026-08-28T00:00:01Z",
+            expires_at: "2026-08-29T00:00:01Z",
+          }));
+        state.database.database.prepare("INSERT INTO cf_task_recommendation_heads(uid,head_id,record_json) VALUES (?,?,?)")
+          .run(uid, "candidate-fixture", JSON.stringify({account_generation: generation, projection: {recommendations: []}}));
+        state.database.database.prepare("INSERT INTO cf_task_snapshot_receipts(uid,receipt_id,record_json) VALUES (?,?,?)")
+          .run(uid, "candidate-fixture", JSON.stringify({account_generation: generation, expires_at: "2026-09-09T00:00:00Z", receipt: {snapshot_id: "owned-snapshot"}}));
+        state.database.database.prepare("DELETE FROM cf_candidate_write_guard WHERE uid=?").run(uid);
+      }
       const path = "/v1/users/delete-account";
       await jobs.fetch(
         new Request(`https://jobs.test${path}`, {
@@ -626,6 +668,13 @@ describe("Cloudflare account deletion workflow", () => {
       expect(state.conversationBucket.objects.size).toBe(0);
       expect(state.speechProfileBucket.objects.size).toBe(0);
       for (const table of [
+        "cf_candidates",
+        "cf_candidate_aliases",
+        "cf_candidate_claims",
+        "cf_candidate_integration_outbox",
+        "cf_task_attention_overrides",
+        "cf_task_recommendation_heads",
+        "cf_task_snapshot_receipts",
         "cf_memory_apply_control",
         "cf_memory_operations",
         "cf_memory_commits",

@@ -980,3 +980,96 @@ byte-identical full-content long-term candidate before the batch is mutated.
 It ignores vector scores and never chooses a replacement route. The Server
 uses the identical rule through its original gather/validator/retry boundary.
 Unknown legacy candidate attribution is not treated as proof of identity.
+
+## Candidate lifecycle integration in progress
+
+`candidate_kernel_sources.py` stages original wire models, identities, Suggested
+projection and staged-task policy. `candidate_db.py` guards exact observed JSON
+and physical rows, account generation and deletion state. Creation/coalescing,
+terminal resolution and task/workstream acceptance commit atomically. Acceptance
+also saves integration work and vector projection work; a workstream includes its
+anchor task and original first event. Goal/workstream snapshots prevent stale
+links, and task-change storage preserves explicit null versus omitted fields.
+
+`candidate_routes.py` now owns the public list/get/create/accept/reject/expire
+handlers. Suggested uses original confidence, evidence, semantic suppression and
+five-item limits. `candidate_attention.py` writes original intervention/feedback
+records to their existing D1 tables. Feedback plus attention overrides commit in
+one batch; retry retains the original expiry. The old physical request-fingerprint
+unique index includes record identity so two distinct idempotency keys do not
+incorrectly merge identical bodies. Original request hashes remain internal
+payload metadata. Subsecond expiry is checked against the retained JSON timestamp.
+
+`staged_candidate_routes.py` replaces the old staged writers. New intake,
+compatibility scores and explicit decisions use Candidates. Reads merge current
+canonical proposals and active historical `cf_task_candidates` rows without
+materializing history. Terminal canonical evidence suppresses historical duplicates
+even if cleanup fails. Cleanup follows the canonical decision and is generation
+fenced; acceptance retries cannot create a second task. Wire shapes, score order,
+0.5 confidence and unknown ownership follow the projected upstream functions.
+
+Goal creation records account generation; canonical creation rechecks it inside
+its receipt batch. User export includes Candidates, interventions, feedback and
+attention overrides, retaining historical payloads without internal index/retry
+metadata. The Jobs deletion owner includes all six new owner/guard tables.
+
+`recommendation_sources.py` also projects the original WMNow evaluation and debug
+control flow, eligibility, shortlist balancing, material identity and message
+constructor. Only storage/provider calls become async. `recommendation_state.py`
+reads canonical Candidates, tasks, goals, workstreams, artifacts and events from
+D1. The active attention override set participates in the original material
+version, so feedback invalidates both Suggested and WMNow consistently.
+
+`recommendation_store.py` publishes the current head, decision history,
+interventions, job completion, model receipt and successful-publication usage in
+one guarded D1 batch. Migration 0185 adds the current head and exact job snapshots.
+A job identifies an execution against the observed head; returning to earlier
+material after suppression expires creates a fresh execution, while retries of
+the same execution share its three-attempt budget and 300-second lease. The old
+physical request-fingerprint index also uses execution identity. A third expired
+lease becomes terminal without another model call. Queue/Cron retries rehydrate
+current canonical state; retired fixed-input jobs are terminally rejected.
+Deletion fences cover both old and new owners, and Jobs purges the new head.
+
+`recommendation_llm.py` sends unchanged upstream system/user text and the original
+JudgmentOutput schema through Workers AI. `WORKERS_AI_TASK_INTELLIGENCE_MODEL`
+defaults to `@cf/qwen/qwen3.8-27b`; an override must support Chat Completions with
+JSON Schema output. The original StableId model-version field receives a digest;
+receipts and usage retain the exact model ID. Input/output limits are 110,000 /
+256,000 UTF-8 bytes, with 8,192 completion tokens and a 180-second timeout. Empty
+shortlists make no inference call. Failed inference/publication cannot fabricate
+an empty recommendation. Usage counts committed successes, not all provider-billed
+calls whose later publication failed.
+
+`recommendation_snapshots.py` now owns device snapshot writes, receipts, reads
+and expiry. The public handlers parse original NormalizedContextSnapshot and
+OpenLoopSnapshot models. Open loops do not require an invented snapshot_id.
+The unchanged upstream window validator enforces future expiry, a one-hour TTL
+and at most five minutes of future clock skew. Open-loop admission requires the
+same owner's open canonical workstream, rechecked in the D1 commit.
+
+Migration 0186 preserves the original physical payloads while replacing the
+single-row-per-device uniqueness with generation/device scope for context and
+generation/device/runtime/workstream scope for open loops. Request receipts keep
+the first response across newer replacements. Old timestamps and changed content
+at an existing timestamp/key conflict; snapshots and receipts publish atomically.
+Readers retract expired state and its receipt under the same exact snapshot guard,
+so concurrent replacement survives cleanup. At most 50 expired receipts are
+removed per pass. Export returns the business payload without storage scope/hash
+fields; account deletion purges the added receipt table.
+
+The actual workerd migration/R2 test caught an expression-depth failure when
+0186 rebuilt a table: schema revalidation rejected the long 0183 task predicate.
+Its 33 null-safe comparisons are now grouped with balanced conjunctions. No
+comparison is removed and no runtime limit is changed. The existing actual
+workerd suite passes the full migration chain and R2 write/read/revocation path.
+Snapshot HTTP semantics remain locally verified with controlled AI, not hosted
+Python Worker/client acceptance. See the [snapshot evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-device-snapshots-2026-09-08.md).
+
+These handlers are wired locally; workflow control is still closed. Outcome
+attribution and the remaining old business writers still need convergence. The integration drain endpoint
+returns 503 until a real dispatcher exists. Recurrence handoff, other legacy
+writers, hosted/runtime verification and release qualification remain unfinished.
+Migrations 0183–0186 are local drafts. See the
+[Candidate evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-candidates-2026-09-08.md)
+and [recommendation evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-recommendations-2026-09-08.md).

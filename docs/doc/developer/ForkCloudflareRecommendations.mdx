@@ -1,0 +1,50 @@
+---
+title: 'Cloudflare Candidates and recommendations'
+description: 'Canonical proposals, recommendation feedback and D1 transactions in the fork target'
+---
+
+This is local integration work. Migrations 0183–0186 and the new recommendation
+path have not been deployed or accepted through Eddy macOS. Workflow control
+remains off.
+
+`/v1/candidates` and `/v1/staged-tasks` share the original Candidate lifecycle.
+Acceptance stores its task or workstream, workflow event, decision and pending
+integration/index work in one D1 batch. Historical staged proposals remain
+readable without being copied on reads; canonical terminal decisions prevent
+duplicate acceptance.
+
+`GET /v1/what-matters-now` and `POST /v1/what-matters-now/evaluate` now run the
+original upstream evaluation over canonical product state. The source projector
+preserves eligibility, tier balancing, evidence, material identity and default
+message text, adapting storage/provider calls to async Cloudflare bindings.
+Published interventions feed `/v1/task-intelligence/feedback`; Later suppresses
+both Suggested and What Matters Now until expiry. Retries of one evaluation
+retain a bounded three-attempt budget.
+
+The Workers AI adapter defaults to `@cf/qwen/qwen3.8-27b`.
+`WORKERS_AI_TASK_INTELLIGENCE_MODEL`, if set, must support the same Chat
+Completions and JSON Schema output contract. Empty shortlists make no model call.
+Provider failures retain durable work instead of inventing a successful empty
+result. Local tests control AI responses; hosted inference is not yet verified
+for this implementation.
+
+D1 `batch()` commits projection, decisions, interventions, job completion and
+successful-publication usage together. A failed statement rolls back the batch.
+Inference happens before this transaction. The [D1 transaction contract](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)
+does not make Queue delivery, R2 or Vectorize operations transactional.
+
+The context/open-loop PUT endpoints now use original bounded request schemas,
+Idempotency-Key, X-Account-Generation and the request's platform/device headers.
+Context is scoped by generation/device; open loops additionally use runtime and
+workstream. Open-loop bodies have no snapshot_id field. Admission requires an
+owned open workstream, a future expiry, at most one hour of TTL and no more than
+five minutes of future clock skew. Older snapshots and changed same-timestamp
+payloads return 409. An identical request retry returns its first receipt even
+after a newer snapshot is stored. Snapshot and receipt writes roll back together.
+Expired reads remove state without deleting a concurrent replacement. User
+export includes the snapshot payloads; account deletion includes their receipts.
+
+Outcome attribution, recurrence handoff and external integration execution
+remain incomplete. The
+integration drain endpoint is unavailable. Local route coverage therefore does
+not establish production release qualification.

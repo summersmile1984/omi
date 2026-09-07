@@ -103,8 +103,10 @@ from chat_first_routes import router as chat_first_router
 from crisp_routes import router as crisp_router
 from migration_routes import router as migration_router
 from candidate_control_routes import router as candidate_control_router
-from candidate_compat_routes import router as candidate_compat_router
+from candidate_routes import router as candidate_router
+from staged_candidate_routes import router as staged_candidate_router
 from task_intelligence_routes import router as task_intelligence_router
+from recommendation_routes import router as recommendation_router
 from desktop_release_routes import router as desktop_release_router
 from desktop_prompt_routes import router as desktop_prompt_router
 from desktop_beta_routes import router as desktop_beta_router
@@ -181,8 +183,10 @@ app.include_router(chat_first_router)
 app.include_router(crisp_router)
 app.include_router(migration_router)
 app.include_router(candidate_control_router)
-app.include_router(candidate_compat_router)
+app.include_router(candidate_router)
+app.include_router(staged_candidate_router)
 app.include_router(task_intelligence_router)
+app.include_router(recommendation_router)
 app.include_router(desktop_release_router)
 app.include_router(desktop_beta_router)
 app.include_router(followup_router)

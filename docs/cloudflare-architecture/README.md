@@ -1,5 +1,7 @@
 # Cloudflare 适配架构与完成度审计
 
+- [Canonical Candidate / WMNow local integration](canonical-candidate-staging.md): original recommendation evaluation and atomic feedback are wired locally; device snapshots now use original scope/receipts; outcome attribution, recurrence, external sync and production acceptance remain incomplete.
+
 > **历史环境说明（2026-09-05 补充）：** 下文是 2026-09-01
 > `codex/cloudflare-adaptation` 分支的 `omi-cf-*-production` /
 > `omi-web-app-production` 部署记录，不代表当前统一主线的 Eddy 已发布。

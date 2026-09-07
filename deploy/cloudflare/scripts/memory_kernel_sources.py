@@ -11,6 +11,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from screen_frame_sources import selected_nodes
 from memory_consolidation_sources import consolidation_sources
+from candidate_kernel_sources import candidate_sources
+from recommendation_sources import recommendation_sources
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULES = {
@@ -24,6 +26,11 @@ MODULES = {
     'models.memory_evidence': 'memory_kernel_evidence',
     'models.memory_review': 'memory_kernel_review',
     'models.memory_recurrence': 'memory_kernel_recurrence',
+    'models.candidate': 'candidate_kernel_models',
+    'models.task_recommendation': 'candidate_kernel_recommendation',
+    'models.goal': 'candidate_kernel_goal',
+    'models.workstream': 'candidate_kernel_workstream',
+    'models.workstream_association': 'candidate_kernel_association',
     'models.action_item': 'memory_kernel_action_item',
     'models.task_intelligence': 'memory_kernel_task_intelligence',
     'utils.memory.required_promotion': 'memory_kernel_required_promotion',
@@ -61,6 +68,8 @@ def project(module: str) -> str:
 def generate(output: Path) -> None:
     outputs = {target + '.py': project(module) for module, target in MODULES.items()}
     outputs.update(consolidation_sources())
+    outputs.update(candidate_sources())
+    outputs.update(recommendation_sources())
     outputs['memory_kernel_intake.py'] = (
         'from enum import Enum\nfrom typing import Any, Dict\n'
         + selected_nodes('backend/models/memories.py', {'SubjectAttribution'})

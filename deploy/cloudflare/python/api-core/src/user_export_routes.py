@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import time
 
@@ -39,6 +40,12 @@ _EXPORT_QUERIES = (
     ("memory_import_artifacts", "cf_memory_import_artifacts", "created_at DESC, artifact_id DESC"),
     ("people", "cf_people", "created_at DESC, id DESC"),
     ("action_items", "cf_action_items", "created_at DESC, id DESC"),
+    ("candidates", "cf_candidates", "created_at DESC, candidate_id"),
+    ("task_interventions", "cf_task_interventions", "created_at DESC, intervention_id"),
+    ("task_feedback", "cf_task_feedback", "created_at DESC, feedback_id"),
+    ("task_attention_overrides", "cf_task_attention_overrides", "expires_at DESC, override_id"),
+    ("task_context_snapshots", "cf_task_context_snapshots", "generated_at DESC, scope_key"),
+    ("task_open_loop_snapshots", "cf_task_open_loop_snapshots", "generated_at DESC, scope_key"),
     ("goals", "cf_goals", "created_at DESC, id DESC"),
     ("goal_history", "cf_goal_progress_history", "recorded_at DESC, goal_id DESC, date DESC"),
     ("goal_events", "cf_goal_progress_events", "created_at DESC, event_id DESC"),
@@ -101,6 +108,26 @@ def _decode_json_columns(row: dict[str, object]) -> dict[str, object]:
 async def _rows(env: object, table: str, order_by: str, uid: str) -> list[dict[str, object]]:
     result = await env.APP_DB.prepare(f"SELECT * FROM {table} WHERE uid = ? ORDER BY {order_by}").bind(uid).all()
     values = result.get("results", []) if isinstance(result, dict) else []
+    if table in {"cf_task_context_snapshots", "cf_task_open_loop_snapshots"}:
+        return [json.loads(row["payload_json"]) for row in values if isinstance(row, dict)]
+    if table in {"cf_candidates", "cf_task_attention_overrides"}:
+        return [json.loads(row["record_json"]) for row in values if isinstance(row, dict)]
+    if table in {"cf_task_interventions", "cf_task_feedback"}:
+        # Preserve historical request-only payloads as well as current records.
+        # Physical identity owns the record; internal retry/index metadata does
+        # not belong in the portable user data document.
+        exported = []
+        for row in values:
+            if not isinstance(row, dict):
+                continue
+            data = json.loads(row["payload_json"])
+            data = {key: value for key, value in data.items() if key not in {"_request_hash", "_override_expires_at"}}
+            for key in ("intervention_id", "feedback_id", "attribution_chain_id", "account_generation"):
+                if key in row:
+                    data[key] = row[key]
+            data.setdefault("created_at", datetime.fromtimestamp(row["created_at"], timezone.utc).isoformat())
+            exported.append(data)
+        return exported
     if table == "cf_daily_summaries":
         values = [
             {key: value for key, value in row.items() if key != "generation_token"}

@@ -33,18 +33,10 @@ class FakeDb:
     def __init__(self):
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
-        action_items_migration = Path(__file__).parents[3] / "migrations/app/0016_action_items.sql"
-        self.connection.executescript(action_items_migration.read_text())
-        migration = Path(__file__).parents[3] / "migrations/app/0018_goals.sql"
-        self.connection.executescript(migration.read_text())
-        history_migration = Path(__file__).parents[3] / "migrations/app/0023_goal_progress_history.sql"
-        self.connection.executescript(history_migration.read_text())
-        mutation_migration = Path(__file__).parents[3] / "migrations/app/0024_goal_mutations.sql"
-        self.connection.executescript(mutation_migration.read_text())
-        events_migration = Path(__file__).parents[3] / "migrations/app/0025_goal_progress_events.sql"
-        self.connection.executescript(events_migration.read_text())
-        workstream_migration = Path(__file__).parents[3] / "migrations/app/0026_workstreams.sql"
-        self.connection.executescript(workstream_migration.read_text())
+        # Exercise the current schema, including generation/deletion admission.
+        migration_dir = Path(__file__).parents[3] / "migrations/app"
+        for migration in sorted(migration_dir.glob("*.sql")):
+            self.connection.executescript(migration.read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -191,6 +183,10 @@ def test_goal_metadata_and_progress_are_uid_scoped():
 def test_canonical_goal_create_and_list_use_generation_scoped_receipt():
     secret = "goal-secret"
     env = type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    env.APP_DB.connection.execute(
+        "INSERT INTO cf_account_cutover(uid,account_generation,updated_at) VALUES ('goal-user',3,1)"
+    )
+    env.APP_DB.connection.commit()
     body = {
         "title": "Canonical goal",
         "desired_outcome": "A generation-safe goal",
@@ -222,7 +218,18 @@ def test_goal_detail_composes_uid_scoped_d1_projections():
         "(uid, id, goal_id, title, objective, status, current_state_summary, latest_event_sequence, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            (uid, "ws-open", goal["id"], "Open thread", "Finish the integration", "open", "In progress", 2, now, now + 2),
+            (
+                uid,
+                "ws-open",
+                goal["id"],
+                "Open thread",
+                "Finish the integration",
+                "open",
+                "In progress",
+                2,
+                now,
+                now + 2,
+            ),
             (uid, "ws-archived", goal["id"], "Old thread", "No longer active", "archived", "", 1, now, now + 1),
             ("other-user", "ws-foreign", goal["id"], "Foreign thread", "Do not leak", "open", "", 1, now, now + 3),
         ],
@@ -256,7 +263,10 @@ def test_goal_detail_composes_uid_scoped_d1_projections():
     assert [thread["workstream_id"] for thread in detail["active_threads"]] == ["ws-open"]
     assert [task["id"] for task in detail["tasks"]] == ["task-open"]
     assert detail["progress_events"][0]["event_id"] == event["event_id"]
-    assert asyncio.run(get_goal_detail(FakeRequest(env, signed_headers(secret, "other-user")), goal["id"])).status_code == 404
+    assert (
+        asyncio.run(get_goal_detail(FakeRequest(env, signed_headers(secret, "other-user")), goal["id"])).status_code
+        == 404
+    )
 
 
 def test_goal_routes_reject_invalid_progress_and_empty_update():
