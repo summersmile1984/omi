@@ -10,8 +10,10 @@ generation. Unmigrated authenticated users receive generation zero with canonica
 read/Chat-first capability; client headers cannot select another generation.
 Unavailable storage or erasure fences retain the original off response. No new
 rollout flag, duplicate control store or read-time backfill is introduced.
-This is not production publication or Eddy macOS acceptance; recommendation
-model/provider and full release qualification remain unfinished.
+The unchanged Qwen provider has also passed a hosted recommendation, cache,
+feedback and accepted-task flow. This is not production publication, broad
+model qualification or Eddy macOS acceptance; full release qualification remains
+unfinished.
 
 `/v1/candidates` and `/v1/staged-tasks` share the original Candidate lifecycle.
 Acceptance stores its task or workstream, workflow event, decision and pending
@@ -31,8 +33,11 @@ The Workers AI adapter defaults to `@cf/qwen/qwen3.8-27b`.
 `WORKERS_AI_TASK_INTELLIGENCE_MODEL`, if set, must support the same Chat
 Completions and JSON Schema output contract. Empty shortlists make no model call.
 Provider failures retain durable work instead of inventing a successful empty
-result. Local tests control AI responses; hosted inference is not yet verified
-for this implementation.
+result. Local tests control AI responses. A separate hosted run used real Qwen
+with unmodified Core/Jobs: one evaluation stored real usage and an intervention,
+cached reads made no extra call, Later suppressed it, and acceptance completed
+through the actual Queue. The [execution record](../../../dev/unified-main/implementation-2026-09-05/canonical-qwen-live-2026-09-08.md)
+records exact source, scope and owned-resource cleanup.
 
 D1 `batch()` commits projection, decisions, interventions, job completion and
 successful-publication usage together. A failed statement rolls back the batch.

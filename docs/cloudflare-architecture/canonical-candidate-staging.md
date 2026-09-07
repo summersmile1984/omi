@@ -29,8 +29,11 @@ The Worker build obtains upstream models and rules through
 `deploy/cloudflare/scripts/candidate_kernel_sources.py` and the original WMNow
 control flow/message constructor through `recommendation_sources.py`. Default
 prompt text is unchanged. The Workers AI adapter defaults to
-`@cf/qwen/qwen3.8-27b`. Local tests control the provider response; actual Qwen
-inference and hosted runtime acceptance remain unverified for this new path.
+`@cf/qwen/qwen3.8-27b`. The unchanged provider and Core/Jobs entries now passed
+one [live Qwen recommendation path](../../dev/unified-main/implementation-2026-09-05/canonical-qwen-live-2026-09-08.md):
+publication and real usage, cached reads, Later suppression, acceptance and
+Queue completion. Local tests still use controlled model IO. Broader model,
+public-login, device and production acceptance remain separate requirements.
 Schema 0183 introduces Candidates and guarded task/workstream writes; 0184 adds
 attention overrides; 0185 adds recommendation heads and job snapshot checks;
 0186 preserves existing device snapshots while adding per-runtime/workstream
@@ -44,8 +47,8 @@ receipt share one generation-fenced batch. Retries retain the first record, and
 owner export/deletion include outcomes. Migration 0188 persists recurrence signals
 with memory results and supplies the original workflow inbox consumer through
 Jobs/Cron. First proposals and Candidate identities survive retries; original
-thresholds and ownership confidence remain unchanged. All six migrations are
-local drafts. Existing component runners discover the tests:
+thresholds and ownership confidence remain unchanged. All six migrations have been applied in isolated hosted D1 tests; they remain
+unpublished to Eddy production. Existing component runners discover the tests:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 deploy/cloudflare/python/api-core/.venv/bin/python -m pytest -q -p no:cacheprovider deploy/cloudflare/python/api-core/tests
