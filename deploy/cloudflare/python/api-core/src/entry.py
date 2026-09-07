@@ -64,7 +64,7 @@ from app_catalog_v2_routes import router as app_catalog_v2_router
 from memory_routes import router as memory_router
 from memory_consolidation_routes import router as memory_consolidation_router
 from recurrence_routes import router as recurrence_router
-from candidate_integration_routes import router as integration_router
+from candidate_integration_routes import router as candidate_integration_router
 from memory_privacy_routes import router as memory_privacy_router
 from memory_admin_routes import router as memory_admin_router
 from memory_review_routes import router as memory_review_router
@@ -146,7 +146,7 @@ app.include_router(app_catalog_v2_router)
 app.include_router(memory_router)
 app.include_router(memory_consolidation_router)
 app.include_router(recurrence_router)
-app.include_router(integration_router)
+app.include_router(candidate_integration_router)
 app.include_router(memory_privacy_router)
 app.include_router(memory_admin_router)
 app.include_router(memory_review_router)

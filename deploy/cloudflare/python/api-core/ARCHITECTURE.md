@@ -1127,3 +1127,14 @@ Migrations 0183–0188 are local drafts. See the
 and [recommendation evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-recommendations-2026-09-08.md).
 
 Outcome verification is recorded in the [outcome evidence note](../../../../dev/unified-main/implementation-2026-09-05/canonical-outcomes-2026-09-08.md).
+
+
+Route composition is verified by `tests/test_candidate_entry.py` against the
+actual `entry.app`, including its request-bound authentication middleware.
+Every router import uses its own domain name. The runtime registry guard rejects
+duplicate method/path mounts, and HTTP tests reach both the Candidate integration
+processor and original app-integration owner. Module-only FastAPI fixtures remain
+useful for domain tests but do not prove production mounting. This guard catches
+the c66e9e3 alias collision, which left nine duplicate mounts and an unreachable
+internal integration endpoint despite passing module tests. See the
+[entry verification](../../../../dev/unified-main/implementation-2026-09-05/canonical-integration-entry-2026-09-08.md).

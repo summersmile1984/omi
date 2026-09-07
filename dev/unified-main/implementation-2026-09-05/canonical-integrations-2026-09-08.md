@@ -76,3 +76,17 @@ made. Full workflow-control enablement, hosted product and dual-target release
 qualification, production Worker deployment and production-connected macOS
 acceptance remain required. No production resources, macOS artifact or model
 defaults changed in this implementation; no push, PR or merge was performed.
+
+
+## Entry-composition correction
+
+The c66e9e3 package check found registration text but did not resolve the imported
+router object. The new router alias was overwritten by the original integration
+router import: nine original method/path pairs were mounted twice and the new
+internal endpoint returned 404. The prior 1,138 module/HTTP fixture tests did not
+exercise this actual composition. Their results remain historical local evidence,
+not proof that the dispatcher was mounted. The distinct router binding and actual
+`entry.app` regression are documented in the
+[entry verification](canonical-integration-entry-2026-09-08.md); the corrected
+source also passed real hosted Core/Jobs Queue delivery. The earlier immutable
+evidence directory is retained unchanged for audit.
