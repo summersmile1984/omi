@@ -55,6 +55,10 @@ locked Wrangler/workerd, then executes:
   memory-index RPC double. Production publication, D1 hydration and cleanup run
   unchanged against that controlled IO. The double proves neither hosted
   Vectorize semantics/latency nor index durability across provider restarts.
+  Recap assertions run while the derived memory is processed. The later native
+  content correction is verified through public export as a newer pending
+  Short-term revision, which must be excluded from vector results until it is
+  processed again; the contract does not fabricate that processing admission.
 - `chat.mjs`, the current upstream Web `api.ts` get/send/clear functions against
   actual HTTP/SSE, Python model RPC and D1: configured brand greeting/default
   system prompt (via an inference-only echo), app-generator platform identity,
