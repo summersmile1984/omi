@@ -99,6 +99,16 @@ An old context cannot issue a second route. Returned items use the actual stored
 JSON and integer-second timestamp representation. Provider publication is a
 post-commit hint backed by the existing durable projection outbox.
 
+Migration 0182 separates the consolidation transaction's read dependencies from
+its write targets. Only items actually changed by the canonical apply plan enter
+`expected_items_json`; candidate/owner-feedback snapshots enter
+`observed_items_json`. The read guard compares owner, generation, source state,
+status, lock, revision and captured metadata inside the same D1 transaction.
+Eligible hidden or locked rejection examples can inform a decision without
+granting mutation authority. Existing interactive writers keep the unchanged
+active/unlocked write gate; concurrent dependency changes abort the whole batch.
+See the [read-dependency regression record](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-read-set-2026-09-07.md).
+
 `memory_consolidation_llm.py` now supplies the Workers AI invocation owner.
 It stages the original prompt, bounded context formatter and message constructor;
 its schema-format text matches the backend's pinned LangChain 1.3.3. The model

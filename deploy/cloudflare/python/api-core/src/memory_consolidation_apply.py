@@ -239,6 +239,7 @@ async def apply_consolidation_batch(
         plan(source, operation, patch)
 
     db, uid = env.APP_DB, context.uid
+    writable_ids = {item.memory_id for _, result in steps for item in result.memory_items}
     expected = [
         {
             key: row[key]
@@ -249,6 +250,8 @@ async def apply_consolidation_batch(
                 'canonical_metadata_json',
                 'capture_device_ids_json',
                 'primary_capture_device',
+                'status',
+                'is_locked',
             )
         }
         for row in rows.values()
@@ -256,15 +259,17 @@ async def apply_consolidation_batch(
     statements = [
         db.prepare(
             'INSERT INTO cf_memory_apply_guard (uid, expected_control_json, account_generation, '
-            'new_ids_json, operation_ids_json, expected_items_json, consolidation_claims_json) VALUES (?, ?, ?, ?, ?, ?, ?)'
+            'new_ids_json, operation_ids_json, expected_items_json, consolidation_claims_json, observed_items_json) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
         ).bind(
             uid,
             prior,
             initial_control.account_generation,
             '[]',
             encoded([result.operation.operation_id for _, result in steps]),
-            encoded(expected),
+            encoded([row for row in expected if row['id'] in writable_ids]),
             encoded([lease.claim() for lease in leases]),
+            encoded([row for row in expected if row['id'] not in writable_ids]),
         )
     ]
     columns = sorted((set(MODEL_COLUMNS.values()) | {'canonical_metadata_json'}) - {'uid', 'id'})
