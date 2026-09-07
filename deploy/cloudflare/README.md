@@ -2912,6 +2912,14 @@ is delete-only. The 1 MB body cap and stable internal retry identity remain in
 force. See the [native intake verification](../../dev/unified-main/implementation-2026-09-05/native-memory-normalization-2026-09-07.md) and
 [consolidation verification record](../../dev/unified-main/implementation-2026-09-05/memory-consolidation-apply-2026-09-07.md).
 
+Native memory lists and ordinary product search now filter persisted lifecycle
+state before pagination and counts. Pending required input remains visible to
+its owner but is excluded from processed search. Archive/hidden/superseded,
+removed-source and user-rejected rows are excluded; processed sensitivity
+restrictions retain the upstream policy. Historical processed data needs no
+new control or receipt. This does not yet supply active-alias collapse or full
+device/cursor/archive parity. See the [default-read verification](../../dev/unified-main/implementation-2026-09-05/memory-default-read-2026-09-07.md).
+
 The same builder selects the three original privacy scrubber/event function
 bodies from `backend/database/memory_apply_store.py` into a separate pure module;
 no Firestore client or persistence adapter is staged. `memory_privacy_plan.py`

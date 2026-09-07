@@ -24,6 +24,16 @@ Existing processed data remains readable without a bulk backfill. The current
 native list still shows pending submissions immediately; creating a memory does
 not invoke a model. [Verification](../../../dev/unified-main/implementation-2026-09-05/native-memory-normalization-2026-09-07.md).
 
+Default `GET /v3/memories` excludes archived, hidden, superseded, source-removed
+and user-rejected records. New required-pending submissions remain visible to
+their owner. Ordinary `/memory/search` includes only eligible processed records;
+it reports their stored processing state. Filtering happens before pagination
+and search counts, so excluded rows do not consume a page. Existing processed
+rows remain readable without creating normalization receipts. Active Short-term
+records are not hidden solely because their nominal TTL elapsed. Active-alias
+collapse, device/cursor parity and explicit native archive reads remain separate
+read-convergence work. [Verification](../../../dev/unified-main/implementation-2026-09-05/memory-default-read-2026-09-07.md).
+
 The batch request remains `{"memories": [...]}`, with at most 100 memories
 and a **1,000,000-byte UTF-8 request body**, including the JSON envelope and
 metadata. The single-memory content limit remains 50,000 characters. Larger

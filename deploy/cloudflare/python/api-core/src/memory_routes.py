@@ -30,6 +30,7 @@ from memory_apply_edit import edit_native_memory
 from memory_product_mutation import mutate_visibility, mutate_review, mutate_product_fields
 from account_routes import usage_source_statement
 from memory_vector_hydration import hydrate_memory_vectors
+from memory_default_read import default_read_predicate
 from vector_search import embed_query, query_vector_ids
 
 router = APIRouter()
@@ -326,8 +327,8 @@ _SELECT = (
     "subject_entity_id, subject_attribution, object_entity_ids_json, qualifiers_json, capture_confidence, veracity, "
     "uncertainty_reasons_json, durability, conversation_id, reviewed, user_review, manually_added, edited, scoring, "
     "app_id, data_protection_level, is_locked, is_read, is_dismissed, kg_extracted, is_baseline, memory_tier, "
-    "valid_at, invalid_at, superseded_by, primary_capture_device, capture_device_ids_json, created_at, updated_at "
-    "FROM cf_memories "
+    "valid_at, invalid_at, superseded_by, primary_capture_device, capture_device_ids_json, created_at, updated_at, "
+    "status, processing_state FROM cf_memories "
 )
 
 
@@ -386,8 +387,8 @@ def _product_search_item(row: dict[str, object]) -> dict[str, object]:
         "memory_layer": "product_memory",
         "tier": str(row.get("memory_tier") or "long_term"),
         "content": str(row.get("content") or ""),
-        "lifecycle_status": "active",
-        "processing_state": "processed",
+        "lifecycle_status": str(row["status"]),
+        "processing_state": str(row["processing_state"]),
         "confidence": confidence,
         "visibility": row.get("visibility"),
         "visibility_source": "universal_memory_service",
@@ -605,11 +606,9 @@ async def search_product_memory(request: Request):
         return JSONResponse({"error": "invalid pagination"}, status_code=400)
 
     uid = str(context["uid"])
-    where = (
-        "WHERE uid = ? AND deleted_at IS NULL AND invalid_at IS NULL "
-        "AND memory_tier != 'archive' AND COALESCE(user_review, 1) != 0 AND is_locked = 0"
-    )
-    args: list[object] = [uid]
+    eligibility, policy_args = default_read_predicate(include_pending=False)
+    where = "WHERE uid = ? AND " + eligibility + " AND is_locked = 0"
+    args: list[object] = [uid, *policy_args]
     if tokens:
         clauses = ["LOWER(content) LIKE ? ESCAPE '\\'" for _ in tokens]
         where += " AND (" + " OR ".join(clauses) + ")"
@@ -874,8 +873,9 @@ async def list_memories(request: Request):
         if not categories or any(item not in MEMORY_CATEGORIES for item in categories):
             return JSONResponse({"error": "invalid memory categories"}, status_code=400)
     uid = str(context["uid"])
-    query = _SELECT + "WHERE uid = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-    args: list[object] = [uid]
+    eligibility, policy_args = default_read_predicate(include_pending=True)
+    query = _SELECT + "WHERE uid = ? AND " + eligibility
+    args: list[object] = [uid, *policy_args]
     if categories:
         query += " AND category IN (" + ",".join("?" for _ in categories) + ")"
         args.extend(categories)

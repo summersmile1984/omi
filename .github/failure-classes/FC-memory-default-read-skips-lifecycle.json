@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "FC-memory-default-read-skips-lifecycle",
+  "violated_contract": "Default memory reads must apply persisted lifecycle, source, processing, sensitivity and review eligibility before pagination. Filtering only deleted/invalid timestamps exposed archive and hidden/superseded rows, while search labeled raw pending input as processed.",
+  "canonical_prevention": "Use one D1 lifecycle predicate for native lists and default search, with the original native required-pending exception only for owner lists. Bind the upstream restricted-label set and compare actual HTTP/SQL results to unchanged upstream canonical visibility functions, including historical principals and pagination.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/python/api-core/src/memory_default_read.py",
+    "deploy/cloudflare/python/api-core/tests/test_memory_default_read.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/python/api-core/src/memory_default_read.py",
+    "deploy/cloudflare/python/api-core/src/memory_routes.py"
+  ],
+  "status": "open"
+}

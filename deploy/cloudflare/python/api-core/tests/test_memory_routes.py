@@ -163,6 +163,11 @@ def test_product_memory_search_uses_d1_default_visibility_and_contract():
     reviewed = create(env, secret, content="Coffee rejected record", category="manual")
     locked = create(env, secret, content="Coffee locked record", category="manual")
     create(env, secret, uid="other-user", content="Coffee belongs to another user")
+    # This search fixture represents existing processed rows. Current native
+    # POSTs are raw pending inputs and are covered by test_memory_default_read.
+    env.APP_DB.connection.execute(
+        "UPDATE cf_memories SET processing_state = 'processed', canonical_metadata_json = '{}'"
+    )
     env.APP_DB.connection.execute(
         "UPDATE cf_memories SET memory_tier = 'archive' WHERE uid = ? AND id = ?",
         ("memory-user", archive["id"]),
@@ -439,16 +444,21 @@ def test_memory_edit_visibility_review_and_delete_are_uid_scoped():
     assert asyncio.run(
         update_memory_visibility(FakeRequest(env, signed_headers(secret), {"value": "public"}), memory_id)
     ) == {"status": "ok"}
-    assert asyncio.run(review_memory(FakeRequest(env, signed_headers(secret), {"value": "false"}), memory_id)) == {
-        "status": "ok"
-    }
-
     listed = asyncio.run(list_memories(FakeRequest(env, signed_headers(secret))))
     assert listed[0]["content"] == "Edited memory"
     assert listed[0]["edited"] is True
     assert listed[0]["visibility"] == "public"
-    assert listed[0]["reviewed"] is True
-    assert listed[0]["user_review"] is False
+    assert asyncio.run(review_memory(FakeRequest(env, signed_headers(secret), {"value": "false"}), memory_id)) == {
+        "status": "ok"
+    }
+
+    # Upstream default visibility excludes explicitly rejected memory.
+    assert asyncio.run(list_memories(FakeRequest(env, signed_headers(secret)))) == []
+    review_state = env.APP_DB.connection.execute(
+        "SELECT reviewed, user_review FROM cf_memories WHERE uid = ? AND id = ?",
+        ("memory-user", memory_id),
+    ).fetchone()
+    assert tuple(review_state) == (1, 0)
 
     other_delete = asyncio.run(delete_memory(FakeRequest(env, signed_headers(secret, "other-user")), memory_id))
     assert other_delete.status_code == 404

@@ -48,6 +48,19 @@ call occurs in the POST and no default prompt changes. Existing processed rows
 retain their state; this is not a bulk backfill. See the
 [normalization verification record](../../../../dev/unified-main/implementation-2026-09-05/native-memory-normalization-2026-09-07.md).
 
+`memory_default_read.py` supplies the D1 lifecycle predicate shared by the
+native list and ordinary product search. Filtering runs before SQL counts and
+pagination. Archive, hidden/superseded, source-removed and user-rejected rows
+are absent by default; processed rows also obey the original sensitivity policy.
+The native list retains the upstream required-pending exception so owners can
+see new submissions immediately. Search requires processed state and reports
+stored status/state. Time alone does not hide an active Short-term item.
+Historical processed rows with no control/receipt remain readable without writes.
+Behavioral tests execute the original canonical visibility bodies as an oracle.
+This fixes lifecycle eligibility, not complete read convergence: active-alias
+lineage selection, device/cursor parity, explicit native archive reads and other
+read families still need alignment. See the [read verification record](../../../../dev/unified-main/implementation-2026-09-05/memory-default-read-2026-09-07.md).
+
 `memory_apply_mutation.py` is the ordinary native user-mutation transaction
 owner. Content correction, visibility, review votes, read/dismiss and baseline
 all persist their item, operation, commit, control head and outbox together.
