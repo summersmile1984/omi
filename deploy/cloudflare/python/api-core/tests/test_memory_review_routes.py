@@ -46,21 +46,8 @@ class FakeDb:
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
-        self.connection.executescript((migration_dir / "0037_memories.sql").read_text())
-        self.connection.executescript("""
-            CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);
-            CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY);
-            """)
-        self.connection.executescript((migration_dir / "0093_memory_review_queue.sql").read_text())
-        self.connection.executescript("""
-            CREATE TABLE cf_usage_sources (
-              uid TEXT NOT NULL, source_kind TEXT NOT NULL, source_id TEXT NOT NULL,
-              occurred_at INTEGER NOT NULL, transcription_seconds INTEGER NOT NULL,
-              words_transcribed INTEGER NOT NULL, insights_gained INTEGER NOT NULL,
-              memories_created INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-              PRIMARY KEY(uid, source_kind, source_id)
-            );
-            """)
+        for path in sorted(migration_dir.glob('*.sql')):
+            self.connection.executescript(path.read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -77,6 +64,9 @@ class FakeDb:
 
 
 class FakeRequest:
+    async def stream(self):
+        yield await self.body()
+
     def __init__(self, env, headers, query=None, body=None):
         self.scope = {"env": env}
         self.headers = headers
@@ -105,7 +95,7 @@ def make_env(secret: str):
 
 
 def create(env, secret: str, *, content: str, arguments: dict[str, object], veracity: float):
-    return asyncio.run(
+    result = asyncio.run(
         create_memory(
             FakeRequest(
                 env,
@@ -121,6 +111,8 @@ def create(env, secret: str, *, content: str, arguments: dict[str, object], vera
             )
         )
     )
+    assert isinstance(result, dict), getattr(result, 'body', None)
+    return result
 
 
 def test_review_queue_is_produced_from_structural_d1_conflict_and_is_uid_scoped():

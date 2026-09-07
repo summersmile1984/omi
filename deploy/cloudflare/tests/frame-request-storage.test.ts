@@ -12,15 +12,19 @@ afterEach(() => databases.splice(0).forEach((db) => db.close()));
 
 // Static portability tripwire, not SQL behavioral coverage. The hosted
 // 2026-09-06 frame-flow migration failed with incomplete input despite SQLite
-// accepting it: https://github.com/cloudflare/workers-sdk/issues/4727.
+// accepting it: https://github.com/cloudflare/workers-sdk/issues/4727. Native
+// memory apply migration 0172 reproduced that same failure later that day.
 // The tests below and test_frame_request_pixels.py execute publication/erasure.
-it("keeps frame trigger CASE expressions parenthesized for remote D1", () => {
-  const migration = readFileSync(
-    new URL("../migrations/app/0168_frame_request_pixels.sql", import.meta.url),
-    "utf8"
-  );
-  expect(migration).not.toMatch(/(?:SELECT\s+|=\s*)CASE\b/i);
-});
+it.each(["0168_frame_request_pixels.sql", "0172_memory_apply_intake.sql"])(
+  "keeps trigger CASE expressions parenthesized for remote D1 in %s",
+  (file) => {
+    const migration = readFileSync(
+      new URL(`../migrations/app/${file}`, import.meta.url),
+      "utf8"
+    );
+    expect(migration).not.toMatch(/(?:SELECT\s+|=\s*)CASE\b/i);
+  }
+);
 
 function fixture() {
   const db = new DatabaseSync(":memory:");

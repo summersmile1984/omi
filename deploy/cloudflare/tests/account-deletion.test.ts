@@ -208,6 +208,44 @@ function fakeAuth(
   };
 }
 
+function seedMemoryApplyJournal(database: SqliteD1, uid: string) {
+  const control = {
+    uid,
+    head_commit_id: "commit-1",
+    account_generation: 1,
+    source_generation: 0,
+    commit_sequence: 1,
+  };
+  database.database
+    .prepare(
+      "INSERT INTO cf_memory_apply_control VALUES (?, 'commit-1', 1, 0, 1, ?)"
+    )
+    .run(uid, JSON.stringify(control));
+  database.database
+    .prepare(
+      "INSERT INTO cf_memory_operations VALUES (?, 'operation-1', 'digest-1', ?, 1)"
+    )
+    .run(
+      uid,
+      JSON.stringify({
+        uid,
+        operation_id: "operation-1",
+        logical_payload_digest: "digest-1",
+        status: "committed",
+      })
+    );
+  database.database
+    .prepare(
+      "INSERT INTO cf_memory_commits VALUES (?, 'commit-1', 'genesis', 1, 1, 0, 'operation-1', '[\"memory-1\"]', '[\"event-1\"]', 1)"
+    )
+    .run(uid);
+  database.database
+    .prepare(
+      "INSERT INTO cf_memory_outbox VALUES (?, 'event-1', 'vector_sync', 'pending', 'memory-1', 'commit-1', 1, 1, ?, 1)"
+    )
+    .run(uid, JSON.stringify({ uid, event_id: "event-1" }));
+}
+
 function seedCloudflareAccount(database: SqliteD1, uid = "deletion-user") {
   database.database
     .prepare(
@@ -225,14 +263,20 @@ function seedCloudflareAccount(database: SqliteD1, uid = "deletion-user") {
       "INSERT INTO cf_conversations (uid, id, created_at) VALUES (?, ?, ?)"
     )
     .run(uid, "deletion-conversation", 1);
-  database.database.prepare("INSERT INTO cf_share_email_quota VALUES (?,'20260906',1)").run(uid);
-  database.database.prepare(
-    "INSERT INTO cf_share_email_dispatches(id,uid,conversation_id,phase,quota_day,recipient_count,was_private,created_at,expires_at,payload_json) " +
-    "VALUES (?,?,'deletion-conversation','dispatching','20260906',1,1,1,10000,'{}')"
-  ).run("deletion-share-" + uid, uid);
-  database.database.prepare(
-    "INSERT INTO cf_share_email_recipients VALUES (?,'deletion-conversation','guest@example.invalid',?)"
-  ).run(uid, "deletion-share-" + uid);
+  database.database
+    .prepare("INSERT INTO cf_share_email_quota VALUES (?,'20260906',1)")
+    .run(uid);
+  database.database
+    .prepare(
+      "INSERT INTO cf_share_email_dispatches(id,uid,conversation_id,phase,quota_day,recipient_count,was_private,created_at,expires_at,payload_json) " +
+        "VALUES (?,?,'deletion-conversation','dispatching','20260906',1,1,1,10000,'{}')"
+    )
+    .run("deletion-share-" + uid, uid);
+  database.database
+    .prepare(
+      "INSERT INTO cf_share_email_recipients VALUES (?,'deletion-conversation','guest@example.invalid',?)"
+    )
+    .run(uid, "deletion-share-" + uid);
   database.database
     .prepare(
       `INSERT INTO cf_task_shares
@@ -557,6 +601,8 @@ describe("Cloudflare account deletion workflow", () => {
     });
     try {
       seedCloudflareAccount(state.database);
+      seedMemoryApplyJournal(state.database, "deletion-user");
+      seedMemoryApplyJournal(state.database, "other-user");
       const path = "/v1/users/delete-account";
       await jobs.fetch(
         new Request(`https://jobs.test${path}`, {
@@ -579,6 +625,25 @@ describe("Cloudflare account deletion workflow", () => {
       expect(state.bucket.objects.size).toBe(0);
       expect(state.conversationBucket.objects.size).toBe(0);
       expect(state.speechProfileBucket.objects.size).toBe(0);
+      for (const table of [
+        "cf_memory_apply_control",
+        "cf_memory_operations",
+        "cf_memory_commits",
+        "cf_memory_outbox",
+      ]) {
+        expect(
+          state.database.row<{ count: number }>(
+            `SELECT COUNT(*) AS count FROM ${table} WHERE uid = ?`,
+            "deletion-user"
+          )?.count
+        ).toBe(0);
+        expect(
+          state.database.row<{ count: number }>(
+            `SELECT COUNT(*) AS count FROM ${table} WHERE uid = ?`,
+            "other-user"
+          )?.count
+        ).toBe(1);
+      }
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_worker_probe WHERE uid = ?",

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
+import { memoryBatchRequest } from "./memory-batch-body";
 import { requestId, withRequestId } from "../shared/request-id";
 import {
   createRealtimeBootstrap,
@@ -1485,9 +1486,13 @@ const proxyAuthenticatedCore = async (
     recoverInvalidByok: c.req.path === "/v1/users/me/subscription",
   });
   if (headers instanceof Response) return withRequestId(headers, id);
-  const response = await c.env.API_CORE.fetch(
-    new Request(c.req.raw, { headers }),
-  );
+  let upstream = new Request(c.req.raw, { headers });
+  if (c.req.method === "POST" && c.req.path === "/v3/memories/batch") {
+    const bounded = await memoryBatchRequest(upstream);
+    if (bounded instanceof Response) return withRequestId(bounded, id);
+    upstream = bounded;
+  }
+  const response = await c.env.API_CORE.fetch(upstream);
   return withRequestId(response, id);
 };
 

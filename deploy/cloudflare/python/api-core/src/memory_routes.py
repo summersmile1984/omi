@@ -9,6 +9,7 @@ account-cutover importer and verification contract.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime, timezone
 import json
 import time
@@ -23,6 +24,7 @@ from internal_auth import decode_context
 from feedback_contract import FeedbackSurface, FeedbackTargetKind
 from feedback_store import feedback_event_statement
 from memory_mutation_errors import memory_mutation_error
+from memory_apply_intake import create_native_memories
 from account_routes import usage_source_statement
 from memory_review_routes import build_review_queue_statements
 from memory_vector_hydration import hydrate_memory_vectors
@@ -31,7 +33,7 @@ from vector_search import embed_query, query_vector_ids
 router = APIRouter()
 
 MAX_REQUEST_BYTES = 256_000
-MAX_BATCH_REQUEST_BYTES = 8_000_000
+MAX_BATCH_REQUEST_BYTES = 1_000_000
 MAX_D1_JSON_BIND_BYTES = 1_800_000
 MAX_CONTENT_LENGTH = 50_000
 MAX_ID_LENGTH = 256
@@ -170,10 +172,18 @@ def _auth_context(request: Request) -> dict[str, object] | None:
     )
 
 
+class RequestBodyTooLarge(ValueError):
+    pass
+
+
 async def _bounded_json(request: Request, max_bytes: int = MAX_REQUEST_BYTES) -> object:
-    raw = await request.body()
-    if len(raw) > max_bytes:
-        raise ValueError("request body exceeds size limit")
+    # Do not retain an additional Request._body copy throughout a large atomic
+    # apply. Enforce the same wire limit while consuming the ASGI stream.
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > max_bytes:
+            raise RequestBodyTooLarge("request body exceeds size limit")
+        raw.extend(chunk)
     return json.loads(raw)
 
 
@@ -214,39 +224,23 @@ def _is_per_file_local_import(tags: list[str]) -> bool:
     )
 
 
-def _json_bind_chunks(rows: list[dict[str, object]]) -> list[tuple[str, str]]:
-    chunks: list[tuple[str, str]] = []
-    current: list[str] = []
+def _usage_id_chunks(rows: list[dict[str, object]]) -> Iterator[str]:
     current_ids: list[str] = []
     current_size = 2
     for row in rows:
-        encoded = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
-        encoded_size = len(encoded.encode("utf-8"))
+        encoded_size = len(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         if encoded_size + 2 > MAX_D1_JSON_BIND_BYTES:
             raise ValueError("memory row exceeds D1 bind limit")
-        additional_size = encoded_size + (1 if current else 0)
-        if current and current_size + additional_size > MAX_D1_JSON_BIND_BYTES:
-            chunks.append(
-                (
-                    "[" + ",".join(current) + "]",
-                    json.dumps(current_ids, ensure_ascii=False, separators=(",", ":")),
-                )
-            )
-            current = []
+        additional_size = encoded_size + (1 if current_ids else 0)
+        if current_ids and current_size + additional_size > MAX_D1_JSON_BIND_BYTES:
+            yield json.dumps(current_ids, ensure_ascii=False, separators=(",", ":"))
             current_ids = []
             current_size = 2
             additional_size = encoded_size
-        current.append(encoded)
         current_ids.append(str(row["id"]))
         current_size += additional_size
-    if current:
-        chunks.append(
-            (
-                "[" + ",".join(current) + "]",
-                json.dumps(current_ids, ensure_ascii=False, separators=(",", ":")),
-            )
-        )
-    return chunks
+    if current_ids:
+        yield json.dumps(current_ids, ensure_ascii=False, separators=(",", ":"))
 
 
 def _batch_row(uid: str, memory_id: str, memory: MemoryCreate, now: int) -> dict[str, object]:
@@ -918,40 +912,10 @@ async def create_memory(request: Request):
     env = request.scope["env"]
     now = int(time.time())
     memory_id = uuid.uuid4().hex
-    manually_added = memory.category == "manual"
     # Category and durability describe capture; only canonical consolidation
     # may admit a new item into Long-term (INV-MEM-4).
     try:
-        memory_statement = env.APP_DB.prepare(
-            "INSERT INTO cf_memories "
-            "(uid, id, content, category, visibility, tags_json, headline, predicate, arguments_json, "
-            "subject_entity_id, subject_attribution, object_entity_ids_json, qualifiers_json, capture_confidence, "
-            "veracity, uncertainty_reasons_json, durability, manually_added, memory_tier, valid_at, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        ).bind(
-            uid,
-            memory_id,
-            memory.content,
-            memory.category,
-            memory.visibility,
-            json.dumps(memory.tags, ensure_ascii=False, separators=(",", ":")),
-            memory.headline,
-            memory.predicate,
-            json.dumps(memory.arguments, ensure_ascii=False, separators=(",", ":")),
-            memory.subject_entity_id,
-            memory.subject_attribution,
-            json.dumps(memory.object_entity_ids, ensure_ascii=False, separators=(",", ":")),
-            json.dumps(memory.qualifiers, ensure_ascii=False, separators=(",", ":")),
-            memory.capture_confidence,
-            memory.veracity,
-            json.dumps(memory.uncertainty_reasons, ensure_ascii=False, separators=(",", ":")),
-            memory.durability,
-            int(manually_added),
-            "short_term",
-            now,
-            now,
-            now,
-        )
+        intake_row = _batch_row(uid, memory_id, memory, now)
         usage_statement = usage_source_statement(
             env,
             uid=uid,
@@ -964,10 +928,10 @@ async def create_memory(request: Request):
         review_statements = await build_review_queue_statements(
             env,
             uid=uid,
-            candidate_rows=[_batch_row(uid, memory_id, memory, now)],
+            candidate_rows=[intake_row],
             now=now,
         )
-        await env.APP_DB.batch([memory_statement, usage_statement, *review_statements])
+        await create_native_memories(env, uid, [intake_row], [usage_statement, *review_statements])
         row = await _first_active(env, uid, memory_id)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
@@ -985,6 +949,11 @@ async def create_memories_batch(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         batch = MemoryBatchCreate.model_validate(await _bounded_json(request, MAX_BATCH_REQUEST_BYTES))
+    except RequestBodyTooLarge:
+        return JSONResponse(
+            {"error": "memory_batch_too_large", "max_bytes": MAX_BATCH_REQUEST_BYTES, "max_memories": MAX_BATCH_CREATE},
+            status_code=413,
+        )
     except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
         return JSONResponse({"error": "invalid memory batch"}, status_code=422)
     accepted = [memory for memory in batch.memories if not _is_per_file_local_import(memory.tags)]
@@ -995,34 +964,15 @@ async def create_memories_batch(request: Request):
     now = int(time.time())
     rows = [_batch_row(uid, uuid.uuid4().hex, memory, now) for memory in accepted]
     try:
-        chunks = _json_bind_chunks(rows)
+        # Only IDs are needed for usage; validate row sizes without building
+        # a second serialized copy of the batch.
+        id_chunks = list(_usage_id_chunks(rows))
     except ValueError:
         return JSONResponse({"error": "memory batch exceeds the size limit"}, status_code=413)
 
     env = request.scope["env"]
     statements: list[object] = []
-    for rows_json, ids_json in chunks:
-        statements.append(
-            env.APP_DB.prepare(
-                "INSERT INTO cf_memories "
-                "(uid, id, content, category, visibility, tags_json, headline, predicate, arguments_json, "
-                "subject_entity_id, subject_attribution, object_entity_ids_json, qualifiers_json, capture_confidence, "
-                "veracity, uncertainty_reasons_json, durability, manually_added, memory_tier, valid_at, created_at, "
-                "updated_at) "
-                "SELECT json_extract(value, '$.uid'), json_extract(value, '$.id'), "
-                "json_extract(value, '$.content'), json_extract(value, '$.category'), "
-                "json_extract(value, '$.visibility'), json_extract(value, '$.tags_json'), "
-                "json_extract(value, '$.headline'), json_extract(value, '$.predicate'), "
-                "json_extract(value, '$.arguments_json'), json_extract(value, '$.subject_entity_id'), "
-                "json_extract(value, '$.subject_attribution'), json_extract(value, '$.object_entity_ids_json'), "
-                "json_extract(value, '$.qualifiers_json'), json_extract(value, '$.capture_confidence'), "
-                "json_extract(value, '$.veracity'), json_extract(value, '$.uncertainty_reasons_json'), "
-                "json_extract(value, '$.durability'), CAST(json_extract(value, '$.manually_added') AS INTEGER), "
-                "json_extract(value, '$.memory_tier'), CAST(json_extract(value, '$.valid_at') AS INTEGER), "
-                "CAST(json_extract(value, '$.created_at') AS INTEGER), "
-                "CAST(json_extract(value, '$.updated_at') AS INTEGER) FROM json_each(?)"
-            ).bind(rows_json)
-        )
+    for ids_json in id_chunks:
         statements.append(
             env.APP_DB.prepare(
                 "INSERT INTO cf_usage_sources "
@@ -1048,7 +998,7 @@ async def create_memories_batch(request: Request):
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
     try:
-        await env.APP_DB.batch(statements)
+        await create_native_memories(env, uid, rows, statements)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
     return {"memories": [_response(row) for row in rows], "created_count": len(rows)}

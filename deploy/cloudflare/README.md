@@ -2892,8 +2892,22 @@ delete-only projection and receipt-gated Short-term promotion. Hosted Python
 Worker scenarios execute these exact rules with synthetic inputs; they do not
 exercise a new public API or a D1 transaction.
 
-D1 still needs the atomic apply owner and convergence of the existing intake,
-mutation, consolidation, privacy and projection writers. These prerequisites
-remain part of the history/revert and JIT route work; their inventory states are
-not changed by kernel packaging. See the
-[verification record](../../dev/unified-main/implementation-2026-09-05/memory-kernel-2026-09-06.md).
+D1 native single/batch memory intake now persists the upstream apply result,
+operation receipt, commit/head, pending kernel outbox, usage and review work in
+one guarded batch (migration 0172). Existing item columns remain authoritative;
+the added JSON column contains only model fields without physical columns.
+Whole internal replay is idempotent, and stale account/control state aborts the
+batch. Receipts and commits follow owner-scoped export and account erasure.
+Cloudflare native batches accept at most 100 items and 1,000,000 UTF-8 request
+bytes, including JSON and metadata; the per-item content limit remains 50,000
+characters. Edge bounds the body before Python and Core checks it again.
+Oversize returns 413 with `memory_batch_too_large`, `max_bytes` and
+`max_memories`, with no writes. Larger imports need client-side byte-aware
+batching; item-count-only callers have not yet been adapted. Each accepted
+request remains one independent atomic transaction.
+
+The other intake, mutation, consolidation, privacy and projection writers still
+need to converge on this transaction owner. History/revert and JIT require that
+complete authority; their inventory states are unchanged. See the
+[kernel verification](../../dev/unified-main/implementation-2026-09-05/memory-kernel-2026-09-06.md)
+and [native intake transaction record](../../dev/unified-main/implementation-2026-09-05/memory-apply-intake-2026-09-06.md).

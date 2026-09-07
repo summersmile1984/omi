@@ -14,8 +14,43 @@ their upstream owner. The same projector runs in Core's test setup, and each
 upstream source participates in frozen release identity. The staged kernel is
 persistence-free: a committed `ApplyResult` describes the complete item/graph/
 operation/head/outbox bundle; it does not mean a D1 transaction committed.
-Native Pyodide execution is qualified separately from the still-required D1
-apply adapter, writer convergence, lineage history and trigger/ledger APIs.
+Native Pyodide execution is qualified separately from D1 persistence, writer
+convergence, lineage history and trigger/ledger APIs.
+
+`memory_apply_intake.py` persists the kernel result for native single and batch
+POSTs in one App D1 batch. Migration 0172 adds operation receipts, commits,
+pending kernel outbox events and `cf_memory_apply_control`; the older
+`cf_memory_control` remains the archive-capability projection. The transaction
+checks the captured control JSON, actual account generation (including an
+unmigrated account's generation zero), deletion fences and fresh item/operation
+identities before inserting anything. Usage and review work share that batch.
+An exact whole internal retry is a no-op; mixed retries and stale authority are
+rejected. Public POSTs still allocate their IDs on the server.
+
+`cf_memories` remains the item authority. Its existing physical columns hold
+content, evidence and lifecycle fields; `canonical_metadata_json` holds only
+the remaining upstream model fields. Bounded JSON inserts preserve the existing
+100-item limit without one D1 query per item. Cloudflare batch intake is capped
+at 1,000,000 UTF-8 request bytes. Edge bounds the body before forwarding it to
+the Python ASGI bridge; Core independently enforces the same limit. Oversized
+requests return 413 with `max_bytes` and `max_memories`, before any write. The native
+parser releases the raw body before apply, and operation transport omits its
+duplicate text. The operation INSERT restores that exact text from the item
+inserted earlier in the same guarded batch; a missing owned item aborts instead
+of persisting an incomplete receipt. Upstream receipt ID/digest validation
+checks the stored result. Native
+intake retains Short-term admission and stages the original TTL policy.
+Preparation keeps only operation IDs/digests for replay lookup, then materializes
+and serializes one item at a time into bounded D1 bindings. It does not retain
+the entire batch of typed operations and materialized item dictionaries.
+Operations and commits are included in the owner's `memory_ledger_data` export;
+all five added tables participate in account erasure and deletion write fences.
+
+This is the native intake adapter, not complete ledger authority. Other intake
+families, edits/review, source deletion/privacy, consolidation, graph assertions
+and projection consumers must still converge before history/revert or JIT can
+expose a complete canonical head. The existing vector publication outbox still
+drives Jobs; a pending kernel outbox event is not a delivered index watermark.
 
 The feedback source projector stages the upstream wire models, desktop rating
 contract and pure daily-report policy into both the ordinary build and tests.

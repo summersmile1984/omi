@@ -30,20 +30,19 @@ class FakeDb:
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
-        for name in ("0032_conversations.sql", "0037_memories.sql", "0046_account_usage.sql"):
-            self.connection.executescript((migration_dir / name).read_text())
-        self.connection.executescript(
-            'CREATE TABLE cf_account_deletion_intents (uid TEXT PRIMARY KEY);'
-            'CREATE TABLE cf_account_deletion_tombstones (uid TEXT PRIMARY KEY);'
-        )
-        self.connection.executescript((migration_dir / '0169_feedback_events.sql').read_text())
+        for path in sorted(migration_dir.glob('*.sql')):
+            self.connection.executescript(path.read_text())
         self.batch_statement_counts = []
+        self.bind_sizes = []
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
 
     async def batch(self, statements):
         self.batch_statement_counts.append(len(statements))
+        self.bind_sizes.extend(
+            len(value.encode()) for statement in statements for value in statement.args if isinstance(value, str)
+        )
         try:
             for statement in statements:
                 self.connection.execute(statement.sql, statement.args)
@@ -78,6 +77,9 @@ class FakeStatement:
 
 
 class FakeRequest:
+    async def stream(self):
+        yield await self.body()
+
     def __init__(self, env, headers, query=None, body=None):
         self.scope = {"env": env}
         self.headers = headers
@@ -348,13 +350,14 @@ def test_memory_batch_create_is_atomic_bounded_and_drops_per_file_imports():
     ]
     assert response["memories"][0]["memory_tier"] == "short_term"
     assert response["memories"][1]["memory_tier"] == "short_term"
-    assert env.APP_DB.batch_statement_counts == [2]
+    assert len(env.APP_DB.batch_statement_counts) == 1
+    small_batch_statements = list(env.APP_DB.batch_statement_counts)
     assert env.APP_DB.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 2
     assert env.APP_DB.connection.execute("SELECT COUNT(*) FROM cf_usage_sources").fetchone()[0] == 2
 
     empty = asyncio.run(create_memories_batch(FakeRequest(env, signed_headers(secret), body={"memories": []})))
     assert empty == {"memories": [], "created_count": 0}
-    assert env.APP_DB.batch_statement_counts == [2]
+    assert env.APP_DB.batch_statement_counts == small_batch_statements
 
     full_env = make_env(secret)
     full = asyncio.run(
@@ -367,7 +370,7 @@ def test_memory_batch_create_is_atomic_bounded_and_drops_per_file_imports():
         )
     )
     assert full["created_count"] == 100
-    assert full_env.APP_DB.batch_statement_counts == [2]
+    assert full_env.APP_DB.batch_statement_counts == small_batch_statements
 
     chunked_env = make_env(secret)
     chunked = asyncio.run(
@@ -375,12 +378,16 @@ def test_memory_batch_create_is_atomic_bounded_and_drops_per_file_imports():
             FakeRequest(
                 chunked_env,
                 signed_headers(secret),
-                body={"memories": [{"content": "x" * 50_000} for _ in range(40)]},
+                body={"memories": [{"content": "x" * 50_000} for _ in range(19)]},
             )
         )
     )
-    assert chunked["created_count"] == 40
-    assert chunked_env.APP_DB.batch_statement_counts == [4]
+    assert chunked["created_count"] == 19
+    # D1 batch is one atomic transaction even when multiple string bindings
+    # are needed. Its documented maximum string/BLOB value is 2 MB:
+    # https://developers.cloudflare.com/d1/platform/limits/
+    assert len(chunked_env.APP_DB.batch_statement_counts) == 1
+    assert max(chunked_env.APP_DB.bind_sizes) <= 2_000_000
 
     oversized = asyncio.run(
         create_memories_batch(

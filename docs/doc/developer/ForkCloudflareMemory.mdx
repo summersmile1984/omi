@@ -11,6 +11,24 @@ The shared Server/Cloudflare HTTP contract verifies creation, persisted tier,
 editing and deletion; full canonical consolidation remains a separate
 implementation and qualification requirement.
 
+With migration 0172, native `POST /v3/memories` and
+`POST /v3/memories/batch` persist memory content, evidence, operation receipts,
+commit records and pending index work atomically with usage and review work.
+The batch request remains `{"memories": [...]}`, with at most 100 memories
+and a **1,000,000-byte UTF-8 request body**, including the JSON envelope and
+metadata. The single-memory content limit remains 50,000 characters. Larger
+requests return HTTP 413 with `error: "memory_batch_too_large"`, `max_bytes`
+and `max_memories`, without writing any items. Clients must split imports by
+both encoded size and item count; each request is a separate transaction.
+A failed transaction returns 503 without a partial
+batch. Repeating a public POST allocates new IDs; this API does not accept a
+client-authored operation or ledger head.
+
+The user export includes owned operation and commit records under
+`memory_ledger_data`. These intake records do not yet constitute complete
+history for edits, source deletion or consolidation. History/revert and JIT
+remain unqualified until every writer shares the same authority.
+
 Migration 0161 enforces the current row's paid-plan lock inside interactive
 updates. A lock acquired after an API pre-read still returns 402 and rolls back
 the transaction. Database failures return 503. Privacy tombstones and account
