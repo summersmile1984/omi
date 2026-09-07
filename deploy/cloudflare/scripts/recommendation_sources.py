@@ -92,6 +92,42 @@ def judgment_messages():
     )
 
 
+def outcome_policy():
+    original = selected_nodes('backend/database/task_recommendations.py', {'_outcome_matches_chain'})
+    tree = ast.parse(original)
+    function = tree.body[0]
+    function.args.args[0].arg = 'store'
+    reads = {
+        "user_ref.collection('candidates').document(source_id).get()": 'store.candidate(source_id)',
+        "user_ref.collection('action_items').document(result_task_id).get()": 'store.task(result_task_id)',
+        "user_ref.collection('action_items').document(source_id).get()": 'store.task(source_id)',
+        "user_ref.collection('workstreams').document(workstream_id).collection('artifact_refs').document(request.subject_id).get()": 'store.artifact(workstream_id, request.subject_id)',
+    }
+    seen = set()
+
+    class StorageCalls(ast.NodeTransformer):
+        def visit_Call(self, node):
+            token = ast.unparse(node)
+            if token in reads:
+                seen.add(token)
+                return ast.copy_location(ast.Await(ast.parse(reads[token], mode='eval').body), node)
+            if isinstance(node.func, ast.Name) and node.func.id == '_snapshot_dict':
+                return self.visit(node.args[0])
+            return self.generic_visit(node)
+
+        def visit_Attribute(self, node):
+            if node.attr == 'exists':
+                return ast.copy_location(ast.Compare(self.visit(node.value), [ast.IsNot()], [ast.Constant(None)]), node)
+            return self.generic_visit(node)
+
+    result = StorageCalls().visit(function)
+    if seen != set(reads):
+        raise ValueError('upstream outcome storage boundary changed')
+    result = ast.AsyncFunctionDef(**result.__dict__)
+    ast.fix_missing_locations(result)
+    return ast.unparse(result) + '\n'
+
+
 def recommendation_sources():
     pure = {
         'MAX_LOCAL_SNAPSHOT_TTL',
@@ -148,4 +184,5 @@ def recommendation_sources():
         + judgment_messages()
         + async_engine('evaluate')
         + async_engine('get_debug_projection')
+        + outcome_policy()
     }

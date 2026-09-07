@@ -43,6 +43,7 @@ _EXPORT_QUERIES = (
     ("candidates", "cf_candidates", "created_at DESC, candidate_id"),
     ("task_interventions", "cf_task_interventions", "created_at DESC, intervention_id"),
     ("task_feedback", "cf_task_feedback", "created_at DESC, feedback_id"),
+    ("task_outcomes", "cf_task_outcomes", "occurred_at DESC, outcome_id"),
     ("task_attention_overrides", "cf_task_attention_overrides", "expires_at DESC, override_id"),
     ("task_context_snapshots", "cf_task_context_snapshots", "generated_at DESC, scope_key"),
     ("task_open_loop_snapshots", "cf_task_open_loop_snapshots", "generated_at DESC, scope_key"),
@@ -112,6 +113,10 @@ async def _rows(env: object, table: str, order_by: str, uid: str) -> list[dict[s
         return [json.loads(row["payload_json"]) for row in values if isinstance(row, dict)]
     if table in {"cf_candidates", "cf_task_attention_overrides"}:
         return [json.loads(row["record_json"]) for row in values if isinstance(row, dict)]
+    if table == "cf_task_outcomes":
+        from recommendation_outcomes import outcome_record
+
+        return [outcome_record(row).model_dump(mode="json") for row in values if isinstance(row, dict)]
     if table in {"cf_task_interventions", "cf_task_feedback"}:
         # Preserve historical request-only payloads as well as current records.
         # Physical identity owns the record; internal retry/index metadata does

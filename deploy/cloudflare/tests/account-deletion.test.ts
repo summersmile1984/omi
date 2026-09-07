@@ -610,8 +610,8 @@ describe("Cloudflare account deletion workflow", () => {
         )!.generation;
         const expected = JSON.stringify([{ id: "candidate-fixture", before: null }]);
         state.database.database.prepare(
-          "INSERT INTO cf_candidate_write_guard(uid,account_generation,candidates_json,aliases_json,claims_json,integrations_json,attention_json,recommendations_json,snapshot_receipts_json) VALUES (?,?,?,?,?,?,?,?,?)",
-        ).run(uid, generation, expected, expected, expected, expected, expected, expected, expected);
+          "INSERT INTO cf_candidate_write_guard(uid,account_generation,candidates_json,aliases_json,claims_json,integrations_json,attention_json,recommendations_json,snapshot_receipts_json,outcomes_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ).run(uid, generation, expected, expected, expected, expected, expected, expected, expected, expected);
         const candidate = {
           candidate_id: "candidate-fixture", subject_kind: "task", proposed_action: "create",
           task_change: { description: "Owned suggestion", owner: "unknown" },
@@ -643,6 +643,10 @@ describe("Cloudflare account deletion workflow", () => {
           .run(uid, "candidate-fixture", JSON.stringify({account_generation: generation, projection: {recommendations: []}}));
         state.database.database.prepare("INSERT INTO cf_task_snapshot_receipts(uid,receipt_id,record_json) VALUES (?,?,?)")
           .run(uid, "candidate-fixture", JSON.stringify({account_generation: generation, expires_at: "2026-09-09T00:00:00Z", receipt: {snapshot_id: "owned-snapshot"}}));
+        state.database.database.prepare("INSERT INTO cf_task_outcomes(uid,outcome_id,account_generation,attribution_chain_id,request_fingerprint,payload_json,occurred_at) VALUES (?,?,?,?,?,?,?)")
+          .run(uid, "candidate-fixture", generation, "owned-chain", "owned-outcome", JSON.stringify({
+            attribution_chain_id: "owned-chain", subject_kind: "task", subject_id: "owned-task", outcome_code: "task_completed",
+          }), 1);
         state.database.database.prepare("DELETE FROM cf_candidate_write_guard WHERE uid=?").run(uid);
       }
       const path = "/v1/users/delete-account";
@@ -675,6 +679,7 @@ describe("Cloudflare account deletion workflow", () => {
         "cf_task_attention_overrides",
         "cf_task_recommendation_heads",
         "cf_task_snapshot_receipts",
+        "cf_task_outcomes",
         "cf_memory_apply_control",
         "cf_memory_operations",
         "cf_memory_commits",

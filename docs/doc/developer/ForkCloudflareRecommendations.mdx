@@ -3,7 +3,7 @@ title: 'Cloudflare Candidates and recommendations'
 description: 'Canonical proposals, recommendation feedback and D1 transactions in the fork target'
 ---
 
-This is local integration work. Migrations 0183–0186 and the new recommendation
+This is local integration work. Migrations 0183–0187 and the new recommendation
 path have not been deployed or accepted through Eddy macOS. Workflow control
 remains off.
 
@@ -44,7 +44,21 @@ after a newer snapshot is stored. Snapshot and receipt writes roll back together
 Expired reads remove state without deleting a concurrent replacement. User
 export includes the snapshot payloads; account deletion includes their receipts.
 
-Outcome attribution, recurrence handoff and external integration execution
-remain incomplete. The
+`POST /v1/task-intelligence/outcomes` requires the original OutcomeCreate body,
+Idempotency-Key and X-Account-Generation. The result subject must belong to the
+referenced intervention/feedback chain, and its code must match its subject kind.
+Accepted Candidate results and related workstream artifacts follow the original
+upstream relationship policy. This endpoint records attribution; it does not
+complete a task or approve an artifact. The server supplies occurred_at.
+
+Missing chains return 404; relationship, key reuse or generation conflicts return
+409. Retries return the first outcome record. Distinct keys represent distinct
+events even for identical bodies. Source snapshots and the receipt share a D1
+batch, so a concurrent relationship change triggers revalidation. Existing
+request-only receipts remain readable. Export includes owned outcomes without
+internal metadata; account deletion removes them. These paths are locally tested,
+not yet accepted through hosted Python Workers or Eddy macOS.
+
+Recurrence handoff and external integration execution remain incomplete. The
 integration drain endpoint is unavailable. Local route coverage therefore does
 not establish production release qualification.

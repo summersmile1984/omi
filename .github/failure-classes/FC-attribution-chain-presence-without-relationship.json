@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "FC-attribution-chain-presence-without-relationship",
+  "violated_contract": "An attributed outcome must identify a result permitted by its source relationship and outcome code. Checking only that an account owns the attribution chain allows an unrelated same-owner task or artifact to be counted as that recommendation outcome. The pre-0187 Cloudflare outcome handler performed only the chain-existence query and omitted the original upstream relationship policy.",
+  "canonical_prevention": "Project the original outcome relationship policy through the ordinary Worker builder. Read its canonical Candidate/task/artifact dependencies and chain source through the transaction owner, recheck those exact snapshots and live generation with the outcome receipt in one D1 batch, and test unrelated subjects, kind/code mismatches, changed relationships, original retries and rollback through public HTTP. The local incident and source comparison are recorded in dev/unified-main/implementation-2026-09-05/canonical-outcomes-2026-09-08.md.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/python/api-core/tests/test_recommendation_outcomes.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/python/api-core/src/recommendation_outcomes.py",
+    "deploy/cloudflare/python/api-core/src/task_intelligence_routes.py"
+  ],
+  "status": "open"
+}

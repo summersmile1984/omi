@@ -23,6 +23,8 @@ _FLAT_TABLES = {
     'recommendation_jobs': ('cf_task_intelligence_jobs', 'job_id'),
     'context_snapshots': ('cf_task_context_snapshots', 'scope_key'),
     'open_loop_snapshots': ('cf_task_open_loop_snapshots', 'scope_key'),
+    'outcomes': ('cf_task_outcomes', 'outcome_id'),
+    'artifacts': ('cf_workstream_artifacts', 'artifact_id'),
 }
 _TASK_PATCH = frozenset(
     {

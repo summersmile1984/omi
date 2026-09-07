@@ -1066,10 +1066,26 @@ workerd suite passes the full migration chain and R2 write/read/revocation path.
 Snapshot HTTP semantics remain locally verified with controlled AI, not hosted
 Python Worker/client acceptance. See the [snapshot evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-device-snapshots-2026-09-08.md).
 
-These handlers are wired locally; workflow control is still closed. Outcome
-attribution and the remaining old business writers still need convergence. The integration drain endpoint
+`recommendation_outcomes.py` now owns `/v1/task-intelligence/outcomes`. The
+ordinary projector copies upstream `_outcome_matches_chain` and replaces only
+its four storage reads with async adapters. Candidate results, task/workstream
+links and artifact membership determine allowed subjects; outcome codes must
+match their original subject kind. This is attribution of a client-reported
+result, not a task completion or artifact approval command.
+
+Migration 0187 checks the exact intervention/feedback and relationship snapshots
+alongside generation and the outcome receipt in one D1 batch. Concurrent source
+changes retry the complete relationship check. Original request-derived identity
+and first server timestamp survive retries; identical bodies under distinct keys
+remain distinct events despite the legacy physical uniqueness index. Historical
+request-only receipts retain their bytes and identity. Owner export now includes
+outcomes without internal hashes; existing account deletion purges them.
+
+These handlers are wired locally; workflow control is still closed. The integration drain endpoint
 returns 503 until a real dispatcher exists. Recurrence handoff, other legacy
 writers, hosted/runtime verification and release qualification remain unfinished.
-Migrations 0183–0186 are local drafts. See the
+Migrations 0183–0187 are local drafts. See the
 [Candidate evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-candidates-2026-09-08.md)
 and [recommendation evidence](../../../../dev/unified-main/implementation-2026-09-05/canonical-recommendations-2026-09-08.md).
+
+Outcome verification is recorded in the [outcome evidence note](../../../../dev/unified-main/implementation-2026-09-05/canonical-outcomes-2026-09-08.md).
