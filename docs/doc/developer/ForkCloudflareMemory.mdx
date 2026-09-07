@@ -88,8 +88,8 @@ Migration 0177 persists an existing graph-backed Long-term memory's refreshed
 graph assertion in that same transaction. The exact current item revision and
 admitted target guard must authorize the assertion. It is included in owner
 export and removed by memory privacy/account erasure. This completes graph
-storage for these user mutations, not consolidation or shared graph-query
-convergence. See the
+storage for these user mutations and the consolidation adapter below. Shared
+graph-query convergence is still unfinished. See the
 [product-mutation verification record](../../../dev/unified-main/implementation-2026-09-05/memory-product-mutation-2026-09-07.md).
 
 Review-queue resolution also shares canonical apply and privacy deletion.
@@ -103,10 +103,27 @@ cleanup remains pending, resolution returns 503 `memory_cleanup_pending` with
 Review source identity is its actual commit, item revision, content hash and
 consolidation `review` route. Historical timestamp-based rows become stale and
 cannot write. Native intake no longer derives review decisions from conflicting
-fields; the canonical consolidation producer remains unfinished. Completed
+fields; the consolidation persistence adapter now creates reviews from validated
+model decisions, while its scheduled model producer remains unfinished. Completed
 privacy erasure removes its review projection, so subsequent retrieval returns
 404. Accepted/corrected decisions remain redacted and replay without a new
 commit. [Verification record](../../../dev/unified-main/implementation-2026-09-05/memory-review-canonical-2026-09-07.md).
+
+`memory_consolidation_apply.apply_consolidation_batch` persists up to 20 upstream
+decisions in one D1 transaction. It validates the complete partition and reloads
+all model-referenced sources before admitting any writes. Required normalization,
+promotion admission receipts, graph assertions, supersession, Archive/review/reject
+outcomes and journal/outbox records share that transaction. A concurrent account,
+source or candidate change requires fresh planning; storage failure rolls back
+the whole batch. Review records use the original deterministic source-bound
+builder and are consumable by the existing public review API.
+
+The adapter does not yet enable scheduled consolidation. Candidate retrieval,
+real model invocation, leases/retries and recurrence handoff remain unfinished;
+recurrence-bearing batches are rejected before writes until their workflow owner
+is connected. Native intake normalization and default-read alignment also remain
+required. No default prompt was changed. See the
+[consolidation verification record](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-apply-2026-09-07.md).
 
 The user export includes owned operations, commits and graph assertions under
 `memory_ledger_data`. These native intake and user-mutation records do not

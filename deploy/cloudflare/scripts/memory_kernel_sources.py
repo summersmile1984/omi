@@ -10,6 +10,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 from screen_frame_sources import selected_nodes
+from memory_consolidation_sources import consolidation_sources
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULES = {
@@ -21,6 +22,12 @@ MODULES = {
     'models.memory_operations': 'memory_kernel_operations',
     'models.product_memory': 'memory_kernel_item',
     'models.memory_evidence': 'memory_kernel_evidence',
+    'models.memory_review': 'memory_kernel_review',
+    'models.memory_recurrence': 'memory_kernel_recurrence',
+    'models.action_item': 'memory_kernel_action_item',
+    'models.task_intelligence': 'memory_kernel_task_intelligence',
+    'utils.memory.required_promotion': 'memory_kernel_required_promotion',
+    'utils.log_sanitizer': 'memory_kernel_sanitizer',
     'utils.memory.short_term_lifecycle': 'memory_kernel_short_term_lifecycle',
     'utils.memory.canonical_lineage': 'memory_kernel_lineage',
 }
@@ -53,6 +60,7 @@ def project(module: str) -> str:
 
 def generate(output: Path) -> None:
     outputs = {target + '.py': project(module) for module, target in MODULES.items()}
+    outputs.update(consolidation_sources())
     outputs['memory_kernel_privacy.py'] = (
         'from __future__ import annotations\n'
         'from datetime import datetime\nfrom typing import List\n'

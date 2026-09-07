@@ -2891,10 +2891,22 @@ distinguishes the hosted decision flow from the remaining trigger/ledger work.
 `scripts/memory_kernel_sources.py` packages the original canonical memory models,
 apply engine, promotion/graph receipt rules, pure Short-term lifecycle and
 canonical lineage resolution into the normal Core build. It rewrites only the
-ten known modules' import names;
+explicitly mapped modules' import names;
 unexpected upstream dependencies fail the build. Core tests consume the same
 projection, and release identity includes every source file. No generated copy
 is maintained in the repository and no default prompt is changed.
+
+`memory_consolidation_sources.py`, called by the same projector, selects the
+upstream L2 decision schemas, complete-batch validation, source-attribution
+conservation and normalization/promotion receipt rules. The D1 adapter in
+`memory_consolidation_apply.py` commits up to 20 decisions with normalization,
+supersession, graph assertions, deterministic review records and the complete
+journal/outbox chain in one guarded batch. Its patch builders are compared
+against the original upstream persistence requests. Source/head races or late
+storage failures leave no partial batch. This adapter does not yet enable
+scheduled model execution; candidate retrieval, leases, recurrence handoff and
+intake/default-read alignment remain required. See the
+[consolidation verification record](../../dev/unified-main/implementation-2026-09-05/memory-consolidation-apply-2026-09-07.md).
 
 The same builder selects the three original privacy scrubber/event function
 bodies from `backend/database/memory_apply_store.py` into a separate pure module;

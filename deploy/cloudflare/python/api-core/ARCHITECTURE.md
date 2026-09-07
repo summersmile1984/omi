@@ -15,7 +15,7 @@ APIs through the Worker fetch bridge. The route modules must stay async and
 must not import Firestore, Redis, thread pools, local persistent files, or
 process-lifetime network clients.
 
-The ordinary builder also stages eleven `memory_kernel_*` modules from the upstream
+The ordinary builder also stages `memory_kernel_*` modules from the upstream
 canonical apply models and pure Short-term lifecycle rules. Only import module
 names change; source text, validators, receipt hashes and decision rules retain
 their upstream owner. The same projector runs in Core's test setup, and each
@@ -53,9 +53,35 @@ guard that admits that exact uid/item/generation may insert it; the assertion
 must match the new revision, content hash, graph plan and commit. Item changes
 revoke the preceding assertion, and the new one shares the item transaction.
 Privacy preparation and physical/account deletion remove it; owner export
-includes it in `memory_ledger_data`. Shared graph aggregation and consolidation
-still need to converge on this assertion owner. This table does not introduce
+includes it in `memory_ledger_data`. The consolidation transaction below now
+uses this assertion owner too; shared graph aggregation remains unfinished. This table does not introduce
 a public promotion shortcut.
+
+`memory_consolidation_apply.py` accepts a complete upstream L2 batch and rehydrates
+every pending source, candidate and negative example from the owner's D1 rows.
+The unchanged upstream partition/reference policy runs before any write.
+`memory_consolidation_policy.py` builds the same normalization and route applies
+as the upstream owners; tests execute those original owners to compare the
+complete patches and operation identities. The ordinary kernel projector also
+stages the original decision schemas, required-processing receipts, provenance
+conservation and review-record builder. No default prompt is changed.
+
+Up to 20 decisions commit in one D1 batch under the account/head and item guards.
+Required normalization and its receipt precede the route; promotion precedes
+dependent duplicate routes. Items, superseded peers, graph assertions, review
+records, operations, commits, control and outbox records all roll back together.
+An old context cannot issue a second route. Returned items use the actual stored
+JSON and integer-second timestamp representation. Provider publication is a
+post-commit hint backed by the existing durable projection outbox.
+
+This is the consolidation persistence adapter, not an enabled maintenance job.
+Candidate retrieval, the actual LLM call, leases/retries, scheduler wiring and
+recurrence-to-workflow handoff remain unfinished. A batch with recurrence signals
+fails before writing while that handoff is absent. Native new intake currently
+enters processed Short-term without the upstream required-normalization marker;
+content correction and review acceptance do carry that marker. Intake alignment
+and the complete default-read policy must be qualified before enabling automatic
+consolidation. See the [verification record](../../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-apply-2026-09-07.md).
 
 Review feedback immediately follows the guarded item UPDATE in the same batch.
 A target deleted concurrently returns 503 with no new feedback or journal
@@ -500,8 +526,9 @@ canonical source contract: current commit, item revision, content hash and
 `promotion.route = review`. Timestamp-based historical rows cannot authorize a
 mutation and become redacted stale reviews when read. Native create/batch no
 longer infers review authority from a structural conflict. Canonical
-consolidation must produce the review decision; that producer remains part of
-the unfinished consolidation convergence.
+consolidation supplies the review decision; its D1 adapter now creates the exact
+source-bound queue record in the route transaction. The scheduled model producer
+remains part of the unfinished consolidation convergence.
 
 `memory_review_store.py` supplies a typed transaction participant to ordinary
 apply and privacy preparation. Migration 0178 rechecks the exact source and
