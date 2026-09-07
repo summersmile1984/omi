@@ -16,14 +16,13 @@ from public_shared_chat_routes import (  # noqa: E402
 )
 from test_conversation_routes import FakeDb, insert_conversation  # noqa: E402
 
-
 SECRET = "public-chat-test-secret"
 PATH = "/v1/conversations/shared/chat"
 
 
 class FakeRequest:
     def __init__(self, env, headers=None, body=None, *, content_length=None):
-        self.scope = {"env": env}
+        self.scope = {"env": env, "raw_path": PATH.encode("ascii")}
         self.headers = dict(headers or {})
         if content_length is not None:
             self.headers["content-length"] = str(content_length)

@@ -11,6 +11,7 @@ from fastapi.routing import APIRoute
 from pydantic import ValidationError
 
 from fallback import record_fallback
+from assertion_path import raw_request_path
 from internal_auth import verify_request_context
 from screen_frame_content import HEADERS, content_url
 from screen_frames_contract import (
@@ -58,7 +59,7 @@ def owner(request: Request) -> str:
         getattr(env, 'INTERNAL_ASSERTION_SECRET', None),
         audience='api-core',
         method=request.method,
-        path=request.url.path,
+        path=raw_request_path(request.scope),
     )
     if context is None:
         raise HTTPException(401, 'unauthorized')

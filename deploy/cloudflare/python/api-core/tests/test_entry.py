@@ -1250,3 +1250,61 @@ def test_location_context_consent_requires_disclosure_and_expires_after_thirty_d
     revoked = asyncio.run(entry.set_location_context_consent(FakeRequest(env, headers, {"enabled": False})))
     assert revoked["enabled"] is False
     assert revoked["expires_at"] is None
+
+
+def test_request_assertion_uses_exact_encoded_asgi_path():
+    # Cloudflare Workers SDK request_to_scope and the ASGI HTTP specification
+    # preserve URL.pathname in raw_path while decoding the routing path.
+    import time
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    secret = 'encoded-path-regression-secret'
+    for target, signed_path, drop_raw, expected in [
+        ('/probe/review%3Aone%3Ar2%3A', '/probe/review%3Aone%3Ar2%3A', False, 200),
+        ('/probe/%E4%B8%AD%20%E6%96%87', '/probe/%E4%B8%AD%20%E6%96%87', False, 200),
+        ('/probe/%252F', '/probe/%252F', False, 200),
+        ('/probe/plain', '/probe/plain', False, 200),
+        ('/probe/review%3Aone', '/probe/review:one', False, 401),
+        ('/probe/%252F', '/probe/%2F', False, 401),
+        ('/probe/other', '/probe/plain', False, 401),
+        ('/probe/plain', '/probe/plain', True, 401),
+    ]:
+        application = FastAPI()
+        application.middleware('http')(entry.enforce_request_bound_auth_context)
+
+        @application.middleware('http')
+        async def environment(request, call_next):
+            request.scope['env'] = SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret)
+            if drop_raw:
+                request.scope.pop('raw_path', None)
+            return await call_next(request)
+
+        @application.get('/probe/{value:path}')
+        async def protected(value: str):
+            return {'admitted': True}
+
+        now = int(time.time())
+        payload = {
+            'uid': 'existing-user',
+            'authority': 'better-auth',
+            'requestId': 'encoded-path',
+            'version': 1,
+            'audience': 'api-core',
+            'assertionId': 'encoded-path-assertion',
+            'issuedAt': now,
+            'expiresAt': now + 60,
+            'method': 'GET',
+            'path': signed_path,
+        }
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
+        signature = (
+            base64.urlsafe_b64encode(hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest())
+            .decode()
+            .rstrip('=')
+        )
+        with TestClient(application) as client:
+            response = client.get(
+                target, headers={'x-omi-auth-context': encoded, 'x-omi-internal-signature': signature}
+            )
+        assert response.status_code == expected, (target, signed_path, response.text)

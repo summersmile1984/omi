@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from fallback import record_fallback
+from assertion_path import raw_request_path
 from internal_auth import create_request_context, verify_request_context
 from share_recipient_contract import ShareRecipientsResponse, extract_share_recipients, normalized_recipient_emails
 
@@ -90,7 +91,7 @@ async def get_conversation_share_recipients(request: Request, conversation_id: s
         getattr(env, 'INTERNAL_ASSERTION_SECRET', None),
         audience='api-core',
         method=request.method,
-        path=request.url.path,
+        path=raw_request_path(request.scope),
     )
     if context is None:
         raise HTTPException(401, 'unauthorized')

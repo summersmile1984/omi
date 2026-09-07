@@ -1054,3 +1054,60 @@ def test_workers_ai_translation_caches_repeated_content():
     env.APP_DB = None
     bypass = translate(["hello"])
     assert bypass["translations"][0]["translated_text"] == "zh:hello"
+
+
+def test_request_assertion_uses_exact_encoded_asgi_path():
+    # Cloudflare Workers SDK request_to_scope and the ASGI HTTP specification
+    # preserve URL.pathname in raw_path while decoding the routing path.
+    import time
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+    from urllib.parse import unquote
+
+    secret = 'encoded-path-regression-secret'
+    for target, signed_path, drop_raw, expected in [
+        ('/probe/review%3Aone%3Ar2%3A', '/probe/review%3Aone%3Ar2%3A', False, 200),
+        ('/probe/%E4%B8%AD%20%E6%96%87', '/probe/%E4%B8%AD%20%E6%96%87', False, 200),
+        ('/probe/%252F', '/probe/%252F', False, 200),
+        ('/probe/plain', '/probe/plain', False, 200),
+        ('/probe/review%3Aone', '/probe/review:one', False, 401),
+        ('/probe/%252F', '/probe/%2F', False, 401),
+        ('/probe/other', '/probe/plain', False, 401),
+        ('/probe/plain', '/probe/plain', True, 401),
+    ]:
+        now = int(time.time())
+        payload = {
+            'uid': 'existing-user',
+            'authority': 'better-auth',
+            'requestId': 'encoded-path',
+            'version': 1,
+            'audience': 'api-ai',
+            'assertionId': 'encoded-path-assertion',
+            'issuedAt': now,
+            'expiresAt': now + 60,
+            'method': 'GET',
+            'path': signed_path,
+        }
+        encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
+        signature = (
+            base64.urlsafe_b64encode(hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).digest())
+            .decode()
+            .rstrip('=')
+        )
+        scope = {
+            'type': 'http',
+            'method': 'GET',
+            'path': unquote(target),
+            'raw_path': target.encode(),
+            'query_string': b'',
+            'env': SimpleNamespace(INTERNAL_ASSERTION_SECRET=secret),
+            'headers': [(b'x-omi-auth-context', encoded.encode()), (b'x-omi-internal-signature', signature.encode())],
+        }
+        if drop_raw:
+            scope.pop('raw_path')
+
+        async def admitted(request):
+            return JSONResponse({'admitted': True})
+
+        response = asyncio.run(entry.enforce_request_bound_auth_context(Request(scope), admitted))
+        assert response.status_code == expected, (target, signed_path, response.body)

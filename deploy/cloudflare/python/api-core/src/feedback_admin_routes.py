@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from feedback_context import get_event, hydrate_context, resolve_context
 from feedback_policy import previous_utc_day
 from feedback_reports import ReportBusy, get_report, run_report
+from assertion_path import raw_request_path
 from internal_auth import verify_request_context
 
 
@@ -19,7 +20,7 @@ def _internal_admin(request: Request):
         getattr(request.scope['env'], 'INTERNAL_ASSERTION_SECRET', None),
         audience='api-core',
         method=request.method,
-        path=request.url.path,
+        path=raw_request_path(request.scope),
     )
     if not context or context.get('authority') != 'internal':
         raise HTTPException(403, 'Invalid feedback service identity')

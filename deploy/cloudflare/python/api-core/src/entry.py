@@ -1,3 +1,4 @@
+from assertion_path import raw_request_path
 import hashlib
 import json
 import math
@@ -235,13 +236,16 @@ async def enforce_request_bound_auth_context(request: Request, call_next):
     signature = request.headers.get("x-omi-internal-signature")
     if encoded or signature:
         env = request.scope.get("env")
+        signed_path = raw_request_path(request.scope)
+        if signed_path is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
         context = verify_request_context(
             encoded,
             signature,
             getattr(env, "INTERNAL_ASSERTION_SECRET", None),
             audience="api-core",
             method=request.method,
-            path=request.url.path,
+            path=signed_path,
         )
         if context is None:
             return JSONResponse({"error": "unauthorized"}, status_code=401)

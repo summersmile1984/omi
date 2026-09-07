@@ -1,5 +1,13 @@
 # API Core Worker architecture
 
+Request-bound assertions use the shared `assertion_path.raw_request_path`
+extractor at every Python verifier. Edge signs the encoded URL pathname;
+[ASGI](https://asgi.readthedocs.io/en/latest/specs/www.html#http-connection-scope)
+decodes the routing path while preserving the original bytes in `raw_path`.
+Missing or malformed raw bytes fail closed. Equivalent decoded paths do not
+make differently encoded signatures interchangeable. Plain-path clients retain
+the same contract. The existing component entry tests exercise this boundary.
+
 `src/entry.py` is the ASGI composition root for the Python Worker. Domain route
 modules use the injected Cloudflare bindings directly: D1 for uid-scoped
 projections and mutation receipts, R2 for asset bytes, and external provider

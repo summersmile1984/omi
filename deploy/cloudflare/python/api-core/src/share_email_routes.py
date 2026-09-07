@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 
 from brand_runtime import load_brand_runtime, load_share_origin
+from assertion_path import raw_request_path
 from internal_auth import verify_request_context
 from share_email_contract import SendShareEmailRequest, _sender_display_name, build_summary_email
 from share_recipient_contract import normalized_recipient_emails
@@ -50,7 +51,7 @@ def owner(request: Request, response: Response):
         getattr(request.scope['env'], 'INTERNAL_ASSERTION_SECRET', None),
         audience='api-core',
         method=request.method,
-        path=request.url.path,
+        path=raw_request_path(request.scope),
     )
     if context is None or context.get('authority') != 'internal':
         raise HTTPException(401, 'unauthorized')

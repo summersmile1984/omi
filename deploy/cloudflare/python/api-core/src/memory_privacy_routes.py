@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
+from assertion_path import raw_request_path
 from internal_auth import verify_request_context
 from memory_privacy_apply import prepare_privacy_deletion
 from memory_privacy_finalize import finalize_privacy_deletion
@@ -50,7 +51,7 @@ def owner(request: Request):
         request.scope['env'].INTERNAL_ASSERTION_SECRET,
         audience='api-core',
         method=request.method,
-        path=request.url.path,
+        path=raw_request_path(request.scope),
     )
     if not context or context.get('authority') != 'internal':
         raise HTTPException(404, 'Not found')
