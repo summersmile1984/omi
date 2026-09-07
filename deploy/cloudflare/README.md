@@ -609,6 +609,13 @@ cf_internal_secret="$(openssl rand -base64 48)"
 for worker_name in omi-cf-auth-staging omi-cf-edge-staging omi-cf-api-core-staging omi-cf-api-ai-staging omi-cf-realtime-staging omi-cf-jobs-staging; do
 printf '%s' "$cf_internal_secret" | npx wrangler secret put INTERNAL_ASSERTION_SECRET --name "$worker_name"
 done
+# One independent, stable memory privacy HMAC key shared by Core and Jobs.
+# Keep it across releases. Auth-key rotation must not rotate memory identities;
+# replacing this key requires a coordinated receipt/row rekey migration.
+cf_memory_privacy_secret="$(openssl rand -base64 48)"
+for worker_name in omi-cf-api-core-staging omi-cf-jobs-staging; do
+printf '%s' "$cf_memory_privacy_secret" | npx wrangler secret put MEMORY_PRIVACY_SECRET --name "$worker_name"
+done
 # Independent Edge-only HMAC pepper for BYOK enrollment fingerprints. Keep it
 # stable; rotating it requires users to re-enroll their four provider keys.
 cf_byok_fingerprint_pepper="$(openssl rand -base64 48)"
@@ -2900,6 +2907,18 @@ result, not a deletion acknowledgement: the caller still needs transaction
 admission, opaque anti-resurrection receipts, physical provider cleanup and
 history finalization. Public deletion handlers have not been migrated by this
 step. See the [privacy-rule verification record](../../dev/unified-main/implementation-2026-09-05/memory-privacy-rules-2026-09-07.md).
+
+Migration 0174 preserves existing memory rows, indexes, views and triggers while
+allowing the upstream `content=None` shape only for a deleted tombstone. Every
+current Core creator and the Jobs X extractor computes the same uid/item HMAC
+using `MEMORY_PRIVACY_SECRET`. A live, opaque 30-day deletion receipt vetoes
+reinsertions and updates inside D1, including MCP's deterministic-ID upsert and
+old writers that omit the key. Existing unrelated legacy rows remain editable;
+new writes always carry their key. Neither the key nor receipt inventory is
+included in user export. The existing Jobs schedule expires receipts, and
+account erasure includes their table. The deletion coordinator must still
+atomically scrub and seal its authoritative lineage before provider cleanup;
+this receipt gate alone does not migrate the public DELETE routes.
 
 The pure engine computes one complete apply result: memory items, graph
 assertions, operation receipt, next control head and projection/vector outbox.

@@ -216,6 +216,7 @@ export async function startLocalTarget({
     };
     const assertionSecret = randomBytes(32).toString("hex"),
       screenFrameSecret = randomBytes(32).toString("hex"),
+      memoryPrivacySecret = randomBytes(32).toString("hex"),
       frozen = {},
       artifacts = {};
     const wrangler = resolve(root, "node_modules/wrangler/bin/wrangler.js");
@@ -233,6 +234,8 @@ export async function startLocalTarget({
             ? assertionSecret
             : name === "SCREEN_FRAME_SIGNING_SECRET"
             ? screenFrameSecret
+            : name === "MEMORY_PRIVACY_SECRET"
+            ? memoryPrivacySecret
             : randomBytes(32).toString("hex"),
         ])
       );

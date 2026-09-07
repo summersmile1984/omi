@@ -104,7 +104,15 @@ def signed_headers(secret: str, uid: str = "memory-user"):
 
 
 def make_env(secret: str):
-    return type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    return type(
+        "Env",
+        (),
+        {
+            "APP_DB": FakeDb(),
+            "INTERNAL_ASSERTION_SECRET": secret,
+            "MEMORY_PRIVACY_SECRET": "memory-privacy-tests-secret-32-bytes",
+        },
+    )()
 
 
 class FakeVectorIndex:

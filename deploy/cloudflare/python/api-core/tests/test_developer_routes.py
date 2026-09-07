@@ -189,6 +189,7 @@ def environment(*, scopes=None, cutover_state="new"):
         MEMORY_VECTORS=FakeVectorIndex(),
         JOBS=FakeQueue(),
         INTERNAL_ASSERTION_SECRET=FIRST_PARTY_SECRET,
+        MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
         WORKERS_AI_INTEGRATION_MODEL="developer-category-test-model",
         WORKERS_AI_VECTOR_MODEL="developer-vector-test-model",
     )

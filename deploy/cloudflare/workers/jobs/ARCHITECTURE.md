@@ -13,6 +13,12 @@ Auth identity removal. Failures retain the fence and enqueue a retry.
 `account-deletion-residual.ts` explicitly registers identity-bearing D1 tables
 and object families; its schema-coverage test catches omitted new owners.
 
+Memory creation shares Core's dedicated `MEMORY_PRIVACY_SECRET` and upstream
+HMAC domain through `shared/memory-privacy-receipts.ts`. The X extractor writes
+the key with each memory; D1 checks the receipt within that same transaction.
+`memory-privacy.ts` expires 30-day receipts from the existing scheduled lane.
+Account erasure includes the receipt table in its ordinary residual inventory.
+
 Screenshot storage has a separate execution identity. `screen-frame-storage.ts`
 signs uid/method/path/audience-bound requests to `SCREEN_FRAME_WRITER` and
 validates its residual acknowledgement. Jobs never receives `SCREEN_FRAMES` R2

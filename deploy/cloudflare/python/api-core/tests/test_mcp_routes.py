@@ -191,6 +191,7 @@ def environment(*, scopes=None, state="new", key_prefix=None):
         TRANSCRIPT_CHUNK_VECTORS=FakeVectorIndex(),
         X_POST_VECTORS=FakeVectorIndex(),
         INTERNAL_ASSERTION_SECRET=INTERNAL_SECRET,
+        MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
         WORKERS_AI_INTEGRATION_MODEL="test-model",
         WORKERS_AI_VECTOR_MODEL="test-vector-model",
     )

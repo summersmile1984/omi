@@ -1,3 +1,4 @@
+import { cleanupExpiredMemoryPrivacyReceipts } from "./memory-privacy";
 import { cleanupFramePixels } from "./frame-request-storage";
 import { Hono, type Context } from "hono";
 import { verifyRequestAuthContext } from "../shared/auth-context";
@@ -1269,6 +1270,7 @@ export default {
       reconcileRecordingDeletions(env, now),
       reconcileAppDeletions(env, now),
       cleanupExpiredAccountDeletionTombstones(env, now),
+      cleanupExpiredMemoryPrivacyReceipts(env, now),
       reconcileStripeWebhookEvents(env, now),
       reconcileVectorProjections(env, now),
       reconcileConversationFinalizations(env, now),

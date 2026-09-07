@@ -14,6 +14,7 @@ def setup_memory():
     env = SimpleNamespace(
         APP_DB=db,
         INTERNAL_ASSERTION_SECRET='memory-secret',
+        MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
         WORKERS_AI_VECTOR_MODEL='test-vector-model',
         AI=FakeVectorAi(),
         MEMORY_VECTORS=FakeVectorIndex(),

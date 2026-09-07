@@ -2,6 +2,7 @@ import type { Context, Hono } from "hono";
 import type { SignedAuthContext } from "../shared/auth-context";
 import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import type { JobsEnv } from "./env";
+import { memoryPrivacyReceiptId } from "../shared/memory-privacy-receipts";
 
 const AUTHORIZE_URL = "https://x.com/i/oauth2/authorize";
 const TOKEN_URL = "https://api.x.com/2/oauth2/token";
@@ -727,26 +728,33 @@ async function storeExtractedMemories(
   now: number,
 ) {
   const sourceId = `x:${(await sha256Hex(postIds.join("|"))).slice(0, 24)}`;
-  const rows = memories.map((content) => {
-    const id = crypto.randomUUID().replace(/-/g, "");
-    return {
-      uid,
-      id,
-      content,
-      tags_json: JSON.stringify(["x"]),
-      qualifiers_json: JSON.stringify({
-        integration: {
-          kind: "integration_text",
-          text_source: "twitter_tweets",
-          source_id: sourceId,
-          post_ids: postIds,
-        },
-      }),
-      valid_at: now,
-      created_at: now,
-      updated_at: now,
-    };
-  });
+  const rows = await Promise.all(
+    memories.map(async (content) => {
+      const id = crypto.randomUUID().replace(/-/g, "");
+      return {
+        uid,
+        id,
+        privacy_receipt_id: await memoryPrivacyReceiptId(
+          env.MEMORY_PRIVACY_SECRET,
+          uid,
+          id,
+        ),
+        content,
+        tags_json: JSON.stringify(["x"]),
+        qualifiers_json: JSON.stringify({
+          integration: {
+            kind: "integration_text",
+            text_source: "twitter_tweets",
+            source_id: sourceId,
+            post_ids: postIds,
+          },
+        }),
+        valid_at: now,
+        created_at: now,
+        updated_at: now,
+      };
+    }),
+  );
   const statements: D1PreparedStatement[] = [];
   if (rows.length) {
     const rowsJson = JSON.stringify(rows);
@@ -755,12 +763,12 @@ async function storeExtractedMemories(
       env.APP_DB.prepare(
         "INSERT INTO cf_memories " +
           "(uid, id, content, category, visibility, tags_json, qualifiers_json, manually_added, app_id, " +
-          "memory_tier, valid_at, created_at, updated_at) " +
+          "memory_tier, valid_at, created_at, updated_at, privacy_receipt_id) " +
           "SELECT json_extract(value, '$.uid'), json_extract(value, '$.id'), json_extract(value, '$.content'), " +
           "'system', 'private', json_extract(value, '$.tags_json'), json_extract(value, '$.qualifiers_json'), " +
           "0, 'x', 'short_term', CAST(json_extract(value, '$.valid_at') AS INTEGER), " +
           "CAST(json_extract(value, '$.created_at') AS INTEGER), " +
-          "CAST(json_extract(value, '$.updated_at') AS INTEGER) FROM json_each(?) " +
+          "CAST(json_extract(value, '$.updated_at') AS INTEGER), json_extract(value, '$.privacy_receipt_id') FROM json_each(?) " +
           "WHERE EXISTS (SELECT 1 FROM cf_x_connections WHERE uid = ? AND connected = 1 AND sync_token = ?)",
       ).bind(rowsJson, uid, syncToken),
       env.APP_DB.prepare(

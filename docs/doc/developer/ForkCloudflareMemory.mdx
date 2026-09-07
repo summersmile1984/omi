@@ -27,6 +27,14 @@ A failed transaction returns 503 without a partial
 batch. Repeating a public POST allocates new IDs; this API does not accept a
 client-authored operation or ledger head.
 
+Cloudflare operators must provision one stable `MEMORY_PRIVACY_SECRET` of at
+least 32 UTF-8 bytes to API Core and Jobs. Keep it separate from authentication
+credentials and retain it across releases. Migration 0174 and the current
+creators use this key for internal deletion-receipt identities. These values
+are absent from API memory objects and exports; clients do not provide them.
+Replacing the secret requires a coordinated rekey migration. Receipt admission
+does not by itself complete the public canonical deletion workflow.
+
 Migration 0173 moves native `PATCH /v3/memories/{id}` content corrections into
 the same transaction as the operation receipt, commit/head and pending index
 work. Corrected content returns to pending Short-term and clears the previous

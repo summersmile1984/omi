@@ -54,7 +54,17 @@ def rows(uid='owner', content='Native evidence'):
 
 
 def apply(database, values, extra=()):
-    return asyncio.run(create_native_memories(SimpleNamespace(APP_DB=database), values[0]['uid'], values, list(extra)))
+    return asyncio.run(
+        create_native_memories(
+            SimpleNamespace(
+                APP_DB=database,
+                MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
+            ),
+            values[0]['uid'],
+            values,
+            list(extra),
+        )
+    )
 
 
 @pytest.fixture
@@ -251,13 +261,18 @@ def test_export_contains_only_owned_intake_journal(database):
     ledger = payload['memory_ledger_data']
     assert len(payload['memories']) == len(ledger['memory_operations']) == len(ledger['memory_commits']) == 2
     assert 'memory_apply_control' not in ledger and 'memory_outbox' not in ledger
+    assert 'privacy_receipt' not in response.body.decode()
     assert 'other-user' not in response.body.decode()
     assert ledger['memory_commits'][0]['commit_sequence'] == 2
     assert ledger['memory_operations'][0]['operation']['status'] == 'committed'
 
 
 def test_streamed_batch_preserves_split_utf8_and_rejects_oversize_before_apply(database):
-    env = SimpleNamespace(APP_DB=database, INTERNAL_ASSERTION_SECRET='stream-secret')
+    env = SimpleNamespace(
+        APP_DB=database,
+        INTERNAL_ASSERTION_SECRET='stream-secret',
+        MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
+    )
 
     class SplitRequest(MemoryRequest):
         async def stream(self):
@@ -283,7 +298,11 @@ def test_streamed_batch_preserves_split_utf8_and_rejects_oversize_before_apply(d
 def test_one_megabyte_batch_boundary_is_atomic_and_preserves_content(database, character):
     # The user selected a 1 MB Cloudflare intake limit after the hosted 8 MB
     # Unicode batch exhausted Worker memory. Count UTF-8 bytes, not characters.
-    env = SimpleNamespace(APP_DB=database, INTERNAL_ASSERTION_SECRET='boundary-secret')
+    env = SimpleNamespace(
+        APP_DB=database,
+        INTERNAL_ASSERTION_SECRET='boundary-secret',
+        MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
+    )
     content = character * (9_950 // len(character.encode()))
     payload = {'memories': [{'content': content + str(i), 'category': 'manual'} for i in range(100)]}
     raw = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode()

@@ -23,6 +23,7 @@ from memory_kernel_apply import (
 from memory_kernel_evidence import ArtifactPreservationState, MemoryEvidence
 from memory_kernel_operations import MemoryOperation, MemoryOperationStatus, MemoryOperationType
 from memory_kernel_short_term_lifecycle import default_short_term_expiry
+from memory_privacy_receipts import privacy_receipt_id
 
 MODEL_COLUMNS = {
     'memory_id': 'id',
@@ -389,7 +390,7 @@ async def create_native_memories(env, uid, rows, extra_statements):
             item = result.memory_items[0]
             append_journal_records(records, uid, result, control, row['created_at'], omit_intake_text=True)
             control = result.control_state
-            yield _stored_item(row, item)
+            yield {**_stored_item(row, item), 'privacy_receipt_id': privacy_receipt_id(env, uid, item.memory_id)}
 
     # Materialize one item at a time; only its bounded serialized chunk survives
     # until the atomic batch. Receipts carry no duplicate text in transport.

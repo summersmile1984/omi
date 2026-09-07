@@ -105,7 +105,10 @@ def target(monkeypatch):
         database.published.append(message)
 
     env = SimpleNamespace(
-        APP_DB=database, INTERNAL_ASSERTION_SECRET='mutation-test-secret', JOBS=SimpleNamespace(send=send)
+        APP_DB=database,
+        INTERNAL_ASSERTION_SECRET='mutation-test-secret',
+        JOBS=SimpleNamespace(send=send),
+        MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
     )
     app = FastAPI()
     # Specific review paths precede /v3/memories/{memory_id} as in composition.

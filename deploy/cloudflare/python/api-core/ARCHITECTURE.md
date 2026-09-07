@@ -27,6 +27,16 @@ identities before inserting anything. Usage and review work share that batch.
 An exact whole internal retry is a no-op; mixed retries and stale authority are
 rejected. Public POSTs still allocate their IDs on the server.
 
+`memory_privacy_receipts.py` computes the original uid/item HMAC with a dedicated
+`MEMORY_PRIVACY_SECRET`, shared only with Jobs. All Core creators persist this
+storage-only key. Migration 0174 admits null content only in a deleted tombstone,
+preserves the preceding row/schema dependencies, and rejects writers against
+unexpired deletion receipts at transaction time. Sealed identities cannot be
+renamed or have their key replaced. Unrelated legacy rows need no backfill;
+fresh creation always supplies a key. Export excludes it. Canonical privacy
+apply still owns lineage scrubbing, receipt sealing and finalization; the
+receipt infrastructure alone is not public deletion authority.
+
 `cf_memories` remains the item authority. Its existing physical columns hold
 content, evidence and lifecycle fields; `canonical_metadata_json` holds only
 the remaining upstream model fields. Bounded JSON inserts preserve the existing

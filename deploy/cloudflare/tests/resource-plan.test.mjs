@@ -97,6 +97,8 @@ function resourceFixture(brand = "alpha", stage = "beta", index = 1) {
                 ? "SHARED_INTERNAL"
                 : binding === "SCREEN_FRAME_SIGNING_SECRET"
                 ? "SHARED_SCREEN_FRAME"
+                : binding === "MEMORY_PRIVACY_SECRET"
+                ? "SHARED_MEMORY_PRIVACY"
                 : role + "_" + binding
             }`
               .toUpperCase()
@@ -472,6 +474,18 @@ describe("one brand/stage Cloudflare resource authority", () => {
     rawSecret.input.secret_refs.auth.BETTER_AUTH_SECRET =
       "secret-content-not-an-environment-name";
     expect(() => render(rawSecret)).toThrow("never secret values");
+    const splitPrivacy = resourceFixture();
+    splitPrivacy.input.secret_refs.jobs.MEMORY_PRIVACY_SECRET = "OTHER_PRIVACY";
+    expect(() => render(splitPrivacy)).toThrow(
+      "isolated shared privacy secret"
+    );
+    const reusedPrivacy = resourceFixture();
+    for (const role of ["jobs", "api-core"])
+      reusedPrivacy.input.secret_refs[role].MEMORY_PRIVACY_SECRET =
+        reusedPrivacy.input.secret_refs.auth.INTERNAL_ASSERTION_SECRET;
+    expect(() => render(reusedPrivacy)).toThrow(
+      "isolated shared privacy secret"
+    );
   });
 
   it("refuses unqualified mount paths and ambiguous public owners, including matching Web inputs", () => {

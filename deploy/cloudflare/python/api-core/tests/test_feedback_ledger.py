@@ -80,7 +80,11 @@ class Database:
 class Harness:
     def __init__(self):
         self.db = Database()
-        self.env = SimpleNamespace(APP_DB=self.db, INTERNAL_ASSERTION_SECRET='feedback-test-secret')
+        self.env = SimpleNamespace(
+            APP_DB=self.db,
+            INTERNAL_ASSERTION_SECRET='feedback-test-secret',
+            MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
+        )
         self.app = FastAPI()
 
         @self.app.middleware('http')

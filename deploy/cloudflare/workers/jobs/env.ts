@@ -67,6 +67,7 @@ export type MemoryVectorizeBinding = VectorizeBinding & {
 };
 
 export type JobsEnv = {
+  MEMORY_PRIVACY_SECRET: string;
   AUTH: Fetcher;
   API_CORE?: Fetcher;
   SHARE_EMAIL?: ShareEmailBinding;

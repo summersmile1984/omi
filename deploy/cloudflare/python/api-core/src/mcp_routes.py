@@ -25,6 +25,7 @@ from memory_mutation_errors import memory_mutation_error
 from pydantic import BaseModel, Field, ValidationError
 
 from account_routes import usage_source_statement
+from memory_privacy_receipts import privacy_receipt_id
 from action_item_routes import _response as action_item_response
 from conversation_routes import (
     MAX_JSON_BYTES as MAX_CONVERSATION_JSON_BYTES,
@@ -630,8 +631,8 @@ async def create_memory(request: Request):
             "(uid, id, content, category, visibility, tags_json, headline, predicate, arguments_json, "
             "subject_entity_id, subject_attribution, object_entity_ids_json, qualifiers_json, capture_confidence, "
             "veracity, uncertainty_reasons_json, durability, reviewed, user_review, manually_added, scoring, "
-            "memory_tier, valid_at, created_at, updated_at, deleted_at, invalid_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, ?, 'short_term', ?, ?, ?, NULL, NULL) "
+            "memory_tier, valid_at, created_at, updated_at, deleted_at, invalid_at, privacy_receipt_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, ?, 'short_term', ?, ?, ?, NULL, NULL, ?) "
             "ON CONFLICT(uid, id) DO UPDATE SET content = excluded.content, category = excluded.category, "
             "visibility = excluded.visibility, tags_json = excluded.tags_json, headline = excluded.headline, "
             "predicate = excluded.predicate, arguments_json = excluded.arguments_json, "
@@ -641,7 +642,7 @@ async def create_memory(request: Request):
             "uncertainty_reasons_json = excluded.uncertainty_reasons_json, durability = excluded.durability, "
             "reviewed = 1, user_review = 1, manually_added = 1, scoring = excluded.scoring, "
             "valid_at = excluded.valid_at, updated_at = excluded.updated_at, "
-            "deleted_at = NULL, invalid_at = NULL"
+            "deleted_at = NULL, invalid_at = NULL, privacy_receipt_id = excluded.privacy_receipt_id"
         ).bind(
             principal.uid,
             memory_id,
@@ -664,6 +665,7 @@ async def create_memory(request: Request):
             now,
             now,
             now,
+            privacy_receipt_id(env, principal.uid, memory_id),
         )
         usage = usage_source_statement(
             env,

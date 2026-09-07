@@ -106,6 +106,12 @@ async def _rows(env: object, table: str, order_by: str, uid: str) -> list[dict[s
             for row in values
             if isinstance(row, dict)
         ]
+    if table == "cf_memories":
+        values = [
+            {key: value for key, value in row.items() if key != "privacy_receipt_id"}
+            for row in values
+            if isinstance(row, dict)
+        ]
     return [_decode_json_columns(row) for row in values if isinstance(row, dict)]
 
 

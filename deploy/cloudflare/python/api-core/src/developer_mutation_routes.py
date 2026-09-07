@@ -15,6 +15,7 @@ from memory_mutation_errors import memory_mutation_error
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from account_routes import usage_source_statement
+from memory_privacy_receipts import privacy_receipt_id
 from action_item_routes import (
     ActionItemUpdate,
     _apply_update as apply_action_item_update,
@@ -222,8 +223,8 @@ def _memory_insert_statement(env: object, row: dict[str, object]):
     return env.APP_DB.prepare(
         "INSERT INTO cf_memories "
         "(uid, id, content, category, visibility, tags_json, reviewed, user_review, manually_added, edited, "
-        "scoring, is_locked, memory_tier, valid_at, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, 1, 1, 1, 0, ?, 0, ?, ?, ?, ?)"
+        "scoring, is_locked, memory_tier, valid_at, created_at, updated_at, privacy_receipt_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, 1, 1, 1, 0, ?, 0, ?, ?, ?, ?, ?)"
     ).bind(
         row["uid"],
         row["id"],
@@ -236,6 +237,7 @@ def _memory_insert_statement(env: object, row: dict[str, object]):
         row["valid_at"],
         row["created_at"],
         row["updated_at"],
+        privacy_receipt_id(env, row["uid"], row["id"]),
     )
 
 

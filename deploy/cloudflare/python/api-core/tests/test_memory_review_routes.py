@@ -91,7 +91,15 @@ def signed_headers(secret: str, uid: str = "review-user"):
 
 
 def make_env(secret: str):
-    return type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    return type(
+        "Env",
+        (),
+        {
+            "APP_DB": FakeDb(),
+            "INTERNAL_ASSERTION_SECRET": secret,
+            "MEMORY_PRIVACY_SECRET": "memory-privacy-tests-secret-32-bytes",
+        },
+    )()
 
 
 def create(env, secret: str, *, content: str, arguments: dict[str, object], veracity: float):

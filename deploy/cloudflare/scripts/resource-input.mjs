@@ -46,6 +46,7 @@ export const REQUIRED_SECRETS = Object.freeze({
     "LIFECYCLE_EMAIL_SIGNING_SECRET",
     "REFERRAL_SIGNING_SECRET",
     "SCREEN_FRAME_SIGNING_SECRET",
+    "MEMORY_PRIVACY_SECRET",
     "INTERNAL_ASSERTION_SECRET",
   ],
   "api-ai": ["INTERNAL_ASSERTION_SECRET"],
@@ -61,6 +62,7 @@ export const REQUIRED_SECRETS = Object.freeze({
     "MCP_APP_TOKEN_ENCRYPTION_SECRET",
     "STRIPE_CONNECT_REFRESH_SECRET",
     "TASK_INTEGRATION_TOKEN_ENCRYPTION_SECRET",
+    "MEMORY_PRIVACY_SECRET",
     "INTERNAL_ASSERTION_SECRET",
   ],
   edge: ["BYOK_FINGERPRINT_PEPPER", "INTERNAL_ASSERTION_SECRET"],
@@ -258,6 +260,7 @@ export function validateResourceInput(input, projected) {
   exactKeys(input.secret_refs, WORKERS, "secret mapping owners");
   const internal = new Set();
   const screenFrame = new Set();
+  const memoryPrivacy = new Set();
   const privateRefs = new Set();
   for (const role of WORKERS) {
     exactKeys(
@@ -275,6 +278,8 @@ export function validateResourceInput(input, projected) {
       if (binding === "INTERNAL_ASSERTION_SECRET") internal.add(reference);
       else if (binding === "SCREEN_FRAME_SIGNING_SECRET")
         screenFrame.add(reference);
+      else if (binding === "MEMORY_PRIVACY_SECRET")
+        memoryPrivacy.add(reference);
       else {
         if (privateRefs.has(reference))
           throw new Error(
@@ -291,6 +296,15 @@ export function validateResourceInput(input, projected) {
   )
     throw new Error(
       "screen frame signer and writer require one isolated shared secret reference"
+    );
+  if (
+    memoryPrivacy.size !== 1 ||
+    privateRefs.has([...memoryPrivacy][0]) ||
+    internal.has([...memoryPrivacy][0]) ||
+    screenFrame.has([...memoryPrivacy][0])
+  )
+    throw new Error(
+      "memory creators require one isolated shared privacy secret reference"
     );
   if (internal.size !== 1 || privateRefs.has([...internal][0]))
     throw new Error(
