@@ -27,6 +27,12 @@ class Index:
         self.matches = []
         self.calls = []
         self.error = None
+        self.visible = True
+        self.readiness_calls = []
+
+    async def queryById(self, vector_id, options):
+        self.readiness_calls.append((vector_id, options))
+        return {'matches': [{'id': vector_id, 'score': 1.0}] if self.visible else []}
 
     async def query(self, vector, options):
         self.calls.append(options)
@@ -77,20 +83,20 @@ def long_term(database, create, content):
     return key
 
 
-def project(database, key, vector_id, *, uid='owner', revision=None):
+def project(database, key, vector_id, *, uid='owner', revision=None, publication_size=1):
     row = database.row(key)
     revision = row['item_revision'] if revision is None else revision
     database.connection.execute(
         'INSERT INTO cf_vector_projection_state '
         '(uid,projection_kind,source_id,sub_id,vector_id,source_version,model,updated_at) '
-        "VALUES (?, 'memory', ?, '', ?, ?, ?, 1)",
-        (uid, key, vector_id, revision, VECTOR_MODEL),
+        "VALUES (?, 'memory', ?, ?, ?, ?, ?, 1)",
+        (uid, key, vector_id, vector_id, revision, VECTOR_MODEL),
     )
     database.connection.execute(
         'INSERT INTO cf_memory_vector_artifacts '
-        '(vector_id,uid,source_id,attempt_id,sub_id,source_version,model,writer_until,writer_done) '
-        "VALUES (?, ?, ?, ?, '', ?, ?, 0, 1)",
-        (vector_id, uid, key, 'fixture:' + vector_id, revision, VECTOR_MODEL),
+        '(vector_id,uid,source_id,attempt_id,sub_id,source_version,model,writer_until,writer_done,publication_size) '
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?)",
+        (vector_id, uid, key, 'fixture:' + vector_id, vector_id, revision, VECTOR_MODEL, publication_size),
     )
 
 
@@ -126,6 +132,8 @@ def test_stale_and_foreign_vector_ids_never_supply_prompt_content(target):
     stale = long_term(database, create, 'Stale source')
     project(database, old, 'a' * 64)
     project(database, stale, 'b' * 64, revision=0)
+    database.connection.execute('DELETE FROM cf_vector_projection_state WHERE vector_id = ?', ('b' * 64,))
+    project(database, stale, 'd' * 64)
     project(database, old, 'c' * 64, uid='other')
     source = create(content='Fresh source')
     env = services(database)

@@ -135,12 +135,28 @@ sensitivity exclusion and active/hidden eligibility. Rehydration compares the
 same bounded feedback text, while hidden rows remain ineligible as ordinary
 candidates or pending sources. A feedback read failure retains pending work.
 
-This is not yet an enabled maintenance job. Index visibility admission, retry leases,
-provider-window batch sizing, scheduler wiring and recurrence-to-workflow handoff
-remain unfinished. The hosted context trial observed an approximately 28-second
-indexing delay after successful vector publication; its private probe waited for
-visibility before the second LLM call. Production must own this wait before
-using an empty result as consolidation context. A batch with recurrence signals
+`memory_vector_readiness.py` now admits retrieval only after all eligible existing
+sources outside the pending batch have complete, current publications and each
+published vector has been observed in a real ANN query. The query uses the hashed
+tenant namespace and an opaque `publication_id` filter (the immutable vector ID),
+so identical embeddings cannot evict the target at the top-K limit. The metadata
+index is a required release policy and must exist before publication. Migration
+0179 records the expected vector count and per-vector proof in the existing
+artifact journal. Legacy/partial/missing projections use the existing outbox and
+Jobs reconciler; they are never assumed ready. One call checks at most 20 vectors,
+retaining completed proofs for continuation. No vector values or source content
+are returned by this check. A separate `projection_sequence` on the existing apply
+control detects mapping changes between admission and candidate hydration; it does
+not change the business ledger JSON. Account deletion can still retract mappings.
+
+`ConsolidationIndexPending` is a resumable dependency wait, with a five-second retry
+hint; it must not spend a model failure attempt or select a business route. Proofs
+are checked again after retrieval without advancing them. Native intake creates
+the canonical control row; an unmaterialized control is not maintenance-ready.
+This is not yet an enabled maintenance job. Retry leases, provider-window batch
+sizing, scheduler wiring and recurrence-to-workflow handoff remain unfinished.
+See the [index admission record](../../../../dev/unified-main/implementation-2026-09-05/memory-index-readiness-2026-09-07.md).
+A batch with recurrence signals
 fails before writing while that handoff is absent. Native new intake, content
 correction and review acceptance now carry the required-normalization marker.
 Other intake families and the complete default-read policy must be qualified before enabling automatic

@@ -1,8 +1,9 @@
 """Cloudflare Vectorize candidate projection helpers.
 
-D1 remains authoritative. Vectorize stores only embeddings plus a hashed tenant
-namespace; every candidate ID is mapped through ``cf_vector_projection_state``
-and then hydrated from the uid-scoped D1 source table before it can be returned.
+D1 remains authoritative. Vectorize stores embeddings, a hashed tenant namespace
+and narrow query metadata (memory publications use an opaque immutable ID).
+Every candidate ID is mapped through ``cf_vector_projection_state`` and hydrated
+from the uid-scoped D1 source table before it can be returned.
 """
 
 from __future__ import annotations

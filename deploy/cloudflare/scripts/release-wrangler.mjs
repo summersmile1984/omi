@@ -241,6 +241,12 @@ export class WranglerReleaseAdapter {
   policies() {
     const resources = this.candidate.resource_plan.resources;
     return [
+      {
+        kind: "vectorize",
+        name: resources.find((entry) => entry.key === "vectorize:memories").name,
+        id: "publication_id",
+        type: "string",
+      },
       ...["conversations", "transcript-chunks", "screen-activity"].map(
         (role) => ({
           kind: "vectorize",

@@ -24,6 +24,7 @@ from memory_kernel_consolidation import (
     _is_prompt_eligible_rejection,
 )
 from memory_vector_hydration import hydrate_memory_vectors
+from memory_vector_readiness import ensure_memory_index_ready, assert_memory_index_snapshot
 from vector_search import embed_query, query_vector_ids
 
 DEFAULT_CANDIDATES_PER_ITEM = 8
@@ -99,6 +100,7 @@ async def gather_consolidation_context(env, uid, memory_ids, *, candidate_limit=
         raise ConsolidationApplySkipped('memory_consolidation_source_changed')
     context = ConsolidationContext(uid=uid, pending_items=[items[key] for key in ids])
     _, _, context = await _hydrate_context(env, context, control.account_generation)
+    projection_sequence = await ensure_memory_index_ready(env, uid, ids)
     # Reuse the original feedback limits and policy. A database outage cannot
     # silently remove an owner's negative feedback from this migration path.
     context.owner_rejected_examples = [
@@ -154,6 +156,7 @@ async def gather_consolidation_context(env, uid, memory_ids, *, candidate_limit=
             )
             if len(candidates) >= candidate_limit:
                 break
+    await assert_memory_index_snapshot(env, uid, ids, projection_sequence)
     _, after = await load_memory_control(env, uid)
     if after != control:
         raise ConsolidationApplySkipped('memory_consolidation_authority_changed')

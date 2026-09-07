@@ -235,6 +235,30 @@ afterEach(() => {
 });
 
 describe("Vectorize rebuildable D1 projection", () => {
+  it("records complete publication ownership without claiming query visibility", async () => {
+    const state = environment();
+    seedSources(state.database);
+    expect(await processVectorProjection(state.env, memoryWork(state.database))).toBe(true);
+    const vector = state.memory.upserts[0][0];
+    expect(vector.metadata).toEqual({ publication_id: vector.id });
+    const publication = state.database.database.prepare(
+      "SELECT vector_count, query_ready FROM cf_memory_vector_publications WHERE source_id='memory-1'",
+    ).get();
+    expect(publication).toMatchObject({ vector_count: 1, query_ready: 0 });
+    // A migrated legacy publisher cannot satisfy the new proof. The normal
+    // reconciler must republish it even though its source/model are current.
+    state.database.database.exec("UPDATE cf_memory_vector_artifacts SET publication_size=0");
+    expect(state.database.database.prepare("SELECT * FROM cf_memory_vector_publications").all()).toEqual([]);
+    const first = vector.id;
+    await reconcileVectorProjections(state.env, 100);
+    const replacement = state.database.database.prepare(
+      "SELECT vector_id FROM cf_vector_projection_state WHERE source_id='memory-1'",
+    ).get();
+    expect(replacement!.vector_id).not.toBe(first);
+    expect(state.database.database.prepare(
+      "SELECT query_ready FROM cf_memory_vector_publications WHERE source_id='memory-1'",
+    ).get()).toMatchObject({ query_ready: 0 });
+  });
   it("keeps the newest vector bytes when two publishers finish in reverse order", async () => {
     const state = environment();
     seedSources(state.database);

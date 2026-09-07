@@ -218,7 +218,7 @@ function seedMemoryApplyJournal(database: SqliteD1, uid: string) {
   };
   database.database
     .prepare(
-      "INSERT INTO cf_memory_apply_control VALUES (?, 'commit-1', 1, 0, 1, ?)"
+      "INSERT INTO cf_memory_apply_control (uid, head_commit_id, account_generation, source_generation, commit_sequence, control_json) VALUES (?, 'commit-1', 1, 0, 1, ?)"
     )
     .run(uid, JSON.stringify(control));
   database.database

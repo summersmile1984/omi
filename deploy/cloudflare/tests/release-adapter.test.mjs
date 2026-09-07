@@ -62,6 +62,16 @@ function fixture(options = {}) {
 }
 const ok = (result) => Response.json({ success: true, result });
 describe("locked Wrangler release adapter", () => {
+  it("requires the opaque memory publication filter before deployment", () => {
+    const adapter = fixture();
+    adapter.candidate.resource_plan.resources = [
+      "vectorize:memories", "vectorize:conversations", "vectorize:transcript-chunks",
+      "vectorize:screen-activity", "r2:assets", "r2:frame-requests-temporary", "r2:frame-requests",
+    ].map((key) => ({ key, name: key.replace(":", "-") }));
+    expect(adapter.policies()).toContainEqual({
+      kind: "vectorize", name: "vectorize-memories", id: "publication_id", type: "string",
+    });
+  });
   it("waits for asynchronous metadata visibility without repeating creation", async () => {
     const fetchImpl = vi
       .fn()

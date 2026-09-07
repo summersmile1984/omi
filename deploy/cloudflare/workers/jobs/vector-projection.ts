@@ -756,9 +756,8 @@ async function seedMissingProjections(
       `SELECT m.uid, 'memory' AS source_kind, m.id AS source_id,
               m.item_revision AS desired_version, 'upsert' AS operation
        FROM cf_memory_projection_sources m
-       LEFT JOIN cf_vector_projection_state s
-         ON s.uid = m.uid AND s.projection_kind = 'memory'
-        AND s.source_id = m.id AND s.sub_id = '000000'
+       LEFT JOIN cf_memory_vector_publications s
+         ON s.uid = m.uid AND s.source_id = m.id
        WHERE m.operation = 'upsert'
          AND (
            s.source_version IS NULL OR s.source_version < m.item_revision OR

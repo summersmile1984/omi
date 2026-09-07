@@ -65,10 +65,10 @@ export async function publishMemoryVectors(
   const claimed = await env.APP_DB.batch(vectors.map((vector) =>
     env.APP_DB.prepare(
       `INSERT INTO cf_memory_vector_artifacts
-       (vector_id, uid, source_id, attempt_id, sub_id, source_version, model, writer_until)
-       SELECT ?, ?, ?, ?, ?, ?, ?, unixepoch() + ? WHERE ${currentSource}`,
+       (vector_id, uid, source_id, attempt_id, sub_id, source_version, model, publication_size, writer_until)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, unixepoch() + ? WHERE ${currentSource}`,
     ).bind(vector.id, uid, sourceId, attempt, vector.subId, revision, model,
-      WRITER_SECONDS, ...sourceArgs),
+      vectors.length, WRITER_SECONDS, ...sourceArgs),
   ));
   if (claimed.length !== vectors.length) throw new Error("incomplete memory vector claim");
   if (claimed.every((result) => result.meta.changes === 0)) return;
@@ -77,7 +77,7 @@ export async function publishMemoryVectors(
   }
 
   mutationId(await env.MEMORY_VECTORS.upsert(vectors.map((vector) => ({
-    id: vector.id, namespace, values: vector.values,
+    id: vector.id, namespace, values: vector.values, metadata: { publication_id: vector.id },
   }))));
   // Only a successful receipt releases the writer. An exception or a missing
   // response retains its full lease, because acceptance remains uncertain.
