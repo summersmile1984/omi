@@ -28,6 +28,7 @@ from memory_kernel_consolidation import (
     _validate_agent_batch,
     is_pending_required_processing,
 )
+from memory_kernel_duplicate_admission import MemoryIdentity, validate_duplicate_creates
 from memory_kernel_item import MemoryItem
 from memory_kernel_review import build_memory_review_conflict
 from vector_search import publish_vector_projection
@@ -165,6 +166,10 @@ async def apply_consolidation_batch(
     prior, initial_control = await load_memory_control(env, context.uid)
     rows, items, current_context = await _hydrate_context(env, context, initial_control.account_generation)
     error = _validate_agent_batch(current_context, batch)
+    if error is None:
+        error = validate_duplicate_creates(
+            current_context, batch, {key: MemoryIdentity.from_item(item) for key, item in items.items()}
+        )
     if error is not None:
         raise ConsolidationApplySkipped(error)
     if batch.recurrence_signals:

@@ -109,6 +109,7 @@ def consolidation_sources():
     # The Core suite compares this data contract to the current upstream model.
     schema = json.loads(source('deploy/cloudflare/contracts/consolidation-output-schema.json'))
     return {
+        'memory_kernel_duplicate_admission.py': source('backend/fork/consolidation_admission.py'),
         'memory_kernel_consolidation.py': common + normalization + belief + feedback + cache + consolidation,
         'memory_kernel_consolidation_schema.py': 'CONSOLIDATION_OUTPUT_SCHEMA = ' + repr(schema) + '\n',
     }

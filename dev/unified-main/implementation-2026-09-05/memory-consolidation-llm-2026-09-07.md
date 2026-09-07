@@ -159,3 +159,55 @@ remaining reader/writer/outbox convergence must be completed before automatic
 maintenance and full CF-4/CI-1 qualification. The shared default prompt and
 upstream files remain unchanged. This work alone does not deploy Eddy production
 Workers or establish the signed macOS app's production UI acceptance.
+
+## Shared exact duplicate admission — 2026-09-07 follow-up
+
+The failed ordinary-generation trial is now a permanent regression fixture in
+`backend/fork/tests/fixtures/qwen_duplicate_create.json` (only synthetic source
+and evidence IDs rebound). A shared pure admission rule rejects `promote/create`
+when complete source content exactly equals a live Long-term candidate belonging
+to the same UID and a known identical subject. It does not compare model-rewritten
+output text, vector scores, prompt-truncated text or paraphrases. It does not
+produce archive/reject decisions on the model's behalf.
+
+Server retains candidate identity during the original gather call with a local
+hydration binding, without global mutation, extra reads or additional prompt
+fields. Its original validator/retry owner records the invalid attempt as
+retryable and calls no apply operation. CF applies the identical rule after D1
+hydration and before any batch mutation. An existing candidate with unknown
+legacy subject provenance remains processable; identity is not invented.
+
+Verification (private directory `consolidation-admission-20260907`):
+
+- Existing backend `test.sh` with explicit admission/registry/seam/startup and
+  unchanged upstream consolidation files: admission **11 passed**, registry
+  **8 passed**, upstream **64 passed**. Seam/startup initially stopped because
+  the local venv lacked the declared boto3/psycopg dependencies; after installing
+  their existing pinned versions, rerunning just those files gave **4 + 27 passed**.
+  The retry case uses StrictFirestore's read-before-write transaction fixture.
+- Core full run: **969 passed, 1 failed**, one existing Starlette warning. The
+  new case's failure was its incorrect assumption that pending intake is absent
+  from the native public list. Existing read behavior deliberately remains;
+  the assertion now compares the whole public response before/after rejection.
+  Rerunning the complete changed apply file gave **28 passed**. No other runtime
+  code changed after the full run. Commands use the existing Core venv and
+  `-m pytest -q --tb=short -p no:cacheprovider`.
+- Disabling only the new admission helper for the corrected regression produced
+  the intended **DID NOT RAISE** failure; restoring the real helper passes. The
+  test proves whole-batch non-mutation, source preservation and acceptance of a
+  later model-supplied archive/duplicate route.
+- Saved real Qwen response replay through native HTTP intake, the production
+  inference parser/usage recorder and local SQL apply: rejected with
+  `output_invalid:exact_duplicate_create`; business journal and pending source
+  unchanged; consumed usage retained (3434 input / 1541 output, one call).
+  Prompt SHA remains `be2a82a77a5286d46b3af5b6320ebfbcbd2eb28bbeb76f82e637085c411bd9aa`.
+  This is saved-response replay, not a new hosted inference or production deploy.
+  The first replay's incorrect public-list assumption is retained as a failed
+  evidence file; the corrected run verifies unchanged public state.
+- Pinned formatter, diff whitespace and upstream-touch checks pass (zero upstream
+  files changed). The new Server test is in the existing startup lane; changes to
+  the shared module/fixture also trigger the existing CF route/Core test lane.
+
+This closes the observed exact-duplicate *write admission* defect. Semantic
+paraphrase quality, real Vectorize retrieval and the CF durable retry/scheduler
+remain unqualified; the earlier failed live trials stay failed evidence.

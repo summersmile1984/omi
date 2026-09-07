@@ -1,0 +1,29 @@
+{
+  "decisions": [
+    {
+      "source_memory_id": "duplicate-source",
+      "route": "promote",
+      "reconciliation": "create",
+      "target_memory_id": null,
+      "supersedes": [],
+      "memory_text": "User has a long-term daily habit of drinking jasmine tea every morning.",
+      "evidence_ids": [
+        "duplicate-evidence"
+      ],
+      "subject_entity_id": "user",
+      "predicate": "has_daily_habit",
+      "arguments": {
+        "habit": "drinking jasmine tea",
+        "time_of_day": "morning",
+        "duration": "long-term"
+      },
+      "relationship_to_user": "self",
+      "aboutness": "primary_user",
+      "basis_for_memory": "explicit",
+      "confidence": "high",
+      "rationale": "Explicit user submission (v3_manual, manual_user_assertion) stating a stable, long-term daily habit. Source attribution is authoritative (subject_entity_id=user, subject_attribution=user). No sensitivity labels, no owner-rejected conflicts, no existing memory to supersede. The vector-similar candidate confirms the same content. Normalized into a clean standalone assertion with structured predicate and arguments."
+    }
+  ],
+  "recurrence_signals": [],
+  "reasoning": "Single pending memory is a raw explicit user submission about their own jasmine tea morning habit. It is self-attributed, unsensitive, stable, and explicitly stated. No conflicts, duplicates, or owner rejections exist. Promoted with normalized structured assertion."
+}

@@ -16,6 +16,7 @@ from . import embedding as _embedding
 from .. import firmware as _firmware
 from . import llm as _llm
 from . import capabilities as _capabilities
+from . import consolidation as _consolidation
 from . import speech as _speech
 from . import provider_guard as _provider_guard
 from . import queue as _queue
@@ -29,6 +30,7 @@ ALL = (
     _firmware,
     _llm,
     _capabilities,
+    _consolidation,
     _speech,
     _account_deletion,
     _provider_guard,

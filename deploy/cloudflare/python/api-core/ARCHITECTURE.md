@@ -884,3 +884,11 @@ The current public Edge send route remains blocked pending native email provider
 qualification. Jobs holds that binding; Core performs no provider send. The
 `cf_share_email_receipts` view exports status metadata without the transient
 message payload or leases.
+
+Canonical consolidation stages `backend/fork/consolidation_admission.py` as
+`memory_kernel_duplicate_admission.py`. After authoritative D1 hydration, it
+rejects a model's `promote/create` for a known same-subject, same-owner,
+byte-identical full-content long-term candidate before the batch is mutated.
+It ignores vector scores and never chooses a replacement route. The Server
+uses the identical rule through its original gather/validator/retry boundary.
+Unknown legacy candidate attribution is not treated as proof of identity.

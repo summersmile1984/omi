@@ -195,3 +195,14 @@ chat and worker budgets before imports; four CPU threads and one generation
 are the admitted reference. The memory feature uses the unchanged upstream
 `WorkingObservationBatch` schema through the canonical/captured route-options
 factory, so native structured output and the production parser agree.
+
+`consolidation_admission.py` is the shared Server/Cloudflare pre-write rule for
+proven exact duplicate/create decisions. `consolidation_transport.py` retains
+full candidate identities from the original gather invocation without extra
+reads or prompt fields; `patches/consolidation.py` attaches it to the original
+Server validator and retry owner. Unknown legacy subject provenance is not
+inferred. Rejected output does not create a substitute route. Cloudflare stages
+the same pure module and calls it after D1 source hydration, before any batch
+mutation. This narrow admission guard does not qualify semantic paraphrase
+deduplication, candidate retrieval or the incomplete Cloudflare retry workflow.
+`fork/tests/test_consolidation_admission.py` runs in the existing startup lane.

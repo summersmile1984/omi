@@ -241,3 +241,14 @@ product qualification; no default prompts or extraction policies are changed.
 Provider contracts: [Vectorize client API](https://developers.cloudflare.com/vectorize/reference/client-api/),
 [ordered asynchronous writes](https://blog.cloudflare.com/building-vectorize-a-distributed-vector-database-on-cloudflare-developer-platform/),
 and [Queue invocation limits](https://developers.cloudflare.com/queues/platform/limits/).
+
+### Exact duplicate admission
+
+The real Qwen 2026-09-07 fixed replay returned one incorrect `promote/create`
+for a pending source whose complete content matched an existing same-user,
+same-subject long-term candidate. Both targets now share the pure fork admission
+rule: reject that create before any business mutation, preserving pending input.
+The Server retains original retry bookkeeping. Cloudflare raises its existing
+apply-skipped result; its durable retry/scheduling workflow is still unfinished.
+This does not infer equivalence from similarity scores, truncated prompts or
+paraphrases. Default prompts and original upstream source remain unchanged.

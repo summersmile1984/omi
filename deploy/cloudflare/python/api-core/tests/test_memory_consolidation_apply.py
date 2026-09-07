@@ -309,3 +309,36 @@ def test_patch_builders_equal_original_upstream_apply_requests(target):
         values.pop('created_at', None)
         values.pop('updated_at', None)
     assert left == right
+
+
+def test_observed_qwen_duplicate_create_cannot_write_any_batch_member(target):
+    database, request, create = target
+    text = 'User prefers drinking jasmine tea every morning as a long-term stable daily habit.'
+    old_id = create(content=text, subject_entity_id='user', subject_attribution='user')
+    original = context(database, old_id)
+    execute(database, original, decision(original.pending_items[0], memory_text=text))
+    duplicate_id = create(content=text, subject_entity_id='user', subject_attribution='user')
+    healthy_id = create(content='I prefer walking in the evening')
+    snapshot = context(database, duplicate_id, healthy_id, candidates=[old_id])
+    source = snapshot.pending_items[0]
+    fixture = Path(__file__).resolve().parents[5] / 'backend/fork/tests/fixtures/qwen_duplicate_create.json'
+    raw = json.loads(fixture.read_text())['decisions'][0]
+    raw['source_memory_id'] = duplicate_id
+    raw['evidence_ids'] = [item.evidence_id for item in source.evidence]
+    failed = policy.ConsolidationAgentDecision.model_validate(raw)
+    healthy = decision(snapshot.pending_items[1])
+    # The captured real response passes the old schema and business validator.
+    assert policy._validate_agent_batch(snapshot, policy.ConsolidationAgentBatch(decisions=[failed, healthy])) is None
+    before = journal(database)
+    public_before = request('GET', '/v3/memories').json()
+    with pytest.raises(policy.ConsolidationApplySkipped, match='exact_duplicate_create'):
+        execute(database, snapshot, failed, healthy)
+    assert journal(database) == before
+    assert read_item(database.row(duplicate_id)) == source
+    assert read_item(database.row(healthy_id)) == snapshot.pending_items[1]
+    assert request('GET', '/v3/memories').json() == public_before
+    # A corrected model route is admitted using the still-pending source.
+    one = context(database, duplicate_id, candidates=[old_id])
+    execute(database, one, decision(source, 'archive', reconciliation='duplicate', target_memory_id=old_id))
+    assert read_item(database.row(duplicate_id)).promotion['route'] == 'archive'
+    assert {item['id'] for item in request('GET', '/v3/memories').json()} == {old_id, healthy_id}
