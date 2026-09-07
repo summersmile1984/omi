@@ -1,3 +1,4 @@
+import { processMemoryPrivacyMessage, reconcileMemoryPrivacyDeletions } from "./memory-privacy-cleanup";
 import { cleanupExpiredMemoryPrivacyReceipts } from "./memory-privacy";
 import { cleanupFramePixels } from "./frame-request-storage";
 import { Hono, type Context } from "hono";
@@ -1087,6 +1088,10 @@ async function processJobMessage(
     await processStripeWebhookMessage(message, env);
     return;
   }
+  if (message.body.kind === "memory_privacy_cleanup") {
+    await processMemoryPrivacyMessage(message, env);
+    return;
+  }
   if (message.body.kind === "vector_project") {
     await processVectorProjectionMessage(message, env);
     return;
@@ -1271,6 +1276,7 @@ export default {
       reconcileAppDeletions(env, now),
       cleanupExpiredAccountDeletionTombstones(env, now),
       cleanupExpiredMemoryPrivacyReceipts(env, now),
+      reconcileMemoryPrivacyDeletions(env),
       reconcileStripeWebhookEvents(env, now),
       reconcileVectorProjections(env, now),
       reconcileConversationFinalizations(env, now),

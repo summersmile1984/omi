@@ -239,10 +239,12 @@ def test_locked_memory_retains_privacy_delete_and_account_erasure(target):
     database.lock(memory_id)
     assert request('DELETE', f'/v3/memories/{memory_id}', uid='other').status_code == 404
     assert request('DELETE', f'/v3/memories/{memory_id}').status_code == 200
-    assert database.row(memory_id)['deleted_at'] is not None
-    assert database.row(memory_id)['is_locked'] == 1
-    database.connection.execute('DELETE FROM cf_memories WHERE uid = ?', ('owner',))
     assert database.row(memory_id) is None
+    assert database.connection.execute('SELECT count(*) FROM cf_memory_privacy_receipts').fetchone()[0] == 1
+    account_memory = create(content='Locked memory retained for account erasure')
+    database.lock(account_memory)
+    database.connection.execute('DELETE FROM cf_memories WHERE uid = ?', ('owner',))
+    assert database.row(account_memory) is None
 
 
 @pytest.mark.parametrize('decision', ['accept', 'reject', 'correct'])
@@ -322,11 +324,15 @@ def test_lock_unlock_and_privacy_delete_coalesce_to_the_latest_revision(target):
     assert database.side_effects()['cf_vector_projection_outbox'][0]['operation'] == 'delete'
     database.connection.execute('UPDATE cf_memories SET is_locked = 0 WHERE id = ?', (memory_id,))
     assert database.side_effects()['cf_vector_projection_outbox'][0]['operation'] == 'upsert'
+    database.connection.executescript('''
+        CREATE TABLE deletion_revision_observation(revision INTEGER);
+        CREATE TRIGGER observe_deletion_revision BEFORE DELETE ON cf_memories
+        BEGIN INSERT INTO deletion_revision_observation VALUES (OLD.item_revision); END;
+    ''')
     assert request('DELETE', f'/v3/memories/{memory_id}').status_code == 200
-    outbox = database.side_effects()['cf_vector_projection_outbox'][0]
-    assert outbox['operation'] == 'delete'
-    assert outbox['desired_version'] == before + 3
-    assert outbox['desired_version'] == database.row(memory_id)['item_revision']
+    assert database.connection.execute('SELECT revision FROM deletion_revision_observation').fetchone()[0] == before + 3
+    assert database.side_effects()['cf_vector_projection_outbox'] == []
+    assert database.row(memory_id) is None
 
 
 def test_recreated_identity_supersedes_its_pending_hard_delete(target):

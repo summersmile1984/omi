@@ -509,15 +509,30 @@ def test_developer_memory_mutations_use_write_scope_d1_and_vector_outbox():
 
     deleted = run(delete_developer_memory(FakeRequest(env), memory_id))
     assert deleted == {"success": True}
-    missing = run(delete_developer_memory(FakeRequest(env), memory_id))
+    assert run(delete_developer_memory(FakeRequest(env), memory_id)) == {"success": True}
+    missing = run(delete_developer_memory(FakeRequest(env), "never-created-memory"))
     assert missing.status_code == 404
     outbox = database.connection.execute(
         "SELECT operation FROM cf_vector_projection_outbox "
         "WHERE uid = 'developer-user' AND source_kind = 'memory' AND source_id = ?",
         (memory_id,),
     ).fetchone()
-    assert dict(outbox) == {"operation": "delete"}
-    assert len(env.JOBS.messages) == 5
+    # Upstream finalization removes deterministic identities after provider
+    # absence; only its content-free receipt remains for a lost-response retry.
+    assert outbox is None
+    assert (
+        database.connection.execute(
+            "SELECT id FROM cf_memories WHERE uid = 'developer-user' AND id = ?", (memory_id,)
+        ).fetchone()
+        is None
+    )
+    assert (
+        database.connection.execute(
+            "SELECT count(*) FROM cf_memory_privacy_receipts WHERE uid = 'developer-user'"
+        ).fetchone()[0]
+        == 1
+    )
+    assert len(env.JOBS.messages) == 4
 
     read_only_database, read_only_env = environment()
     denied = run(

@@ -458,7 +458,7 @@ def test_memory_edit_visibility_review_and_delete_are_uid_scoped():
         "SELECT deleted_at FROM cf_memories WHERE uid = ? AND id = ?",
         ("memory-user", memory_id),
     ).fetchone()
-    assert tombstone["deleted_at"] is not None
+    assert tombstone is None  # Canonical finalization removes deterministic IDs after provider absence.
 
 
 def test_memory_read_and_baseline_status_are_uid_scoped_and_locked():
@@ -536,7 +536,7 @@ def test_memory_read_and_baseline_status_are_uid_scoped_and_locked():
     assert locked.status_code == 402
 
 
-def test_batch_delete_is_all_or_nothing_and_keeps_tombstones():
+def test_batch_delete_is_all_or_nothing_and_finalizes_tombstones():
     secret = "memory-secret"
     env = make_env(secret)
     first = create(env, secret, content="First")
@@ -566,7 +566,8 @@ def test_batch_delete_is_all_or_nothing_and_keeps_tombstones():
     assert deleted == {"status": "ok"}
     assert asyncio.run(list_memories(FakeRequest(env, signed_headers(secret)))) == []
     count = env.APP_DB.connection.execute(
-        "SELECT COUNT(*) AS count FROM cf_memories WHERE uid = ? AND deleted_at IS NOT NULL",
+        "SELECT COUNT(*) AS count FROM cf_memories WHERE uid = ?",
         ("memory-user",),
     ).fetchone()
-    assert count["count"] == 2
+    assert count["count"] == 0
+    assert env.APP_DB.connection.execute("SELECT count(*) FROM cf_memory_privacy_receipts").fetchone()[0] == 2

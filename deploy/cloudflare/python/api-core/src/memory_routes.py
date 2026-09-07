@@ -16,6 +16,7 @@ import time
 from typing import Literal
 import uuid
 
+from memory_privacy_delete import MemoryNotFound, delete_memory_scope, delete_selected_memories
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -1018,32 +1019,11 @@ async def delete_memories_batch(request: Request):
         return {"status": "ok"}
     uid = str(context["uid"])
     env = request.scope["env"]
-    placeholders = ",".join("?" for _ in deletion.memory_ids)
     try:
-        rows = (
-            await env.APP_DB.prepare(
-                "SELECT id FROM cf_memories WHERE uid = ? AND deleted_at IS NULL AND invalid_at IS NULL "
-                f"AND id IN ({placeholders})"
-            )
-            .bind(uid, *deletion.memory_ids)
-            .all()
-        )
-        found = {
-            str(row["id"])
-            for row in (rows.get("results", []) if isinstance(rows, dict) else [])
-            if isinstance(row, dict) and row.get("id")
-        }
-        if found != set(deletion.memory_ids):
-            return JSONResponse({"error": "memory not found"}, status_code=404)
-        now = int(time.time())
-        statements = [
-            env.APP_DB.prepare(
-                "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
-                "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-            ).bind(now, now, uid, memory_id)
-            for memory_id in deletion.memory_ids
-        ]
-        await env.APP_DB.batch(statements)
+        if not await delete_selected_memories(env, uid, deletion.memory_ids):
+            return JSONResponse({"error": "memory_cleanup_pending"}, status_code=503, headers={"retry-after": "2"})
+    except MemoryNotFound:
+        return JSONResponse({"error": "memory not found"}, status_code=404)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
     return {"status": "ok"}
@@ -1058,14 +1038,11 @@ async def delete_memory(request: Request, memory_id: str):
         return JSONResponse({"error": "memory not found"}, status_code=404)
     uid = str(context["uid"])
     env = request.scope["env"]
-    now = int(time.time())
     try:
-        if await _first_active(env, uid, memory_id) is None:
-            return JSONResponse({"error": "memory not found"}, status_code=404)
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(now, now, uid, memory_id).run()
+        if not await delete_selected_memories(env, uid, [memory_id]):
+            return JSONResponse({"error": "memory_cleanup_pending"}, status_code=503, headers={"retry-after": "2"})
+    except MemoryNotFound:
+        return JSONResponse({"error": "memory not found"}, status_code=404)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
     return {"status": "ok"}
@@ -1077,16 +1054,12 @@ async def delete_all_memories(request: Request):
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     uid = str(context["uid"])
-    now = int(time.time())
     scope = _query_value(request, "scope") or "all"
     if scope not in {"all", "default"}:
         return JSONResponse({"error": "invalid memory deletion scope"}, status_code=400)
-    tier_filter = " AND memory_tier != 'archive'" if scope == "default" else ""
     try:
-        await request.scope["env"].APP_DB.prepare(
-            "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
-            "WHERE uid = ? AND deleted_at IS NULL AND invalid_at IS NULL" + tier_filter
-        ).bind(now, now, uid).run()
+        if not await delete_memory_scope(request.scope['env'], uid, scope):
+            return JSONResponse({"error": "memory_cleanup_pending"}, status_code=503, headers={"retry-after": "2"})
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
     return {"status": "ok"}

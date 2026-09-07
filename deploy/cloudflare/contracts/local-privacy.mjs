@@ -36,8 +36,9 @@ export async function localPrivacyObserver(metadata) {
       ...registry.ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS,
     ]),
   ];
-  return (uid) => {
+  return (uid, memoryId) => {
     assert(registry.validAccountDeletionUid(uid));
+    assert(memoryId === undefined || (typeof memoryId === "string" && memoryId.length > 0 && memoryId.length <= 256));
     const result = {
       app: {},
       auth: {},
@@ -89,6 +90,15 @@ export async function localPrivacyObserver(metadata) {
               "cf_account_deletion_intents",
               "uid",
             );
+            if (memoryId !== undefined) {
+              const owned = (sql) => database.prepare(sql).get(uid, memoryId).n;
+              result.memory_cleanup = {
+                rows: owned("SELECT count(*) AS n FROM cf_memories WHERE uid = ? AND id = ?"),
+                artifacts: owned("SELECT count(*) AS n FROM cf_memory_vector_artifacts WHERE uid = ? AND source_id = ?"),
+                mappings: owned("SELECT count(*) AS n FROM cf_vector_projection_state WHERE uid = ? AND source_id = ? AND projection_kind = 'memory'"),
+                requests: owned("SELECT count(*) AS n FROM cf_memory_privacy_deletions d, json_each(d.targets_json) t WHERE d.uid = ? AND json_extract(t.value, '$.id') = ?"),
+              };
+            }
           }
           if (kind === "d1" && tables.has("user")) {
             assert(!authFound, "ambiguous local Auth DB");

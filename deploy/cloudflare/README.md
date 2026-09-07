@@ -2916,9 +2916,18 @@ reinsertions and updates inside D1, including MCP's deterministic-ID upsert and
 old writers that omit the key. Existing unrelated legacy rows remain editable;
 new writes always carry their key. Neither the key nor receipt inventory is
 included in user export. The existing Jobs schedule expires receipts, and
-account erasure includes their table. The deletion coordinator must still
-atomically scrub and seal its authoritative lineage before provider cleanup;
-this receipt gate alone does not migrate the public DELETE routes.
+account erasure includes their table. The public deletion coordinator now
+atomically scrubs and seals its authoritative lineage before provider cleanup
+(0175), then finalizes under the provider/hold/gate checks in migration 0176.
+Native single/batch/all/default, MCP and Developer deletion acknowledge 200 only
+after physical erasure; pending cleanup returns 503 `memory_cleanup_pending`
+with `Retry-After: 2`. Existing Jobs Queue/cron uses signed Core continuations to
+complete durable work. All/default requests retain their parent scope across
+100-item batches; default retains Archive. Referencing history and memory
+usage-source rows are removed, while original source conversations remain.
+The [deletion verification record](../../dev/unified-main/implementation-2026-09-05/memory-privacy-delete-2026-09-07.md)
+distinguishes actual local orchestration, hosted transaction proof and the
+remaining production qualification.
 
 The pure engine computes one complete apply result: memory items, graph
 assertions, operation receipt, next control head and projection/vector outbox.
@@ -2957,7 +2966,7 @@ The patch policy is behaviorally compared against the original upstream
 `update_canonical_memory_content` implementation. See the
 [content-edit verification record](../../dev/unified-main/implementation-2026-09-05/memory-apply-edit-2026-09-07.md).
 
-The other intake, mutation, consolidation, privacy and projection writers still
+The other intake, mutation, consolidation, source-deletion and projection writers still
 need to converge on this transaction owner. History/revert and JIT require that
 complete authority; their inventory states are unchanged. See the
 [kernel verification](../../dev/unified-main/implementation-2026-09-05/memory-kernel-2026-09-06.md)

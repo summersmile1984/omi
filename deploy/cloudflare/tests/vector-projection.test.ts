@@ -3,7 +3,9 @@ import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { JobsEnv } from "../workers/jobs/env";
+import type { JobMessage, JobsEnv } from "../workers/jobs/env";
+import { processMemoryPrivacyMessage } from "../workers/jobs/memory-privacy-cleanup";
+import { verifyRequestAuthContext } from "../workers/shared/auth-context";
 import { cleanupMemoryVectors } from "../workers/jobs/memory-vector-publication";
 import {
   purgeAccountVectorProjections,
@@ -797,5 +799,160 @@ describe("Vectorize rebuildable D1 projection", () => {
         .prepare("SELECT COUNT(*) AS count FROM cf_vector_projection_state")
         .get(),
     ).toEqual({ count: 0 });
+  });
+});
+
+describe("canonical privacy cleanup orchestration", () => {
+  it("retries until observed Vectorize absence and ignores caller-selected IDs", async () => {
+    const { database, env, memory } = environment();
+    seedSources(database);
+    await processVectorProjection(env, memoryWork(database));
+    const token = "a".repeat(64);
+    database.database.exec(
+      "UPDATE cf_memories SET content=NULL,status='tombstoned',source_state='tombstoned',deleted_at=100 WHERE id='memory-1'",
+    );
+    const revision = (
+      database.database
+        .prepare("SELECT item_revision FROM cf_memories WHERE id='memory-1'")
+        .get() as { item_revision: number }
+    ).item_revision;
+    database.database
+      .prepare(
+        "INSERT INTO cf_memory_privacy_deletions(uid,token,requested_ids_json,targets_json,created_at) VALUES ('vector-user',?,'[\"memory-1\"]',?,100)",
+      )
+      .run(
+        token,
+        JSON.stringify([
+          {
+            id: "memory-1",
+            item_revision: revision,
+            receipt_id: "receipt_" + "0".repeat(64),
+          },
+        ]),
+      );
+    database.database.exec(
+      "INSERT INTO cf_memory_vector_artifacts(vector_id,uid,source_id,attempt_id,sub_id,source_version,model,writer_until) VALUES ('retained-vector','vector-user','retained-memory','retained-attempt','0',1,'bge-m3',1000)",
+    );
+    memory.vectors.set("retained-vector", { id: "retained-vector" });
+    env.INTERNAL_ASSERTION_SECRET = "privacy-orchestration-secret-32-bytes";
+    const finalized = vi.fn();
+    env.API_CORE = {
+      fetch: vi.fn(async (request: Request) => {
+        const context = await verifyRequestAuthContext(
+          request,
+          "api-core",
+          env.INTERNAL_ASSERTION_SECRET,
+        );
+        expect(context?.uid).toBe("vector-user");
+        expect(context?.authority).toBe("internal");
+        expect(await request.json()).toEqual({ token });
+        if (new URL(request.url).pathname.endsWith("/resume"))
+          return Response.json({
+            targets: [{ id: "memory-1", item_revision: revision }],
+          });
+        expect(
+          database.database
+            .prepare(
+              "SELECT count(*) AS n FROM cf_memory_vector_artifacts WHERE source_id='memory-1'",
+            )
+            .get(),
+        ).toEqual({ n: 0 });
+        finalized();
+        return new Response(null, { status: 204 });
+      }),
+    } as unknown as Fetcher;
+    const ack = vi.fn(),
+      retry = vi.fn();
+    const message = {
+      body: {
+        kind: "memory_privacy_cleanup",
+        uid: "vector-user",
+        jobId: "privacy-test",
+        payload: { token, sourceId: "retained-memory" },
+      },
+      ack,
+      retry,
+    } as unknown as Message<JobMessage>;
+    await processMemoryPrivacyMessage(message, env);
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledWith({ delaySeconds: 10 });
+    expect(finalized).not.toHaveBeenCalled();
+    expect(memory.deletes.flat()).not.toContain("retained-vector");
+    await processMemoryPrivacyMessage(message, env);
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(finalized).toHaveBeenCalledTimes(1);
+    expect(memory.vectors.has("retained-vector")).toBe(true);
+    expect(
+      database.database
+        .prepare("SELECT source_id FROM cf_memory_vector_artifacts")
+        .all(),
+    ).toEqual([{ source_id: "retained-memory" }]);
+  });
+
+  it("keeps denied holds pending without touching provider data", async () => {
+    const { env, memory } = environment();
+    env.INTERNAL_ASSERTION_SECRET = "privacy-orchestration-secret-32-bytes";
+    env.API_CORE = {
+      fetch: vi.fn(async () =>
+        Response.json({ error: "held" }, { status: 503 }),
+      ),
+    } as unknown as Fetcher;
+    const ack = vi.fn(),
+      retry = vi.fn();
+    await processMemoryPrivacyMessage(
+      {
+        body: {
+          kind: "memory_privacy_cleanup",
+          uid: "vector-user",
+          payload: { token: "b".repeat(64) },
+        },
+        ack,
+        retry,
+      } as unknown as Message<JobMessage>,
+      env,
+    );
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(memory.deletes).toEqual([]);
+  });
+
+  it("continues a durable delete scope without acknowledging a pending batch", async () => {
+    const { env } = environment();
+    env.INTERNAL_ASSERTION_SECRET = "privacy-orchestration-secret-32-bytes";
+    let finished = false;
+    env.API_CORE = {
+      fetch: vi.fn(async (request: Request) => {
+        expect(new URL(request.url).pathname).toBe(
+          "/internal/memory-privacy/scope",
+        );
+        expect(
+          (
+            await verifyRequestAuthContext(
+              request,
+              "api-core",
+              env.INTERNAL_ASSERTION_SECRET,
+            )
+          )?.uid,
+        ).toBe("vector-user");
+        return new Response(null, { status: finished ? 204 : 503 });
+      }),
+    } as unknown as Fetcher;
+    const ack = vi.fn(),
+      retry = vi.fn();
+    const message = {
+      body: {
+        kind: "memory_privacy_cleanup",
+        uid: "vector-user",
+        payload: { token: "c".repeat(64), scope: true },
+      },
+      ack,
+      retry,
+    } as unknown as Message<JobMessage>;
+    await processMemoryPrivacyMessage(message, env);
+    expect(ack).not.toHaveBeenCalled();
+    expect(retry).toHaveBeenCalledTimes(1);
+    finished = true;
+    await processMemoryPrivacyMessage(message, env);
+    expect(ack).toHaveBeenCalledTimes(1);
   });
 });

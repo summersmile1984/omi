@@ -19,6 +19,7 @@ import re
 import time
 import uuid
 
+from memory_privacy_delete import MemoryNotFound, delete_selected_memories
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from memory_mutation_errors import memory_mutation_error
@@ -695,24 +696,12 @@ async def delete_memory(request: Request, memory_id: str):
     assert principal is not None
     env = request.scope["env"]
     try:
-        row = (
-            await env.APP_DB.prepare(
-                "SELECT id FROM cf_memories WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-            )
-            .bind(principal.uid, memory_id)
-            .first()
-        )
-        if not isinstance(row, dict):
-            return _detail("Memory not found", 404)
-        now = int(time.time())
-        update = env.APP_DB.prepare(
-            "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(now, now, principal.uid, memory_id)
-        await env.APP_DB.batch([update])
+        if not await delete_selected_memories(env, principal.uid, [memory_id]):
+            return JSONResponse({"error": "memory_cleanup_pending"}, status_code=503, headers={"retry-after": "2"})
+    except MemoryNotFound:
+        return _detail("Memory not found", 404)
     except Exception:
         return _error("memories unavailable", 503)
-    await publish_vector_projection(env, uid=principal.uid, source_kind="memory", source_id=memory_id)
     return {"status": "ok"}
 
 

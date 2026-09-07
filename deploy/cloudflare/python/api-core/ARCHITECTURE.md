@@ -53,9 +53,31 @@ an active trusted hold blocks it, and another live owner excludes acquisition
 for six hours. Hold placement and acquisition contend in the same D1 authority.
 Payment locks and writer-transition pauses do not block an admitted privacy
 scrub. These tables are currently integrated only into canonical memory
-preparation, not every Cloudflare destructive workflow. Public DELETE routing,
-provider cleanup coordination, historical record erasure and tombstone/inventory
-finalization remain to be connected before deployment qualification.
+deletion, not every Cloudflare destructive workflow.
+
+`memory_privacy_delete.py` connects native single/batch/all/default, MCP and
+Developer DELETE routes to this owner. A pending provider returns 503 with
+`memory_cleanup_pending` and `Retry-After: 2`; 200 acknowledges completed erasure.
+The durable inventory and existing Jobs Queue/cron resume cleanup without
+requiring another client request. Delete-all/default has a durable parent scope
+across batches of at most 100 items; default retains Archive even when linked.
+The original Developer paid-lock admission remains 402. An owned unexpired
+receipt makes a retry after successful finalization idempotent; unknown IDs
+still return 404.
+
+`memory_privacy_routes.py` exposes only request-bound internal Jobs continuations
+over the existing `API_CORE` service binding. Clients cannot choose target
+revisions, operation tokens or legal-hold authority. Jobs renews the gate through
+Core before provider IO, retracts vectors through their observed revision, then
+calls `memory_privacy_finalize.py`. Migration 0176 checks tombstone identity,
+gate/hold state and absence of every artifact/serving mapping inside the final
+D1 batch. Referencing operations, commits, outbox, reviews, Archive/lifecycle
+history and memory usage-source identities are removed with the physical rows.
+Original source conversations/import artifacts remain. Removing usage-source
+rows also removes those memories from the derived historical usage counts.
+Pending inventory fences late writers even beyond receipt expiry. Only the
+30-day opaque receipts remain after finalization. These checks do not establish
+complete canonical writer convergence or production deployment qualification.
 
 `cf_memories` remains the item authority. Its existing physical columns hold
 content, evidence and lifecycle fields; `canonical_metadata_json` holds only
@@ -77,7 +99,7 @@ Operations and commits are included in the owner's `memory_ledger_data` export;
 all five added tables participate in account erasure and deletion write fences.
 
 This is the native intake adapter, not complete ledger authority. Other intake
-families, edits/review, source deletion/privacy, consolidation, graph assertions
+families, non-native edits/review, source deletion, consolidation, graph assertions
 and projection consumers must still converge before history/revert or JIT can
 expose a complete canonical head. The existing vector publication outbox still
 drives Jobs; a pending kernel outbox event is not a delivered index watermark.

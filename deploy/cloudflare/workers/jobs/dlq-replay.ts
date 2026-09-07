@@ -64,6 +64,7 @@ const JOB_KINDS: ReadonlySet<JobMessage["kind"]> = new Set([
   "sync_local_files",
   "legacy_audio_rebuild",
   "vector_project",
+  "memory_privacy_cleanup",
   "account_delete",
   "recording_delete",
   "app_delete",

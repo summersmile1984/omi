@@ -94,7 +94,7 @@ def test_preparation_scrubs_complete_lineage_and_seals_in_one_transaction(databa
         assert stored['item_revision'] == old_row['item_revision'] + 1
         vector_work = next(row for row in snapshot['cf_vector_projection_outbox'] if row['source_id'] == memory_id)
         assert vector_work['operation'] == 'delete' and vector_work['desired_version'] == item.item_revision
-        with pytest.raises(sqlite3.IntegrityError, match='memory_privacy_deleted'):
+        with pytest.raises(sqlite3.IntegrityError, match='memory_privacy_deleted|memory_privacy_cleanup_pending'):
             database.connection.execute("UPDATE cf_memories SET content = 'late result' WHERE id = ?", (memory_id,))
     assert database.row('retained') == next(row for row in old['cf_memories'] if row['id'] == 'retained')
     assert any('Native evidence' in row['operation_json'] for row in snapshot['cf_memory_operations'])

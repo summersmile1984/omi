@@ -81,7 +81,7 @@ async def lineage_ids(db, uid, requested_ids):
     return found
 
 
-async def prepare_privacy_deletion(env, uid, requested_ids, now):
+async def prepare_privacy_deletion(env, uid, requested_ids, now, *, expand_lineages=True):
     if (
         not isinstance(uid, str)
         or not uid
@@ -105,7 +105,7 @@ async def prepare_privacy_deletion(env, uid, requested_ids, now):
             raise ValueError('memory_privacy_inventory_changed')
         return pending
     prior, control = await read_memory_control(env, uid)
-    ids = await lineage_ids(db, uid, requested_ids)
+    ids = await lineage_ids(db, uid, requested_ids) if expand_lineages else requested_ids
     items, expected, stored = [], [], []
     for memory_id in ids:
         row = await db.prepare('SELECT * FROM cf_memories WHERE uid = ? AND id = ?').bind(uid, memory_id).first()
@@ -134,13 +134,15 @@ async def prepare_privacy_deletion(env, uid, requested_ids, now):
         'requested_ids_json': requested_json,
         'targets_json': encoded(targets),
         'created_at': now,
+        'last_attempt_at': 0,
+        'expand_lineages': int(expand_lineages),
     }
     statements = [
         gate_statement(db, uid, token, now),
         db.prepare(
             'INSERT INTO cf_memory_privacy_apply_guard(uid, token, expected_control_json, account_generation, '
-            'requested_ids_json, expected_items_json) VALUES (?, ?, ?, ?, ?, ?)'
-        ).bind(uid, token, prior, control.account_generation, requested_json, encoded(expected)),
+            'requested_ids_json, expected_items_json, expand_lineages) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(uid, token, prior, control.account_generation, requested_json, encoded(expected), int(expand_lineages)),
         *_insert_rows(db, 'cf_memory_privacy_deletions', [inventory]),
     ]
     columns = sorted(

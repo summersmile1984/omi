@@ -715,8 +715,62 @@ try {
       "cascade retained derived task");
     await request("api", `/v1/conversations/${id}`, 200, { token: owner.token });
   });
-  const unused = await signup();
   const inspectPrivacy = await localPrivacyObserver(metadata);
+  await caseOf("recording.public-memory-delete-waits-for-provider-cleanup", async () => {
+    const privacyId = randomUUID();
+    const capture = await connect(other.token, privacyId);
+    capture.socket.send(new Uint8Array(16000));
+    await capture.until((frames) => frames.some(Array.isArray));
+    capture.socket.close();
+    await new Promise((resolve) => capture.socket.once("close", resolve));
+    await request("api", `/v1/conversations/${privacyId}/finalize`, 200, {
+      token: other.token, method: "POST", body: {},
+    });
+    let memory;
+    const searchPath = "/memory/vector/search?query=concise&limit=10";
+    const indexedDeadline = Date.now() + 30000;
+    while (Date.now() < indexedDeadline) {
+      const result = await request("api", searchPath, 200, { token: other.token });
+      memory = result.data.items.find((row) => row.conversation_id === privacyId);
+      if (memory) break;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    require(memory, "privacy recording never became searchable through actual Jobs publication");
+    const before = inspectPrivacy(other.uid, memory.id);
+    require(before.memory_cleanup.rows === 1 && before.memory_cleanup.artifacts > 0 &&
+      before.memory_cleanup.mappings > 0, "privacy fixture lacks a persisted published vector");
+    await request("api", `/v3/memories/${memory.id}`, 404, { token: owner.token, method: "DELETE" });
+    const removed = await request("api", `/v3/memories/${memory.id}`, [200, 503], {
+      token: other.token, method: "DELETE",
+    });
+    if (removed.status === 503) {
+      require(removed.data.error === "memory_cleanup_pending" && removed.headers.get("retry-after") === "2",
+        "deletion failed before durable provider cleanup admission");
+    }
+    const hidden = await request("api", searchPath, 200, { token: other.token });
+    require(hidden.data.items.every((row) => row.id !== memory.id), "deleted memory is still searchable");
+    // Do not retry the public DELETE here: Jobs must drive its own signed Core
+    // continuation and finish the durable request without another client call.
+    let after = inspectPrivacy(other.uid, memory.id);
+    const cleanupDeadline = Date.now() + 30000;
+    while (Object.values(after.memory_cleanup).some((value) => value !== 0) && Date.now() < cleanupDeadline) {
+      require(removed.status === 503, "public deletion acknowledged unfinished physical cleanup");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      after = inspectPrivacy(other.uid, memory.id);
+    }
+    require(Object.values(after.memory_cleanup).every((value) => value === 0),
+      "Jobs did not finish physical memory, vector journal and request cleanup");
+    require(after.app["cf_memory_privacy_receipts.uid"] === before.app["cf_memory_privacy_receipts.uid"] + 1,
+      "completed privacy deletion lost its retry receipt");
+    await request("api", `/v3/memories/${memory.id}`, 200, { token: other.token, method: "DELETE" });
+    await request("api", `/v1/conversations/${privacyId}`, 200, { token: other.token });
+    await request("api", `/v1/conversations/${id}`, 200, { token: owner.token });
+    writeFileSync(resolve(metadata.trace_dir, "memory-privacy-results.json"), JSON.stringify({
+      boundary: "actual Edge/Core/Jobs/D1 with controlled Vectorize", initial_status: removed.status,
+      before: before.memory_cleanup, after: after.memory_cleanup, release_qualified: false,
+    }, null, 2) + "\n", { mode: 0o600 });
+  });
+  const unused = await signup();
   const beforeDeletion = inspectPrivacy(owner.uid);
   require(beforeDeletion.app["cf_conversations.uid"] > 0 &&
     beforeDeletion.app["cf_memories.uid"] > 0 &&

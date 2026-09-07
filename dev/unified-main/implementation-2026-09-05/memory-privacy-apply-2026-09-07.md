@@ -1,5 +1,8 @@
 # Canonical memory privacy preparation — 2026-09-07
 
+This preparation checkpoint is followed by the
+[public deletion and finalization implementation](memory-privacy-delete-2026-09-07.md).
+
 The previous receipt migration fenced creators but did not connect a canonical
 delete transaction. `memory_privacy_apply.py` now prepares one bounded set of
 complete lineages with the original upstream privacy scrubbers. It returns

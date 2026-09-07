@@ -47,6 +47,7 @@ from goal_routes import (
 from mcp_routes import _memory_category, _memory_score
 from memory_routes import _first_active as first_active_memory
 from vector_search import publish_vector_projection, vector_outbox_statement
+from memory_privacy_delete import MemoryNotFound, delete_selected_memories
 
 router = APIRouter()
 
@@ -392,22 +393,14 @@ async def delete_developer_memory(request: Request, memory_id: str):
     env = request.scope["env"]
     try:
         existing = await first_active_memory(env, principal.uid, memory_id)
-        if existing is None:
-            return JSONResponse({"detail": "Memory not found"}, status_code=404)
-        if _bool(existing.get("is_locked")):
-            return JSONResponse(
-                {"detail": "A paid plan is required to access this memory."},
-                status_code=402,
-            )
-        now = int(time.time())
-        mutation = env.APP_DB.prepare(
-            "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(now, now, principal.uid, memory_id)
-        await env.APP_DB.batch([mutation])
+        if existing is not None and _bool(existing.get("is_locked")):
+            return JSONResponse({"detail": "A paid plan is required to access this memory."}, status_code=402)
+        if not await delete_selected_memories(env, principal.uid, [memory_id]):
+            return JSONResponse({"error": "memory_cleanup_pending"}, status_code=503, headers={"retry-after": "2"})
+    except MemoryNotFound:
+        return JSONResponse({"detail": "Memory not found"}, status_code=404)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
-    await _publish_projection(env, principal.uid, "memory", memory_id)
     return {"success": True}
 
 

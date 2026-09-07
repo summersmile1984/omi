@@ -19,6 +19,17 @@ the key with each memory; D1 checks the receipt within that same transaction.
 `memory-privacy.ts` expires 30-day receipts from the existing scheduled lane.
 Account erasure includes the receipt table in its ordinary residual inventory.
 
+`memory-privacy-cleanup.ts` continues public memory deletion through the existing
+Jobs Queue and scheduled lane. It obtains immutable targets and renews legal-hold
+admission from Core using method/path/audience-bound internal assertions, then
+uses the shared vector artifact owner. Accepted asynchronous Vectorize deletion
+does not acknowledge the task: the artifact owner must prove erasure before Core
+can physically finalize memory/history rows. Pending tasks retry after ten
+seconds. Durable all/default scope requests continue across 100-item batches;
+cron revisits children and parent scopes in oldest-attempt order. No Core-to-Jobs
+service binding or new credential is introduced. Public clients receive 503
+while cleanup is pending; only completed finalization returns 200.
+
 Screenshot storage has a separate execution identity. `screen-frame-storage.ts`
 signs uid/method/path/audience-bound requests to `SCREEN_FRAME_WRITER` and
 validates its residual acknowledgement. Jobs never receives `SCREEN_FRAMES` R2

@@ -32,18 +32,39 @@ least 32 UTF-8 bytes to API Core and Jobs. Keep it separate from authentication
 credentials and retain it across releases. Migration 0174 and the current
 creators use this key for internal deletion-receipt identities. These values
 are absent from API memory objects and exports; clients do not provide them.
-Replacing the secret requires a coordinated rekey migration. Receipt admission
-does not by itself complete the public canonical deletion workflow.
+Replacing the secret requires a coordinated rekey migration.
 
 Migration 0175 adds canonical deletion preparation: complete-lineage selection,
 transaction-time account/head/item checks, content scrubbing, a new privacy
 commit and sealed deletion receipts. A content-free cleanup inventory survives
-provider failures. A private D1 transaction probe verifies preparation and
-rollback, but public DELETE routes have not yet switched to this owner.
-Historical erasure and provider cleanup/finalization still block that switch.
+provider failures. Migration 0176 connects native single/batch/all/default,
+MCP and Developer deletion to this owner and guards final physical erasure.
 The new legal-hold/destructive gate authority is server-owned; no user request
-may create a hold or choose an operation token. It currently protects this
-preparation owner only, rather than all Cloudflare deletion families.
+may create a hold or choose an operation token. It protects canonical memory
+deletion, rather than all Cloudflare deletion families.
+
+Deletion returns HTTP 200 only after vector cleanup and physical memory/history
+erasure. While an external writer or provider deletion is pending, it returns
+503 with `error: "memory_cleanup_pending"` and `Retry-After: 2`. The existing
+Jobs Queue and schedule continue the durable request without another client
+call. Jobs uses signed private Core continuations; Core rechecks authority and
+artifact/mapping absence inside the final D1 transaction. A provider accepting
+an asynchronous deletion is insufficient to acknowledge success.
+
+All/default deletion persists its scope across batches of at most 100 items.
+Default retains Archive, including linked Archive records. Finalization removes
+referencing journal, review, Archive and lifecycle history as well as the memory
+row. Source conversations and imported source artifacts remain. Removing memory
+usage-source identities also removes their contribution to historical usage
+counts. Opaque 30-day receipts allow idempotent retries after finalization;
+pending cleanup continues to fence late writers even if a receipt expires.
+Unknown IDs return 404. Developer deletion retains its active paid-lock check
+(402); native privacy deletion remains available for locked memories.
+
+The local actual Workers recording flow verifies indexed memory deletion and
+autonomous Jobs completion with a controlled Vectorize provider. See the
+[deletion verification record](../../../dev/unified-main/implementation-2026-09-05/memory-privacy-delete-2026-09-07.md)
+for the exact verification scope and remaining production requirements.
 
 Migration 0173 moves native `PATCH /v3/memories/{id}` content corrections into
 the same transaction as the operation receipt, commit/head and pending index

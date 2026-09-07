@@ -410,8 +410,22 @@ def test_mcp_memory_create_list_edit_delete_is_uid_scoped_and_uses_workers_ai():
     projection = db.connection.execute(
         "SELECT operation FROM cf_vector_projection_outbox WHERE uid = 'mcp-user' AND source_kind = 'memory'"
     ).fetchone()
-    assert dict(projection) == {"operation": "delete"}
-    assert [message["kind"] for message in env.JOBS.messages] == ["vector_project"] * 3
+    assert projection is None
+    assert (
+        db.connection.execute("SELECT id FROM cf_memories WHERE uid = 'mcp-user' AND id = ?", (memory_id,)).fetchone()
+        is None
+    )
+    assert (
+        db.connection.execute("SELECT count(*) FROM cf_memory_privacy_receipts WHERE uid = 'mcp-user'").fetchone()[0]
+        == 1
+    )
+    assert (
+        db.connection.execute(
+            "SELECT content FROM cf_memories WHERE uid = 'other-user' AND id = 'other-memory'"
+        ).fetchone()[0]
+        == "private"
+    )
+    assert [message["kind"] for message in env.JOBS.messages] == ["vector_project"] * 2
     assert run(get_memories(FakeRequest(env))) == []
     missing = run(delete_memory(FakeRequest(env), "other-memory"))
     assert missing.status_code == 404
