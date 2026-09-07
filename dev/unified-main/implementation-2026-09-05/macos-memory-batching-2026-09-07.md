@@ -71,10 +71,31 @@ Source/binary hashes and private results are recorded under
 `macos-memory-hosted-20260907-a/`. This is real native business code over HTTP,
 not a UI onboarding or production-service acceptance claim.
 
+## Refreshed signed macOS artifact
+
+The ordinary `desktop/macos/fork/release.py` completed from implementation commit
+`4654e8e14385907203069a0f04fd4e5411d0cc14` with Eddy's manifest, the
+`cloudflare.production` profile, version `0.1.0` and build `2026090701`.
+The local artifact is `/private/tmp/eddy-macos-production-20260907-a/Eddy.app`;
+its sibling `Eddy-0.1.0-2026090701-macos.zip` contains the signed app.
+
+`codesign --verify --deep --strict` passed. The normal bundle dependency audit
+passed for all 19 Mach-O files. The packaged profile points to Eddy's production
+Edge/Auth/Web endpoints; the staged planner is byte-identical to the committed
+source. Main executable SHA-256:
+`e636ef79dc7034715ae0ed018b2bd3e86ce46f69e2865257c7237e5eea7083ee`.
+Archive, manifest and planner hashes are recorded in the private
+`macos-memory-batching-artifact-20260907.json` evidence file.
+
+The bundle requires macOS 26.0 because of its actual linked dependency floor.
+It has a timestamped Developer ID signature but is not notarized. This refreshed
+app has not been launched for UI acceptance, and its production services are
+not deployed. The artifact correctly retains `service_verified: false` and
+`release_ready: false`.
+
 ## Remaining delivery work
 
 Electron's count-only importer still needs the same byte-aware adaptation.
 Production Worker release, complete CF-4/CI-1 qualification, canonical writer
-convergence and Eddy's production UI loop remain unfinished. The refreshed
-signed application is being built separately; a successful compile or HTTP
-probe does not establish a deployed product.
+convergence and Eddy's production UI loop remain unfinished. The signed app and
+HTTP integration evidence do not establish a deployed product.
