@@ -123,7 +123,7 @@ Review source identity is its actual commit, item revision, content hash and
 consolidation `review` route. Historical timestamp-based rows become stale and
 cannot write. Native intake no longer derives review decisions from conflicting
 fields; the consolidation persistence adapter now creates reviews from validated
-model decisions, while its scheduled model producer remains unfinished. Completed
+model decisions; the scheduled producer is described below. Completed
 privacy erasure removes its review projection, so subsequent retrieval returns
 404. Accepted/corrected decisions remain redacted and replay without a new
 commit. [Verification record](../../../dev/unified-main/implementation-2026-09-05/memory-review-canonical-2026-09-07.md).
@@ -137,12 +137,26 @@ source or candidate change requires fresh planning; storage failure rolls back
 the whole batch. Review records use the original deterministic source-bound
 builder and are consumable by the existing public review API.
 
+D1 supports transactional batches: all prepared statements submitted to one
+`APP_DB.batch()` succeed together or roll back together on failure
+([Cloudflare contract](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)).
+The model call and candidate gathering happen before this batch. The batch then
+checks the observed account/head/item versions and commits the memory, journal
+and outbox together; a changed observation requires fresh planning. This does not
+make the earlier network reads or later R2, Vectorize and Queue operations part
+of the same transaction. Those external updates follow their durable outbox.
+
 Migration 0182 distinguishes read-only consolidation context from memory writes.
 An eligible hidden owner-rejection example may inform a decision without being
 edited. Candidate and feedback snapshots are checked again inside the D1
 transaction; changed context cancels the entire batch. Write targets retain their
 active/unlocked requirements. Apply this migration before deploying the updated
 Core Worker; earlier writers use the new read-set column's empty default.
+The [hosted follow-up](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-hosted-2026-09-08.md)
+verified D1 rollback, whole-source batch continuation and terminal size-failure
+isolation through real Auth, Workers, D1, Vectorize, Cron and Queue. Consolidation
+outputs/usage and the hidden historical feedback state were controlled fixtures;
+this is not live model-quality or production release qualification.
 
 The Cloudflare model adapter preserves the original consolidation prompt and
 output schema and invokes Workers AI before the guarded D1 apply. Its optional

@@ -1091,12 +1091,13 @@
           Vectorize 与 Durable Objects，不和 legacy Google/Firebase 生产环境合流，也没有切换官方域名。
         </p>
         <p class="masthead__lede">
-          <strong>Eddy 当前状态（2026-09-07）：生产交付尚未完成。</strong>
+          <strong>Eddy 当前状态（2026-09-08）：生产交付尚未完成。</strong>
           本页记录的是 2026-09-01 的 omi-cf 生产环境，图表和历史验收不能作为 Eddy 的生产证据。
-          当前记忆调度与有界重试已做隔离云端验证；超限拆批与只读反例校验修复仅完成本地回归，
-          Core 1024 项、Workers 1006 项通过。默认提示词和指定 Qwen 模型保持不变。
+          记忆调度、有界重试、超限拆批和只读反例校验已通过隔离 Cloudflare 集成验证，D1 整批回滚实测通过。
+          本轮模型输出使用固定测试数据，历史隐藏状态为明确标记的测试样本；不代表真实 Qwen 回复质量验收。
+          此前本地 Core 1024 项、Workers 1006 项通过。默认提示词和指定模型保持不变。
           记忆转任务交接、17 个未通过交付验收的接口、整体部署及 macOS 生产端验收仍未完成。
-          <a href="../../dev/unified-main/implementation-2026-09-05/memory-consolidation-planning-2026-09-07.md"
+          <a href="../../dev/unified-main/implementation-2026-09-05/memory-consolidation-hosted-2026-09-08.md"
             >查看本轮修复与验证边界</a>。
 
           <a
@@ -1553,6 +1554,13 @@
               </tbody>
             </table>
           </div>
+
+          <p class="section-lede">
+            <strong>D1 支持同一数据库内的事务批次。</strong>
+            <a href="https://developers.cloudflare.com/d1/worker-api/d1-database/#batch">db.batch() 中任一语句失败，整个批次回滚</a>。
+            记忆处理先在事务外检索并调用 LLM，再在事务内校验读取时的版本、提交记忆和日志及待同步记录。
+            只读参考记忆与写入目标分别校验；R2、Vectorize 和 Queue 的后续更新通过待同步记录重试。
+          </p>
 
           <h3>写入与搜索的关键顺序</h3>
           <div class="two-col">

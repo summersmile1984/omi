@@ -78,3 +78,11 @@ convergence, the 17 blocked backend routes, CF-4/CI-1 release qualification and
 the signed macOS app's actual production-connected acceptance. The earlier
 isolated hosted dispatcher replay is separate evidence, not this patch's cloud
 verification. No production resources were changed in this turn.
+
+## Hosted follow-up — 2026-09-08
+
+The [isolated hosted trial](memory-consolidation-hosted-2026-09-08.md) passed eight
+Unicode sources in batches of 3, 3 and 2 with no leftover attempt rows. It also
+verified single-source overflow reaches review after three failures while healthy
+work completes, using real Cloudflare bindings and controlled model outputs.
+All temporary resources were removed. Production qualification remains separate.

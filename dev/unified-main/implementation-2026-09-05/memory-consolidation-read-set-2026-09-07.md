@@ -2,8 +2,8 @@
 
 Failure-Class: FC-consolidation-rejection-context-drift
 
-The real native-intake → hidden negative feedback → candidate retrieval → LLM
-adapter → D1 apply path failed locally with `memory_apply_target_changed`.
+Native intake plus an explicitly seeded hidden negative-feedback snapshot →
+candidate retrieval → LLM adapter → D1 apply failed locally with `memory_apply_target_changed`.
 The original context owner correctly admitted hidden owner rejection examples,
 but D1 put every hydrated context row in the interactive **write** guard. That
 guard correctly requires active/unlocked mutation targets, so a valid read-only
@@ -51,3 +51,11 @@ own source import path. None of these corrections relaxed product assertions.
 
 This proves local native route/SQL behavior. It does not prove hosted Pyodide/D1
 execution of migration 0182 or qualify an Eddy production release.
+
+## Hosted follow-up — 2026-09-08
+
+The [isolated hosted trial](memory-consolidation-hosted-2026-09-08.md) now verifies
+migration 0182 with hidden/locked read-only feedback, transactional rollback and
+batch continuation on actual Cloudflare bindings. It explicitly seeds historical
+hidden/locked state after native rejection; it does not claim that a native
+review request hides a pending memory. Model decisions remain synthetic.
