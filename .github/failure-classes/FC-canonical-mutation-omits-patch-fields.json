@@ -4,10 +4,11 @@
   "violated_contract": "A canonical mutation's operation identity and applied patch must describe the same logical fields, including changed arguments.",
   "canonical_prevention": "Construct operation identity from the complete logical mutation before hashing, and exercise the production operation builder against the real apply kernel instead of only testing manually assembled operations.",
   "canonical_prevention_artifact": [
-    "backend/tests/unit/test_memory_apply_store.py"
+    "backend/fork/tests/test_canonical_mutations.py"
   ],
   "evidence_prs": [],
   "scope_hints": [
+    "backend/fork/canonical_mutations.py",
     "backend/utils/memory/canonical_memory_adapter.py",
     "deploy/cloudflare/python/api-core/src/memory_apply_mutation.py"
   ],

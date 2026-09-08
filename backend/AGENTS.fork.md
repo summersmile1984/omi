@@ -4,6 +4,13 @@ Upstream rules live in [`AGENTS.md`](./AGENTS.md); this file adds only what is
 true for this fork. It is fork-owned: upstream never touches it, so it never
 conflicts on an upstream sync.
 
+Canonical mutation guidance lives in
+[the fork transaction guide](../.github/agent-docs/backend-memory-transactions.md).
+`fork/canonical_mutations.py` adds changed patch arguments before upstream hashes
+the operation. Register both public and internal mutation entrypoints; do not
+edit the upstream adapter or its tests. The startup lane exercises feedback,
+receipt replay and conflicting reuse through the original apply owner.
+
 ## Cloud-neutral runtime switches
 
 The image contains one generated target/stage/brand table. `fork.bootstrap`

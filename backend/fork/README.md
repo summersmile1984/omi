@@ -1,5 +1,12 @@
 # Fork runtime ownership
 
+`canonical_mutations.py` wraps the original user patch builder so changed
+`arguments` participate in the operation identity before canonical apply.
+`patches/canonical_memory.py` binds both upstream entrypoints for Server OS;
+`omi_cloud` keeps upstream behavior. The fork startup test runs real feedback,
+receipt persistence, replay and conflicting reuse with controlled storage.
+Cloudflare's `memory_apply_mutation.py` retains the equivalent D1 mutation rule.
+
 Local Server OS may explicitly select `--operator-ai mimo-cn` when rendering its
 profile. `operator_ai.py` owns the public model/endpoint contract and credential
 admission; `mimo_chat.py` and `mimo_speech.py` adapt the selected API. The ASGI

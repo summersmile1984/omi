@@ -2319,8 +2319,6 @@ def _apply_canonical_user_mutation(
             "result_status": LifecycleState.active.value,
             **logical_updates,
         }
-        if "arguments" in patch_updates:
-            logical_payload["arguments"] = patch_updates["arguments"]
         evidence_ids = [evidence.evidence_id for evidence in item.evidence]
         mutation_identity = build_patch_mutation_identity(
             {

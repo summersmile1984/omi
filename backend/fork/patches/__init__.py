@@ -17,6 +17,7 @@ from .. import firmware as _firmware
 from . import llm as _llm
 from . import capabilities as _capabilities
 from . import consolidation as _consolidation
+from . import canonical_memory as _canonical_memory
 from . import speech as _speech
 from . import provider_guard as _provider_guard
 from . import queue as _queue
@@ -31,6 +32,7 @@ ALL = (
     _llm,
     _capabilities,
     _consolidation,
+    _canonical_memory,
     _speech,
     _account_deletion,
     _provider_guard,
