@@ -129,6 +129,10 @@ export function sourceIdentity(root) {
         "backend/routers/jit_rollout.py",
         "backend/utils/memory/jit_trigger_contract.py",
         "backend/utils/memory/jit_trigger_snapshot.py",
+        "backend/routers/jit_ledger_snapshot.py",
+        "backend/utils/memory/jit_ledger_mirror_snapshot.py",
+        "backend/utils/memory/knowledge_ledger_migration.py",
+        "backend/utils/memory/universal_list_cursor.py",
         "backend/utils/memory/v3/account_generation_source.py",
         "backend/utils/screen_frames",
       ])

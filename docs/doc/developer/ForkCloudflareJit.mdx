@@ -186,3 +186,28 @@ unchanged prior source fails that test. Default prompts are unchanged.
 
 Verification scope and remaining release obligations are recorded in the
 [feedback execution record](../../../dev/unified-main/implementation-2026-09-05/jit-trigger-feedback-2026-09-08.md).
+
+## Knowledge-ledger snapshots
+
+`GET /v1/jit/knowledge-ledger/prompt-snapshot` returns the upstream prompt
+snapshot envelope. `mode=enabled` requires a current completed migration and
+projection receipt. Without those records, the response stays in compatibility
+mode with empty rows. An enabled snapshot contains at most 64 selected memory
+rows, with evidence and document bodies omitted. The endpoint reads memory;
+it does not change the model's default prompt or invoke an AI provider.
+
+`GET /v1/jit/knowledge-ledger/mirror-snapshot` returns a page of the authoritative
+ledger, including historical rows and lineage aliases. `page_size` defaults to
+200 and must be between 1 and 500. Follow the opaque `next_cursor` until
+`final_page=true`; every page must have no `failure_reason` and the same epoch.
+Use the original page/chain revision and cumulative counts when assembling the
+mirror. Cursors belong to the authenticated account and expire after 15 minutes.
+A changed epoch requires a fresh scan. A failed or oversized page is never a
+complete result, even when its returned rows are empty.
+
+Cloudflare uses the API Core `MEMORY_V3_CURSOR_SECRET` secret for cursor signing.
+Account identity comes from authentication. Both responses are `no-store` and
+recheck current rollout and memory authority before returning actionable data.
+Privacy retirement removes the derived prompt snapshot in the same transaction.
+The consumer implementation does not create migration receipts; production
+availability still requires the migration publisher and the full native JIT flow.

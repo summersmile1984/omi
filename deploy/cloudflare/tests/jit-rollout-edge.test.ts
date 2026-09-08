@@ -49,7 +49,12 @@ function request() {
 }
 
 describe("JIT rollout public boundary", () => {
-  it.each(["/v1/jit/trigger-snapshot", "/v3/memories/ledger-history"])(
+  it.each([
+    "/v1/jit/trigger-snapshot",
+    "/v3/memories/ledger-history",
+    "/v1/jit/knowledge-ledger/prompt-snapshot",
+    "/v1/jit/knowledge-ledger/mirror-snapshot",
+  ])(
     "binds %s to the authenticated owner and strips forged authority",
     async (snapshotPath) => {
       const { env, seen } = fixture();

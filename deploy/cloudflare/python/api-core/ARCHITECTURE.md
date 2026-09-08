@@ -1287,3 +1287,30 @@ the transient read participant is always removed before commit. Deleting a sourc
 or replacement purges its reopen receipt as upstream does, without inventing a
 new supersession link on the standalone closed source. Existing writer convergence,
 common two-target acceptance and production/native qualification are separate work.
+
+## Ledger prompt and mirror consumers
+
+`jit_ledger_snapshot_routes.py` serves both original knowledge-ledger snapshot
+GET routes through signed Edge authentication. `jit_ledger_snapshot_sources.py`
+stages the upstream completion/projection schemas, prompt selection, mirror
+wire models, HMAC cursors, page hashes, aliases and failure decisions; only the
+storage calls become asynchronous. `jit_ledger_snapshot_store.py` binds them to
+independent account generation, canonical control and the atomic proof pair in
+`cf_knowledge_ledger_snapshots` (0192). No consumer writes a completion or mode.
+
+Prompt reads revalidate the receipt's actual memory rows and physical privacy
+fields, then recheck source fingerprints. Time-dependent belief fields are
+returned exactly as recorded and excluded only from persisted-content equality.
+Mirror pages read all canonical IDs with the upstream 500-row maximum and one
+sentinel; SQL bounds records before transfer to Python. A record over 1 MB or a
+page over 4 MB fails without partial rows or false completion. Current page
+fingerprints and head/proof state are rechecked before returning authority.
+The original 15-minute cursors require API Core `MEMORY_V3_CURSOR_SECRET`;
+missing secrets never fall back to another key.
+
+Privacy update/delete triggers remove derived prompt text in the same transaction;
+the account-erasure registry owns whole-account cleanup. These are rebuildable
+proof/projection records, outside the upstream portable ledger-history families.
+Tests use explicit controlled migration receipts after native intake. The real
+migration publisher, remaining legacy writer convergence, native workflow and
+shared two-target/queued-erasure qualification remain required.

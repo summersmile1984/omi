@@ -2886,6 +2886,33 @@ against the actual D1 implementation. See the
 The [verification record](../../dev/unified-main/implementation-2026-09-05/jit-rollout-2026-09-06.md)
 distinguishes the hosted decision flow from the remaining trigger/ledger work.
 
+## Desktop knowledge-ledger snapshots
+
+Authenticated Edge/Core now expose the upstream `GET /v1/jit/knowledge-ledger/prompt-snapshot`
+and `GET /v1/jit/knowledge-ledger/mirror-snapshot` read contracts. Both require current
+rollout, account generation, canonical writer/head and migration/projection proof.
+Migration `0192_knowledge_ledger_snapshots.sql` stores the completion and projection
+pair; reads never create this proof or change writer mode. API Core requires the
+independent `MEMORY_V3_CURSOR_SECRET` secret-name mapping for the original signed
+mirror cursor. Missing or invalid authority cannot certify a complete mirror.
+
+The prompt preserves the original maximum of 64 selected rows and removes document
+bodies/evidence through the upstream projector. Its stored wire data is returned
+unchanged, while current source fields and privacy are checked before responding.
+The mirror retains 200 rows by default, a maximum page size of 500, owner-bound
+15-minute cursors, lineage aliases and the original cumulative revision chain.
+D1 limits each transferred source record to 1 MB and each page to 4 MB; a limit
+failure rejects the page instead of reporting a truncated complete result.
+Privacy retirement removes the stored projection in the same SQL transaction;
+account erasure includes the new table. Responses are `no-store`; no model or
+default prompt is changed.
+
+The migration publisher and remaining legacy writers must still converge on the
+canonical transaction owner before production can publish these proofs. Controlled
+receipts used to verify these consumers do not establish migration completion,
+native acceptance or full CF-4/CI-1 qualification. See the
+[snapshot implementation record](../../dev/unified-main/implementation-2026-09-05/jit-ledger-snapshots-2026-09-08.md).
+
 ## Canonical memory apply rules
 
 `scripts/memory_kernel_sources.py` packages the original canonical memory models,

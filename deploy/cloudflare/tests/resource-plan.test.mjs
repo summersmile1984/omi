@@ -467,6 +467,9 @@ describe("one brand/stage Cloudflare resource authority", () => {
     const missingSecret = resourceFixture();
     delete missingSecret.input.secret_refs.auth.BETTER_AUTH_SECRET;
     expect(() => render(missingSecret)).toThrow("secret name mapping");
+    const missingCursor = resourceFixture();
+    delete missingCursor.input.secret_refs["api-core"].MEMORY_V3_CURSOR_SECRET;
+    expect(() => render(missingCursor)).toThrow("secret name mapping");
     const split = resourceFixture();
     split.input.secret_refs.jobs.INTERNAL_ASSERTION_SECRET = "OTHER_INTERNAL";
     expect(() => render(split)).toThrow("one shared reference");

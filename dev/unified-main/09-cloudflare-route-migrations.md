@@ -203,8 +203,13 @@ preserves the upstream five-action policy, user authority while rollout is off,
 and durable replay. The shared Server adapter's operation digest now includes
 changed arguments, repairing valid feedback rejected before reaching storage.
 See [feedback verification](implementation-2026-09-05/jit-trigger-feedback-2026-09-08.md).
-The ledger mirror/prompt snapshots still need their migration/projection state
-owners. The entire JIT family's common two-target, native and queued-erasure
+The ledger mirror/prompt consumers now stage the original receipt validation,
+wire models, signed cursors, page revisions and lineage aliases over bounded D1
+reads. Migration 0192 adds their proof pair and privacy/account-erasure ownership.
+The producer still needs actual migration publication and convergence of the
+remaining noncanonical writers; reads cannot manufacture completion. See the
+[snapshot implementation record](implementation-2026-09-05/jit-ledger-snapshots-2026-09-08.md).
+The entire JIT family's common two-target, native and queued-erasure
 qualification remains required; no inventory classification changes here.
 
 | Method | Path                                       |
