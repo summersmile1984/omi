@@ -122,6 +122,7 @@ export function sourceIdentity(root) {
         "backend/routers/jit_rollout.py",
         "backend/utils/memory/jit_trigger_contract.py",
         "backend/utils/memory/jit_trigger_snapshot.py",
+        "backend/utils/memory/v3/account_generation_source.py",
         "backend/utils/screen_frames",
       ])
         .split("\0")

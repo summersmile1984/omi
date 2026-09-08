@@ -176,11 +176,22 @@ canonical D1 state families. Actual hosted Core/D1 verification passed concurren
 budgets, replay, parent ownership, trigger revocation and whole-batch rollback;
 the full Core regression and original upstream store tests also pass. See
 [reservation evidence](implementation-2026-09-05/jit-reservations-2026-09-08.md).
-The hosted fixture used synthetic signed principals and seeded trigger authority;
-it does not prove public Auth/Edge, queued erasure, the shared two-target
-reservation contract or the native workflow. Its inventory/manifest classification
-therefore remains blocked under the completion gate above. The four trigger/ledger
-snapshot and feedback routes still need their canonical CF business state owners.
+The initial hosted fixture used synthetic signed principals and seeded trigger
+authority. A subsequent public Auth/Edge snapshot run below also verifies the
+reservation path. Queued erasure, the shared two-target reservation contract and
+the native workflow remain unqualified. Its inventory/manifest classification
+therefore remains blocked under the completion gate above.
+
+The trigger-snapshot adapter now stages the original exhaustive reader and wire
+projection over the independent account generation, canonical control and D1
+trigger rows. It retains the 500-row limit and rejects invalid or changing
+watchlists as a whole. The [public execution record](implementation-2026-09-05/jit-trigger-snapshot-2026-09-08.md)
+proves actual signup/session/JWT, snapshot/reservation, 500/501 rows, privacy
+revocation and logout through hosted Auth/Rate Limit/Edge/Core/D1. Seeded trigger
+fixtures do not prove native trigger creation or the common two-target contract;
+its classification remains blocked pending the family completion gate.
+The ledger mirror/prompt snapshots and trigger feedback still need their CF
+business state owners.
 
 | Method | Path                                       |
 | ------ | ------------------------------------------ |

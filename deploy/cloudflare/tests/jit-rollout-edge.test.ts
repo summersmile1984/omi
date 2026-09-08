@@ -49,6 +49,20 @@ function request() {
 }
 
 describe("JIT rollout public boundary", () => {
+  it("binds trigger snapshots to the authenticated owner and strips forged authority", async () => {
+    const { env, seen } = fixture();
+    const snapshotPath = "/v1/jit/trigger-snapshot";
+    const incoming = new Request("https://edge.test" + snapshotPath, request());
+    const response = await edge.fetch(incoming, env as never);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(seen).toHaveLength(1);
+    const context = await verifyRequestAuthContext(seen[0], "api-core", env.INTERNAL_ASSERTION_SECRET);
+    expect(context).toMatchObject({ uid: "owner", method: "GET", path: snapshotPath });
+    for (const name of ["cookie", "authorization", "x-omi-uid"])
+      expect(seen[0].headers.has(name)).toBe(false);
+  });
+
   it("binds the current policy read to the authenticated owner and route", async () => {
     const { env, seen } = fixture();
     const response = await edge.fetch(request(), env as never);

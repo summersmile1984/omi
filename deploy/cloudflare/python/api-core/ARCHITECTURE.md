@@ -1181,7 +1181,28 @@ revocation and complete rollback after a failed final write. All disposable
 resources were removed. Local Core regression passes 1170 tests; the original
 upstream reservation store passes 21. See the
 [execution evidence](../../../../dev/unified-main/implementation-2026-09-05/jit-reservations-2026-09-08.md).
-This fixture uses synthetic signed principals and seeded trigger authority.
-Public Auth/Edge, the shared two-target reservation contract, queued erasure
-and the native trigger/watchlist workflow remain unqualified; the route manifest
-retains its blocked classification until its completion gate is satisfied.
+This initial fixture uses synthetic signed principals and seeded trigger
+authority. The subsequent public snapshot run below also verifies reservations
+through actual Auth/Edge. The shared two-target reservation contract, queued
+erasure and the native trigger/watchlist workflow remain unqualified; the route
+manifest retains its blocked classification until its completion gate is satisfied.
+
+`jit_trigger_snapshot_routes.py` supplies the desktop's exhaustive trigger
+watchlist. `jit_snapshot_sources.py` stages the original snapshot reader,
+revision hashing, model envelopes and response projection, replacing only
+Firestore IO with the D1 store. Account generation comes independently from
+`cf_account_cutover`; canonical control and its physical head/sequence must
+agree with it. Missing control with existing memory is not certified empty.
+The original 500-row maximum, active-row validation, action and snooze policy,
+whole-snapshot failure and final uncached rollout check are preserved.
+
+The store rechecks both the canonical head and the exact bounded trigger rows
+after scanning. This also catches existing writer families that mutate rows
+without advancing the head. No partial, invalid or concurrently revoked
+watchlist is released as complete. The route uses existing authentication and
+no-store responses; it performs no memory mutation or provider call. Its
+manifest classification remains blocked pending the family completion gate.
+The [public execution record](../../../../dev/unified-main/implementation-2026-09-05/jit-trigger-snapshot-2026-09-08.md)
+proves real signup/session/JWT, authenticated snapshot/reservation, 500/501-row
+behavior, privacy revocation and logout through the ordinary four Workers and
+hosted D1. It uses seeded trigger fixtures; all test resources were removed.

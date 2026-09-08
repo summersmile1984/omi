@@ -101,6 +101,47 @@ On 2026-09-08, the actual hosted Core/D1 path passed 12 concurrent notification
 requests with exactly three reservations, 12 triages with exactly eight
 reservations, idempotent replay, parent ownership, trigger revocation and an
 injected final-write failure with zero partial records. The fixture used
-synthetic signed principals and seeded trigger authority; it did not qualify
-public Auth/Edge, queued erasure, shared two-target reservation behavior or the
-native workflow. The route manifest remains blocked pending those gates.
+synthetic signed principals and seeded trigger authority. A subsequent hosted
+run also verified public Auth/Edge reservations alongside the trigger snapshot
+below. Queued erasure, shared two-target reservation behavior and the native
+workflow remain unqualified; the route manifest remains blocked pending its
+completion gate.
+
+## Trigger watchlist snapshot
+
+`GET /v1/jit/trigger-snapshot` uses the original exhaustive desktop watchlist
+contract. It returns the authenticated owner and generation, canonical head and
+sequence, deterministic snapshot revision, original runtime policy, and action
+rows. Each row includes memory ID/revision, trigger condition, action prompt,
+one-per-day wakeup budget and any snooze expiry. A snoozed trigger remains in
+the watchlist with its expiry, as required by the desktop matcher.
+
+The complete scan includes at most 500 trigger records. A 501st record, any
+invalid active trigger, an unavailable generation, or a state change during
+the scan yields `complete=false` with an empty `rows` array and an explicit
+`failure_reason`. Inactive rows remain part of the revision fingerprint but
+do not become actionable rows. A proven absence of canonical head and memory
+can produce a complete empty watchlist; missing control with existing memory
+does not prove absence.
+
+Cloudflare reads generation from the existing account cutover owner and checks
+it against canonical control. It then rechecks the head and actual trigger
+rows before releasing authority, including metadata-only changes by older
+writers. Rollout is read again immediately before responding. A disabled or
+killed rollout returns the original content-free disabled envelope. Responses
+use `Cache-Control: no-store`; the caller cannot select another owner through
+query parameters or identity headers.
+
+Reservation and feedback callers must use the account generation from their
+current actionable snapshot. A freshly authenticated Cloudflare account can
+already have generation 1; hard-coding the internal test fixture's generation 0
+correctly produces an authority conflict.
+
+This read performs no model call or mutation. Native trigger creation,
+feedback and ledger prompt/mirror qualification remain separate required work.
+
+The hosted public run passed real signup, session restore and JWT authentication;
+500-row completeness and 501-row rejection; sensitive-trigger revocation;
+reservation/replay/concurrent quotas; and logout revocation. Trigger rows were
+controlled SQL fixtures, not native trigger-creation evidence. All owned test
+Workers and databases were removed afterwards.

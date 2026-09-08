@@ -99,3 +99,10 @@ The route retains its blocked inventory/manifest classification under the
 The four trigger/ledger snapshot and feedback routes still require their CF
 owners. Full CI-1/CF-4 qualification and production deployment remain unfinished;
 the hosted journal explicitly records `release_qualified=false`.
+
+Subsequent evidence: the [public trigger-snapshot run](jit-trigger-snapshot-2026-09-08.md)
+also passed this reservation route through real signup/session/JWT and the
+ordinary Auth/Rate Limit/Edge/Core Workers. It used the snapshot's actual account
+generation, preserved the shared daily budget under contention, rejected an old
+receipt after privacy revocation and proved logout revocation. Shared two-target,
+queued erasure and native workflow qualification still remain.

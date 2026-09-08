@@ -1096,9 +1096,11 @@
           已在隔离 Cloudflare 环境通过两条真实 Qwen 业务链路：推荐生成、反馈与任务接受；
           原五分钟定时任务自动整理新记忆，并通过真实 BGE-M3／Vectorize 检索找回。
           两条链路各调用一次 Qwen，默认提示词未改动，测试资源已清理。
-          当前 Core 1170 项、Workers 1030 项全过；上游主动提醒预算测试 21 项通过。
+          当前 Core 1184 项、Workers 1031 项全过；本轮上游提醒快照测试 16 项通过。
           主动提醒预算预占已在真实 D1 验证并发限额、重复请求与写入失败整组回滚。
           D1 支持 batch 事务；上游 Firestore 的读写事务已适配为提交前检查和原子批次。
+          真实注册登录后的提醒快照与预算预占已通过公开 Auth／Edge 链路验证，
+          包括 500／501 条边界、敏感提醒撤销和注销后旧凭证拒绝；提醒数据采用受控测试记录。
           大批量、重试与隐藏反例的旧测试仍采用受控模型输出，不能据此声称全面模型质量验收。
           记忆转任务交接的云端验收、17 个未通过交付验收的接口、整体部署及 macOS 生产端验收仍未完成。
           <a href="../../dev/unified-main/implementation-2026-09-05/canonical-qwen-live-2026-09-08.md"
@@ -1106,7 +1108,9 @@
           <a href="../../dev/unified-main/implementation-2026-09-05/canonical-memory-live-2026-09-08.md"
             >自动记忆整理与检索验收</a>；
           <a href="../../dev/unified-main/implementation-2026-09-05/jit-reservations-2026-09-08.md"
-            >D1 预算事务验收及剩余范围</a>。
+            >D1 预算事务验收及剩余范围</a>；
+          <a href="../../dev/unified-main/implementation-2026-09-05/jit-trigger-snapshot-2026-09-08.md"
+            >公开登录链路的提醒快照验收</a>。
 
           <a
             href="../../dev/unified-main/implementation-2026-09-05/eddy-cloudflare-release-verification.md"

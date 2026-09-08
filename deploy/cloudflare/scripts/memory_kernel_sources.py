@@ -15,6 +15,7 @@ from candidate_kernel_sources import candidate_sources
 from recommendation_sources import recommendation_sources
 from recurrence_sources import recurrence_sources
 from jit_proactivity_sources import jit_sources
+from jit_snapshot_sources import snapshot_sources
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULES = {
@@ -77,6 +78,7 @@ def generate(output: Path) -> None:
     outputs.update(recommendation_sources())
     outputs.update(recurrence_sources())
     outputs.update(jit_sources())
+    outputs.update(snapshot_sources())
     outputs['integration_kernel.py'] = (
         'import hashlib\nimport json\nfrom typing import Any,Dict,List,Optional,Tuple\n'
         'from integration_queue_policy import QueuePolicy\n'
