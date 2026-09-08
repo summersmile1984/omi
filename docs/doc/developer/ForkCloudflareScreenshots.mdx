@@ -3,10 +3,10 @@ title: "Cloudflare meeting screenshots"
 description: "Screenshot display, settings and revocation for clients using the Cloudflare target"
 ---
 
-The screenshot API is under development in the Cloudflare target. Core implements
-candidate adjudication, display and revocation; the public Edge route family remains
-unavailable until the full supported input size and complete client workflow are qualified.
-Do not use these implementation results as evidence of a live deployment.
+The Cloudflare target implements screenshot adjudication, display and revocation
+through its public Edge API. The full supported input size and complete native
+client workflow remain under qualification. These implementation results do not
+establish that a particular production deployment is ready.
 
 An authenticated `GET /v1/screen-frame-egress/settings` returns
 `meeting_note_screenshots_enabled`, which defaults to true for existing accounts
@@ -51,6 +51,9 @@ Candidate submission uses `POST /v1/screen-frame-egress/adjudications` with
 `mime_type`, `declared_width`, `declared_height`, `sha256_base64` and `bytes_base64`.
 The conversation must be owned and completed; captures must fall within its
 time window with the existing two-minute slack.
+The public API enforces the upstream limit of 30 adjudication requests per
+account per hour, including replays. A request above the limit returns 429
+before any image bytes reach the adjudicator or model.
 
 Every transport digest is checked before model processing. Core standardizes
 the image and judges those exact bytes with `@cf/qwen/qwen3.8-27b`, the upstream

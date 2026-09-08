@@ -72,8 +72,12 @@ The [hosted Qwen run](../../../../dev/unified-main/implementation-2026-09-05/scr
 also passes the normal Core/writer with real Images, Qwen, D1 and R2, including
 read revocation after sharing/settings changes and deletion. The worker has no
 public route in that run. Synthetic owners and conversations were used;
-automated hosted erasure, supported-input memory limits, public Edge routing and
-production business qualification remain outstanding.
+the later [public screenshot run](../../../../dev/unified-main/implementation-2026-09-05/screen-frame-public-2026-09-08.md)
+also verifies real signup/session/JWT through Edge, quota enforcement, logout and
+automatic object deletion by this Worker's ordinary five-minute cron. No manual
+object deletion or cleanup endpoint supplied that result. Supported-input memory
+limits, native capture, queued account erasure and complete production business
+qualification remain outstanding.
 
 Protocol sources:
 [Qwen vision binding](https://developers.cloudflare.com/workers-ai/models/qwen3.8-27b/),

@@ -17,6 +17,11 @@ export type EdgeRateLimitPolicy = {
 };
 
 export const EDGE_RATE_LIMIT_POLICIES = {
+  "screenshots:adjudicate": {
+    name: "screenshots:adjudicate",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
   "frame_requests:read": {
     name: "frame_requests:read",
     maxRequests: 120,
@@ -284,6 +289,7 @@ export const PUBLIC_SHARED_CHAT_GLOBAL_RATE_LIMIT =
   EDGE_RATE_LIMIT_POLICIES["public_shared_chat:global"];
 
 const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
+  ["POST /v1/screen-frame-egress/adjudications", EDGE_RATE_LIMIT_POLICIES["screenshots:adjudicate"]],
   ["POST /v1/tts/synthesize", TTS_SYNTHESIZE_RATE_LIMIT],
   ["POST /v1/tts/synthesize-workers-ai", TTS_SYNTHESIZE_RATE_LIMIT],
   ["POST /v2/tts/synthesize", TTS_SYNTHESIZE_RATE_LIMIT],

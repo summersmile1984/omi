@@ -44,9 +44,11 @@ The [2026-09-08 Qwen verification](implementation-2026-09-05/screen-frame-qwen-2
 then runs the ordinary Core/writer with real Images/Qwen/D1/R2: meeting image
 storage, credential-image omission, replay, isolated owner reads and revocation
 after sharing/settings changes and deletion. It uses synthetic signed owners
-and completed conversations. These eight route slots remain blocked pending
-supported-input memory qualification, public Edge routing, native capture and
-full hosted business qualification, including automated erasure.
+and completed conversations. The [public screenshot run](implementation-2026-09-05/screen-frame-public-2026-09-08.md)
+adds real signup/session/JWT through Edge, the original 30-per-hour quota, logout
+and automatic R2 deletion by the writer's ordinary five-minute cron. These eight
+route slots remain blocked pending supported-input memory qualification, native
+capture, queued account erasure and complete two-target business qualification.
 The [native screenshot codec verification](implementation-2026-09-05/screen-image-hosted-2026-09-06.md)
 now covers 64-megapixel RGB/RGBA inputs, single 20 MiB binary/JSON requests,
 dense inputs, original colors/orientation and exact downstream bytes. The full

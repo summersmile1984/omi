@@ -369,6 +369,14 @@ the shared sanitized fallback event; missing legacy palette uses the upstream
 neutral colors. Invalid signing configuration fails the entire read with 503.
 
 `screen_frame_adjudication.py` now registers candidate admission and processing.
+Edge registers all eight screenshot API slots and the separate image-content
+capability route. Owner endpoints use the existing verified-session, cutover
+admission and signed Core context. Adjudication uses the upstream
+`screenshots:adjudicate` limit of 30 requests per account per hour before body
+forwarding. Shared sets and image reads preserve the URL while dropping caller
+credentials, claimed identity and cache validators; Core/the writer recheck
+current share state or the image capability. Responses stream through Edge with
+the Core privacy cache headers. The boundary tests run in the normal Workers suite.
 The upstream transport digest checks, capture window and request fingerprint are
 staged without rewriting their behavior. Every candidate digest is checked before
 the first model call; binary bytes are decoded again per candidate instead of
@@ -414,10 +422,12 @@ runs the normal Core and isolated writer with real Images/Qwen/D1/R2. A two-imag
 submission stores the meeting presentation and omits the synthetic credential
 image. It proves replay without repeated inference, exact receipt-to-content
 digests, separate owner views, sharing/settings revocation and deletion of read
-access. Principals and completed conversations are synthetic. Public Auth/Edge,
-native capture, automated hosted object erasure and the complete multi-candidate
-request envelope still require qualification; the eight inventory slots remain
-blocked. Earlier native hosted tests prove single
+access. The subsequent [public screenshot run](../../../../dev/unified-main/implementation-2026-09-05/screen-frame-public-2026-09-08.md)
+uses actual Auth signup/session/JWT through Edge, verifies the original quota,
+logout and the five-minute writer's automatic R2 erasure. Completed conversations
+and images are synthetic. Native capture, queued account erasure, the complete
+multi-candidate request envelope and two-target qualification remain outstanding;
+the eight inventory slots remain blocked. Earlier native hosted tests prove single
 64-megapixel RGB/RGBA images, a 20 MiB file (including its JSON transport), dense
 RGB/RGBA inputs and eight 64-megapixel RGBA candidates. They do not prove eight simultaneous
 20 MiB candidates or the complete adjudication/D1/R2/model workflow. See the

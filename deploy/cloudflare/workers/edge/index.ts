@@ -287,6 +287,18 @@ const proxyPublicCore = async (
   return withRequestId(response, id);
 };
 
+const proxyPublicScreenshots = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  // Shared visibility and image capabilities are checked by Core/the writer.
+  // Public reads carry no caller session, claimed identity or cache validators.
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers: new Headers() }),
+  );
+  return withRequestId(response, id);
+};
+
 const proxyPublicJobs = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
@@ -2088,6 +2100,15 @@ app.patch("/v3/memories/:memoryId/baseline", proxyAuthenticatedCore);
 app.post("/v3/memories/:memoryId/review", proxyAuthenticatedCore);
 app.post("/v3/memory-imports/batch", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/shared", proxyPublicCore);
+app.get("/v1/conversations/:conversationId/shared/screenshots", proxyPublicScreenshots);
+app.get("/v1/screen-frame-content", proxyPublicScreenshots);
+app.get("/v1/screen-frame-egress/settings", proxyAuthenticatedCore);
+app.patch("/v1/screen-frame-egress/settings", proxyAuthenticatedCore);
+app.post("/v1/screen-frame-egress/adjudications", proxyAuthenticatedCore);
+app.get("/v1/conversations/:conversationId/screenshots", proxyAuthenticatedCore);
+app.patch("/v1/conversations/:conversationId/screenshot-sharing", proxyAuthenticatedCore);
+app.delete("/v1/conversations/:conversationId/screenshots", proxyAuthenticatedCore);
+app.delete("/v1/conversations/:conversationId/screenshots/:frameId", proxyAuthenticatedCore);
 app.get("/v1/conversations", proxyAuthenticatedCore);
 app.post("/v1/conversations", proxyAuthenticatedCore);
 app.post("/v1/conversations/from-segments", proxyAuthenticatedCore);
