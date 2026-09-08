@@ -32,9 +32,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
         with:
-          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/pylock*.toml
+
+      # Managed Python is relocatable and installs under the runner account.
+      # setup-python's macOS archives require /Users/runner/hostedtoolcache.
+      - name: Provision CI Python
+        run: |
+          uv python install 3.12
+          fork_python=$(uv python find --managed-python 3.12)
+          dirname "$fork_python" >> "$GITHUB_PATH"
 
       # The guard classifies a file as "upstream" by its presence in
       # upstream/main, so without this ref it can only skip. Fetch it explicitly
@@ -79,22 +89,11 @@ jobs:
             --manifest .github/checks-manifest.fork.yaml --lane ci \
             --base "$DIFF_BASE" --platform linux --check-id fork-upstream-touch
 
-      # fork-backend-seams runs the real backend suite through test.sh, which
-      # needs the pinned interpreter. Without it the check silently degrades to
-      # "no module named pytest" -- a dead check is worse than no check, since
-      # the whole point is catching an upstream rename.
-      # Same pinned action and cache key shape upstream's backend-unit-tests
-      # workflow uses, so the fork gate provisions the identical interpreter.
-      - name: Install uv
-        uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
-        with:
-          enable-cache: true
-          cache-dependency-glob: backend/pylock*.toml
-
       - name: Provision backend environment
         run: |
           make setup-backend
           uv pip install --python backend/.venv/bin/python --no-deps --require-hashes -r backend/requirements-fork.txt
+          echo "$GITHUB_WORKSPACE/backend/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Select platform checks
         id: platforms
@@ -192,12 +191,14 @@ jobs:
           git diff --name-only refs/remotes/upstream/main HEAD | sort -u > /tmp/changed.txt
           git ls-tree -r --name-only refs/remotes/upstream/main | sort -u > /tmp/upstream.txt
           n=$(comm -12 /tmp/changed.txt /tmp/upstream.txt | wc -l | tr -d ' ')
-          echo "### Fork divergence" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Upstream files this branch differs from upstream on: **$n**" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "This number should only fall. It counts everything, including" >> "$GITHUB_STEP_SUMMARY"
-          echo "upstream commits not yet merged here, so read it as a trend." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Fork divergence"
+            echo ""
+            echo "Upstream files this branch differs from upstream on: **$n**"
+            echo ""
+            echo "This number should only fall. It counts everything, including"
+            echo "upstream commits not yet merged here, so read it as a trend."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   fork-macos:
     name: Fork macOS native contracts
@@ -213,9 +214,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
         with:
-          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/pylock*.toml
+
+      # Managed Python is relocatable and installs under the runner account.
+      # setup-python's macOS archives require /Users/runner/hostedtoolcache.
+      - name: Provision CI Python
+        run: |
+          uv python install 3.12
+          fork_python=$(uv python find --managed-python 3.12)
+          dirname "$fork_python" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v4
         with:

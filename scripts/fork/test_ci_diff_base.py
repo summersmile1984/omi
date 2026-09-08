@@ -129,6 +129,43 @@ class DiffBaseTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
+    def test_both_jobs_bootstrap_python_in_runner_account(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        for name, job in workflow['jobs'].items():
+            command = next(step['run'] for step in job['steps'] if step.get('name') == 'Provision CI Python')
+            with tempfile.TemporaryDirectory(prefix='fork-ci-python-') as directory:
+                root = Path(directory)
+                managed_bin = root / 'managed python/bin'
+                managed_bin.mkdir(parents=True)
+                uv = root / 'uv'
+                uv.write_text(
+                    '#!/bin/sh\n'
+                    'if [ "$*" = "python install 3.12" ]; then exit "$FIXTURE_INSTALL_STATUS"; fi\n'
+                    '[ "$*" = "python find --managed-python 3.12" ] || exit 64\n'
+                    'printf "%s/python3.12\\n" "$FIXTURE_MANAGED_BIN"\n'
+                )
+                uv.chmod(0o755)
+                output = root / 'github-path'
+                for status in (0, 1):
+                    with self.subTest(job=name, install_status=status):
+                        output.unlink(missing_ok=True)
+                        result = subprocess.run(
+                            ['bash', '-euo', 'pipefail', '-c', command],
+                            env={
+                                **os.environ,
+                                'PATH': f'{root}:{os.environ["PATH"]}',
+                                'GITHUB_PATH': str(output),
+                                'FIXTURE_MANAGED_BIN': str(managed_bin),
+                                'FIXTURE_INSTALL_STATUS': str(status),
+                            },
+                            capture_output=True,
+                            text=True,
+                        )
+                        self.assertEqual(result.returncode, status, result.stderr)
+                        self.assertEqual(output.exists(), status == 0)
+                        if status == 0:
+                            self.assertEqual(output.read_text().strip(), str(managed_bin))
+
     def test_backend_provision_restores_fork_layer_only_after_successful_sync(self) -> None:
         # make setup-backend removes packages outside the upstream lock. The
         # actual workflow must restore the hash-pinned fork layer afterwards.
@@ -158,6 +195,7 @@ class ManifestTests(unittest.TestCase):
             for status in (0, 1):
                 with self.subTest(upstream_status=status):
                     marker.write_text('old install')
+                    (root / 'github-path').unlink(missing_ok=True)
                     result = subprocess.run(
                         ['bash', '-euo', 'pipefail', '-c', command],
                         cwd=root,
@@ -165,6 +203,8 @@ class ManifestTests(unittest.TestCase):
                             **os.environ,
                             'PATH': f'{root}:{os.environ["PATH"]}',
                             'FIXTURE_UPSTREAM_STATUS': str(status),
+                            'GITHUB_WORKSPACE': str(root),
+                            'GITHUB_PATH': str(root / 'github-path'),
                         },
                         capture_output=True,
                         text=True,
@@ -173,6 +213,9 @@ class ManifestTests(unittest.TestCase):
                     self.assertEqual(marker.exists(), status == 0)
                     if status == 0:
                         self.assertEqual(marker.read_text(), 'installed')
+                        self.assertEqual((root / 'github-path').read_text().strip(), str(root / 'backend/.venv/bin'))
+                    else:
+                        self.assertFalse((root / 'github-path').exists())
 
     def test_actual_fork_manifest_resolves_after_backend_test_moves(self) -> None:
         # 6d9b046eec moved storage/queue tests into backend/fork/tests while the

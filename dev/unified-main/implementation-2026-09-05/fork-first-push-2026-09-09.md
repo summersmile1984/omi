@@ -79,3 +79,23 @@ switch. This bypasses the hook as a whole for this one push; it does not change
 hooks, checks or their reported outcomes. It is not a full preflight pass or
 main-merge approval. The fork CI still runs its own unchanged ownership and
 deployment-target gates on the pushed source.
+
+
+## First cloud CI attempt and runner bootstrap repair
+
+Commit `7082acf97c` was pushed successfully. The real GitHub Actions run
+[34268928847](https://github.com/summersmile1984/omi/actions/runs/34268928847)
+was accepted by `macstudio-memweft`, then failed before business tests because
+`actions/setup-python` tried to create `/Users/runner/hostedtoolcache`.
+[The action documents this macOS archive constraint](https://github.com/actions/setup-python/blob/main/docs/advanced-usage.md).
+
+Both fork jobs now install managed Python through the already pinned uv action,
+using the runner account's writable install directory. After backend sync and
+fork-layer restore, the primary job publishes the pinned backend interpreter on
+GITHUB_PATH so later Python contracts share its installed dependencies.
+The existing workflow behavior suite executes both jobs' bootstrap shell for
+success/failure, and checks that a failed backend sync cannot publish its path.
+All 11 tests pass; the actual bootstrap selected managed Python 3.12.13 on this
+Mac without privilege changes. Workflow actionlint including shellcheck passes.
+The correction push retains the documented first-push hook exception; this
+record does not claim the separate upstream preflight passed.

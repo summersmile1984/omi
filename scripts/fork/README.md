@@ -29,7 +29,10 @@ After `make setup-backend`, install the fork runtime layer with
 `uv pip install --python backend/.venv/bin/python --no-deps --require-hashes -r backend/requirements-fork.txt`.
 The upstream sync removes packages outside its lock. The fork file supplies
 hash-pinned CPython 3.11 wheels for Linux amd64 and Mac Studio ARM64, and CI
-installs it after every upstream environment sync.
+installs it after every upstream environment sync and selects that interpreter
+for subsequent Python checks. Both jobs bootstrap Python 3.12 through `uv` in
+the runner account; this avoids the non-relocatable macOS `setup-python` archive
+requiring `/Users/runner/hostedtoolcache` on a self-hosted Mac.
 
 ## Runner and event routing
 
