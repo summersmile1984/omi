@@ -1,4 +1,4 @@
-"""Original screenshot privacy prompt and schema over Cloudflare's Gemini binding."""
+"""Original screenshot privacy prompt and schema over Cloudflare's Qwen vision binding."""
 
 import asyncio
 import base64
@@ -10,6 +10,8 @@ from screen_frames_contract import ScreenFrameJudgement
 from screen_frames_prompt import _PRIVACY_PROMPT
 from synthesis_routes import _rpc_mapping
 
+SCREEN_FRAME_MODEL = '@cf/qwen/qwen3.8-27b'
+
 
 class JudgeFailure(Exception):
     pass
@@ -17,24 +19,30 @@ class JudgeFailure(Exception):
 
 def model_input(jpeg):
     return {
-        'contents': [
+        'messages': [
             {
                 'role': 'user',
-                'parts': [
-                    {'text': _PRIVACY_PROMPT},
-                    {'inlineData': {'mimeType': 'image/jpeg', 'data': base64.b64encode(jpeg).decode('ascii')}},
+                'content': [
+                    {'type': 'text', 'text': _PRIVACY_PROMPT},
+                    {
+                        'type': 'image_url',
+                        'image_url': {'url': 'data:image/jpeg;base64,' + base64.b64encode(jpeg).decode('ascii')},
+                    },
                 ],
             }
         ],
-        'generationConfig': {
-            'responseMimeType': 'application/json',
-            'responseJsonSchema': ScreenFrameJudgement.model_json_schema(),
+        'response_format': {
+            'type': 'json_schema',
+            'json_schema': {'name': 'ScreenFrameJudgement', 'schema': ScreenFrameJudgement.model_json_schema()},
         },
+        'max_completion_tokens': 8192,
+        'n': 1,
+        'temperature': 0,
     }
 
 
 async def _usage(env, attempt, model, result):
-    usage = _rpc_mapping(result.get('usageMetadata')) or {}
+    usage = _rpc_mapping(result.get('usage')) or {}
 
     def count(key):
         value = usage.get(key)
@@ -45,7 +53,7 @@ async def _usage(env, attempt, model, result):
         )
 
     now = int(time.time())
-    incoming, outgoing = count('promptTokenCount'), count('candidatesTokenCount') + count('thoughtsTokenCount')
+    incoming, outgoing = count('prompt_tokens'), count('completion_tokens')
     await env.APP_DB.prepare(
         'INSERT INTO cf_llm_usage_daily (uid, usage_day, usage_kind, feature, model, account, '
         'input_tokens, output_tokens, total_tokens, call_count, updated_at) '
@@ -68,23 +76,27 @@ async def _usage(env, attempt, model, result):
     ).run()
 
 
-async def judge(env, attempt, jpeg, policy):
+async def judge(env, attempt, jpeg):
     try:
-        result = _rpc_mapping(
-            await asyncio.wait_for(env.AI.run('google/' + policy.model, model_input(jpeg)), timeout=90)
-        )
+        result = _rpc_mapping(await asyncio.wait_for(env.AI.run(SCREEN_FRAME_MODEL, model_input(jpeg)), timeout=90))
         if not result:
             raise JudgeFailure('malformed_output')
-        await _usage(env, attempt, policy.model, result)
-        candidates = result.get('candidates')
-        if not isinstance(candidates, list) or len(candidates) != 1 or candidates[0].get('finishReason') != 'STOP':
+        await _usage(env, attempt, SCREEN_FRAME_MODEL, result)
+        choices = result.get('choices')
+        if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
             raise JudgeFailure('malformed_output')
-        parts = candidates[0].get('content', {}).get('parts', [])
-        text = ''.join(
-            part['text']
-            for part in parts
-            if isinstance(part, dict) and not part.get('thought') and isinstance(part.get('text'), str)
-        )
+        message = choices[0].get('message')
+        if (
+            choices[0].get('finish_reason') != 'stop'
+            or not isinstance(message, dict)
+            or message.get('role') != 'assistant'
+            or message.get('refusal')
+            or message.get('tool_calls')
+        ):
+            raise JudgeFailure('malformed_output')
+        text = message.get('content')
+        if not isinstance(text, str):
+            raise JudgeFailure('malformed_output')
         verdict = ScreenFrameJudgement.model_validate_json(text)
         if (verdict.outcome == 'approved_clean') != (verdict.reject_reason is None):
             raise JudgeFailure('contradictory_output')

@@ -194,7 +194,7 @@ async function fixture(uid = "screen-owner") {
     purpose: "meeting_note_v1",
     retention: "with_subject",
     decision: "approved_clean",
-    model: "gemini-2.5-flash-lite",
+    model: "@cf/qwen/qwen3.8-27b",
     policy_version: "test-policy",
     prompt_version: "test-prompt",
     issued_at: now,
@@ -315,6 +315,7 @@ describe("isolated screenshot writer", () => {
     "rejected",
     "wrong-purpose",
     "wrong-model",
+    "retired-model",
     "wrong-audience",
     "wrong-owner",
     "wrong-digest",
@@ -327,6 +328,7 @@ describe("isolated screenshot writer", () => {
     }
     if (kind === "rejected") Object.assign(p, { decision: "rejected" });
     if (kind === "wrong-model") Object.assign(p, { model: "other-model" });
+    if (kind === "retired-model") Object.assign(p, { model: "gemini-2.5-flash-lite" });
     if (kind === "wrong-audience") Object.assign(p, { aud: "api-core" });
     if (kind === "wrong-owner") p.uid = "another-owner";
     const signed = token(

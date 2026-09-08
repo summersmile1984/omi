@@ -135,7 +135,7 @@ print(json.dumps(statements))
       purpose: "meeting_note_v1",
       retention: "with_subject",
       decision: "approved_clean",
-      model: "gemini-2.5-flash-lite",
+      model: "@cf/qwen/qwen3.8-27b",
       policy_version: "fixture",
       prompt_version: "fixture",
       issued_at: now,

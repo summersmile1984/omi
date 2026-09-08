@@ -388,10 +388,17 @@ the unchanged upstream canonicalizer creates the 1600-pixel quality-82 JPEG,
 480-pixel quality-75 thumbnail and exact-byte digest. No transform occurs on reads.
 
 `screen_frame_judge.py` sends the unchanged upstream privacy prompt and judgement
-schema through `AI.run('google/gemini-2.5-flash-lite', ...)`. Contradictory or
-malformed output never authorizes storage. Only the judged canonical JPEG and
-its derived thumbnail/metadata enter a signed write approval. Usage uses the
-existing `screen_frame_judge` feature in the D1 LLM ledger.
+schema through `AI.run('@cf/qwen/qwen3.8-27b', ...)`. The Cloudflare target selects
+this vision model; the upstream purpose rules and default prompt retain their
+original source. The request uses a text part plus a JPEG data URL in `messages`
+and the original model's JSON schema in `response_format`, following the
+[Cloudflare Qwen protocol](https://developers.cloudflare.com/workers-ai/models/qwen3.8-27b/).
+Only a single completed assistant choice supplies the verdict. Refusals, tool
+calls, reasoning-only, contradictory or malformed output never authorize storage.
+Only the judged canonical JPEG and its derived thumbnail/metadata enter a signed
+write approval. Core and the isolated writer bind that approval to the exact Qwen
+model identity. Usage uses the existing `screen_frame_judge` feature in the D1
+LLM ledger; completion tokens already include reasoning tokens and are counted once.
 
 `screen_frame_adjudication_store.py` owns the 24-hour attempt reservation and
 replay response. A D1 batch acquires the attempt response against the current
@@ -402,12 +409,15 @@ privacy epoch changes cancel the whole pending publication. An all-rejected pass
 sets `adjudicated_at` without incrementing revision, matching the upstream rule.
 The storage worker expires attempt rows in bounded batches.
 
-Core's entire screenshot pipeline has now run in local workerd with real PNG
-canonicalization, actual writer approval verification and real D1/R2. Inference
-was controlled and checked the original prompt hash; this is not model-quality
-or hosted-provider evidence. Edge routing and the eight inventory slots remain
-blocked until hosted model access, the complete multi-candidate request envelope
-and business qualification are resolved. Native hosted tests now prove single
+The [hosted Qwen verification](../../../../dev/unified-main/implementation-2026-09-05/screen-frame-qwen-2026-09-08.md)
+runs the normal Core and isolated writer with real Images/Qwen/D1/R2. A two-image
+submission stores the meeting presentation and omits the synthetic credential
+image. It proves replay without repeated inference, exact receipt-to-content
+digests, separate owner views, sharing/settings revocation and deletion of read
+access. Principals and completed conversations are synthetic. Public Auth/Edge,
+native capture, automated hosted object erasure and the complete multi-candidate
+request envelope still require qualification; the eight inventory slots remain
+blocked. Earlier native hosted tests prove single
 64-megapixel RGB/RGBA images, a 20 MiB file (including its JSON transport), dense
 RGB/RGBA inputs and eight 64-megapixel RGBA candidates. They do not prove eight simultaneous
 20 MiB candidates or the complete adjudication/D1/R2/model workflow. See the

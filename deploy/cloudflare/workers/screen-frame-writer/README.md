@@ -16,6 +16,10 @@ the common request assertion key. The approval binds issuer, audience, uid,
 conversation, attempt, epoch, model/policy/prompt identity, decision, both byte
 digests and metadata. It is never a client credential. The writer verifies the
 claims and bytes and consumes the approval ID in D1 before R2 work.
+The accepted model identity is `@cf/qwen/qwen3.8-27b`, matching Core's vision
+binding and usage ledger. An approval naming the retired Gemini provider is
+rejected before any image storage; the original privacy and prompt versions
+remain unchanged.
 Readiness and image admission also reject equal actual signing/assertion keys,
 so distinct secret reference names alone cannot mask a reused credential.
 
@@ -64,9 +68,14 @@ Tests run in the existing `deploy/cloudflare/ci/routes.sh` lane:
 resource-plan tests, plus Core's user export test. The eight upstream public
 screenshot routes remain classified as blocked. Core now also has native local
 PNG → controlled judge → signed approval → writer → D1/R2 → content-proxy evidence.
-Hosted model access, supported-input memory limits, Edge routing and production
-business qualification remain outstanding.
+The [hosted Qwen run](../../../../dev/unified-main/implementation-2026-09-05/screen-frame-qwen-2026-09-08.md)
+also passes the normal Core/writer with real Images, Qwen, D1 and R2, including
+read revocation after sharing/settings changes and deletion. The worker has no
+public route in that run. Synthetic owners and conversations were used;
+automated hosted erasure, supported-input memory limits, public Edge routing and
+production business qualification remain outstanding.
 
 Protocol sources:
+[Qwen vision binding](https://developers.cloudflare.com/workers-ai/models/qwen3.8-27b/),
 [R2 Workers multipart API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/),
 [R2 error codes](https://developers.cloudflare.com/r2/api/error-codes/).

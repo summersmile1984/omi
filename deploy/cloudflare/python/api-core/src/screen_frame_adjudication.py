@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from screen_frame_adjudication_store import current, failure, publish, reserve
 from screen_frame_content import _encode, signing_secret
 from screen_frame_image import canonicalize_screen_frame
-from screen_frame_judge import JudgeFailure, judge
+from screen_frame_judge import SCREEN_FRAME_MODEL, JudgeFailure, judge
 from screen_frame_views import FENCE, ScreenshotRoute, _enabled, _response, owner
 from screen_frames_admission import (
     IDEMPOTENCY_TTL_SECONDS,
@@ -71,7 +71,7 @@ def approval(env, attempt, candidate, canonical, judgement, policy):
         'purpose': 'meeting_note_v1',
         'retention': policy.retention.value,
         'decision': judgement.outcome,
-        'model': policy.model,
+        'model': SCREEN_FRAME_MODEL,
         'policy_version': policy.policy_version,
         'prompt_version': policy.prompt_version,
         'issued_at': now,
@@ -165,7 +165,7 @@ async def adjudicate(request: Request, body: ScreenFrameAdjudicationRequest, uid
         except ScreenFrameCanonicalizationError:
             continue
         try:
-            judgement = await judge(env, attempt, canonical.jpeg_bytes, policy)
+            judgement = await judge(env, attempt, canonical.jpeg_bytes)
         except JudgeFailure:
             continue
         if judgement.outcome != 'approved_clean':

@@ -5,7 +5,7 @@ description: "Screenshot display, settings and revocation for clients using the 
 
 The screenshot API is under development in the Cloudflare target. Core implements
 candidate adjudication, display and revocation; the public Edge route family remains
-unavailable until hosted model access and the complete workflow are qualified.
+unavailable until the full supported input size and complete client workflow are qualified.
 Do not use these implementation results as evidence of a live deployment.
 
 An authenticated `GET /v1/screen-frame-egress/settings` returns
@@ -53,8 +53,9 @@ The conversation must be owned and completed; captures must fall within its
 time window with the existing two-minute slack.
 
 Every transport digest is checked before model processing. Core standardizes
-the image and judges those exact bytes with the upstream privacy prompt and
-strict output schema. A client verdict cannot approve an image. Rejected or
+the image and judges those exact bytes with `@cf/qwen/qwen3.8-27b`, the upstream
+privacy prompt and strict output schema. The prompt is unchanged. A client
+verdict cannot approve an image. Rejected or
 unreadable candidates are omitted; a failed approved-image write returns 503.
 JPEG/PNG processing uses Cloudflare Images to decode and resize the source;
 the final JPEG and thumbnail use the upstream encoder. EXIF orientation is

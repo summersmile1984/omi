@@ -65,6 +65,7 @@ class D1(Database):
 class AI:
     def __init__(self):
         self.calls, self.results, self.hook = [], [], None
+        self.response = None
 
     async def run(self, model, payload):
         self.calls.append((model, payload))
@@ -73,10 +74,14 @@ class AI:
         result = self.results.pop(0) if self.results else deepcopy(APPROVED)
         if isinstance(result, Exception):
             raise result
-        return {
-            'candidates': [{'content': {'parts': [{'text': json.dumps(result)}]}, 'finishReason': 'STOP'}],
-            'usageMetadata': {'promptTokenCount': 120, 'candidatesTokenCount': 30},
-        }
+        return self.response if self.response is not None else completion(result)
+
+
+def completion(verdict):
+    return {
+        'choices': [{'message': {'role': 'assistant', 'content': json.dumps(verdict)}, 'finish_reason': 'stop'}],
+        'usage': {'prompt_tokens': 120, 'completion_tokens': 30, 'completion_tokens_details': {'reasoning_tokens': 12}},
+    }
 
 
 class Writer:
@@ -233,9 +238,18 @@ def test_approved_pipeline_judges_and_writes_identical_canonical_bytes_and_repla
     assert value['frame_set']['adjudicated_at']
     claims, jpeg, thumbnail = target.writer.calls[0]
     model, payload = target.ai.calls[0]
-    assert model == 'google/gemini-2.5-flash-lite'
-    assert payload['contents'][0]['parts'][0]['text'] == _PRIVACY_PROMPT
-    assert base64.b64decode(payload['contents'][0]['parts'][1]['inlineData']['data']) == jpeg
+    assert model == claims['model'] == '@cf/qwen/qwen3.8-27b'
+    assert payload['messages'][0]['content'][0] == {'type': 'text', 'text': _PRIVACY_PROMPT}
+    image = payload['messages'][0]['content'][1]
+    assert image['type'] == 'image_url'
+    prefix, encoded = image['image_url']['url'].split(',', 1)
+    assert prefix == 'data:image/jpeg;base64' and base64.b64decode(encoded) == jpeg
+    from screen_frames_contract import ScreenFrameJudgement
+
+    assert payload['response_format'] == {
+        'type': 'json_schema',
+        'json_schema': {'name': 'ScreenFrameJudgement', 'schema': ScreenFrameJudgement.model_json_schema()},
+    }
     assert Image.open(io.BytesIO(jpeg)).size == (1600, 900)
     assert Image.open(io.BytesIO(thumbnail)).size == (480, 270)
     assert (claims['policy_version'], claims['prompt_version'], claims['decision']) == (
@@ -247,6 +261,7 @@ def test_approved_pipeline_judges_and_writes_identical_canonical_bytes_and_repla
     assert target.call(request).json() == value
     assert len(target.ai.calls) == len(target.writer.calls) == 1
     usage = target.db.connection.execute('SELECT * FROM cf_llm_usage_daily').fetchone()
+    assert usage['model'] == model
     assert (usage['feature'], usage['input_tokens'], usage['output_tokens'], usage['call_count']) == (
         'screen_frame_judge',
         120,
@@ -315,6 +330,44 @@ def test_rejected_malformed_or_failed_judge_never_writes_and_records_the_attempt
     assert response.json()['frame_set']['revision'] == 0 and response.json()['frame_set']['adjudicated_at']
     assert not target.writer.calls
     assert target.db.connection.execute('SELECT count(*) FROM cf_screen_frame_writes').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    'fault', ['empty', 'multiple', 'nonobject', 'length', 'refusal', 'tool', 'role', 'reasoning_only']
+)
+def test_qwen_incomplete_refused_or_ambiguous_response_cannot_authorize_storage(target, fault):
+    reply = completion(APPROVED)
+    message = reply['choices'][0]['message']
+    if fault == 'empty':
+        reply['choices'] = []
+    elif fault == 'multiple':
+        reply['choices'] *= 2
+    elif fault == 'nonobject':
+        reply['choices'] = [None]
+    elif fault == 'length':
+        reply['choices'][0]['finish_reason'] = 'length'
+    elif fault == 'refusal':
+        message['refusal'] = 'Cannot judge this image'
+    elif fault == 'tool':
+        message['tool_calls'] = [{'id': 'unexpected-tool'}]
+    elif fault == 'role':
+        message['role'] = 'user'
+    else:
+        message['reasoning_content'] = message.pop('content')
+    target.ai.response = reply
+    response = target.call(body())
+    assert response.status_code == 200 and response.json()['outcome'] == 'no_approved_frames'
+    assert not target.writer.calls
+    assert target.db.connection.execute('SELECT count(*) FROM cf_screen_frame_writes').fetchone()[0] == 0
+
+
+def test_qwen_reasoning_cannot_override_the_final_privacy_rejection(target):
+    reply = completion({**APPROVED, 'outcome': 'rejected', 'reject_reason': 'credentials'})
+    reply['choices'][0]['message']['reasoning_content'] = json.dumps(APPROVED)
+    target.ai.response = reply
+    response = target.call(body())
+    assert response.status_code == 200 and response.json()['outcome'] == 'no_approved_frames'
+    assert not target.writer.calls
 
 
 def test_bad_codec_is_candidate_local_and_long_metadata_uses_original_normalization(target):

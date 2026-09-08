@@ -22,7 +22,7 @@ export type Approval = {
   purpose: "meeting_note_v1";
   retention: "with_subject";
   decision: "approved_clean";
-  model: "gemini-2.5-flash-lite";
+  model: "@cf/qwen/qwen3.8-27b";
   policy_version: string;
   prompt_version: string;
   issued_at: number;
@@ -146,7 +146,7 @@ export async function verifyApproval(
     p.purpose !== "meeting_note_v1" ||
     p.retention !== "with_subject" ||
     p.decision !== "approved_clean" ||
-    p.model !== "gemini-2.5-flash-lite" ||
+    p.model !== "@cf/qwen/qwen3.8-27b" ||
     typeof p.policy_version !== "string" ||
     !p.policy_version ||
     p.policy_version.length > 128 ||
