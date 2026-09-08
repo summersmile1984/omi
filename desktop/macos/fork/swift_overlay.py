@@ -31,7 +31,7 @@ def declarations(path: Path) -> dict[str, list[tuple[int, int]]]:
     for line in lines:
         offsets.append(offsets[-1] + len(line))
     found: dict[str, list[tuple[int, int]]] = {}
-    pattern = re.compile(r'\(func_decl .*?range=\[.*?:(\d+):(\d+) - line:(\d+):(\d+)\] "([^"]+)"')
+    pattern = re.compile(r'\((?:func|constructor)_decl .*?range=\[.*?:(\d+):(\d+) - line:(\d+):(\d+)\] "([^"]+)"')
     for match in pattern.finditer(result.stdout + result.stderr):
         first_line, first_col, last_line, last_col = map(int, match.group(1, 2, 3, 4))
         start = offsets[first_line - 1] + first_col - 1

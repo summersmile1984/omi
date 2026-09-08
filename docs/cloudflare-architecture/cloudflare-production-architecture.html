@@ -1101,6 +1101,8 @@
           撤销分享、关闭截图和删除后旧预览链接均失效。
           公开注册登录后的截图链路另有 56 项 HTTP 验证，覆盖原每小时 30 次限额、注销和五分钟定时任务自动清理 R2；
           会话及图片仍为测试数据，大批量输入与 macOS 实际采集尚未完成验收。
+          macOS 截图请求的普通 30 秒超时已在 fork 构建层修正：真实本机 HTTP 延迟测试中，
+          原请求约 30.5 秒失败，修正后约 41 秒收到结果；这项传输验证不等同于原生完整业务验收。
           主动提醒预算预占已在真实 D1 验证并发限额、重复请求与写入失败整组回滚。
           D1 支持 batch 事务；上游 Firestore 的读写事务已适配为提交前检查和原子批次。
           真实注册登录后的提醒快照与预算预占已通过公开 Auth／Edge 链路验证，
@@ -1117,6 +1119,8 @@
             >Qwen 截图审核与预览撤销验收</a>；
           <a href="../../dev/unified-main/implementation-2026-09-05/screen-frame-public-2026-09-08.md"
             >公开截图链路与自动清理验收</a>；
+          <a href="../../dev/unified-main/implementation-2026-09-05/screen-frame-native-timeout-2026-09-08.md"
+            >原生截图请求超时修正验证</a>；
           <a href="../../dev/unified-main/implementation-2026-09-05/jit-trigger-snapshot-2026-09-08.md"
             >公开登录链路的提醒快照验收</a>。
 

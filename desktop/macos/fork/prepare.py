@@ -157,6 +157,11 @@ def stage(
         ROOT / "desktop/macos/Desktop", desktop, ignore=shutil.ignore_patterns(".build", ".swiftpm", ".DS_Store")
     )
     source = desktop / "Sources"
+    rewrite_functions(
+        source / "Services/APIClient/APIClient+ScreenFrames.swift",
+        {"adjudicateScreenFrames(_:)": (FORK / "overlays/screen_frame_adjudication.swift").read_text()},
+        owners,
+    )
     generated = source / "ForkNative"
     generated.mkdir()
     for path in (FORK / "Sources/NativeIdentity").glob("*.swift"):

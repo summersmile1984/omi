@@ -68,6 +68,15 @@ image transformation or model call.
 The successful result contains `attempt_id`, `outcome` (`committed` or
 `no_approved_frames`) and `frame_set`.
 
+Adjudication processes candidates sequentially and returns its JSON only when
+the attempt finishes. Clients must allow for the complete batch rather than
+use a short CRUD request timeout. The fork macOS build sets this request's
+inactivity timeout to 60 seconds plus 180 seconds per candidate, capped at eight
+candidates (25 minutes). This is an upper allowance for slow image/model/storage
+calls, not expected latency or a server completion guarantee. The request stays
+one attempt with the same candidate bytes; other API requests retain their
+ordinary timeout. The full supported batch-body size remains under qualification.
+
 Repeating an attempt with the same request replays its stored response for
 24 hours; a different fingerprint returns 409 and an unfinished attempt returns 503. An all-rejected pass updates `adjudicated_at` while leaving revision
 unchanged. At most seven approved frames survive, with up to one banner and six

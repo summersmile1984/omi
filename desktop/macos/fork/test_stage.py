@@ -343,6 +343,42 @@ extension Bundle { static let resourceBundle = Bundle.main }
         result = subprocess.run([str(binary)], capture_output=True, text=True, check=True)
         self.assertIn("both targets passed", result.stdout)
 
+    def test_staged_screen_frame_request_preserves_attempt_and_waits_for_sequential_judging(self):
+        source = self.output / "Desktop/Sources"
+
+        def method(path, name):
+            left, right = declarations(path)[name][0]
+            return path.read_bytes()[left:right].decode()
+
+        api = source / "APIClient.swift"
+        screen = source / "Services/APIClient/APIClient+ScreenFrames.swift"
+        transport = source / "Services/OmiHTTPTransport.swift"
+        replacements = {
+            "ACTUAL_GENERIC_POST": method(
+                api,
+                "post(_:body:requireAuth:customBaseURL:includeBYOK:expectedOwnerId:authorizationSnapshot:allowsAuthRetry:requestTimeout:)",
+            ),
+            "ACTUAL_GENERIC_GET": method(
+                api, "get(_:requireAuth:customBaseURL:includeBYOK:expectedOwnerId:authorizationSnapshot:)"
+            ),
+            "ACTUAL_STAGED_ADJUDICATION": method(screen, "adjudicateScreenFrames(_:)"),
+            "ACTUAL_SETTINGS": method(screen, "getScreenFrameSettings()"),
+            "ACTUAL_TRANSPORT_METHODS": "\n".join(
+                method(transport, name) for name in ("init()", "makeEncoder()", "makeDecoder()")
+            ),
+            "ACTUAL_WIRE_MODELS": (source / "MeetingScreenshots/ScreenFrameEgressWireTypes.swift").read_text(),
+        }
+        template = (ROOT / "desktop/macos/fork/Tests/screen_frame_request_probe.swift").read_text()
+        for marker, content in replacements.items():
+            template = template.replace("/* " + marker + " */", content)
+        probe = self.directory / "screen-frame-request-probe.swift"
+        probe.write_text(template)
+        binary = self.directory / "screen-frame-request-probe"
+        subprocess.run(["xcrun", "swiftc", "-parse-as-library", str(probe), "-o", str(binary)], check=True)
+        result = subprocess.run([str(binary)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("screen frame request passed", result.stdout)
+
     def test_published_or_non_named_artifacts_are_not_admitted_by_local_package(self):
         for target, name in [("omi_cloud", "omi-auth-contract"), ("cloudflare", "Omi"), ("cloudflare", "../Omi")]:
             with self.assertRaises(ValueError):

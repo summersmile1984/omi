@@ -23,5 +23,6 @@
   "Resources/herologo.png": "8f416dd16e7d56254bc6afe8222bddd318476a527197f181f2ac41f4f3afc773",
   "PostHogManager.swift:initialize()": "2dbe72e2a45a3c46cc43c76f14e02ac42091d3aabdb0fdd8af80da81975521ba",
   "OmiApp.swift:windowTitle(displayName:version:launchMode:isNonProduction:)": "0f35e2e099097d3b41945351e77e9c28ba63df8e088dd9763c555f7dc815fb65",
-  "OnboardingImportEvidenceService.swift:save(_:logPrefix:authorizationSnapshot:apiClient:sleep:)": "5fbd800eb46b5988b5663b8611423e7911941a64015bf1ce020d7b04f7752ba7"
+  "OnboardingImportEvidenceService.swift:save(_:logPrefix:authorizationSnapshot:apiClient:sleep:)": "5fbd800eb46b5988b5663b8611423e7911941a64015bf1ce020d7b04f7752ba7",
+  "APIClient+ScreenFrames.swift:adjudicateScreenFrames(_:)": "803618aacf1bcba8361481fa1709227f69ac856682742f9bb3beaf5c2a9a67e4"
 }

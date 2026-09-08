@@ -82,6 +82,24 @@ controlled API seam. It checks complete ordered delivery, encoded byte limits,
 partial failures, oversized-item isolation, account switching and both targets.
 It is separate from full-app compilation, real HTTP integration and UI evidence.
 
+The screenshot adjudication call also stages one reviewed declaration,
+`APIClient.adjudicateScreenFrames`. Both targets retain the upstream single
+attempt and all candidate bytes. Its request inactivity timeout is 60 seconds
+plus 180 seconds per candidate, bounded to one through eight candidates
+(240–1,500 seconds). Cloudflare's sequential image preparation, privacy model
+and approved-image write permit 45, 90 and 30 seconds of external waits per
+candidate. The ordinary 30-second client budget can expire before even two
+frames finish. This request-specific allowance does not change server limits,
+retry behavior, selection, privacy prompts, other endpoints or the session's
+ordinary timeout. It is an upper waiting allowance, not expected response time.
+
+The existing native identity lane compiles the actual staged screenshot method,
+upstream generic POST/GET, wire models, encoder/decoder and transport initializer.
+A deterministic slow-response seam rejects the original call and accepts the
+one- and eight-candidate calls, while checking exact request bytes and identity,
+server-error propagation and unchanged settings requests. This does not qualify
+the largest batch body, actual image capture or full native/server integration.
+
 The same manifest `icon_master`, `logo_light` and `logo_dark` inputs pass the
 shared bounded static-PNG validator before staging replaces any resource. The
 platform generator derives the existing Dock, menu-bar and `herologo` resource
