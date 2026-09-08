@@ -1,4 +1,6 @@
 import copy
+import __future__
+import ast
 import hashlib
 import os
 from contextlib import contextmanager
@@ -27,8 +29,11 @@ from models.memory_apply import (
     MemoryControlState,
     build_patch_mutation_identity,
     memory_content_hash,
+    apply_long_term_patch_transaction,
+    MemoryWriterClass,
+    require_writer_admitted,
 )
-from models.memory_contracts import DurablePatchDecision, LifecycleState
+from models.memory_contracts import DurablePatchDecision, LifecycleState, deterministic_contract_id
 from models.memory_operations import (
     MemoryLedgerReopenReceipt,
     MemoryOperation,
@@ -51,6 +56,64 @@ from models.product_memory import (
 )
 
 backend = Path(__file__).resolve().parents[2]
+
+
+def test_canonical_user_mutation_hashes_feedback_arguments_before_apply():
+    # Execute the unchanged production operation builder against the real apply
+    # kernel. Only its item/control reads and persistence call are injected;
+    # the lower-level receipt test below used a hand-built, already-correct
+    # operation and therefore could not catch the missing arguments at ingress.
+    path = backend / 'utils/memory/canonical_memory_adapter.py'
+    tree = ast.parse(path.read_text())
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == '_apply_canonical_user_mutation'
+    )
+    item = _target_item(
+        kind=MemoryKind.trigger,
+        ledger_schema_version='knowledge_ledger.v1',
+        subject_scope=MemorySubjectScope.primary_user,
+        intent_backed=True,
+        write_reason=LedgerWriteReason.standing_trigger,
+        trigger_condition={'keywords': ['release'], 'action': {'type': 'agent_prompt', 'prompt': 'Next step.'}},
+    )
+    control = MemoryControlState(uid='u1', head_commit_id='head0', account_generation=1, source_generation=2)
+    observed = []
+
+    def persist(**kwargs):
+        patch = {**kwargs['patch_payload'], 'existing_item': item, 'evidence': item.evidence}
+        operation = kwargs['proposed_operation']
+        result = apply_long_term_patch_transaction(
+            control_state=control, operation=operation, patch_payload=patch, allow_trigger_feedback_arguments=True
+        )
+        observed.append(result)
+        return result
+
+    namespace = {
+        **globals(),
+        '_read_canonical_memory_item': lambda *a, **kw: item,
+        '_ensure_control_state': lambda *a, **kw: control,
+        'apply_direct_user_long_term_patch_firestore': persist,
+    }
+    exec(
+        compile(
+            ast.Module(body=[function], type_ignores=[]), str(path), 'exec', flags=__future__.annotations.compiler_flag
+        ),
+        namespace,
+    )
+    arguments = {'jit_trigger_feedback': {'last_action': 'useful', 'feedback_count': 1}}
+    _, updated = namespace['_apply_canonical_user_mutation'](
+        'u1',
+        item.memory_id,
+        mutation_kind='jit_trigger_feedback:' + 'f' * 64,
+        operation_type=MemoryOperationType.ledger_mutation,
+        build_patch=lambda *_: ({'result_status': 'active'}, {'arguments': arguments, 'curation_weight': 1}),
+        db_client=object(),
+    )
+    assert len(observed) == 1 and observed[0].status == ApplyStatus.committed
+    assert updated.arguments == arguments and updated.curation_weight == 1
+    assert updated.item_revision == item.item_revision + 1
 
 
 def _fake_transactional():
