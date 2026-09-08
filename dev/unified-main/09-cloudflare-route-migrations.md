@@ -197,8 +197,15 @@ proves actual signup/session/JWT, snapshot/reservation, 500/501 rows, privacy
 revocation and logout through hosted Auth/Rate Limit/Edge/Core/D1. Seeded trigger
 fixtures do not prove native trigger creation or the common two-target contract;
 its classification remains blocked pending the family completion gate.
-The ledger mirror/prompt snapshots and trigger feedback still need their CF
-business state owners.
+The trigger-feedback adapter now joins the canonical memory transaction and
+existing Candidate event guard with immutable receipts (migration 0190). It
+preserves the upstream five-action policy, user authority while rollout is off,
+and durable replay. The shared Server adapter's operation digest now includes
+changed arguments, repairing valid feedback rejected before reaching storage.
+See [feedback verification](implementation-2026-09-05/jit-trigger-feedback-2026-09-08.md).
+The ledger mirror/prompt snapshots still need their migration/projection state
+owners. The entire JIT family's common two-target, native and queued-erasure
+qualification remains required; no inventory classification changes here.
 
 | Method | Path                                       |
 | ------ | ------------------------------------------ |

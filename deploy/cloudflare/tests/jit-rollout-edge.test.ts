@@ -57,8 +57,16 @@ describe("JIT rollout public boundary", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(seen).toHaveLength(1);
-    const context = await verifyRequestAuthContext(seen[0], "api-core", env.INTERNAL_ASSERTION_SECRET);
-    expect(context).toMatchObject({ uid: "owner", method: "GET", path: snapshotPath });
+    const context = await verifyRequestAuthContext(
+      seen[0],
+      "api-core",
+      env.INTERNAL_ASSERTION_SECRET
+    );
+    expect(context).toMatchObject({
+      uid: "owner",
+      method: "GET",
+      path: snapshotPath,
+    });
     for (const name of ["cookie", "authorization", "x-omi-uid"])
       expect(seen[0].headers.has(name)).toBe(false);
   });
@@ -92,12 +100,15 @@ describe("JIT rollout public boundary", () => {
   );
 });
 
-describe("JIT proactivity reservation public boundary", () => {
-  const reservationPath = "/v1/jit/proactivity/reservations";
-
-  it.each([true, false])(
-    "uses original paid-work rate admission, allowed=%s",
-    async (allowed) => {
+describe("JIT reservation and user feedback public boundary", () => {
+  it.each([
+    [true, "/v1/jit/proactivity/reservations"],
+    [false, "/v1/jit/proactivity/reservations"],
+    [true, "/v1/jit/trigger-feedback"],
+    [false, "/v1/jit/trigger-feedback"],
+  ] as const)(
+    "uses original per-user rate admission, allowed=%s, path=%s",
+    async (allowed, reservationPath) => {
       const { env, seen } = fixture();
       const rateRequests: Record<string, unknown>[] = [];
       const configured = {
@@ -107,7 +118,7 @@ describe("JIT proactivity reservation public boundary", () => {
           get: () => ({
             fetch: async (request: Request) => {
               rateRequests.push(
-                (await request.json()) as Record<string, unknown>,
+                (await request.json()) as Record<string, unknown>
               );
               return Response.json({
                 allowed,
@@ -130,7 +141,7 @@ describe("JIT proactivity reservation public boundary", () => {
           },
           body: JSON.stringify({ event_id: "synthetic-hash" }),
         }),
-        configured as never,
+        configured as never
       );
       expect(response.status).toBe(allowed ? 200 : 429);
       expect(rateRequests).toHaveLength(1);
@@ -143,7 +154,7 @@ describe("JIT proactivity reservation public boundary", () => {
         const context = await verifyRequestAuthContext(
           seen[0],
           "api-core",
-          env.INTERNAL_ASSERTION_SECRET,
+          env.INTERNAL_ASSERTION_SECRET
         );
         expect(context).toMatchObject({
           uid: "owner",
@@ -154,6 +165,6 @@ describe("JIT proactivity reservation public boundary", () => {
         expect(seen[0].headers.has("authorization")).toBe(false);
         expect(seen[0].headers.has("x-omi-uid")).toBe(false);
       }
-    },
+    }
   );
 });

@@ -28,6 +28,10 @@ from internal_auth import create_request_context, decode_context  # noqa: E402
 class Database:
     def __init__(self):
         self.connection = sqlite3.connect(':memory:', isolation_level=None)
+        # Match the hosted D1 boundary that rejected the 101-byte trigger
+        # feedback receipt prefix despite passing unrestricted SQLite tests.
+        # https://developers.cloudflare.com/d1/platform/limits/
+        self.connection.setlimit(sqlite3.SQLITE_LIMIT_LIKE_PATTERN_LENGTH, 50)
         self.connection.row_factory = sqlite3.Row
         self.before_write = None
         self.fail = False

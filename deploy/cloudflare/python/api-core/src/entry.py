@@ -66,6 +66,7 @@ from memory_consolidation_routes import router as memory_consolidation_router
 from recurrence_routes import router as recurrence_router
 from jit_proactivity_routes import router as jit_proactivity_router
 from jit_trigger_snapshot_routes import router as jit_trigger_snapshot_router
+from jit_trigger_feedback_routes import router as jit_trigger_feedback_router
 from candidate_integration_routes import router as candidate_integration_router
 from memory_privacy_routes import router as memory_privacy_router
 from memory_admin_routes import router as memory_admin_router
@@ -150,6 +151,7 @@ app.include_router(memory_consolidation_router)
 app.include_router(recurrence_router)
 app.include_router(jit_proactivity_router)
 app.include_router(jit_trigger_snapshot_router)
+app.include_router(jit_trigger_feedback_router)
 app.include_router(candidate_integration_router)
 app.include_router(memory_privacy_router)
 app.include_router(memory_admin_router)

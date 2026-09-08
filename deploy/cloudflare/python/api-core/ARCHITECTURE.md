@@ -1226,3 +1226,23 @@ The [public execution record](../../../../dev/unified-main/implementation-2026-0
 proves real signup/session/JWT, authenticated snapshot/reservation, 500/501-row
 behavior, privacy revocation and logout through the ordinary four Workers and
 hosted D1. It uses seeded trigger fixtures; all test resources were removed.
+
+`jit_trigger_feedback_routes.py` mounts the original content-free user feedback
+contract. `jit_feedback_sources.py` stages upstream feedback rules and the
+canonical adapter with only its IO calls relocated. `FeedbackStore` reuses
+`CandidateTransaction` for the notification and immutable receipt read set;
+the typed `CanonicalTriggerFeedback` participant joins the existing memory
+mutation owner. Item revision, operation digest, head, graph/outbox and both
+receipt links commit atomically. Hidden-target replay and owner export use the
+same current authority; rollout does not gate explicit user feedback.
+
+Migration 0190 extends the existing Candidate guard and adds receipt storage.
+Deletion ownership is in the ordinary Jobs residual registry. The actual-entry
+tests cover all actions, killed/disabled rollout, stale/reused identities,
+concurrent replay, final-write rollback and the bounded local feedback window.
+The shared migration-backed test database enforces D1's 50-byte LIKE/GLOB
+pattern limit. Receipt identity uses exact prefix equality; a full feedback
+digest must not be embedded in a LIKE pattern.
+This route remains in the required JIT family completion gate until common
+two-target, native and queued-erasure qualification is complete. See the
+[execution record](../../../../dev/unified-main/implementation-2026-09-05/jit-trigger-feedback-2026-09-08.md).

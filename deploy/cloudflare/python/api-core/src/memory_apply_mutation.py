@@ -2,6 +2,10 @@
 
 from datetime import datetime, timezone
 import json
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from jit_trigger_feedback_store import CanonicalTriggerFeedback
 
 from memory_apply_item import read_item
 from memory_apply_intake import (
@@ -43,6 +47,7 @@ async def apply_user_memory_mutation(
     build_patch,
     extra_statements=(),
     review_resolution: CanonicalReviewResolution | None = None,
+    trigger_feedback: 'CanonicalTriggerFeedback | None' = None,
 ):
     """False is an absent target; receipts, graph, feedback and row commit together."""
     db = env.APP_DB
@@ -50,9 +55,9 @@ async def apply_user_memory_mutation(
     row = (
         await db.prepare(
             "SELECT * FROM cf_memories WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL "
-            "AND status = 'active' AND superseded_by IS NULL"
+            "AND status IN ('active', ?) AND superseded_by IS NULL"
         )
-        .bind(uid, memory_id)
+        .bind(uid, memory_id, 'hidden' if trigger_feedback is not None else 'active')
         .first()
     )
     if row is None:
@@ -76,9 +81,19 @@ async def apply_user_memory_mutation(
     item = item.model_copy(update={'promotion': {**(item.promotion or {}), **metadata}})
     instant = max(datetime.fromtimestamp(now, timezone.utc), item.captured_at, item.updated_at)
     logical_updates, patch_updates, physical = build_patch(item, instant)
+    if trigger_feedback is not None:
+        if (
+            physical
+            or review_resolution is not None
+            or kind != 'jit_trigger_feedback:' + trigger_feedback.proposed.feedback_id
+        ):
+            raise ValueError('invalid trigger feedback mutation')
+        trigger_feedback.validate(item, control, logical_updates, patch_updates)
     if not set(physical).issubset(PRODUCT_COLUMNS):
         raise ValueError('unsupported memory product mutation')
     logical = {'decision': 'update', 'target_memory_id': memory_id, 'result_status': 'active', **logical_updates}
+    if 'arguments' in patch_updates:
+        logical['arguments'] = patch_updates['arguments']
     evidence_ids = [evidence.evidence_id for evidence in item.evidence]
     identity = build_patch_mutation_identity(
         {
@@ -102,7 +117,9 @@ async def apply_user_memory_mutation(
     )
     operation = MemoryOperation.new(
         uid=uid,
-        operation_type=MemoryOperationType.user_mutation,
+        operation_type=(
+            MemoryOperationType.ledger_mutation if trigger_feedback is not None else MemoryOperationType.user_mutation
+        ),
         source_packet_id=f'user_mutation:{kind}:{memory_id}:r{item.item_revision}:{key[:16]}',
         target_memory_id=memory_id,
         evidence_ids=evidence_ids,
@@ -126,7 +143,12 @@ async def apply_user_memory_mutation(
         'existing_item': item,
         'evidence': item.evidence,
     }
-    result = apply_long_term_patch_transaction(control_state=control, operation=operation, patch_payload=patch)
+    result = apply_long_term_patch_transaction(
+        control_state=control,
+        operation=operation,
+        patch_payload=patch,
+        allow_trigger_feedback_arguments=trigger_feedback is not None,
+    )
     if result.status != ApplyStatus.committed or len(result.memory_items) != 1:
         raise ValueError('memory user mutation was not admitted')
     updated = MemoryItem.model_validate(result.memory_items[0].model_dump())
@@ -145,8 +167,16 @@ async def apply_user_memory_mutation(
     statements = [
         db.prepare(
             'INSERT INTO cf_memory_apply_guard (uid, expected_control_json, account_generation, '
-            'new_ids_json, operation_ids_json, expected_items_json) VALUES (?, ?, ?, ?, ?, ?)'
-        ).bind(uid, prior, control.account_generation, '[]', encoded([operation.operation_id]), encoded([expected]))
+            'new_ids_json, operation_ids_json, expected_items_json, observed_items_json) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(
+            uid,
+            prior,
+            control.account_generation,
+            '[]',
+            encoded([operation.operation_id]),
+            encoded([] if item.status.value == 'hidden' else [expected]),
+            encoded([row] if trigger_feedback is not None else []),
+        )
     ]
     if review_resolution is not None:
         statements.append(review_resolution.admission(db, uid))
@@ -179,6 +209,8 @@ async def apply_user_memory_mutation(
     for table, values in records.items():
         statements.extend(_insert_rows(db, table, values))
     statements.append(control_statement(db, uid, result.control_state))
+    if trigger_feedback is not None:
+        statements.extend(trigger_feedback.statements(updated))
     if review_resolution is not None:
         statements.extend(
             review_resolution.resolution_statements(

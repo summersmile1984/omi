@@ -412,6 +412,7 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     EDGE_RATE_LIMIT_POLICIES["knowledge_graph:rebuild"],
   ],
   ["POST /v1/memories/extract", EDGE_RATE_LIMIT_POLICIES["memories:extract"]],
+  ["POST /v1/jit/trigger-feedback", EDGE_RATE_LIMIT_POLICIES["memories:modify"]],
   [
     "POST /v1/connectors/synthesize",
     EDGE_RATE_LIMIT_POLICIES["connectors:synthesize"],

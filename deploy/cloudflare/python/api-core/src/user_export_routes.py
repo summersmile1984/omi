@@ -33,6 +33,7 @@ _EXPORT_QUERIES = (
     ("email_preferences", "cf_user_email_preferences", "uid"),
     ("daily_summaries", "cf_daily_summaries", "date DESC, id DESC"),
     ("jit_proactivity_events", "cf_jit_proactivity_events", "event_id"),
+    ("jit_trigger_feedback", "cf_jit_trigger_feedback", "feedback_id"),
     ("jit_proactivity_budget_controls", "cf_jit_proactivity_budget_controls", "control_id"),
     ("jit_proactivity_daily_budgets", "cf_jit_proactivity_daily_budgets", "budget_day"),
     ("jit_proactivity_candidate_turns", "cf_jit_proactivity_candidate_turns", "candidate_id"),
@@ -121,6 +122,7 @@ async def _rows(env: object, table: str, order_by: str, uid: str) -> list[dict[s
         "cf_task_attention_overrides",
         "cf_task_recurrence_inbox",
         'cf_jit_proactivity_events',
+        'cf_jit_trigger_feedback',
         'cf_jit_proactivity_budget_controls',
         'cf_jit_proactivity_daily_budgets',
         'cf_jit_proactivity_candidate_turns',
@@ -252,6 +254,7 @@ async def export_user_data(request: Request):
             name: sections.pop(name, [])
             for name in (
                 'jit_proactivity_events',
+                'jit_trigger_feedback',
                 'jit_proactivity_budget_controls',
                 'jit_proactivity_daily_budgets',
                 'jit_proactivity_candidate_turns',

@@ -137,11 +137,52 @@ current actionable snapshot. A freshly authenticated Cloudflare account can
 already have generation 1; hard-coding the internal test fixture's generation 0
 correctly produces an authority conflict.
 
-This read performs no model call or mutation. Native trigger creation,
-feedback and ledger prompt/mirror qualification remain separate required work.
+This read performs no model call or mutation. Native trigger creation and
+ledger prompt/mirror qualification remain separate required work.
 
 The hosted public run passed real signup, session restore and JWT authentication;
 500-row completeness and 501-row rejection; sensitive-trigger revocation;
 reservation/replay/concurrent quotas; and logout revocation. Trigger rows were
 controlled SQL fixtures, not native trigger-creation evidence. All owned test
 Workers and databases were removed afterwards.
+
+## User trigger feedback
+
+`POST /v1/jit/trigger-feedback` uses the upstream request and receipt models and
+feedback policy. The request includes `feedback_id`, `event_id`,
+`trigger_memory_id`, `account_generation`, `trigger_revision`, `action` and an
+aware `recorded_at`. The five actions are `useful`, `false_positive`,
+`missed_or_late`, `snooze` and `disable`. Snooze requires a later
+`snoozed_until`; the other actions must omit it. Feedback/event IDs are SHA256
+digests and the API accepts no free-text feedback note.
+
+The referenced planned-notification receipt must belong to the same account,
+generation and trigger revision. Feedback changes only the bounded feedback
+arguments, curation weight and, for disable, visibility status. It preserves
+the trigger's condition, action prompt and content. User feedback is available
+when proactive rollout is disabled or killed. The Edge applies the existing
+`memories:modify` rate limit, 120 requests per hour per user.
+
+Migration `0190_jit_trigger_feedback.sql` adds immutable content-free receipts.
+The canonical memory transaction writes the updated item, graph projection,
+operation, head, outbox, receipt and notification's feedback link in one D1
+batch. Existing Candidate and memory guards recheck every observed authority;
+known concurrent snapshot conflicts retry the whole operation up to three
+times. A failed final receipt write rolls back all preceding writes.
+
+An identical request returns `applied=false` with the original receipt and the
+current trigger revision. Replays recheck the account, notification and current
+target, including a hidden trigger after disable. Receipt identity remains
+durable after the trigger's rolling 32-ID feedback window advances. Changed
+payloads, stale revisions and unavailable authority return `409`; invalid input
+returns `422`. Export includes only the owner's `jit_trigger_feedback` records;
+the existing account-deletion registry owns their removal.
+
+The shared Server mutation adapter also includes changed arguments in the
+operation digest. Previously the adapter omitted arguments even though the
+lower-level apply kernel required them, rejecting valid feedback with
+`payload_mismatch`. The regression executes the actual operation builder;
+unchanged prior source fails that test. Default prompts are unchanged.
+
+Verification scope and remaining release obligations are recorded in the
+[feedback execution record](../../../dev/unified-main/implementation-2026-09-05/jit-trigger-feedback-2026-09-08.md).

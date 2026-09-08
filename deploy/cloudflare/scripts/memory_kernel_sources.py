@@ -16,9 +16,11 @@ from recommendation_sources import recommendation_sources
 from recurrence_sources import recurrence_sources
 from jit_proactivity_sources import jit_sources
 from jit_snapshot_sources import snapshot_sources
+from jit_feedback_sources import feedback_sources
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULES = {
+    'models.jit_trigger_feedback': 'jit_trigger_feedback_models',
     'models.jit_proactivity': 'jit_proactivity_models',
     'utils.task_intelligence.rollout': 'candidate_kernel_rollout',
     'utils.durable_queue_policy': 'integration_queue_policy',
@@ -79,6 +81,7 @@ def generate(output: Path) -> None:
     outputs.update(recurrence_sources())
     outputs.update(jit_sources())
     outputs.update(snapshot_sources())
+    outputs.update(feedback_sources())
     outputs['integration_kernel.py'] = (
         'import hashlib\nimport json\nfrom typing import Any,Dict,List,Optional,Tuple\n'
         'from integration_queue_policy import QueuePolicy\n'
