@@ -61,6 +61,19 @@ This fixes lifecycle eligibility, not complete read convergence: active-alias
 lineage selection, device/cursor parity, explicit native archive reads and other
 read families still need alignment. See the [read verification record](../../../../dev/unified-main/implementation-2026-09-05/memory-default-read-2026-09-07.md).
 
+`memory_history_routes.py` now owns `GET /v3/memories/ledger-history`. Its staged
+upstream schema, canonical wire projector, history admission and page algorithm
+retain the original owner-facing semantics. `memory_history_store.py` supplies
+D1 keyset pages, physical privacy/lock admission and account/head/row rechecks.
+It reads at most 32 rows / 1,000,000 document bytes per transfer, charges larger
+single rows separately, and caps the scan at 4,000,000 bytes. Consumed budgets
+return `X-Omi-List-Truncated: true`; authority/storage failures return 503.
+The original 500-result / 501-provider-row / 5000-pagination-window limits remain.
+It creates no control, migration or receipt and performs no provider call. The
+unchanged head query/fingerprint also serves trigger snapshots through
+`memory_read_authority.py`. Revert, lineage producers and full release acceptance
+remain unfinished. See the [history verification record](../../../../dev/unified-main/implementation-2026-09-05/memory-history-2026-09-08.md).
+
 `memory_apply_mutation.py` is the ordinary native user-mutation transaction
 owner. Content correction, visibility, review votes, read/dismiss and baseline
 all persist their item, operation, commit, control head and outbox together.

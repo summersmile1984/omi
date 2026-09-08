@@ -57,6 +57,7 @@ function fixture() {
   mkdirSync(resolve(root, "backend/utils/retrieval"), { recursive: true });
   mkdirSync(resolve(root, "backend/utils/memory"), { recursive: true });
   mkdirSync(resolve(root, "backend/database"), { recursive: true });
+  mkdirSync(resolve(root, "backend/utils/other"), { recursive: true });
   for (const path of [
     "backend/routers/frame_requests.py",
     "backend/models/frame_request.py",
@@ -65,6 +66,12 @@ function fixture() {
     "backend/utils/jit_rollout.py",
     "backend/utils/memory/canonical_memory_adapter.py",
     "backend/utils/memory/canonical_lineage.py",
+    "backend/utils/memory/memory_service.py",
+    "backend/utils/memory/knowledge_ledger.py",
+    "backend/utils/memory/ledger_history_policy.py",
+    "backend/utils/memory/memory_api_contract.py",
+    "backend/utils/memory/belief_model.py",
+    "backend/utils/other/list_budget.py",
     "backend/database/memory_apply_store.py",
   ])
     writeFileSync(resolve(root, path), "CONTRACT = 1\n");
@@ -94,9 +101,9 @@ function fixture() {
   return { root, directory, candidate };
 }
 describe("immutable release inputs and output ownership", () => {
-  it("binds upstream screenshot, frame-request, JIT and memory correction/privacy policy bytes to the source digest", () => {
+  it("binds upstream screenshot, frame-request, JIT and memory correction/privacy and history policy bytes to the source digest", () => {
     const f = fixture();
-    for (const path of [
+    const paths = [
       "backend/routers/frame_requests.py",
       "backend/models/frame_request.py",
       "backend/utils/retrieval/frame_request_policy.py",
@@ -104,20 +111,32 @@ describe("immutable release inputs and output ownership", () => {
       "backend/utils/jit_rollout.py",
       "backend/utils/memory/canonical_memory_adapter.py",
       "backend/utils/memory/canonical_lineage.py",
+      "backend/utils/memory/memory_service.py",
+      "backend/utils/memory/knowledge_ledger.py",
+      "backend/utils/memory/ledger_history_policy.py",
+      "backend/utils/memory/memory_api_contract.py",
+      "backend/utils/memory/belief_model.py",
+      "backend/utils/other/list_budget.py",
       "backend/database/memory_apply_store.py",
       "backend/models/screen_frame.py",
       "backend/routers/screen_frames.py",
       "backend/utils/screen_frames/judge.py",
-    ]) {
+    ];
+    const originals = new Map();
+    for (const path of paths) {
       const original = readFileSync(resolve(f.root, path));
       expect(f.candidate.source.files[path]).toBe(digest(original));
+      originals.set(path, original);
       writeFileSync(resolve(f.root, path), "CHANGED = True\n");
-      expect(sourceIdentity(f.root).digest).not.toBe(f.candidate.source.digest);
-      expect(() => verifyCandidate(f.directory, f.root)).toThrow(
-        "source changed"
-      );
-      writeFileSync(resolve(f.root, path), original);
     }
+    // Check every dependency's recorded bytes, then exercise the common
+    // invalidation once without dozens of redundant Git process launches.
+    expect(sourceIdentity(f.root).digest).not.toBe(f.candidate.source.digest);
+    expect(() => verifyCandidate(f.directory, f.root)).toThrow(
+      "source changed"
+    );
+    for (const [path, original] of originals)
+      writeFileSync(resolve(f.root, path), original);
     expect(verifyCandidate(f.directory, f.root).source.digest).toBe(
       f.candidate.source.digest
     );

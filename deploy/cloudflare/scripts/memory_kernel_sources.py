@@ -17,6 +17,7 @@ from recurrence_sources import recurrence_sources
 from jit_proactivity_sources import jit_sources
 from jit_snapshot_sources import snapshot_sources
 from jit_feedback_sources import feedback_sources
+from memory_history_sources import history_sources
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULES = {
@@ -82,6 +83,7 @@ def generate(output: Path) -> None:
     outputs.update(jit_sources())
     outputs.update(snapshot_sources())
     outputs.update(feedback_sources())
+    outputs.update(history_sources())
     outputs['integration_kernel.py'] = (
         'import hashlib\nimport json\nfrom typing import Any,Dict,List,Optional,Tuple\n'
         'from integration_queue_policy import QueuePolicy\n'

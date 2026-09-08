@@ -2085,6 +2085,7 @@ app.get("/memory/search", proxyAuthenticatedCore);
 app.get("/memory/archive/search", proxyAuthenticatedCore);
 app.get("/memory/vector/search", proxyAuthenticatedCore);
 app.get("/v3/memories", proxyAuthenticatedCore);
+app.get("/v3/memories/ledger-history", proxyAuthenticatedCore);
 app.post("/v3/memories", proxyAuthenticatedCore);
 app.post("/v3/memories/batch", proxyAuthenticatedCore);
 app.get("/v3/memories/review-queue", proxyAuthenticatedCore);

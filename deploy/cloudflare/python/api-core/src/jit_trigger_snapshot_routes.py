@@ -1,8 +1,5 @@
 """Original desktop watchlist policy over current canonical D1 authority."""
 
-import hashlib
-import json
-
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
@@ -15,26 +12,14 @@ from jit_trigger_snapshot_kernel import (
     read_authoritative_trigger_snapshot,
 )
 from jit_trigger_snapshot_wire import _disabled_trigger_snapshot, snapshot_envelope
+from memory_read_authority import HEAD, digest
 from memory_apply_item import read_item
 from memory_kernel_apply import MemoryControlState
 
 router = APIRouter()
 
-HEAD = '''SELECT COALESCE(account.account_generation,0) AS trusted_generation,
-control.control_json,control.account_generation,control.head_commit_id,
-control.commit_sequence,control.source_generation,
-EXISTS(SELECT 1 FROM cf_memories WHERE uid=owner.uid) AS has_memory,
-(EXISTS(SELECT 1 FROM cf_account_deletion_intents WHERE uid=owner.uid) OR
-EXISTS(SELECT 1 FROM cf_account_deletion_tombstones WHERE uid=owner.uid)) AS deleted
-FROM (SELECT ? AS uid) owner
-LEFT JOIN cf_account_cutover account ON account.uid=owner.uid
-LEFT JOIN cf_memory_apply_control control ON control.uid=owner.uid'''
 TRIGGERS = '''SELECT * FROM cf_memories WHERE uid=?
 AND json_extract(canonical_metadata_json,'$.kind')='trigger' ORDER BY id LIMIT ?'''
-
-
-def digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
 class TriggerSnapshotStore:

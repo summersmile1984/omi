@@ -1,5 +1,5 @@
 ---
-title: 'Cloudflare memory writes'
+title: 'Cloudflare memory'
 description: 'Canonical write admission and durable projection work in the fork Cloudflare target'
 ---
 
@@ -328,3 +328,25 @@ handoff remains unfinished. Byte-aware whole-source batching is covered by local
 regression tests; it has not yet been exercised in a hosted trial. These isolated
 trials are not a production release qualification.
 Detailed evidence: [context trial](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-context-2026-09-07.md).
+
+### Explicit canonical history
+
+`GET /v3/memories/ledger-history` is now implemented in Core and authenticated
+Edge. It retains the original bare-array `MemoryDB` response, closed/rejected/
+preserved-legacy admission, stable newest-first order and `Cache-Control: no-store`.
+Hidden, deleted, source-purged, sensitive, locked and pending rows are excluded.
+Default memory lists retain their separate current-memory behavior.
+
+`limit` is capped at 500; `offset + limit > 5000` returns 413. A provider window
+of 501 rows, consumed read deadline or the adapter's 4,000,000-byte scan limit
+sets `X-Omi-List-Truncated: true`. D1 pages hold at most 32 records and 1,000,000
+document bytes, charging a larger single record separately. A partial response
+must not be presented as exhaustive history. Storage or changed authority returns
+503. Disabled/unknown JIT rollout returns the original empty array without a
+history scan. Reads do not create migration, control or commit records.
+
+The source projector preserves upstream history policy and wire rules. Core
+rechecks account/head, bounded row cohorts and current rollout before releasing
+the response. The [verification record](../../../dev/unified-main/implementation-2026-09-05/memory-history-2026-09-08.md)
+separates hosted consumer validation from still-required native ledger creation,
+append-only revert, common two-target contracts and production release.

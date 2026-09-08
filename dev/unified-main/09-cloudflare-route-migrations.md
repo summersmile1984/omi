@@ -264,6 +264,14 @@ executable prerequisite, not a D1 commit owner or a history implementation. The
 existing writers must still converge on one atomic durable apply boundary before
 either ledger route or the remaining JIT snapshots/feedback can be qualified.
 
+The history GET now has an actual canonical D1 reader with upstream policy/wire
+staging, bounded keyset IO, byte/deadline truncation and account/head/row rechecks.
+It passed 24 public hosted HTTP checks and 28 focused local cases; the test rows
+were seeded, so this does not prove ledger producers or revert. See the
+[history verification](implementation-2026-09-05/memory-history-2026-09-08.md).
+The family retains its blocked classification until append-only revert and
+common/native qualification are complete.
+
 | Method | Path                              |
 | ------ | --------------------------------- |
 | GET    | `/v3/memories/ledger-history`     |
