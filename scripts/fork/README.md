@@ -33,6 +33,16 @@ installs it after every upstream environment sync.
 
 ## Runner and event routing
 
+For linked-worktree pushes use
+`git -c core.hooksPath=scripts/fork/git-hooks push`.
+The fork hook removes Git's exported repository-local variables before calling
+the unchanged upstream single-flight/pre-push checks. Otherwise nested fixture
+repositories can read or modify the caller's Git configuration, and the
+AGENTS.md self-test fails despite valid ignored-path behavior. The override is
+per command; it disables no check and changes no shared hook installation.
+The CI behavior test performs a real disposable push through this hook and the
+upstream self-test with an inherited Git directory, work tree and index.
+
 Pushes to `main`, `codex/**`, and `sync/**`, plus manual runs, use
 `[self-hosted, macOS, ARM64, mac-studio, memweft]`. Pull requests targeting `main`
 use disposable `ubuntu-latest` and, when selected, `macos-26` hosts. The primary

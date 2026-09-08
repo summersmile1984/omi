@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -91,6 +92,40 @@ class DiffBaseTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             self.resolve("push", before="f" * 40)
         self.assertFalse((self.root / "github-output").exists())
+
+    def test_fork_push_hook_preserves_checks_without_leaking_git_context(self) -> None:
+        scripts = self.root / 'scripts'
+        scripts.mkdir()
+        downstream = scripts / 'pre-push-singleflight'
+        checker = ROOT / '.github/scripts/check_agents_md_lean.py'
+        # Exercise the exact upstream self-test that failed in the real linked
+        # worktree push. Only the rest of the long push suite is substituted.
+        program = 'import runpy,sys; runpy.run_path(sys.argv[1])["self_test"]()'
+        downstream.write_text(
+            '#!/bin/sh\nexec ' + ' '.join(map(shlex.quote, [sys.executable, '-c', program, str(checker)])) + '\n'
+        )
+        downstream.chmod(0o755)
+        result = subprocess.run(
+            [
+                'git',
+                '-c',
+                f'core.hooksPath={ROOT / "scripts/fork/git-hooks"}',
+                'push',
+                'origin',
+                'HEAD:refs/heads/verified',
+            ],
+            cwd=self.root,
+            env={
+                **os.environ,
+                'GIT_DIR': str(self.root / '.git'),
+                'GIT_WORK_TREE': str(self.root),
+                'GIT_INDEX_FILE': str(self.root / '.git/index'),
+            },
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git('rev-parse', 'verified'), self.git('rev-parse', 'HEAD'))
 
 
 class ManifestTests(unittest.TestCase):

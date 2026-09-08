@@ -54,7 +54,7 @@ checks:
 
   - id: fork-ci-diff-base
     command: ["python3", "scripts/fork/test_ci_diff_base.py"]
-    triggers: [".github/workflows/fork-checks.yml", ".github/checks-manifest.fork.yaml", "scripts/fork/test_ci_diff_base.py", "scripts/fork/preflight", "backend/fork/tests/**", "backend/tests/**"]
+    triggers: [".github/workflows/fork-checks.yml", ".github/checks-manifest.fork.yaml", "scripts/fork/test_ci_diff_base.py", "scripts/fork/git-hooks/**", "scripts/fork/preflight", "backend/fork/tests/**", "backend/tests/**"]
     lanes: ["local", "ci"]
     reason: "The advertised manual Fork Checks entry emitted an empty diff base because workflow_dispatch has no event.before; execute that exact shell in real Git fixtures for PR, push and manual events. This tests the workflow consumer rather than duplicating the shared manifest selector."
 
