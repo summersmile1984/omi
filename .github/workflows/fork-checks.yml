@@ -1,12 +1,13 @@
 name: Fork Checks
 
-# Fork-owned CI lane. Upstream workflows are left byte-identical and disabled in
-# this fork's Actions settings; anything this fork needs lives in fork-*.yml.
+# Fork-owned CI for summersmile1984/omi. Trusted branch pushes and manual runs
+# use Mac Studio; pull requests use disposable GitHub-hosted runners.
+# Upstream workflow files remain unchanged and keep their own repository settings.
 on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: [main, "codex/**", "sync/**"]
   workflow_dispatch:
 
 concurrency:
@@ -18,9 +19,10 @@ permissions:
 
 jobs:
   fork-gate:
-    name: Fork gate
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: Fork gate (Server OS + Cloudflare)
+    if: github.repository == 'summersmile1984/omi'
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
+    timeout-minutes: 120
     outputs:
       base: ${{ steps.base.outputs.ref }}
       macos: ${{ steps.platforms.outputs.macos }}
@@ -28,6 +30,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -40,7 +43,7 @@ jobs:
         run: |
           git remote add upstream https://github.com/BasedHardware/omi.git 2>/dev/null || true
           git config remote.upstream.tagOpt --no-tags
-          git fetch --no-tags --depth=1 upstream main
+          git fetch --no-tags upstream main
           git update-ref refs/remotes/upstream/main FETCH_HEAD
           echo "upstream/main = $(git rev-parse --short refs/remotes/upstream/main)"
 
@@ -57,11 +60,24 @@ jobs:
           elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
             ref="$BEFORE_SHA"
           else
-            # Manual runs have no event.before; inspect the current commit.
-            ref=HEAD^
+            # New branch pushes and manual runs qualify the whole fork branch.
+            git fetch --no-tags origin main
+            ref=$(git merge-base HEAD FETCH_HEAD)
+            # On main itself, retain a non-empty current-commit review range.
+            if [ "$ref" = "$(git rev-parse HEAD)" ]; then
+              ref=HEAD^
+            fi
           fi
           resolved=$(git rev-parse --verify --end-of-options "$ref^{commit}")
           echo "ref=$resolved" >> "$GITHUB_OUTPUT"
+
+      - name: Validate fork ownership before dependency provisioning
+        env:
+          DIFF_BASE: ${{ steps.base.outputs.ref }}
+        run: |
+          python3 .github/scripts/run_checks.py \
+            --manifest .github/checks-manifest.fork.yaml --lane ci \
+            --base "$DIFF_BASE" --platform linux --check-id fork-upstream-touch
 
       # fork-backend-seams runs the real backend suite through test.sh, which
       # needs the pinned interpreter. Without it the check silently degrades to
@@ -76,7 +92,9 @@ jobs:
           cache-dependency-glob: backend/pylock*.toml
 
       - name: Provision backend environment
-        run: make setup-backend
+        run: |
+          make setup-backend
+          uv pip install --python backend/.venv/bin/python --no-deps --require-hashes -r backend/requirements-fork.txt
 
       - name: Select platform checks
         id: platforms
@@ -121,7 +139,7 @@ jobs:
         id: flutter
         run: |
           python3 .github/scripts/run_checks.py --manifest .github/checks-manifest.fork.yaml \
-            --lane ci --base "${{ steps.base.outputs.ref }}" --output json > /tmp/fork-check-selection.json
+            --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux --output json > /tmp/fork-check-selection.json
           python3 - <<'PY'
           import json, os
           selected = json.load(open('/tmp/fork-check-selection.json'))['checks']
@@ -160,11 +178,13 @@ jobs:
         working-directory: desktop/windows
         run: pnpm install --frozen-lockfile
 
+      # Portable contracts run on either host; macOS-only checks run below.
+      # Server OS still executes in Linux Docker containers on Mac Studio.
       - name: Fork manifest (ci lane)
         run: |
           python3 .github/scripts/run_checks.py \
             --manifest .github/checks-manifest.fork.yaml \
-            --lane ci --base "${{ steps.base.outputs.ref }}"
+            --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux
 
       - name: Report upstream divergence
         if: always()
@@ -183,14 +203,15 @@ jobs:
     name: Fork macOS native contracts
     needs: fork-gate
     if: needs.fork-gate.outputs.macos == 'true'
-    runs-on: macos-26
-    timeout-minutes: 45
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '["macos-26"]' || '["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
+    timeout-minutes: 60
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: ${{ github.event_name == 'pull_request' && '/Applications/Xcode_26.6.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:

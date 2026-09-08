@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -66,6 +67,20 @@ class DiffBaseTests(unittest.TestCase):
         self.commit("second pushed commit")
         self.assertEqual(self.resolve("push", before=self.base), f"ref={self.base}")
 
+    def test_manual_feature_branch_uses_all_commits_since_main(self) -> None:
+        main = self.git("rev-parse", "main")
+        self.git("switch", "-q", "-c", "codex/feature")
+        self.commit("first feature commit")
+        self.commit("second feature commit")
+        self.assertEqual(self.resolve("workflow_dispatch"), f"ref={main}")
+
+    def test_new_feature_branch_push_uses_all_commits_since_main(self) -> None:
+        main = self.git("rev-parse", "main")
+        self.git("switch", "-q", "-c", "codex/feature")
+        self.commit("first feature commit")
+        self.commit("second feature commit")
+        self.assertEqual(self.resolve("push", before="0" * 40), f"ref={main}")
+
     def test_new_branch_zero_before_has_a_real_base(self) -> None:
         self.assertEqual(self.resolve("push", before="0" * 40), f"ref={self.base}")
 
@@ -76,6 +91,75 @@ class DiffBaseTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             self.resolve("push", before="f" * 40)
         self.assertFalse((self.root / "github-output").exists())
+
+
+class ManifestTests(unittest.TestCase):
+    def test_backend_provision_restores_fork_layer_only_after_successful_sync(self) -> None:
+        # make setup-backend removes packages outside the upstream lock. The
+        # actual workflow must restore the hash-pinned fork layer afterwards.
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        command = next(
+            step['run']
+            for step in workflow['jobs']['fork-gate']['steps']
+            if step.get('name') == 'Provision backend environment'
+        )
+        with tempfile.TemporaryDirectory(prefix='fork-ci-install-') as directory:
+            root = Path(directory)
+            marker = root / 'fork-layer'
+            (root / 'make').write_text(
+                '#!/bin/sh\n[ "$1" = setup-backend ] || exit 64\n' 'rm -f fork-layer\nexit "$FIXTURE_UPSTREAM_STATUS"\n'
+            )
+            (root / 'uv').write_text(
+                f'#!{sys.executable}\nimport pathlib, sys\n'
+                'args = sys.argv[1:]\n'
+                'assert args[:2] == ["pip", "install"]\n'
+                'assert "--no-deps" in args and "--require-hashes" in args\n'
+                'assert args[args.index("--python") + 1] == "backend/.venv/bin/python"\n'
+                'assert args[args.index("-r") + 1] == "backend/requirements-fork.txt"\n'
+                'pathlib.Path("fork-layer").write_text("installed")\n'
+            )
+            for name in ('make', 'uv'):
+                (root / name).chmod(0o755)
+            for status in (0, 1):
+                with self.subTest(upstream_status=status):
+                    marker.write_text('old install')
+                    result = subprocess.run(
+                        ['bash', '-euo', 'pipefail', '-c', command],
+                        cwd=root,
+                        env={
+                            **os.environ,
+                            'PATH': f'{root}:{os.environ["PATH"]}',
+                            'FIXTURE_UPSTREAM_STATUS': str(status),
+                        },
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    self.assertEqual(marker.exists(), status == 0)
+                    if status == 0:
+                        self.assertEqual(marker.read_text(), 'installed')
+
+    def test_actual_fork_manifest_resolves_after_backend_test_moves(self) -> None:
+        # 6d9b046eec moved storage/queue tests into backend/fork/tests while the
+        # manifest kept their old path. Execute the real CI selector/validator.
+        subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / ".github/scripts/run_checks.py"),
+                "--manifest",
+                ".github/checks-manifest.fork.yaml",
+                "--lane",
+                "ci",
+                "--base",
+                "HEAD",
+                "--output",
+                "json",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 
 if __name__ == "__main__":

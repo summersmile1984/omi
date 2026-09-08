@@ -155,6 +155,32 @@ class UpstreamTouchGuardTests(unittest.TestCase):
         self.assertEqual(out["violations"], [])
         self.assertTrue(any("seam.swift" in a for a in out["allowed"]))
 
+    def test_unmerged_upstream_growth_does_not_change_clean_sync_verdict(self):
+        h = self.harness()
+        git(h.root, "switch", "-q", "-c", "upstream-update", "refs/remotes/upstream/main")
+        h.commit("backend/service.py", "VALUE = 2\n", "upstream update")
+        git(h.root, "update-ref", "refs/remotes/upstream/main", "HEAD")
+        git(h.root, "switch", "-q", "main")
+        git(h.root, "merge", "--no-ff", "--no-edit", "upstream-update")
+        git(h.root, "switch", "-q", "upstream-update")
+        h.commit("backend/service.py", "VALUE = 3\n", "later upstream update")
+        git(h.root, "update-ref", "refs/remotes/upstream/main", "HEAD")
+        git(h.root, "switch", "-q", "main")
+        rc, out = h.run()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["upstream_files_changed"], 0)
+
+    def test_unmerged_upstream_adoption_does_not_hide_a_forbidden_fork_edit(self):
+        h = self.harness()
+        h.commit("backend/service.py", "VALUE = 2\n", "fork edit")
+        git(h.root, "switch", "-q", "-c", "upstream-update", "refs/remotes/upstream/main")
+        h.commit("backend/service.py", "VALUE = 2\n", "upstream independently adopts edit")
+        git(h.root, "update-ref", "refs/remotes/upstream/main", "HEAD")
+        git(h.root, "switch", "-q", "main")
+        rc, out = h.run()
+        self.assertEqual(rc, 1, out)
+        self.assertEqual([v["path"] for v in out["violations"]], ["backend/service.py"])
+
     def test_allowlisted_seam_over_budget_fails(self):
         h = self.harness()
         h.commit("seam.swift", "".join(f"let extra{i} = {i}\n" for i in range(9)))

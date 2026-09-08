@@ -36,6 +36,17 @@ done
 
 ## 3. fork 检查清单与本地入口
 
+**2026-09-08 fork CI 调整**：当前实现见
+[fork 脚本说明](../../scripts/fork/README.md)。`summersmile1984/omi` 的
+`main`、`codex/**`、`sync/**` push 和手动运行选择 Mac Studio runner；
+面向 `main` 的 PR 仍使用托管 runner。Server OS 运行 Linux Docker 契约，
+Cloudflare 运行本地 Wrangler 契约，原生 macOS 检查单独调度。
+新分支首次 push / 手动运行检查相对 main 的完整分支差异；上游零改动规则
+使用实际已合入的上游祖先，不受远端 tip 前移影响。失效的 storage/queue
+测试引用已迁到 `backend/fork/tests/test_storage_queue_adapters.py`。
+`scripts/fork/preflight --fork-only` 对应 Fork Checks；默认命令仍保留上游加
+fork 的完整门禁。下文保留原有规划语境，不代表部署 workflow 已经实现。
+
 2026-09-04 的实际工作流以 `.github/workflows/fork-checks.yml` 和
 `.github/checks-manifest.fork.yaml` 为准；下表仍包含规划项。PR 使用目标分支的
 已获取提交作 diff base，push 使用事件的 `before`；手动运行没有 `before`，

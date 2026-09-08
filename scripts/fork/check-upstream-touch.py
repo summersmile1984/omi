@@ -242,7 +242,7 @@ def added_lines(upstream_ref: str, head: str, path: str) -> int:
 def object_id(ref: str, path: str) -> str | None:
     """Return a path's object ID, or None when the path is absent at ``ref``.
 
-    A file imported unchanged from the current upstream tree is not a fork
+    A file imported unchanged from the merged upstream tree is not a fork
     modification.  This matters for a normal merge commit: its diff contains
     all upstream changes since the fork's previous main, while the resulting
     blob has exactly upstream's bytes.  Compare object IDs rather than text so
@@ -265,6 +265,11 @@ def evaluate(base: str, head: str, upstream_ref: str, allowlist_path: Path) -> R
     allowed_by_path = {e.path: e for e in entries}
     excepted = set(exceptions)
 
+    # The live upstream tip advances independently after a sync. Compare with
+    # the upstream ancestor incorporated into this head: later upstream work
+    # must neither count as fork edits nor hide an existing fork modification.
+    upstream_ref = run_git(["merge-base", head, upstream_ref]).strip()
+
     changed = [p for p in run_git(["diff", "--name-only", f"{base}...{head}"]).splitlines() if p]
     upstream_files = set(run_git(["ls-tree", "-r", "--name-only", upstream_ref]).splitlines())
 
@@ -280,7 +285,7 @@ def evaluate(base: str, head: str, upstream_ref: str, allowlist_path: Path) -> R
         # `base...head` necessarily includes files that upstream changed before
         # a clean sync merge.  Their head blobs are upstream blobs, so treating
         # them as fork divergence would make the required weekly sync workflow
-        # impossible to validate.  Only a byte difference from current upstream
+        # impossible to validate. Only a byte difference from merged upstream
         # is a fork-owned edit that needs the allowlist review below.
         if object_id(head, path) == object_id(upstream_ref, path):
             continue
@@ -330,7 +335,7 @@ def main() -> int:
     parser.add_argument(
         "--upstream-ref",
         default=DEFAULT_UPSTREAM_REF,
-        help=f"ref whose tree defines 'upstream file' (default: {DEFAULT_UPSTREAM_REF})",
+        help=f"upstream history whose shared ancestor defines the baseline (default: {DEFAULT_UPSTREAM_REF})",
     )
     parser.add_argument("--allowlist", default=str(DEFAULT_ALLOWLIST))
     parser.add_argument("--json", action="store_true", help="emit machine-readable output")
