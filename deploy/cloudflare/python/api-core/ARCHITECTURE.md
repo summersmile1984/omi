@@ -1259,3 +1259,31 @@ digest must not be embedded in a LIKE pattern.
 This route remains in the required JIT family completion gate until common
 two-target, native and queued-erasure qualification is complete. See the
 [execution record](../../../../dev/unified-main/implementation-2026-09-05/jit-trigger-feedback-2026-09-08.md).
+
+### Explicit ledger restore
+
+`memory_revert_routes.py` exposes authenticated `POST /v3/memories/{memory_id}/revert`.
+Edge retains the upstream `memories:modify` rate (120/hour). The UUID body, append/
+close chain policy, exact retry recognition, standalone reopen, provenance, row
+identity, slot validation, wire projection and apply kernel come from upstream.
+`memory_revert_sources.py` changes their synchronous storage calls to awaited D1
+participants. The server process prompt-cache invalidation is omitted because
+Core has no such cache; the actual canonical head and existing outbox advance.
+No model or default prompt is involved.
+
+`memory_revert_store.py` commits through the existing canonical apply guard,
+`cf_memories`, journal, graph, outbox and control. Migration 0191 adds a read-only
+closed-lineage participant; it does not relax active-item write admission. Every
+observed physical field is checked inside the same batch. A source-keyed
+`cf_memory_ledger_reopens` receipt prevents two different operation UUIDs from
+reopening one standalone source. Same-operation races reload the original policy;
+retired operations are conflicts, not new restores. One record above 1,000,000
+encoded bytes or aggregate reads above 4,000,000 bytes returns 503 before writing.
+Original 64-link traversal remains intact.
+
+New rows receive the existing keyed privacy identity. Reopen receipts join owned
+export, canonical privacy finalization and account-deletion residual cleanup;
+the transient read participant is always removed before commit. Deleting a source
+or replacement purges its reopen receipt as upstream does, without inventing a
+new supersession link on the standalone closed source. Existing writer convergence,
+common two-target acceptance and production/native qualification are separate work.

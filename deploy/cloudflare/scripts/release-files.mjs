@@ -107,6 +107,7 @@ export function sourceIdentity(root) {
         "backend/utils/memory/canonical_lineage.py",
         "backend/utils/memory/memory_service.py",
         "backend/utils/memory/knowledge_ledger.py",
+        "backend/models/knowledge_ledger_policy.py",
         "backend/utils/memory/ledger_history_policy.py",
         "backend/utils/memory/memory_api_contract.py",
         "backend/utils/memory/belief_model.py",

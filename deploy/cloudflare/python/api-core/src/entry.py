@@ -63,6 +63,7 @@ from app_install_routes import router as app_install_router
 from app_catalog_v2_routes import router as app_catalog_v2_router
 from memory_routes import router as memory_router
 from memory_history_routes import router as memory_history_router
+from memory_revert_routes import router as memory_revert_router
 from memory_consolidation_routes import router as memory_consolidation_router
 from recurrence_routes import router as recurrence_router
 from jit_proactivity_routes import router as jit_proactivity_router
@@ -148,6 +149,7 @@ app.include_router(app_install_router)
 app.include_router(app_projection_router)
 app.include_router(app_catalog_v2_router)
 app.include_router(memory_history_router)
+app.include_router(memory_revert_router)
 app.include_router(memory_router)
 app.include_router(memory_consolidation_router)
 app.include_router(recurrence_router)

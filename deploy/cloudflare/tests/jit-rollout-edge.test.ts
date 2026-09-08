@@ -111,6 +111,8 @@ describe("JIT reservation and user feedback public boundary", () => {
     [false, "/v1/jit/proactivity/reservations"],
     [true, "/v1/jit/trigger-feedback"],
     [false, "/v1/jit/trigger-feedback"],
+    [true, "/v3/memories/closed-memory/revert"],
+    [false, "/v3/memories/closed-memory/revert"],
   ] as const)(
     "uses original per-user rate admission, allowed=%s, path=%s",
     async (allowed, reservationPath) => {

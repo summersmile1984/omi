@@ -77,8 +77,9 @@ Evidence: `/Users/macstudio/.codex/eddy-production/memory-history-public-2026090
 
 ## Still required
 
-The revert endpoint still needs the original append/close transaction, exact
-operation replay and standalone-reopen receipt owner. Full lineage producers,
+The subsequent [restore implementation](memory-revert-2026-09-08.md) supplies the
+append/close transaction, exact operation replay and standalone reopen receipt.
+Its verification is separate from this history-read record. Full lineage producers,
 JIT mirror/prompt migration projections, Server/Cloudflare common acceptance and
 native production acceptance remain required. The family retains its blocked
 inventory classification. CF-4 and CI-1 release executors remain absent; no Eddy

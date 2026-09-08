@@ -40,6 +40,7 @@ _EXPORT_QUERIES = (
     ("memories", "cf_memories", "created_at DESC, id DESC"),
     ("memory_operations", "cf_memory_operations", "created_at DESC, operation_id"),
     ("memory_commits", "cf_memory_commits", "commit_sequence DESC, commit_id"),
+    ("memory_ledger_reopens", "cf_memory_ledger_reopens", "source_memory_id"),
     ("memory_graph_assertions", "cf_memory_graph_assertions", "memory_id"),
     ("memory_import_runs", "cf_memory_import_runs", "updated_at DESC, run_id DESC"),
     ("memory_import_artifacts", "cf_memory_import_artifacts", "created_at DESC, artifact_id DESC"),
@@ -245,6 +246,7 @@ async def export_user_data(request: Request):
         "memory_ledger_data": {
             "memory_operations": sections.pop("memory_operations", []),
             "memory_commits": sections.pop("memory_commits", []),
+            "memory_ledger_reopens": sections.pop("memory_ledger_reopens", []),
             "memory_graph_assertions": sections.pop("memory_graph_assertions", []),
         },
         "people": sections.pop("people", []),

@@ -30,6 +30,7 @@ def history_statements(db, uid):
         f"memory_id IN ({TARGETS}) OR {references('audit_metadata_json')})"
     )
     queries = [
+        f"DELETE FROM cf_memory_ledger_reopens WHERE uid = ? AND {references('receipt_json')}",
         f"DELETE FROM cf_memory_commits WHERE uid = ? AND (operation_id IN ({operations}) OR {references('memory_ids_json')})",
         f"DELETE FROM cf_memory_outbox WHERE uid = ? AND (json_extract(event_json, '$.operation_id') IN ({operations}) OR {references('event_json')})",
         f"DELETE FROM cf_memory_operations WHERE uid = ? AND {references('operation_json')}",

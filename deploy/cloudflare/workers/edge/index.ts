@@ -2099,6 +2099,7 @@ app.patch("/v3/memories/:memoryId/visibility", proxyAuthenticatedCore);
 app.patch("/v3/memories/:memoryId/read", proxyAuthenticatedCore);
 app.patch("/v3/memories/:memoryId/baseline", proxyAuthenticatedCore);
 app.post("/v3/memories/:memoryId/review", proxyAuthenticatedCore);
+app.post("/v3/memories/:memoryId/revert", proxyAuthenticatedCore);
 app.post("/v3/memory-imports/batch", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/shared", proxyPublicCore);
 app.get("/v1/conversations/:conversationId/shared/screenshots", proxyPublicScreenshots);

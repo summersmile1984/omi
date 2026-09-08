@@ -269,8 +269,12 @@ staging, bounded keyset IO, byte/deadline truncation and account/head/row rechec
 It passed 24 public hosted HTTP checks and 28 focused local cases; the test rows
 were seeded, so this does not prove ledger producers or revert. See the
 [history verification](implementation-2026-09-05/memory-history-2026-09-08.md).
-The family retains its blocked classification until append-only revert and
-common/native qualification are complete.
+The restore POST now has an upstream append/close transaction and source-keyed
+standalone reopen receipt in D1. Its actual Core path covers replay, concurrent
+operations, stale sources, privacy and atomic rollback; see the
+[restore verification](implementation-2026-09-05/memory-revert-2026-09-08.md).
+The family retains its blocked classification until complete writer convergence
+and common/native qualification are complete.
 
 | Method | Path                              |
 | ------ | --------------------------------- |

@@ -349,4 +349,25 @@ The source projector preserves upstream history policy and wire rules. Core
 rechecks account/head, bounded row cohorts and current rollout before releasing
 the response. The [verification record](../../../dev/unified-main/implementation-2026-09-05/memory-history-2026-09-08.md)
 separates hosted consumer validation from still-required native ledger creation,
-append-only revert, common two-target contracts and production release.
+common two-target contracts and production release. Restore has its own
+append/close verification below.
+
+## Restore a closed ledger fact
+
+`POST /v3/memories/{memory_id}/revert` accepts `{"operation_id":"<UUID>"}` and
+returns the original `{"status":"ok","memory":...}` with `Cache-Control: no-store`.
+Use the same operation UUID when retrying a lost response. Restoration appends a
+new current fact and closes the old current tail; it does not overwrite the
+selected history row. A standalone closed source gets one durable reopen receipt.
+
+The upstream fact identity, visibility, privacy, lock, chain and replay rules are
+staged into Core. Both rows, journal, graph, outbox, receipt and canonical head
+commit in one guarded D1 batch. A stale source is re-read before retrying; a
+locked source returns 402, an invalid restore 409, and unavailable authority 503.
+The adapter limits each read record to 1,000,000 encoded bytes and total reads to
+4,000,000 bytes; exceeding these bounds makes no partial write. Account deletion
+and per-memory deletion also remove associated reopen receipts. This endpoint
+requires no AI call and changes no default prompt.
+
+The [restore verification record](../../../dev/unified-main/implementation-2026-09-05/memory-revert-2026-09-08.md)
+tracks local and hosted evidence separately from full production acceptance.

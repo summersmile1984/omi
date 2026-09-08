@@ -517,7 +517,7 @@ export function edgeRateLimitPolicyForRequest(
         path,
       )) ||
     (normalizedMethod === "POST" &&
-      /^\/v3\/memories\/[^/]+\/review$/.test(path))
+      /^\/v3\/memories\/[^/]+\/(?:review|revert)$/.test(path))
   ) {
     return EDGE_RATE_LIMIT_POLICIES["memories:modify"];
   }
