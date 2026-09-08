@@ -13,6 +13,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { localConfigs } from "../contracts/local-config.mjs";
+import { fixtureSecret } from "../contracts/local-secrets.mjs";
 import { copyFrozenTarget } from "../contracts/frozen-local.mjs";
 import { LocalProcesses } from "../contracts/local-process.mjs";
 import {
@@ -56,6 +57,31 @@ const inputs = {
 };
 
 describe("disposable actual Cloudflare target", () => {
+  it.each([false, true])(
+    "reads actual dotenv credential values (quoted=%s)",
+    (quoted) => {
+      const secret = "a".repeat(64);
+      const contents = `LIFECYCLE_EMAIL_SIGNING_SECRET=${
+        quoted ? JSON.stringify(secret) : secret
+      }\n`;
+      expect(fixtureSecret(contents, "LIFECYCLE_EMAIL_SIGNING_SECRET")).toBe(
+        secret
+      );
+    }
+  );
+
+  it("rejects missing or invalid fixture credentials without including their value", () => {
+    expect(() => fixtureSecret("", "FAIR_USE_ADMIN_KEY")).toThrow(
+      "local fixture credential is missing or invalid"
+    );
+    expect(() =>
+      fixtureSecret(
+        "FAIR_USE_ADMIN_KEY=private-invalid-value",
+        "FAIR_USE_ADMIN_KEY"
+      )
+    ).toThrow("local fixture credential is missing or invalid");
+  });
+
   it("runs copied nine-owner artifacts with frozen SQL and rejects later payload drift", () => {
     const directory = mkdtempSync(resolve(tmpdir(), "cf-frozen-local-"));
     directories.push(directory);

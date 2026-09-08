@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { build } from "esbuild";
+import { fixtureSecret } from "./local-secrets.mjs";
 
 // The real upstream Web API consumer supplies request shape and SSE decoding.
 // Seams only provide a real public-auth JWT and the Web proxy's base mapping.
@@ -305,8 +306,7 @@ try {
     resolve(dirname(values.metadata), "configs/api-core/.dev.vars"),
     "utf8",
   );
-  const adminKey = /^FAIR_USE_ADMIN_KEY=([0-9a-f]{64})$/m.exec(adminVars)?.[1];
-  assert(Boolean(adminKey), "fixture has no owned fair-use admin credential");
+  const adminKey = fixtureSecret(adminVars, "FAIR_USE_ADMIN_KEY");
   const ownerUid = JSON.parse(
     Buffer.from(owner.split(".")[1], "base64url"),
   ).sub;

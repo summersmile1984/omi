@@ -103,3 +103,21 @@ platform/brand product qualification. Recording finalization, conversation and
 memory retrieval, process restart, full error shapes, client UI, supported OSes
 and actual releases require their corresponding evidence. A core result always
 sets `release_qualified` to false.
+
+## Run the frozen candidate on both local targets
+
+`node contracts/deployment/regress.mjs --candidate /absolute/new-candidate`
+runs all four existing Cloudflare suites against the candidate's frozen Worker,
+Web and SQL bytes, alongside the Server runner from that verified source. It
+compares the common HTTP case IDs, waits for both targets to clean up even when
+one fails, and prints the private report directories. The combined JSON contains
+the candidate digest, brand, individual cases and `release_qualified: false`.
+The Server runner honors `SELF_HOST_CI_PORT` and the byte-verified
+`SELF_HOST_CI_RUNTIME_IMAGE`; inference in this common slice remains controlled.
+
+The normal `release.mjs prepare` CLI now runs this command's same implementation
+after freezing the candidate and fails when either local target fails. Its
+combined report is saved separately at the printed `product_report` path. This is a required local
+release step; it does not replace the wider CF-4/CI-1 or deployed-provider gates.
+A failed local run may retain an immutable candidate for diagnosis, but the
+prepare command exits nonzero and never uploads a Worker.

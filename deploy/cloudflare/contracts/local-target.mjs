@@ -24,6 +24,8 @@ import {
 import { freezeWorkerConfig } from "../scripts/release-build.mjs";
 import { LocalProcesses } from "./local-process.mjs";
 import { startInferenceControl } from "./inference-control.mjs";
+import { readDevLlmVars } from "./dev-llm-config.mjs";
+import { attachDevAsr } from "./dev-asr-socket.mjs";
 import { digest, REQUIRED_SECRETS } from "../scripts/resource-input.mjs";
 import { fileTree, git } from "../scripts/release-files.mjs";
 
@@ -73,7 +75,9 @@ export async function startLocalTarget({
   signal,
   webOrigin,
   candidateContext,
+  llmDevVars,
 }) {
+  const liveLlm = llmDevVars ? readDevLlmVars(llmDevVars) : undefined;
   root = resolve(root);
   output = resolve(output);
   if (lstatSync(output, { throwIfNoEntry: false }))
@@ -126,12 +130,27 @@ export async function startLocalTarget({
       closeSync(fd);
     }
   };
-  const asr = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  const asrSecret = randomBytes(32).toString("hex");
+  const asr = new WebSocketServer({
+    host: "127.0.0.1",
+    port: 0,
+    maxPayload: 1000000,
+    ...(liveLlm
+      ? {
+          verifyClient: ({ req }) =>
+            req.headers.authorization === `Token ${asrSecret}`,
+        }
+      : {}),
+  });
   await new Promise((resolve, reject) => {
     asr.once("listening", resolve);
     asr.once("error", reject);
   });
-  asr.on("connection", (socket) => {
+  asr.on("connection", (socket, request) => {
+    if (liveLlm) {
+      attachDevAsr(socket, request, liveLlm.secrets);
+      return;
+    }
     let time = 0;
     socket.on("message", (_data, binary) => {
       if (binary)
@@ -214,6 +233,12 @@ export async function startLocalTarget({
     configs.provider.vars = {
       INFERENCE_CONTROL_ORIGIN: inferenceControl.origin,
     };
+    if (liveLlm) {
+      configs.provider.main = resolve(root, "contracts/provider-dev.ts");
+      // The public embedding endpoint otherwise selects the legacy 768-wide
+      // BGE base model; local Ollama and memory vectors share BGE-M3 (1024).
+      configs["api-ai"].vars.WORKERS_AI_EMBEDDING_MODEL = "@cf/baai/bge-m3";
+    }
     const assertionSecret = randomBytes(32).toString("hex"),
       screenFrameSecret = randomBytes(32).toString("hex"),
       memoryPrivacySecret = randomBytes(32).toString("hex"),
@@ -239,9 +264,12 @@ export async function startLocalTarget({
             : randomBytes(32).toString("hex"),
         ])
       );
+      if (role === "provider" && liveLlm)
+        Object.assign(secrets, liveLlm.secrets);
+      if (role === "realtime" && liveLlm) secrets.ASR_API_KEY = asrSecret;
       const values =
         Object.entries(secrets)
-          .map(([name, value]) => `${name}=${value}`)
+          .map(([name, value]) => `${name}=${JSON.stringify(value)}`)
           .join("\n") + "\n";
       writeFileSync(resolve(source, ".dev.vars"), values, { mode: 0o600 });
       writeFileSync(resolve(bundle, ".dev.vars"), values, { mode: 0o600 });
@@ -471,6 +499,7 @@ export async function startLocalTarget({
         ].map((path) => [path, digest(readFileSync(resolve(root, path)))])
       ),
       artifacts,
+      inference: liveLlm?.evidence ?? { mode: "controlled" },
       ...(candidateContext
         ? {
             candidate_digest: candidateContext.candidate.candidate_digest,
@@ -482,8 +511,9 @@ export async function startLocalTarget({
       pyodide_cache: cache,
       inference_control_origin: inferenceControl.origin,
       command: [process.execPath, ...args],
-      provider_boundary:
-        "synthetic ASR, structured/text/embedding inference and transient memory Vectorize IO; actual application Workers, D1, R2, DO, Queue",
+      provider_boundary: liveLlm
+        ? "external LLM/MiMo ASR/TTS and local Ollama embedding; transient memory Vectorize IO; actual application Workers, D1, R2, DO, Queue"
+        : "synthetic ASR, structured/text/embedding inference and transient memory Vectorize IO; actual application Workers, D1, R2, DO, Queue",
       unproved: [
         "hosted-model quality",
         "remote Vectorize/Images",
@@ -532,6 +562,7 @@ if (
         "share-origin": { type: "string" },
         "web-origin": { type: "string" },
         candidate: { type: "string" },
+        "llm-dev-vars": { type: "string" },
         "run-core": { type: "boolean", default: false },
         "run-recording": { type: "boolean", default: false },
         "run-chat": { type: "boolean", default: false },
@@ -539,6 +570,13 @@ if (
       },
     });
     if (!values.output) throw new Error("--output is required");
+    if (
+      values["llm-dev-vars"] &&
+      (values["run-recording"] || values["run-share"])
+    )
+      throw new Error(
+        "recording/share fault suites require the controlled provider; use --run-core --run-chat for live LLM"
+      );
     const candidateDirectory = values.candidate && resolve(values.candidate);
     const candidate =
       candidateDirectory &&
@@ -552,6 +590,7 @@ if (
       shareOrigin: values["share-origin"],
       signal: controller.signal,
       webOrigin: values["web-origin"],
+      llmDevVars: values["llm-dev-vars"],
       candidateContext:
         candidate &&
         qualificationContext(resolve(componentRoot, "../.."), {
@@ -577,7 +616,12 @@ if (
     }
     if (values["run-chat"]) {
       await target.command("chat", process.execPath, [
-        resolve(componentRoot, "contracts/chat.mjs"),
+        resolve(
+          componentRoot,
+          values["llm-dev-vars"]
+            ? "contracts/chat-live.mjs"
+            : "contracts/chat.mjs"
+        ),
         "--metadata",
         resolve(values.output, "metadata.json"),
       ]);

@@ -17,6 +17,13 @@ SQL authorities and dependency locks are qualified before any remote mutation.
 These commands do not deploy. See [the release workflow](release.md) for exact
 inputs, qualification, remote apply, version ownership and recovery commands.
 
+The prepare CLI also executes the frozen candidate's four local Wrangler
+product suites and the same Server HTTP core through
+`contracts/deployment/regress.mjs`. Either target failing fails prepare;
+The separately saved `product_report` records the exact scope and candidate digest.
+For source iteration use `npm run test:product`; for an interactive isolated
+Wrangler API use `npm run dev:product -- --output /absolute/new-target`.
+
 A local candidate always has `release_ready=false`. CF-4 product coverage, CI-1
 cross-target contracts, prior Worker/new-schema compatibility and actual remote
 resource/domain/version observations remain required. The first-release schema
@@ -2794,7 +2801,6 @@ manifest lanes execute this same command. Read `contracts/README.md` for tools,
 metadata, synthetic inference boundaries and retained evidence. A local green
 report never sets release qualification or authorizes remote deployment.
 
-
 ### Developer conversation questions
 
 `POST /v1/dev/user/ask` combines the existing Developer key authority, the
@@ -3076,3 +3082,14 @@ need to converge on this transaction owner. History/revert and JIT require that
 complete authority; their inventory states are unchanged. See the
 [kernel verification](../../dev/unified-main/implementation-2026-09-05/memory-kernel-2026-09-06.md)
 and [native intake transaction record](../../dev/unified-main/implementation-2026-09-05/memory-apply-intake-2026-09-06.md).
+
+## Local external LLM development
+
+The disposable Wrangler target binds `env.AI.run()` to MiMo China Token Plan
+for `mimo-v2.5`, `mimo-v2.5-asr`, `mimo-v2.5-tts`, and to local Ollama BGE-M3
+for 1024-dimensional embedding. Its live WebSocket ASR bridge also uses MiMo.
+Use `npm run dev:product -- --output /tmp/new-owned-target --llm-dev-vars
+/secure/mimo.dev.vars`, or `npm run test:product -- --llm-dev-vars
+/secure/mimo.dev.vars` for common HTTP and live chat/audio/embedding regression. Production AI
+bindings and default prompts are unchanged. Configuration, protocol scope and
+evidence boundaries: [product contracts](contracts/README.md).

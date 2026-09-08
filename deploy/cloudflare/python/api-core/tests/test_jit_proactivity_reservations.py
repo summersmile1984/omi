@@ -13,6 +13,8 @@ from test_candidate_entry import api
 from test_candidate_routes import call
 from test_memory_mutation_lock import Database
 import jit_proactivity_store as store
+import memory_routes
+import memory_kernel_apply
 
 PATH = '/v1/jit/proactivity/reservations'
 NOW = datetime(2026, 9, 8, 8, tzinfo=timezone.utc)
@@ -33,10 +35,24 @@ def request(event='one', operation='ambient_notification', **extra):
     )
 
 
+def freeze_capture(monkeypatch, instant):
+    class CaptureTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+
+    monkeypatch.setattr(memory_routes, 'time', SimpleNamespace(time=lambda: instant.timestamp()))
+    monkeypatch.setattr(memory_kernel_apply, 'datetime', CaptureTime)
+
+
 @pytest.fixture
 def env(monkeypatch):
     db = Database()
     monkeypatch.setattr(store, 'clock', lambda: NOW)
+    # The upstream paid-work policy requires valid_from <= reservation time.
+    # Freeze the public capture owner too: real time passed NOW on 2026-09-08
+    # and made this fixture's newly created trigger appear to be in the future.
+    freeze_capture(monkeypatch, NOW)
     yield SimpleNamespace(APP_DB=db, MEMORY_PRIVACY_SECRET='jit-offline-fixture-secret-32-bytes')
     db.connection.close()
 
@@ -207,6 +223,18 @@ def test_planned_trigger_budget_and_stale_revision(api, env):
     assert send(api, {**value, 'event_id': identity('second')}).status_code == 409
     assert send(api, {**value, 'trigger_revision': revision + 1}).status_code == 409
     assert len(rows(env)) == 1
+
+
+@pytest.mark.parametrize('offset,expected', [(-1, 200), (0, 200), (1, 409)])
+def test_trigger_validity_uses_the_same_controlled_clock(api, env, monkeypatch, offset, expected):
+    # Original contract: backend/models/jit_proactivity.py requires valid_from
+    # at or before the reservation. Keep the actual route's future-row denial.
+    freeze_capture(monkeypatch, NOW + timedelta(seconds=offset))
+    memory_id, revision = trigger_fixture(api, env)
+    value = request('clock-boundary', 'planned_notification', trigger_memory_id=memory_id, trigger_revision=revision)
+    response = send(api, value)
+    assert response.status_code == expected, response.text
+    assert len(rows(env)) == (1 if expected == 200 else 0)
 
 
 @pytest.mark.parametrize('change', ['snooze', 'metadata', 'privacy'])

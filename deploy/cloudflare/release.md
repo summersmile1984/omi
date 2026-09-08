@@ -61,6 +61,23 @@ removed Next/vinext commands, and production could mutate resources/migrations
 before building Web. These are behavioral owner tests, not a new source scrape
 or duplicate deployment registry.
 
+## Local product regression
+
+After building and freezing all artifacts, `release.mjs prepare` now starts
+actual local Wrangler and Docker targets through
+`contracts/deployment/regress.mjs`. Cloudflare runs core, recording/privacy,
+chat and share; Server runs the identical common HTTP core. Both must pass,
+including matching common case IDs. Either failure fails prepare; both targets
+finish their owned teardown. The combined result is retained outside the immutable candidate at the printed
+`product_report` path and explicitly sets `release_qualified: false`.
+This step uses controlled inference. It is not a deployed-provider or complete
+platform/brand qualification, and does not replace the admission contracts below.
+Rerun the frozen local step with:
+
+```sh
+node contracts/deployment/regress.mjs --candidate /absolute/candidate
+```
+
 ## Admission still pending
 
 The current tree cannot publish while CF-4 and CI-1 remain unimplemented product

@@ -102,6 +102,97 @@ node deploy/cloudflare/contracts/local-target.mjs \
   --output /tmp/new-owned-cf-target --brand-id local-fixture
 ```
 
+For real local AI calls, put the following in a private mode-0600 file
+outside the repository (for example `/secure/mimo.dev.vars`):
+
+```dotenv
+DEV_LLM_URL=https://token-plan-cn.xiaomimimo.com/v1/chat/completions
+DEV_LLM_API_KEY=your-key
+DEV_LLM_MODEL=mimo-v2.5
+DEV_LLM_PROTOCOL=mimo
+DEV_TTS_VOICE=mimo_default
+DEV_OLLAMA_URL=http://127.0.0.1:11434/api/embed
+DEV_EMBEDDING_MODEL=bge-m3
+```
+
+`DEV_LLM_PROTOCOL=openai` (the default) supports other OpenAI-compatible chat
+endpoints, including loopback HTTP, for chat only. MiMo mode additionally selects
+`mimo-v2.5-asr` and `mimo-v2.5-tts`; Ollama must already serve local BGE-M3.
+The public embedding endpoint is projected to the BGE-M3 1024-dimensional
+contract used by memory vectors (its production default BGE base model is
+unchanged). No fixed embedding or transcript is returned in this live mode.
+Endpoint/model selection is explicit; an
+ambient environment variable never switches the deterministic CI provider.
+
+```sh
+# Interactive real LLM/ASR/TTS + Ollama through the same local Workers:
+npm --prefix deploy/cloudflare run dev:product -- \
+  --output /tmp/new-owned-cf-live --llm-dev-vars /secure/mimo.dev.vars
+
+# The existing blocking product runner: common HTTP + real chat/audio/embedding.
+# Default invocation without these arguments retains every deterministic suite.
+npm --prefix deploy/cloudflare run test:product -- \
+  --llm-dev-vars /secure/mimo.dev.vars
+```
+
+The local projection binds `AI` to `provider-dev.ts`; Python and TypeScript
+business owners still call `env.AI.run()`. Production templates and prompts are
+unchanged. Secrets are copied only to the disposable provider's private
+`.dev.vars`; fixture evidence records endpoint/model/protocol without the key.
+Keep that disposable output private as it contains local credentials.
+`local-secrets.mjs` reads generated privacy/admin credentials with Node's dotenv
+parser, including quoted values emitted by the local target. The recording and
+chat contract runners share this reader; raw-line regular expressions rejected
+those valid quoted credentials in the 2026-09-08 normal CI rehearsal. Missing or
+malformed values still fail without printing the credential.
+
+`dev-llm.mjs` preserves messages, usage and OpenAI choices, and returns Workers
+AI's `response` field. MiMo uses `max_completion_tokens`, disabled thinking and
+auto tool selection, matching the existing Server development adapter. For
+`json_schema` requests the same schema becomes a function parameter schema;
+the function arguments must be valid JSON and the unchanged application parser
+owns full validation. No prompt is inserted, no failed request falls back to
+fixed answers, and incomplete/unmetered results fail. See the
+[MiMo protocol](https://mimo.mi.com/docs/en-US/api/chat/openai-api).
+
+Live audio verification requires `ffmpeg` and `ffprobe` on the runner. The
+product lane checks decoded desktop/mobile MP3 from the public TTS routes,
+retranscribes generated speech through `/v1/stt/transcribe-workers-ai`, checks
+Ollama vector size and semantic ordering through `/v1/embeddings`, and sends
+real PCM through `/v4/listen` before rereading the persisted D1 transcript.
+
+The real chat case set uses the upstream Web client against actual Auth,
+Python `AI.run()` RPC, public SSE and D1 history; it also checks account
+isolation, structured goal advice and clear. Model wording is not asserted.
+These cases execute only when explicitly selecting a real provider; normal CI
+remains hermetic, and adapter regressions run in the existing Vitest CI lane.
+The runtime regression also executes the real `Provider` RPC in locked workerd
+with an internal outbound Worker. It catches the observed local `redirect:
+"error"` rejection; the adapter uses `manual` and rejects 3xx before any second
+request. Network errors and response bodies never enter provider logs; only
+fixed failure reasons and the three token counts are recorded.
+
+This adapter supports non-streaming model chat. The current public chat path
+already emits client SSE after non-streaming model inference; it does not claim
+token streaming from MiMo. ASR/TTS requests use MiMo's documented
+[audio ASR](https://mimo.mi.com/docs/en-US/api/audio/Speech-Recognition) and
+[audio TTS](https://mimo.mi.com/docs/en-US/api/audio/tts) Chat Completions bodies.
+TTS uses the explicitly selected MiMo voice and native MP3 output; it does not
+reproduce Aura/ElevenLabs voice identities, sample-rate/bitrate tuning or Opus.
+Ollama uses [`/api/embed`](https://docs.ollama.com/api/embed), `truncate:false`,
+and rejects wrong model/dimension/count/non-finite/zero vectors.
+
+The loopback ASR bridge is authenticated with a per-run secret and accepts mono
+PCM16/linear16 or unsigned PCM8, 8–48 kHz, with `zh`, `en` or automatic language.
+It serializes five-second recognition windows, flushes a short tail after
+350 ms input inactivity, caps queued PCM at 20 seconds and cancels pending
+inference on disconnect. Realtime owns transcript persistence. A client must
+remain connected until its final transcript arrives; this is chunked MiMo HTTP
+recognition, not MiMo-native WebSocket ASR, diarization or speaker identity.
+Opus/stereo input is rejected explicitly rather than interpreted as PCM.
+The transient Vectorize double remains local-only; passing this suite is not
+production Cloudflare model/index or complete release qualification.
+
 To exercise an already prepared release's exact application bytes, add
 `--candidate /absolute/new-candidate`. The runner reopens the immutable candidate
 and verifies its source and artifact hashes before copying all eight Workers,
@@ -202,3 +293,20 @@ claims, the thirty-day Operator subscription projection, owned export and
 the existing queue-driven account erasure. The signup Web UI is verified
 separately against the same local HTTP authority; this lane alone does not
 prove a browser flow or production deployment.
+
+## Current local execution and candidate regression
+
+From `deploy/cloudflare`, `npm run test:product` runs the existing actual
+Wrangler product lane. `npm run dev:product -- --output /absolute/new-target`
+keeps the isolated API/Auth Workers running for interactive HTTP work; startup
+prints `metadata.json` with the actual loopback origins. Add `--candidate` to
+use frozen brand/application/Web bytes as described above. Source-mode fixtures
+use the explicitly synthetic Local Atlas presentation.
+
+The 2026-09-08 source run passed 49 cases (16 common, 20 recording/privacy,
+11 chat, two share). The separate standard Docker Server run passed all 16
+common cases. `contracts/deployment/regress.mjs` now composes those existing
+runners for a frozen candidate and checks matching common case identities.
+`release.mjs prepare` executes it as a blocking local release step. These runs
+exercise actual persistence/Queue owners with controlled model IO; live model
+quality, remote bindings and production readiness require their own evidence.

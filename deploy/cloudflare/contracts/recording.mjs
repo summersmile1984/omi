@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { WebSocket } from "ws";
 import { localPrivacyObserver } from "./local-privacy.mjs";
+import { fixtureSecret } from "./local-secrets.mjs";
 
 // Actual public recording flow; only the target runner's inference is controlled.
 // Kept separate from the common core slice until both target runners support it.
@@ -38,11 +39,16 @@ let unsubscribeToken;
 function issueUnsubscribeToken(uid) {
   // Only this disposable runner's private issuer key; never a session bypass
   // or database seed. The public Python route verifies the real capability.
-  const vars = readFileSync(resolve(dirname(resolve(values.metadata)), "workers/api-core/.dev.vars"), "utf8");
-  const secret = vars.match(/^LIFECYCLE_EMAIL_SIGNING_SECRET=([a-f0-9]{64})$/m)?.[1];
-  if (!secret) throw new Error("local lifecycle issuer secret is missing");
-  return Buffer.from(uid).toString("base64url") + "." +
-    createHmac("sha256", secret).update(`${uid}:lifecycle`).digest("base64url");
+  const vars = readFileSync(
+    resolve(dirname(resolve(values.metadata)), "workers/api-core/.dev.vars"),
+    "utf8"
+  );
+  const secret = fixtureSecret(vars, "LIFECYCLE_EMAIL_SIGNING_SECRET");
+  return (
+    Buffer.from(uid).toString("base64url") +
+    "." +
+    createHmac("sha256", secret).update(`${uid}:lifecycle`).digest("base64url")
+  );
 }
 const require = (value, message) => {
   if (!value) throw new Error(message);

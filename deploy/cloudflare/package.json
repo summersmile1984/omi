@@ -14,6 +14,8 @@
     "pretest": "npm run validate:manifest",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:product": "bash ci/product.sh",
+    "dev:product": "node contracts/local-target.mjs",
     "backfill:d1": "node scripts/backfill-d1.mjs",
     "benchmark:staging": "node scripts/benchmark-staging.mjs",
     "smoke:staging": "node scripts/smoke-staging.mjs",
