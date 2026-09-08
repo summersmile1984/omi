@@ -77,3 +77,69 @@ describe("JIT rollout public boundary", () => {
     }
   );
 });
+
+describe("JIT proactivity reservation public boundary", () => {
+  const reservationPath = "/v1/jit/proactivity/reservations";
+
+  it.each([true, false])(
+    "uses original paid-work rate admission, allowed=%s",
+    async (allowed) => {
+      const { env, seen } = fixture();
+      const rateRequests: Record<string, unknown>[] = [];
+      const configured = {
+        ...env,
+        RATE_LIMITS: {
+          idFromName: (value: string) => value,
+          get: () => ({
+            fetch: async (request: Request) => {
+              rateRequests.push(
+                (await request.json()) as Record<string, unknown>,
+              );
+              return Response.json({
+                allowed,
+                limit: 120,
+                remaining: allowed ? 119 : 0,
+                retryAfter: 30,
+                resetAt: Date.now() + 30000,
+              });
+            },
+          }),
+        },
+      };
+      const response = await edge.fetch(
+        new Request("https://edge.test" + reservationPath, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer synthetic-session",
+            "content-type": "application/json",
+            "x-omi-uid": "forged",
+          },
+          body: JSON.stringify({ event_id: "synthetic-hash" }),
+        }),
+        configured as never,
+      );
+      expect(response.status).toBe(allowed ? 200 : 429);
+      expect(rateRequests).toHaveLength(1);
+      expect(rateRequests[0]).toMatchObject({
+        max_requests: 120,
+        window_seconds: 3600,
+      });
+      expect(seen).toHaveLength(allowed ? 1 : 0);
+      if (allowed) {
+        const context = await verifyRequestAuthContext(
+          seen[0],
+          "api-core",
+          env.INTERNAL_ASSERTION_SECRET,
+        );
+        expect(context).toMatchObject({
+          uid: "owner",
+          method: "POST",
+          path: reservationPath,
+        });
+        expect(await seen[0].json()).toEqual({ event_id: "synthetic-hash" });
+        expect(seen[0].headers.has("authorization")).toBe(false);
+        expect(seen[0].headers.has("x-omi-uid")).toBe(false);
+      }
+    },
+  );
+});

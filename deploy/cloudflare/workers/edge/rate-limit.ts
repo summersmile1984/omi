@@ -422,6 +422,10 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     "POST /v1/agent/execute-tool",
     EDGE_RATE_LIMIT_POLICIES["agent:execute_tool"],
   ],
+  [
+    "POST /v1/jit/proactivity/reservations",
+    EDGE_RATE_LIMIT_POLICIES["agent:execute_tool"],
+  ],
   ["GET /v1/goals/suggest", EDGE_RATE_LIMIT_POLICIES["goals:suggest"]],
   ["GET /v1/goals/advice", EDGE_RATE_LIMIT_POLICIES["goals:advice"]],
   [

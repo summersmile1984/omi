@@ -2105,6 +2105,7 @@ app.delete("/v1/conversations/:conversationId", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/photos", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/share-recipients", proxyAuthenticatedCore);
 app.get("/v1/jit/rollout-decision", proxyAuthenticatedCore);
+app.post("/v1/jit/proactivity/reservations", proxyAuthenticatedCore);
 app.get(
   "/v1/conversations/:conversationId/photos/:photoId/image",
   proxyAuthenticatedCore

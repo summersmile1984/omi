@@ -32,6 +32,10 @@ _EXPORT_QUERIES = (
     ("csat_ratings", "cf_csat_ratings", "created_at DESC, id DESC"),
     ("email_preferences", "cf_user_email_preferences", "uid"),
     ("daily_summaries", "cf_daily_summaries", "date DESC, id DESC"),
+    ("jit_proactivity_events", "cf_jit_proactivity_events", "event_id"),
+    ("jit_proactivity_budget_controls", "cf_jit_proactivity_budget_controls", "control_id"),
+    ("jit_proactivity_daily_budgets", "cf_jit_proactivity_daily_budgets", "budget_day"),
+    ("jit_proactivity_candidate_turns", "cf_jit_proactivity_candidate_turns", "candidate_id"),
     ("memories", "cf_memories", "created_at DESC, id DESC"),
     ("memory_operations", "cf_memory_operations", "created_at DESC, operation_id"),
     ("memory_commits", "cf_memory_commits", "commit_sequence DESC, commit_id"),
@@ -112,7 +116,15 @@ async def _rows(env: object, table: str, order_by: str, uid: str) -> list[dict[s
     values = result.get("results", []) if isinstance(result, dict) else []
     if table in {"cf_task_context_snapshots", "cf_task_open_loop_snapshots"}:
         return [json.loads(row["payload_json"]) for row in values if isinstance(row, dict)]
-    if table in {"cf_candidates", "cf_task_attention_overrides", "cf_task_recurrence_inbox"}:
+    if table in {
+        "cf_candidates",
+        "cf_task_attention_overrides",
+        "cf_task_recurrence_inbox",
+        'cf_jit_proactivity_events',
+        'cf_jit_proactivity_budget_controls',
+        'cf_jit_proactivity_daily_budgets',
+        'cf_jit_proactivity_candidate_turns',
+    }:
         return [json.loads(row["record_json"]) for row in values if isinstance(row, dict)]
     if table == "cf_task_outcomes":
         from recommendation_outcomes import outcome_record
@@ -236,6 +248,15 @@ async def export_user_data(request: Request):
         "people": sections.pop("people", []),
         "action_items": sections.pop("action_items", []),
         "task_data": task_data,
+        "jit_data": {
+            name: sections.pop(name, [])
+            for name in (
+                'jit_proactivity_events',
+                'jit_proactivity_budget_controls',
+                'jit_proactivity_daily_budgets',
+                'jit_proactivity_candidate_turns',
+            )
+        },
         "chat_messages": sections.pop("chat_messages", []),
         "desktop_daily_usage": sections.pop("desktop_daily_usage", []),
         "realtime_usage": sections.pop("realtime_usage", []),

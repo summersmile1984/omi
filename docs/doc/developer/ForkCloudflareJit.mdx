@@ -1,6 +1,6 @@
 ---
-title: 'Cloudflare JIT rollout decision'
-description: 'Read the authenticated admission decision before starting just-in-time work in a fork.'
+title: 'Cloudflare JIT admission and budgets'
+description: 'Read current admission and reserve cross-device proactive-work budgets.'
 ---
 
 Clients read the current server decision using their normal session token:
@@ -37,6 +37,70 @@ migration or deletion do not receive actionable authority.
 
 This read does not reserve a proactive-work budget, perform inference or provide
 a trigger watchlist. Those operations retain their own authorization checks.
-The trigger, feedback, reservation and knowledge-ledger snapshot endpoints are
-still undergoing Cloudflare migration; an enabled rollout response alone does
-not establish their availability.
+An enabled rollout response alone does not establish the availability of every
+JIT operation. Trigger snapshots, feedback and knowledge-ledger snapshots remain
+separate migration obligations.
+
+## Proactivity reservations
+
+`POST /v1/jit/proactivity/reservations` preserves the upstream reservation request
+and response. The caller supplies `event_id`, `candidate_id`, `device_id`,
+`operation` and its current `account_generation`. Event, candidate and device IDs
+are lowercase 64-character SHA256 digests; raw content is not accepted in those
+fields. A trigger reference supplies both `trigger_memory_id` and
+`trigger_revision`. Full turns also require a `parent_event_id` digest.
+
+| Operation | Original budget and authority |
+| --- | --- |
+| `planned_notification` | One per trigger/day; counts toward three total notifications/day; requires an eligible current trigger |
+| `ambient_notification` | Shares the three-notification daily limit |
+| `nano_triage` | Eight per day across devices |
+| `full_turn` | Three per day and one per candidate; requires a matching parent notification |
+
+The parent must belong to the same owner, generation, candidate, device, budget
+day/timezone and trigger revision, and must not have terminal feedback. Trigger
+compiler, intent, privacy, evidence and snooze checks use the original upstream
+rules. This endpoint reserves authority; it does not send a notification or call
+an AI provider.
+
+A successful response contains `reserved` and `receipt`. An identical replay
+returns the original receipt with `reserved=false`, without charging the budget
+again. Reusing the event identity with different input conflicts. Replays still
+check current authority; a revoked trigger or disabled rollout cannot be
+bypassed by replaying an old successful receipt.
+
+Cloudflare uses the account's latest existing FCM device registration as timezone
+authority, ordered by `updated_at` and `device_key`. The request cannot set a
+timezone. Missing or invalid zones fail closed; a timezone change cannot split
+an active budget window. The Worker packages upstream-pinned `tzdata==2024.1`
+for ZoneInfo local-midnight and DST behavior.
+
+All four reservation state families commit through one D1 batch. The transaction
+rechecks account generation/deletion, rollout flags, memory control, timezone,
+trigger revision/metadata and every observed budget/receipt. Conflicts retry the
+whole policy evaluation up to five times, preserving the original server time.
+A failure rolls back the entire batch. User export includes owned JIT records;
+account deletion purges reservation state and transient transaction guards.
+
+D1's `batch()` provides an atomic SQL transaction. The upstream Firestore
+read/compute/write callback cannot be reused as an open database transaction:
+Core reads authority, evaluates the original policy, then checks those exact
+snapshots and commits the writes in one batch. A failed snapshot check raises
+a database error, so every write in that batch rolls back before the policy
+retries. See the [D1 batch API](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch).
+
+The Edge uses the original `agent:execute_tool` rate policy. Invalid requests
+return `422`, disabled work `403`, budget/authority conflicts `409`, and malformed
+or unavailable stored authority `503`. Normal authentication remains required.
+
+This adapter's acceptance is distinct from full production release qualification
+and the native trigger/watchlist workflow. The remaining JIT routes are required
+before that complete flow can be delivered.
+
+On 2026-09-08, the actual hosted Core/D1 path passed 12 concurrent notification
+requests with exactly three reservations, 12 triages with exactly eight
+reservations, idempotent replay, parent ownership, trigger revocation and an
+injected final-write failure with zero partial records. The fixture used
+synthetic signed principals and seeded trigger authority; it did not qualify
+public Auth/Edge, queued erasure, shared two-target reservation behavior or the
+native workflow. The route manifest remains blocked pending those gates.

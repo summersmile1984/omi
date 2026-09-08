@@ -66,6 +66,11 @@ version = "4.16.0"
 wheels = [{ url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", upload-time = 2026-07-02T08:40:04Z, size = 45571, hashes = { sha256 = "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8" } }]
 
 [[packages]]
+name = "tzdata"
+version = "2024.1"
+wheels = [{ url = "https://files.pythonhosted.org/packages/65/58/f9c9e6be752e9fcb8b6a0ee9fb87e6e7a1f6bcab2cdc73f02bb7ba91ada0/tzdata-2024.1-py2.py3-none-any.whl", upload-time = 2024-02-11T23:22:38Z, size = 345370, hashes = { sha256 = "9068bc196136463f5245e51efda838afa15aaeca9903f49050dfa2679db4d252" } }]
+
+[[packages]]
 name = "workers-runtime-sdk"
 version = "1.7.0"
 wheels = [{ url = "https://files.pythonhosted.org/packages/48/f9/72787b800562081f0ff6fef68d7cd820eed9d53e025ae6b31319c496d3c1/workers_runtime_sdk-1.7.0-py3-none-any.whl", upload-time = 2026-08-24T09:58:36Z, size = 35109, hashes = { sha256 = "f16e3af5c540853fd4caaafdcb8fea76598df5517f649b0d4cfbf26932fd27ad" } }]

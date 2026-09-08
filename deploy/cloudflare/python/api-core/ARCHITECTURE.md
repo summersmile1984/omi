@@ -1149,3 +1149,39 @@ useful for domain tests but do not prove production mounting. This guard catches
 the c66e9e3 alias collision, which left nine duplicate mounts and an unreachable
 internal integration endpoint despite passing module tests. See the
 [entry verification](../../../../dev/unified-main/implementation-2026-09-05/canonical-integration-entry-2026-09-08.md).
+
+
+`jit_proactivity_routes.py` supplies the original content-free paid-work
+reservation wire contract. `jit_proactivity_sources.py` stages the unchanged
+receipt models and trigger compiler, and projects the upstream reservation
+transaction with only storage reads/writes relocated to async D1 adapters.
+Default prompts and per-day/per-candidate limits are unchanged.
+
+Migration 0189 adds event, daily-budget, budget-window and candidate-turn state
+to the existing Candidate transaction owner. Exact record snapshots, account
+generation and deletion fences protect all writes. A supplemental guard checks
+current rollout/kill flags, memory control, timezone and trigger revision plus
+metadata in the same batch. Replayed receipts also commit their read guards;
+an old successful receipt cannot authorize work after a concurrent revocation.
+Snapshot conflicts retry the entire read and policy evaluation at most five
+times. No provider call or notification send occurs in this endpoint.
+
+Timezone authority uses the existing latest FCM device registration for this
+Cloudflare target, ordered by updated_at and device_key, as in its daily summary
+owner. The original policy rejects missing/invalid zones and changes splitting
+an active budget window. ZoneInfo uses tzdata 2024.1, matching the upstream pin,
+including local-midnight DST boundaries. Client reservation bodies cannot choose
+their own timezone. Edge applies the existing agent:execute_tool rate policy.
+User export includes owned JIT business records; account erasure includes all
+four state families and the transient guard.
+
+The actual Core entrypoint and migration 0189 passed hosted Python Worker/D1
+verification: concurrent daily budgets, replay, parent ownership, trigger
+revocation and complete rollback after a failed final write. All disposable
+resources were removed. Local Core regression passes 1170 tests; the original
+upstream reservation store passes 21. See the
+[execution evidence](../../../../dev/unified-main/implementation-2026-09-05/jit-reservations-2026-09-08.md).
+This fixture uses synthetic signed principals and seeded trigger authority.
+Public Auth/Edge, the shared two-target reservation contract, queued erasure
+and the native trigger/watchlist workflow remain unqualified; the route manifest
+retains its blocked classification until its completion gate is satisfied.

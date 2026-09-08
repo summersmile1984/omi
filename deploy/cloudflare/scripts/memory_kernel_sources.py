@@ -14,9 +14,11 @@ from memory_consolidation_sources import consolidation_sources
 from candidate_kernel_sources import candidate_sources
 from recommendation_sources import recommendation_sources
 from recurrence_sources import recurrence_sources
+from jit_proactivity_sources import jit_sources
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULES = {
+    'models.jit_proactivity': 'jit_proactivity_models',
     'utils.task_intelligence.rollout': 'candidate_kernel_rollout',
     'utils.durable_queue_policy': 'integration_queue_policy',
     'models.memory_apply': 'memory_kernel_apply',
@@ -74,6 +76,7 @@ def generate(output: Path) -> None:
     outputs.update(candidate_sources())
     outputs.update(recommendation_sources())
     outputs.update(recurrence_sources())
+    outputs.update(jit_sources())
     outputs['integration_kernel.py'] = (
         'import hashlib\nimport json\nfrom typing import Any,Dict,List,Optional,Tuple\n'
         'from integration_queue_policy import QueuePolicy\n'

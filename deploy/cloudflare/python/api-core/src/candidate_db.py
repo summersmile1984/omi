@@ -6,6 +6,10 @@ import json
 from candidate_kernel_policy import CandidateConflictError, CandidateGenerationMismatchError
 
 _TABLES = {
+    'jit_events': ('cf_jit_proactivity_events', 'event_id'),
+    'jit_budget_controls': ('cf_jit_proactivity_budget_controls', 'control_id'),
+    'jit_budgets': ('cf_jit_proactivity_daily_budgets', 'budget_day'),
+    'jit_turns': ('cf_jit_proactivity_candidate_turns', 'candidate_id'),
     'candidates': ('cf_candidates', 'candidate_id'),
     'aliases': ('cf_candidate_aliases', 'key_hash'),
     'claims': ('cf_candidate_claims', 'semantic_id'),

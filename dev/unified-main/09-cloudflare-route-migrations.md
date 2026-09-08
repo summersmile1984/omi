@@ -171,7 +171,16 @@ Owner: `api-core`. Upstream authority: `backend/routers/jit_rollout.py; backend/
 
 The rollout decision is now exposed through authenticated Edge/Core using the existing D1 control owner. It retains the upstream tri-state/allowlist policy, current owner/default flags, dominant global kill switch and no-store response. The shared HTTP contract passes on Server and local Cloudflare; actual hosted Auth/Edge/Core/D1 flag transitions, isolation and logout revocation also pass. See [verification](implementation-2026-09-05/jit-rollout-2026-09-06.md).
 
-The other five trigger/ledger snapshot, feedback and atomic proactivity reservation routes still require canonical CF business state. This decision read does not qualify those routes or enable them through empty responses.
+The proactivity reservation adapter now preserves the original policy over four
+canonical D1 state families. Actual hosted Core/D1 verification passed concurrent
+budgets, replay, parent ownership, trigger revocation and whole-batch rollback;
+the full Core regression and original upstream store tests also pass. See
+[reservation evidence](implementation-2026-09-05/jit-reservations-2026-09-08.md).
+The hosted fixture used synthetic signed principals and seeded trigger authority;
+it does not prove public Auth/Edge, queued erasure, the shared two-target
+reservation contract or the native workflow. Its inventory/manifest classification
+therefore remains blocked under the completion gate above. The four trigger/ledger
+snapshot and feedback routes still need their canonical CF business state owners.
 
 | Method | Path                                       |
 | ------ | ------------------------------------------ |
