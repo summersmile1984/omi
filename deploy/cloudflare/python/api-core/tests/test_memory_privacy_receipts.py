@@ -149,11 +149,20 @@ def test_mcp_content_id_replay_cannot_restore_a_physically_erased_memory(target,
     seal(database.connection, row['uid'], row['id'])
     database.connection.execute('DELETE FROM cf_memories WHERE uid = ? AND id = ?', (row['uid'], row['id']))
     database.connection.commit()
-    before = state(database)
-    denied = request('POST', path, body=payload(path))
-    assert denied.status_code == 503
-    assert 'memory_privacy' not in denied.text
-    assert state(database) == before
+    before = database.connection.execute('SELECT * FROM cf_memory_privacy_receipts').fetchall()
+    # Upstream write_canonical_external_memory explicitly allocates a fresh
+    # identity after privacy retirement. The deleted identity remains sealed;
+    # a new user submission must not be mistaken for a late raw writer replay.
+    submitted = request('POST', path, body=payload(path))
+    assert submitted.status_code == 200
+    assert 'privacy_receipt' not in submitted.text
+    fresh = database.connection.execute('SELECT * FROM cf_memories').fetchone()
+    assert fresh['id'] != row['id'] and fresh['content'] == row['content']
+    assert fresh['privacy_receipt_id'] == receipt(fresh['uid'], fresh['id'])
+    assert json.loads(fresh['evidence_json'])[0]['evidence_id'] != json.loads(row['evidence_json'])[0]['evidence_id']
+    assert database.connection.execute('SELECT * FROM cf_memory_privacy_receipts').fetchall() == before
+    with pytest.raises(sqlite3.IntegrityError, match='memory_privacy_deleted'):
+        legacy(database.connection, uid=row['uid'], memory_id=row['id'])
 
 
 def test_conversation_extraction_uses_the_same_receipt_gate(database):

@@ -10,10 +10,10 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
+from memory_kernel_intake import document_id_from_seed
 from internal_auth import verify_request_context  # noqa: E402
 from mcp_routes import (  # noqa: E402
     SUPPORTED_SCOPES,
-    _memory_id,
     complete_action_item,
     create_action_item,
     create_memory,
@@ -382,7 +382,7 @@ def test_mcp_memory_create_list_edit_delete_is_uid_scoped_and_uses_workers_ai():
         )
     )
     assert created["category"] == "interesting"
-    memory_id = _memory_id("The user prefers green tea.")
+    memory_id = document_id_from_seed("The user prefers green tea.")
     stored = db.connection.execute(
         "SELECT category, reviewed, user_review, manually_added, memory_tier FROM cf_memories WHERE id = ?",
         (memory_id,),

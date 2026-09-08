@@ -78,6 +78,7 @@ function fixture() {
     "backend/utils/memory/belief_model.py",
     "backend/utils/other/list_budget.py",
     "backend/database/memory_apply_store.py",
+    "backend/database/document_ids.py",
   ])
     writeFileSync(resolve(root, path), "CONTRACT = 1\n");
   git("add", ".");
@@ -128,6 +129,7 @@ describe("immutable release inputs and output ownership", () => {
       "backend/utils/memory/belief_model.py",
       "backend/utils/other/list_budget.py",
       "backend/database/memory_apply_store.py",
+      "backend/database/document_ids.py",
       "backend/models/screen_frame.py",
       "backend/routers/screen_frames.py",
       "backend/utils/screen_frames/judge.py",

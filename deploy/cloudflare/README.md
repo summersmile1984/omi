@@ -2984,7 +2984,7 @@ Migration 0174 preserves existing memory rows, indexes, views and triggers while
 allowing the upstream `content=None` shape only for a deleted tombstone. Every
 current Core creator and the Jobs X extractor computes the same uid/item HMAC
 using `MEMORY_PRIVACY_SECRET`. A live, opaque 30-day deletion receipt vetoes
-reinsertions and updates inside D1, including MCP's deterministic-ID upsert and
+reinsertions and updates inside D1, including external deterministic-ID intake and
 old writers that omit the key. Existing unrelated legacy rows remain editable;
 new writes always carry their key. Neither the key nor receipt inventory is
 included in user export. The existing Jobs schedule expires receipts, and
@@ -3024,6 +3024,18 @@ Oversize returns 413 with `memory_batch_too_large`, `max_bytes` and
 by encoded bytes and count before writing; Electron's item-count-only importer
 still needs that adaptation. Each accepted request remains one independent
 atomic transaction.
+
+MCP and Developer explicit memory creation now use that same canonical intake
+owner, with the original `document_id_from_seed` implementation staged from
+upstream. Identical active submissions return the existing record without a new
+commit, usage charge or tier change. Mixed Developer batches recheck duplicate
+records in the same transaction as new records; a retired privacy identity gets
+a fresh ID and evidence on an explicit new submission. All new records require
+processing before vector admission. MCP content edits and Developer combined
+content/visibility/category/tag edits also commit through canonical mutation;
+one combined request produces one commit. Integration, conversation-derived and
+Jobs X writers still require convergence. See the
+[external intake verification](../../dev/unified-main/implementation-2026-09-05/external-memory-authority-2026-09-08.md).
 
 Native content PATCH now uses that same journal/control writer. Migration 0173
 adds target revision/metadata/ownership admission to its transaction guard.

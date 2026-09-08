@@ -46,6 +46,22 @@ A failed transaction returns 503 without a partial
 batch. Repeating a public POST allocates new IDs; this API does not accept a
 client-authored operation or ledger head.
 
+MCP `POST /v1/mcp/memories` and Developer single/batch memory creation also
+commit evidence, operation/head records, usage and pending work atomically.
+They use the upstream content-derived identity: submitting identical active
+content returns its existing record, preserving its category, tags and tier.
+No additional memory or usage is recorded for that duplicate. The Developer
+batch limit remains 25, and duplicate/new entries are checked together before
+any commit. A new explicit submission after privacy deletion receives a fresh
+identity and evidence; it does not restore the deleted record.
+
+MCP content corrections and Developer content/visibility/category/tag updates
+use the same canonical mutation transaction. A combined Developer PATCH makes
+one commit. Content corrections return to pending Short-term; metadata-only
+changes preserve the tier. A PATCH containing only null fields returns 422.
+Category classification retains its existing model call and prompt; successful
+classification does not grant normalization or Long-term admission.
+
 Cloudflare operators must provision one stable `MEMORY_PRIVACY_SECRET` of at
 least 32 UTF-8 bytes to API Core and Jobs. Keep it separate from authentication
 credentials and retain it across releases. Migration 0174 and the current

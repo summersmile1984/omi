@@ -76,6 +76,11 @@ INTAKE_COLUMNS = {
     'valid_at',
     'created_at',
     'updated_at',
+    'reviewed',
+    'user_review',
+    'edited',
+    'scoring',
+    'is_locked',
 }
 
 
@@ -325,14 +330,14 @@ def append_journal_records(records, uid, result, control, now, *, omit_intake_te
         )
 
 
-async def create_native_memories(env, uid, rows, extra_statements, *, source_surface):
+async def create_native_memories(env, uid, rows, extra_statements, *, source_surface, observed_items=()):
     """The native single/batch routes supply validated rows and owned side effects.
 
     Admission is rechecked inside the same transaction as every result write.
     A transient CAS conflict is returned to the caller rather than silently
     rebasing an accepted user operation against an unobserved generation.
     """
-    if source_surface not in {'v3_manual', 'v3_api', 'v3_batch'}:
+    if source_surface not in {'v3_manual', 'v3_api', 'v3_batch', 'mcp', 'developer_api'}:
         raise ValueError('invalid native memory source surface')
     if not rows or len(rows) > 100 or len({row['id'] for row in rows}) != len(rows):
         raise ValueError('invalid native memory batch')
@@ -391,13 +396,15 @@ async def create_native_memories(env, uid, rows, extra_statements, *, source_sur
     statements = [
         db.prepare(
             'INSERT INTO cf_memory_apply_guard '
-            '(uid, expected_control_json, account_generation, new_ids_json, operation_ids_json) VALUES (?, ?, ?, ?, ?)'
+            '(uid, expected_control_json, account_generation, new_ids_json, operation_ids_json, observed_items_json) '
+            'VALUES (?, ?, ?, ?, ?, ?)'
         ).bind(
             uid,
             prior,
             control.account_generation,
             encoded([row['id'] for row in rows]),
             encoded([operation_id for operation_id, _ in identities]),
+            encoded(list(observed_items)),
         )
     ]
     records = {table: [] for table in ('cf_memory_operations', 'cf_memory_commits', 'cf_memory_outbox')}

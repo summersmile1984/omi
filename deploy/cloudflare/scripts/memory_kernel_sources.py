@@ -95,7 +95,8 @@ def generate(output: Path) -> None:
         + selected_nodes('backend/utils/notifications.py', {'_generate_tag', '_build_apple_reminders_sync_message'})
     )
     outputs['memory_kernel_intake.py'] = (
-        'from enum import Enum\nfrom typing import Any, Dict\n'
+        'import hashlib,uuid\nfrom enum import Enum\nfrom typing import Any, Dict\n'
+        + selected_nodes('backend/database/document_ids.py', {'document_id_from_seed'})
         + selected_nodes('backend/models/memories.py', {'SubjectAttribution'})
         + selected_nodes('backend/utils/memory/canonical_memory_adapter.py', {'_product_metadata_from_payload'})
     )

@@ -113,6 +113,7 @@ export function sourceIdentity(root) {
         "backend/utils/memory/belief_model.py",
         "backend/utils/other/list_budget.py",
         "backend/database/memory_apply_store.py",
+        "backend/database/document_ids.py",
         "backend/utils/llm/chat.py",
         "backend/utils/llms/memory.py",
         "backend/routers/chat_sessions.py",
