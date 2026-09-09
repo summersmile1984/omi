@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -59,6 +59,15 @@ export function probeConfiguration(config, names, directory) {
   return result;
 }
 
+export function stageProbeWorker(configPath, names, targetDirectory) {
+  // Wrangler resolves python_modules from the config's project root, not main
+  // or base_dir. Preserve that root when moving the frozen configuration.
+  cpSync(dirname(configPath), targetDirectory, { recursive: true, errorOnExist: true, force: false });
+  const path = resolve(targetDirectory, "wrangler.json");
+  writeFileSync(path, JSON.stringify(probeConfiguration(readJson(configPath), names, targetDirectory)), { mode: 0o600 });
+  return path;
+}
+
 export async function qualifyCloudRuntime(context, {
   journalDirectory,
   adapterFactory = (options) => new WranglerReleaseAdapter(options),
@@ -79,8 +88,7 @@ export async function qualifyCloudRuntime(context, {
   const probe = structuredClone(candidate);
   for (const [role, worker] of Object.entries(candidate.workers)) {
     const config = resolve(directory, worker.config);
-    const path = resolve(journalDirectory, `${role}.json`);
-    writeFileSync(path, JSON.stringify(probeConfiguration(readJson(config), names, dirname(config))), { mode: 0o600 });
+    const path = stageProbeWorker(config, names, resolve(journalDirectory, role));
     probe.workers[role] = { ...worker, name: names[worker.name], config: path };
   }
   const token = randomBytes(32).toString("hex");

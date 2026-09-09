@@ -64,6 +64,15 @@ fork's additive classifier both run without a new classification exception.
 
 Cloudflare qualification reuses the actual frozen publisher with all uploaded
 module/assets bytes, variables, secrets and compatibility settings. It creates
+one complete private directory per Worker before changing its configuration:
+Wrangler 4.127.0 collects `python_modules` relative to the configuration project
+root, even when `main` and `base_dir` are absolute. Moving only the configuration
+silently drops vendored dependencies; the live trial of artifact 10124622514
+failed with error 10021 (`ModuleNotFoundError: fastapi`) for this reason.
+The regression runs the pinned Wrangler dry-run and checks the emitted Python
+package bytes. Earlier negative trials that moved only the configuration do not
+prove that the original Core error 10013 was reproduced.
+The qualifier creates
 two uniquely owned temporary D1 databases, executes the frozen SQL through the
 real remote migration command and compares catalogs, ledgers and foreign keys
 with the existing frozen SQL owner. Trial Workers bind to those temporary D1

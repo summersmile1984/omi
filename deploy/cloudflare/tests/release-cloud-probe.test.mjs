@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { WORKERS } from "../scripts/resource-input.mjs";
-import { probeConfiguration, qualifyCloudRuntime } from "../scripts/release-cloud-probe.mjs";
+import { probeConfiguration, stageProbeWorker, qualifyCloudRuntime } from "../scripts/release-cloud-probe.mjs";
 
 const directories = [];
 afterEach(() => directories.splice(0).forEach((directory) => rmSync(directory, { recursive: true, force: true })));
@@ -19,11 +21,13 @@ function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occup
   };
   for (const role of WORKERS) {
     const name = `eddy-${role}-beta`;
-    const config = `${role}.json`;
+    const config = `workers/${role}/wrangler.json`;
+    const workerDirectory = resolve(directory, "workers", role);
+    mkdirSync(workerDirectory, { recursive: true });
     candidate.workers[role] = { name, config, sha256: "d".repeat(64) };
     candidate.resource_plan.secrets[role] = { INTERNAL: "ORIGINAL_SECRET" };
     candidate.resource_plan.deploy_order.push(name);
-    writeFileSync(resolve(directory, `${role}.js`), `export default {fetch: () => new Response("${role}")};\n`);
+    writeFileSync(resolve(workerDirectory, `${role}.js`), `export default {fetch: () => new Response("${role}")};\n`);
     writeFileSync(resolve(directory, config), JSON.stringify({
       name, main: `${role}.js`, compatibility_date: "2026-09-01",
       vars: { ORIGINAL: "runtime-variable" },
@@ -134,6 +138,35 @@ function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occup
 }
 
 describe("frozen Cloudflare release CI rehearsal", () => {
+  it("preserves the Python package root collected by the actual pinned Wrangler", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "release-python-root-"));
+    directories.push(directory);
+    const source = resolve(directory, "frozen");
+    mkdirSync(resolve(source, "modules"), { recursive: true });
+    mkdirSync(resolve(source, "python_modules/fixture_package"), { recursive: true });
+    const dependency = 'VALUE = "frozen package bytes"\n';
+    writeFileSync(resolve(source, "python_modules/fixture_package/__init__.py"), dependency);
+    writeFileSync(resolve(source, "modules/entry.py"), "import fixture_package\n");
+    const config = resolve(source, "wrangler.json");
+    writeFileSync(config, JSON.stringify({
+      name: "original-python", main: "modules/entry.py", base_dir: "modules",
+      compatibility_date: "2026-09-01", compatibility_flags: ["python_workers"],
+      find_additional_modules: true, no_bundle: true,
+    }));
+    const staged = stageProbeWorker(config, { "original-python": "private-python" }, resolve(directory, "private"));
+    const output = resolve(directory, "upload");
+    const component = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const result = spawnSync(process.execPath, [
+      resolve(component, "node_modules/wrangler/bin/wrangler.js"), "deploy", "--dry-run", "--no-bundle",
+      "--config", staged, "--outdir", output,
+    ], {
+      cwd: directory, encoding: "utf8", timeout: 30_000,
+      env: { ...process.env, CI: "true", WRANGLER_SEND_METRICS: "false" },
+    });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(readFileSync(resolve(output, "python_modules/fixture_package/__init__.py"), "utf8")).toBe(dependency);
+    expect(JSON.parse(readFileSync(config, "utf8")).name).toBe("original-python");
+  });
   it("uploads every unchanged module with its runtime bindings, probes cold/warm requests and removes only owned Workers", async () => {
     const f = fixture();
     const result = await qualifyCloudRuntime(f.context, f.options);
