@@ -49,6 +49,15 @@ step from a clean fixture and verifies provisioning failure stops the probe.
 
 ## Artifacts and provenance
 
+Both CD workflows download through GitHub CLI into an attempt-owned temporary
+folder. A successful command must also produce all four delivery files before
+that folder is handed to admission. Interrupted or incomplete downloads get at
+most three isolated attempts; partial files never become a deployment input.
+This addresses the observed `download-artifact@v4` silent truncation in run
+34362300799 (also reported in actions/download-artifact#454). The subsequent
+source, stage and archive-hash verification remains mandatory. This download
+step is workflow-owned so transport repairs preserve previously accepted bytes.
+
 Artifacts are retained by Actions for 30 days. `delivery.json` binds source
 commit/tree, full CI run/attempt, brand/stage, Cloudflare candidate digest,
 Docker image IDs and each archive's SHA-256. `cloudflare.tar.gz` holds the

@@ -19,6 +19,87 @@ from release_ci import CI_PATH, PREPARE_PATH, REPOSITORY, resolve_delivery, veri
 ROOT = Path(__file__).resolve().parents[2]
 
 
+class DeliveryDownloadTests(unittest.TestCase):
+    """Run 34362300799 reported a successful but incomplete artifact transfer."""
+
+    def run_step(self, target, incomplete=False):
+        workflow = yaml.safe_load((ROOT / f'.github/workflows/fork-cd-{target}.yml').read_text())
+        step = next(
+            row for row in workflow['jobs']['deploy']['steps'] if row.get('name') == 'Download complete frozen delivery'
+        )
+        with tempfile.TemporaryDirectory() as work:
+            directory = Path(work)
+            destination = directory / 'accepted'
+            record = directory / 'attempts'
+            transport = directory / 'transport.py'
+            transport.write_text('''import os, sys
+from pathlib import Path
+args = sys.argv[1:]
+assert args[:6] == ['run', 'download', '123', '--repo', 'summersmile1984/omi', '--name']
+assert args[6:8] == ['delivery-synthetic-eddy-beta', '--dir']
+record = Path(os.environ['DOWNLOAD_TEST_RECORD'])
+attempt = int(record.read_text()) + 1 if record.exists() else 1
+record.write_text(str(attempt))
+destination = Path(args[8])
+destination.mkdir(parents=True)
+(destination / 'cloudflare.tar.gz').write_text('partial' if attempt == 1 else 'complete')
+if os.environ['DOWNLOAD_TEST_INCOMPLETE'] == 'true':
+    raise SystemExit(0)
+if attempt == 1:
+    raise SystemExit(1)
+for name in ['delivery.json', 'server-images.tar', 'source.tar.gz']:
+    (destination / name).write_text('complete')
+''')
+            launcher = directory / 'gh'
+            launcher.write_text(
+                '#!/bin/bash\nexec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(transport)) + ' "$@"\n'
+            )
+            launcher.chmod(0o700)
+            result = subprocess.run(
+                ['bash', '-e', '-o', 'pipefail', '-c', step['run']],
+                cwd=directory,
+                env={
+                    **os.environ,
+                    'PATH': str(directory) + os.pathsep + os.environ['PATH'],
+                    'RUNNER_TEMP': str(directory),
+                    'DELIVERY_RUN_ID': '123',
+                    'DELIVERY_ARTIFACT': 'delivery-synthetic-eddy-beta',
+                    'DELIVERY_DIRECTORY': str(destination),
+                    'DOWNLOAD_TEST_RECORD': str(record),
+                    'DOWNLOAD_TEST_INCOMPLETE': str(incomplete).lower(),
+                },
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            files = {p.name: p.read_text() for p in destination.glob('*')} if destination.exists() else None
+            self.assertEqual(list(directory.glob('eddy-delivery.*')), [], 'attempt-owned temporary files leaked')
+            return result, int(record.read_text()), files
+
+    def test_both_targets_retry_interrupted_transfer_without_publishing_partial_files(self):
+        for target in ['cloudflare', 'server']:
+            with self.subTest(target=target):
+                result, attempts, files = self.run_step(target)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(attempts, 2)
+                self.assertEqual(
+                    files,
+                    {
+                        name: 'complete'
+                        for name in ['delivery.json', 'cloudflare.tar.gz', 'server-images.tar', 'source.tar.gz']
+                    },
+                )
+
+    def test_both_targets_refuse_false_success_after_three_incomplete_attempts(self):
+        for target in ['cloudflare', 'server']:
+            with self.subTest(target=target):
+                result, attempts, files = self.run_step(target, incomplete=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(attempts, 3)
+                self.assertIsNone(files)
+                self.assertIn('deployment has not started', result.stderr)
+
+
 class CloudflareQualificationToolsTests(unittest.TestCase):
     """PR #14 omitted the interpreter on a clean CD checkout (run 34358400820)."""
 
