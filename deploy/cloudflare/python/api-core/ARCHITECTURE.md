@@ -15,6 +15,25 @@ APIs through the Worker fetch bridge. The route modules must stay async and
 must not import Firestore, Redis, thread pools, local persistent files, or
 process-lifetime network clients.
 
+The source projector copies that composition root unchanged to
+`_worker_application.py` and makes `python/core_entrypoint.py` the uploaded
+`entry.py`. The small Worker entrypoint imports the application inside the first
+request and delegates to its existing ASGI handler with the same request,
+bindings and context. Python caches a successful module import for later
+requests; import failure propagates and is retried on a subsequent request.
+FastAPI itself is imported at deployment time so the runtime initializes its
+thread-free handling of synchronous dependencies. Loading the framework only
+inside a request caused the existing JIT HTTP regression to return 503 while
+trying to start a thread; loading only the business application lazily preserves
+that runtime integration.
+This keeps the 492-route application out of deployment-time initialization,
+which reproduced Cloudflare upload error 10013 when a binding was present in
+beta CD run 34373519437. The ordinary business source and default prompts are
+unchanged. The cloud diagnostic loaded all routes successfully; measured cold
+health requests took about 5–10 seconds. Four subsequent requests on one
+connection in the same location took 0.18–0.19 seconds each. These are diagnostic
+measurements, not a service latency guarantee.
+
 The ordinary builder also stages `memory_kernel_*` modules from the upstream
 canonical apply models and pure Short-term lifecycle rules. Only import module
 names change; source text, validators, receipt hashes and decision rules retain

@@ -172,6 +172,22 @@ command. Neither the source tree nor CF5's regular-source-only rule is changed.
 Dev runs use that source snapshot; restart the command after editing source.
 CPython tests load the same canonical shared directory through their conftest.
 
+Core's projector preserves its ASGI composition bytes as
+`src/_worker_application.py` in that stage and installs the small
+`python/core_entrypoint.py` as the staged entrypoint. Application initialization
+runs inside the first request; subsequent requests reuse Python's module cache.
+FastAPI itself stays imported at deployment time so the runtime initializes its
+thread-free synchronous dependency support; the JIT HTTP regression covers this
+boundary in the existing business suite.
+It delegates HTTP/WebSocket dispatch to the existing ASGI handler and preserves
+the request, environment and context. `test_worker_bootstrap.py` exercises lazy
+loading, unchanged delegation, and initialization error propagation/retry.
+Cloudflare CD run 34373519437 reproduced upload error 10013 with the complete
+Core application plus even one inert variable; an isolated cloud probe with
+request-time loading initialized all 492 routes successfully. Cold requests may
+therefore take several seconds; this does not certify an interrupted release
+or provide its recovery authorization.
+
 API Core also stages the upstream screenshot wire types, canonicalizer, palette,
 privacy prompt and survivor selection through `scripts/screen_frame_sources.py`.
 The compiler uses the existing `backend/.venv/bin/python` prerequisite and

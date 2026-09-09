@@ -1,0 +1,38 @@
+---
+title: "Fork Cloudflare delivery"
+description: "Frozen releases, Core initialization, and deployment evidence"
+---
+
+The fork prepares immutable Cloudflare and Server OS artifacts from one source
+commit with successful full CI. Separate GitHub deployment workflows consume the
+same preparation receipt. The workflow source controls download/admission; the
+application and its qualification runners remain bound to the accepted source.
+See `scripts/fork/RELEASE.md` for workflow inputs and environment configuration.
+
+Cloudflare Core keeps its business composition in `python/api-core/src/entry.py`.
+The ordinary source projector copies those exact bytes to the staged
+`_worker_application.py` and installs `python/core_entrypoint.py` as the deployed
+entrypoint. Its first request imports the application and calls its existing
+ASGI handler with the original request, bindings and execution context. Later
+requests reuse Python's module cache. Import errors propagate; they are not
+converted into a success response. HTTP and WebSocket dispatch stay with the
+same ASGI implementation, and default prompts retain their existing source.
+The framework itself remains imported at deployment time so synchronous
+FastAPI dependencies use the runtime's thread-free integration. The existing
+JIT HTTP business case caught a 503 when the framework was also loaded late.
+
+This boundary addresses the observed Cloudflare upload failure in beta CD run
+34373519437: the full application uploaded without bindings, but adding even one
+inert variable caused HTTP 500 / error 10013. A small ASGI application with the
+same resource bindings uploaded successfully. Request-time loading of the full
+492-route application with its actual bindings and secrets passed an isolated
+cloud probe. Measured cold health requests took approximately 5–10 seconds;
+four subsequent requests on one connection in the same location took
+0.18–0.19 seconds each. These are diagnostics, not a latency guarantee.
+
+The deployment journal remains the release authority. A successful upload or
+bootstrap probe does not certify publication of all nine Workers, schema
+compatibility, or public business acceptance. A partially completed release
+retains its candidate, migration records and observed Worker versions and must
+be reconciled before further publication. D1 migrations are never reversed
+automatically.

@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -98,6 +99,17 @@ export function preparePythonSource(projectDirectory, args) {
             "Core source projection failed; inspect the upstream contract owners"
           );
       }
+      // Cloudflare upload validation cannot initialize the full Core graph
+      // with bindings (run 34373519437). Keep the application bytes intact and
+      // import them from the request entrypoint instead of deployment scope.
+      const application = resolve(stage, "src/_worker_application.py");
+      if (lstatSync(application, { throwIfNoEntry: false }))
+        throw new Error("Python application module collides with project owner");
+      renameSync(resolve(stage, "src/entry.py"), application);
+      copyFileSync(
+        resolve(repository, "deploy/cloudflare/python/core_entrypoint.py"),
+        resolve(stage, "src/entry.py"),
+      );
     }
     // Vendored immutable dependencies retain the existing staging link contract;
     // Wrangler's compiled/frozen payload is checked to contain regular files.
