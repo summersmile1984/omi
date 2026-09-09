@@ -186,6 +186,9 @@ class Fixture:
             table['profiles']['self_hosted.local'] = core_only_profile(table['profiles']['self_hosted.local'])
         profile_file = self.output / 'profile.json'
         profile_file.write_text(json.dumps(table, indent=2) + '\n')
+        # The public profile is bind-mounted into a different Linux UID. The
+        # enclosing fixture and credential files retain the private umask.
+        profile_file.chmod(0o444)
         env = {}
         for line in (ROOT / 'deploy/self-host/.env.production.example').read_text().splitlines():
             if line.strip() and not line.lstrip().startswith('#') and '=' in line:
@@ -464,6 +467,27 @@ class Fixture:
             ],
             timeout=60,
         )
+        if not self.model_stores:
+            self.command(
+                [
+                    'docker',
+                    'run',
+                    '--rm',
+                    '--network=none',
+                    '--platform=linux/amd64',
+                    '--user=0:0',
+                    '--volume',
+                    f'{self.output / "profile.json"}:/proof/profile.json:ro',
+                    '--volume',
+                    f'{ROOT / "deploy/self-host/ci/providers.py"}:/contract/providers.py:ro',
+                    '--volume',
+                    f'{ROOT / "deploy/self-host/ci/test_provider_access.py"}:/proof/test_provider_access.py:ro',
+                    self.api_image,
+                    'python',
+                    '/proof/test_provider_access.py',
+                ],
+                timeout=30,
+            )
         if 'llm' in self.model_stores:
             self.command(
                 [

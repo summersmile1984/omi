@@ -86,3 +86,15 @@ Final fork-clock validation: `uvx uv==0.12.3 run pytest -q` in API Core passed
 real workerd product run passed 49 cases. The main-relative upstream PR
 preflight still stops at the already tracked line-count ratchet for upstream
 synchronization growth; the fork acceptance lanes remain enforced.
+
+Ubuntu PR run `34337809124` subsequently passed the complete Cloudflare product
+suite, then stopped while starting the Server dependency containers. A native
+Linux reproduction established that the generated profile inherited mode `0600`
+and the non-root provider failed its startup import with `PermissionError`.
+The public profile is now explicitly read-only (`0444`); the fixture directory
+and credentials retain their private permissions. The existing product lane
+recreates the actual profile bytes/mode on a Linux filesystem and imports the
+real provider after dropping to its container UID, while also proving private
+file denial. That check rejects the original mode. The changed Server product
+lane passed all 11 fixture tests, the native permission proof and all 16 HTTP
+cases locally. A new remote CI run is still required for this source change.

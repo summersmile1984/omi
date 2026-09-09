@@ -1,5 +1,11 @@
 # Self-host production profile
 
+The Docker product fixture keeps its directory, credentials and logs private.
+Its generated public profile is mode `0444`, readable by the non-root container
+UID on Linux. The existing product CI lane imports the actual controlled
+provider under that UID on the container filesystem, proving profile access
+and private-file denial even when Docker Desktop maps host permissions.
+
 Current implementation: [local model/runtime boundaries](model-runtime.md).
 The sections below originated before the upstream runtime changed. Their
 SenseVoice/MOSS, generic embedding, webhook/TTS and full-cutover descriptions
