@@ -613,15 +613,20 @@ describe("Hume webhook boundary", () => {
         emotions: Array<{ name: string; score: number }>;
       }> = [];
       const longEmotionName = "e".repeat(128);
-      while (JSON.stringify(predictions).length < 524_200) {
+      let serializedLength = 2; // Array brackets, then each item and separator.
+      while (serializedLength < 524_200) {
         const start = predictions.length;
-        predictions.push({
+        const prediction = {
           start,
           end: start + 0.5,
           emotions: [{ name: longEmotionName, score: 0.5 }],
-        });
+        };
+        serializedLength +=
+          JSON.stringify(prediction).length + (predictions.length ? 1 : 0);
+        predictions.push(prediction);
       }
       const predictionsJson = JSON.stringify(predictions);
+      expect(predictionsJson.length).toBe(serializedLength);
       expect(predictionsJson.length).toBeLessThanOrEqual(524_288);
       state.database.database
         .prepare(

@@ -387,6 +387,10 @@ screenshot integration has a 15-second deadline, sized above the observed
 6.739-second run in [34301227612](https://github.com/summersmile1984/omi/actions/runs/34301227612).
 It still executes the unchanged upstream wire, image codec, prompt and survivor
 policy assertions; no retries or skipped tests turn a failure into a pass.
+Keep independent database scenarios in separate cases and build large fixture
+payloads in linear time. Ubuntu run `34339851267` exposed three OAuth schemas
+sharing one deadline and quadratic Hume fixture serialization. Their original
+assertions and 5-second deadline remain; Hume's 524,285-byte input is unchanged.
 
 API Core now serves `GET /v2/desktop/prompts` through authenticated Edge
 routing. Migration `0153_desktop_prompts.sql` stores operator-authored global

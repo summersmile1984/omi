@@ -98,3 +98,20 @@ real provider after dropping to its container UID, while also proving private
 file denial. That check rejects the original mode. The changed Server product
 lane passed all 11 fixture tests, the native permission proof and all 16 HTTP
 cases locally. A new remote CI run is still required for this source change.
+
+At `72f78ee226`, Ubuntu run `34339851267` passed both real backend product
+suites and the Electron/Flutter fork lanes. Two later Vitest cases hit the
+unchanged five-second test deadline under suite load. OAuth bundled three
+independent migrated databases under one deadline; those admission cases now
+run separately with every assertion retained. Hume's near-limit fixture
+re-serialized the entire growing array on each iteration; incremental length
+accounting builds the same payload in linear time. Runtime and test timeouts
+remain unchanged. The corresponding local Linux measurement used two CPUs.
+
+The Mac runner also encountered GitHub's cancellation redelivery pattern
+(actions/runner #4569), recovered after force-cancelling the superseded push
+and restarting its service. Its inherited Docker Desktop credential helper
+later hung during public-image metadata resolution. A separate runner Docker
+configuration using the native Keychain helper pulled the exact pinned digest
+successfully and retained both Docker contexts; the user's Docker configuration
+was not edited. The runner service loads that configuration on its next job.
