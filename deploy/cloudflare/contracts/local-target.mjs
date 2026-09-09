@@ -32,38 +32,45 @@ import { fileTree, git } from "../scripts/release-files.mjs";
 const componentRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function failedCoreCases(metadata) {
+export function failedProductCases(metadata) {
   if (!metadata?.trace_dir) return [];
-  try {
-    const path = resolve(metadata.trace_dir, "core-results.json");
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024)
-      return [];
-    const report = JSON.parse(readFileSync(path, "utf8"));
-    if (!Array.isArray(report.cases)) return [];
-    return report.cases
-      .filter(
-        (row) =>
-          row.result === "fail" &&
-          typeof row.id === "string" &&
-          /^[a-zA-Z0-9_.:-]{1,100}$/.test(row.id)
-      )
-      .slice(0, 50)
-      .map((row) => ({
-        id: row.id,
-        ...(typeof row.error === "string" &&
-        /returned HTTP [1-5][0-9]{2}; expected [1-5][0-9]{2}/.test(row.error)
-          ? {
-              status: row.error.match(
-                /returned HTTP [1-5][0-9]{2}; expected [1-5][0-9]{2}/
-              )[0],
-            }
-          : {}),
-      }));
-  } catch {
-    return [];
+  const failures = [];
+  const validId = (value) => typeof value === "string" && /^[a-zA-Z0-9_.:-]{1,100}$/.test(value);
+  const publicReasons = new Set([
+    "recording frame deadline exceeded",
+    "recording upgrade deadline exceeded",
+    "recording closed before expected event",
+    "actual queue did not finalize recording",
+  ]);
+  for (const suite of ["core", "recording", "chat", "share"]) {
+    try {
+      const path = resolve(metadata.trace_dir, `${suite}-results.json`);
+      const stat = lstatSync(path);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) continue;
+      const report = JSON.parse(readFileSync(path, "utf8"));
+      if (!Array.isArray(report.cases)) continue;
+      let previous;
+      for (const row of report.cases) {
+        if (!validId(row?.id)) continue;
+        if (row.result === "pass") previous = row.id;
+        if (row.result !== "fail") continue;
+        const status = typeof row.error === "string" ? row.error.match(
+          /returned HTTP [1-5][0-9]{2}; expected [1-5][0-9]{2}|(?:auth|api) (?:GET|POST|PUT|PATCH|DELETE) expected [0-9,]+, received [1-5][0-9]{2}/
+        )?.[0] : undefined;
+        failures.push({
+          id: row.id,
+          ...(previous ? { after: previous } : {}),
+          ...(status ? { status } : {}),
+          ...(publicReasons.has(row.error) ? { reason: row.error } : {}),
+        });
+      }
+    } catch {
+      // One absent or malformed suite must not hide another suite's failure.
+    }
   }
+  return failures.slice(0, 50);
 }
+
 async function freePort() {
   const socket = createServer();
   await new Promise((resolve, reject) => {
@@ -658,9 +665,9 @@ if (
     process.exitCode = controller.signal.aborted ? 130 : 0;
   } catch (error) {
     console.error(error.message);
-    const failed = failedCoreCases(target?.metadata);
+    const failed = failedProductCases(target?.metadata);
     if (failed.length)
-      console.error(JSON.stringify({ failed_core_cases: failed }));
+      console.error(JSON.stringify({ failed_product_cases: failed }));
     process.exitCode = 1;
   } finally {
     await target?.close();

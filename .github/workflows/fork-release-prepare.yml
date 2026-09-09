@@ -139,6 +139,7 @@ jobs:
     name: Cloudflare artifact qualification
     needs: prepare
     uses: ./.github/workflows/fork-cd-cloudflare.yml
+    secrets: inherit
     with:
       delivery_run_id: ${{ format('{0}', github.run_id) }}
       stage: ${{ inputs.stage }}

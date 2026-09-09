@@ -2826,12 +2826,19 @@ owner isolation, expired/locked/invalid capabilities, self and duplicate
 acceptance, malformed responses and a real recipient copy. This local evidence
 does not qualify remote routes or authorize a deployment.
 
-`bash deploy/cloudflare/ci/product.sh` builds an isolated actual seven-Worker target,
+`bash deploy/cloudflare/ci/product.sh` builds an isolated actual application target,
 applies all normal migrations, runs the shared identity/onboarding/Tasks suite and
 a separate recording/Queue contract, then stops its process tree. Both fork
 manifest lanes execute this same command. Read `contracts/README.md` for tools,
 metadata, synthetic inference boundaries and retained evidence. A local green
 report never sets release qualification or authorizes remote deployment.
+On failure, CI prints a bounded `failed_product_cases` summary from the Core,
+recording, chat and share reports: case identities, the preceding passed case,
+HTTP status mismatches and explicitly allowed recording deadline reasons.
+Private response bodies, sessions and arbitrary exception text remain in the
+local evidence directory. Linux run 34408005511 failed recording while the old
+Core-only summary omitted its actual failure; all four reports now share the
+same bounded reader.
 
 ### Developer conversation questions
 
