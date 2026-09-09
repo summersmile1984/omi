@@ -163,7 +163,7 @@ export function sourceIdentity(root) {
     digest: digest(files),
   };
 }
-export function verifyCandidate(directory, root) {
+export function verifyCandidateArtifacts(directory) {
   outputEntry(resolve(directory), resolve(directory, "candidate.json"));
   const candidate = readJson(resolve(directory, "candidate.json"));
   const { candidate_digest, ...body } = candidate;
@@ -173,10 +173,6 @@ export function verifyCandidate(directory, root) {
     candidate.release_ready !== false
   )
     throw new Error("candidate integrity or unqualified release state differs");
-  if (digest(sourceIdentity(root)) !== digest(candidate.source))
-    throw new Error(
-      "source changed after qualification; prepare a new candidate"
-    );
   for (const [path, files] of Object.entries(candidate.artifact_files)) {
     outputEntry(
       resolve(directory),
@@ -185,5 +181,14 @@ export function verifyCandidate(directory, root) {
     if (digest(fileTree(resolve(directory, path))) !== digest(files))
       throw new Error(`artifact changed: ${path}`);
   }
+  return candidate;
+}
+
+export function verifyCandidate(directory, root) {
+  const candidate = verifyCandidateArtifacts(directory);
+  if (digest(sourceIdentity(root)) !== digest(candidate.source))
+    throw new Error(
+      "source changed after qualification; prepare a new candidate"
+    );
   return candidate;
 }

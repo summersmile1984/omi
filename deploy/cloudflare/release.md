@@ -124,10 +124,27 @@ It emits explicitly named `first-release.*` cases. An observed retained Worker,
 nonempty initial authority, schema drift or denied observation is a failure;
 this first-release proof makes no claim about rollback to a previous version.
 
-## Future explicit remote operations
+## Remote operations and first-release continuation
 
-The following commands are implemented but were **not executed remotely** for
-this package. They require an exact `--authorize <candidate-digest>`, a scoped
+An interrupted first deployment can use `apply --continue-from /absolute/prior-journal`
+with a newly qualified candidate. The release owner validates retained candidate
+files, journals and Git ancestry, checks every live Worker against the recorded
+version owner, and requires unchanged artifacts for any already published
+Worker. Both D1 authorities must exactly match the frozen schema catalog and
+migration ledger with no foreign-key violations. Catalog comparison removes
+only SQL line-comment text outside quoted literals and identifiers: the real
+D1 migration removed comments from two table definitions, while local SQLite
+retained them. Object names, constraints, literal values and other SQL bytes
+still must match; original migration file hashes never change. All predecessor journals are
+locked; their contents remain unchanged. A new transaction republishes retained
+bytes and repaired, previously unpublished Workers under the new candidate's
+identity, then runs the ordinary public acceptance gates. Failed continuation
+attempts retain their own history for a further observed continuation. Schema
+changes, external version changes, an unconfirmed upload that changed serving
+code, and adoption of a completed release are refused. This narrow operation
+does not implement arbitrary upgrade or rollback compatibility.
+
+Remote operations require an exact `--authorize <candidate-digest>`, a scoped
 `CLOUDFLARE_API_TOKEN`, and any referenced secret values in the process environment.
 The account ID always comes from the candidate. Application secrets are written
 only to a private temporary file for one deployment and removed afterwards;

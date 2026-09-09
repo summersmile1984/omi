@@ -13,6 +13,10 @@ on:
         options: [beta, production]
         default: beta
         required: true
+      continue_from:
+        description: Retained incomplete first-release journal name; leave empty for a fresh release
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -81,10 +85,15 @@ jobs:
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
           RELEASE_DIRECTORY: ${{ runner.temp }}/cf-delivery-${{ github.run_id }}
           RELEASE_JOURNAL_ROOT: ${{ vars.RELEASE_JOURNAL_ROOT }}
+          RELEASE_CONTINUE_FROM: ${{ inputs.continue_from }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           RELEASE_SECRETS_JSON: ${{ secrets.RELEASE_SECRETS_JSON }}
         run: |
           python3 "$RUNNER_TEMP/fork-release-admission/release_ci.py" verify --directory "$RELEASE_DIRECTORY" \
             --sha "$RELEASE_SHA" --stage "$RELEASE_STAGE" --target cloudflare
+          continuation=()
+          if [[ -n "$RELEASE_CONTINUE_FROM" ]]; then
+            continuation=(--continue-from "$RELEASE_CONTINUE_FROM")
+          fi
           node scripts/fork/deploy-cloudflare.mjs --delivery "$RELEASE_DIRECTORY" \
-            --journal-root "$RELEASE_JOURNAL_ROOT"
+            --journal-root "$RELEASE_JOURNAL_ROOT" "${continuation[@]}"

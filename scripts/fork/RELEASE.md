@@ -168,8 +168,23 @@ checks create their own accounts and delete only those accounts; cleanup
 failure fails qualification. These are explicit API/provider checks, not a
 claim that every native UI journey was exercised against the public endpoint.
 
-The existing prior-schema qualifier currently admits first release into empty
-D1 only. An update with retained Worker versions, arbitrary schema migration,
+The existing prior-schema qualifier admits first release into empty D1, or
+continuation of an owned incomplete first release with exactly matching SQL and
+infrastructure. Cloudflare CD's optional `continue_from` input names the retained
+journal (a basename under the stage's `RELEASE_JOURNAL_ROOT`). The owner checks
+that journal and its retained candidate, follows earlier failed attempts back
+to observed Worker absence, and locks the entire journal lineage. Every live
+version must match the recorded owner; an ambiguous upload may only be retried
+when the active version is provably unchanged. Already published Worker
+artifacts must be byte-identical in the freshly qualified candidate. The schema
+runner observes full D1 catalogs, migration ledgers and foreign keys before any
+continuation mutation. Publication gives all nine Workers the new candidate
+annotations while retaining Worker identities and persistent data. The normal
+source/CI/local-product and deployed-product gates still run. No old proof
+approves new bytes, no prior journal is rewritten, and a completed release
+cannot be adopted as an incomplete first release.
+
+An update with changed retained Worker artifacts, arbitrary schema migration,
 or rollback must provide the separate prior-version/new-schema compatibility
 proof; these entry points fail closed until that proof exists. D1 migrations
 are never automatically reversed. `release.mjs recovery-plan` reports the

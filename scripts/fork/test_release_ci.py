@@ -24,6 +24,76 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 
 
+class CloudflareContinuationHandoffTests(unittest.TestCase):
+    """Run the actual wrapper; only the downstream remote publisher is controlled."""
+
+    def run_wrapper(self, previous):
+        with tempfile.TemporaryDirectory() as work:
+            directory = Path(work)
+            delivery = directory / 'delivery'
+            candidate_dir = delivery / 'unpacked/cloudflare'
+            candidate_dir.mkdir(parents=True)
+            candidate = {
+                'candidate_digest': 'c' * 64,
+                'source': {'commit': 'a' * 40},
+                'inventory': {'secret_refs': {}},
+            }
+            (candidate_dir / 'candidate.json').write_text(json.dumps(candidate))
+            (delivery / 'delivery.json').write_text(
+                json.dumps({'candidate_digest': 'c' * 64, 'commit': 'a' * 40, 'stage': 'beta', 'ci_run_id': 123})
+            )
+            publisher = directory / 'deploy/cloudflare/scripts/release.mjs'
+            publisher.parent.mkdir(parents=True)
+            publisher.write_text(
+                'import {writeFileSync} from "node:fs";'
+                'writeFileSync(process.env.CAPTURE, JSON.stringify(process.argv.slice(2)));'
+            )
+            capture = directory / 'capture.json'
+            command = [
+                shutil.which('node'),
+                str(ROOT / 'scripts/fork/deploy-cloudflare.mjs'),
+                '--delivery',
+                str(delivery),
+                '--journal-root',
+                str(directory / 'journals'),
+            ]
+            if previous:
+                command += ['--continue-from', previous]
+            result = subprocess.run(
+                command,
+                cwd=directory,
+                text=True,
+                capture_output=True,
+                env={'PATH': os.environ['PATH'], 'CAPTURE': str(capture), 'CLOUDFLARE_API_TOKEN': 'synthetic-fixture'},
+            )
+            args = json.loads(capture.read_text()) if capture.exists() else None
+            if args:
+                retained = Path(args[args.index('--candidate') + 1])
+                self.assertEqual(json.loads((retained / 'candidate.json').read_text()), candidate)
+            return result, args
+
+    def test_new_and_continued_releases_retain_candidate_and_forward_exact_journal(self):
+        previous = 'beta-' + 'a' * 40 + '-11111111-1111-4111-8111-111111111111'
+        for value in ['', previous]:
+            with self.subTest(previous=value):
+                result, args = self.run_wrapper(value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(args[0], 'apply')
+                self.assertEqual(args[args.index('--authorize') + 1], 'c' * 64)
+                if value:
+                    self.assertEqual(Path(args[args.index('--continue-from') + 1]).name, value)
+                else:
+                    self.assertNotIn('--continue-from', args)
+
+    def test_cross_stage_and_external_journals_never_reach_the_publisher(self):
+        for value in ['../other-journal', '/absolute/journal', 'production-' + 'a' * 40 + '-' + '1' * 36]:
+            with self.subTest(previous=value):
+                result, args = self.run_wrapper(value)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIsNone(args)
+                self.assertIn('continuation must name one retained journal in this stage', result.stderr)
+
+
 class FrozenArchiveTests(unittest.TestCase):
     def fixture(self, directory):
         directory.mkdir()

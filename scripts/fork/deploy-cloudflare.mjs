@@ -1,5 +1,5 @@
 import { readFileSync, mkdirSync, cpSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
@@ -8,6 +8,7 @@ const { values } = parseArgs({
   options: {
     delivery: { type: "string" },
     "journal-root": { type: "string" },
+    "continue-from": { type: "string" },
   },
 });
 try {
@@ -27,6 +28,11 @@ try {
   const candidate = JSON.parse(
     readFileSync(resolve(directory, "candidate.json"))
   );
+  const previous = values["continue-from"];
+  if (previous && (basename(previous) !== previous ||
+      !/^(beta|production)-[0-9a-f]{40}-[0-9a-f-]{36}$/.test(previous) ||
+      !previous.startsWith(`${receipt.stage}-`)))
+    throw new Error("continuation must name one retained journal in this stage");
   if (
     candidate.candidate_digest !== receipt.candidate_digest ||
     candidate.source.commit !== receipt.commit
@@ -79,6 +85,7 @@ try {
       journal,
       "--authorize",
       candidate.candidate_digest,
+      ...(previous ? ["--continue-from", resolve(journalRoot, previous)] : []),
     ],
     { env, stdio: "inherit", timeout: 150 * 60 * 1000 }
   );

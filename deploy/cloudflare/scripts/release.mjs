@@ -23,6 +23,7 @@ import {
 import { WranglerReleaseAdapter } from "./release-wrangler.mjs";
 import { regressCandidate } from "../../../contracts/deployment/regress.mjs";
 import { qualificationContext } from "../contracts/qualification-context.mjs";
+import { continuationContext } from "./release-continuation.mjs";
 import {
   applyRelease,
   createJournal,
@@ -43,6 +44,7 @@ try {
       candidate: { type: "string" },
       journal: { type: "string" },
       authorize: { type: "string" },
+      "continue-from": { type: "string" },
     },
   });
   if (positionals.length !== 1)
@@ -50,6 +52,8 @@ try {
       "select prepare, check, dry-run, provision, apply, recovery-plan or restore"
     );
   const [action] = positionals;
+  if (values["continue-from"] && action !== "apply")
+    throw new Error("--continue-from is only valid for an apply transaction");
   if (action === "prepare") {
     if (!values.output || !values.inventory)
       throw new Error(
@@ -148,6 +152,9 @@ try {
       const qualify = async (observations) =>
         runReleaseQualifiers(root, candidate, observations, { directory });
       const verify = () => verifyCandidate(directory, root);
+      const continuation = values["continue-from"]
+        ? continuationContext(root, candidate, resolve(values["continue-from"]))
+        : undefined;
       if (action === "recovery-plan") {
         console.log(
           JSON.stringify(
@@ -170,12 +177,12 @@ try {
         }
         // Exclusive process ownership; a crash leaves the lock for explicit
         // inspection. Never silently remove it or replay remote operations.
-        const lock = openSync(
-          resolve(journalDirectory, "transaction.lock"),
-          "wx",
-          0o600
-        );
+        const locks = [];
         try {
+          for (const directory of [...(continuation?.lockDirectories ?? []), journalDirectory]) {
+            const path = resolve(directory, "transaction.lock");
+            locks.push({ path, fd: openSync(path, "wx", 0o600) });
+          }
           if (action === "provision")
             await provisionResources({ candidate, journal, adapter, persist });
           else if (action === "apply")
@@ -186,6 +193,7 @@ try {
               persist,
               qualify,
               verify,
+              continuation,
             });
           else
             await restoreRelease({
@@ -197,8 +205,10 @@ try {
               verify,
             });
         } finally {
-          closeSync(lock);
-          unlinkSync(resolve(journalDirectory, "transaction.lock"));
+          for (const { path, fd } of locks.reverse()) {
+            closeSync(fd);
+            unlinkSync(path);
+          }
         }
         console.log(
           JSON.stringify({

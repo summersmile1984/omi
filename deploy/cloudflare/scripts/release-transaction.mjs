@@ -161,6 +161,7 @@ export async function applyRelease({
   persist,
   qualify,
   verify,
+  continuation,
 }) {
   assertJournal(candidate, journal);
   if (journal.phase !== "apply" || journal.state !== "prepared")
@@ -186,6 +187,10 @@ export async function applyRelease({
   for (const worker of Object.values(candidate.workers))
     journal.before[worker.name] = await adapter.observeWorker(worker.name);
   journal.before.release_phase = "candidate";
+  if (continuation) {
+    continuation.verify(journal.before);
+    journal.before.continuation = continuation.reference;
+  }
   journal.qualification = await qualify(journal.before);
   if (
     !journal.qualification.length ||
