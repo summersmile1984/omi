@@ -8,6 +8,7 @@ import {
   ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS,
   ACCOUNT_DELETION_D1_SURFACES,
   ACCOUNT_DELETION_D1_PURGE_SURFACES,
+  ACCOUNT_DELETION_WRITER_D1_SURFACES,
   ACCOUNT_DELETION_R2_PREFIX_PATTERNS,
   ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS,
   readAccountProductResidual,
@@ -34,7 +35,7 @@ const IDENTITY_COLUMNS = new Set([
 function migrationIdentitySurfaces(): Set<string> {
   const directory = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
-    "../migrations/app",
+    "../migrations/app"
   );
   const database = new DatabaseSync(":memory:");
   database.exec("PRAGMA foreign_keys = ON");
@@ -46,7 +47,7 @@ function migrationIdentitySurfaces(): Set<string> {
   try {
     const tables = database
       .prepare(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
       )
       .all() as Array<{ name: string }>;
     const surfaces = new Set<string>();
@@ -74,7 +75,7 @@ function residualEnvironment(
     conversationR2Prefix?: string;
     speechProfileR2Prefix?: string;
     malformed?: boolean;
-  } = {},
+  } = {}
 ) {
   const statements: Array<{ sql: string; uid?: string }> = [];
   const database = {
@@ -99,7 +100,7 @@ function residualEnvironment(
               },
             ],
             meta: {},
-          })),
+          }))
     ),
   } as unknown as D1Database;
   const bucket = {
@@ -138,6 +139,18 @@ function residualEnvironment(
       ASSETS: bucket,
       CONVERSATION_RECORDINGS: conversationBucket,
       SPEECH_PROFILES: speechProfileBucket,
+      INTERNAL_ASSERTION_SECRET: "account-deletion-residual-secret",
+      SCREEN_FRAME_WRITER: {
+        fetch: async (request: Request) =>
+          Response.json({
+            uid: decodeURIComponent(
+              new URL(request.url).pathname.split("/")[3]
+            ),
+            empty: true,
+            writes: 0,
+            objects_present: false,
+          }),
+      } as unknown as Fetcher,
     },
     statements,
     bucket,
@@ -156,7 +169,7 @@ async function residualHeaders(uid: string, path: string) {
     "jobs",
     "GET",
     path,
-    "account-deletion-residual-secret",
+    "account-deletion-residual-secret"
   );
   if (!signed) throw new Error("test residual assertion unavailable");
   return {
@@ -171,42 +184,43 @@ describe("Cloudflare account-deletion residual", () => {
       [
         ...ACCOUNT_DELETION_D1_SURFACES,
         ...ACCOUNT_DELETION_CONTROL_D1_SURFACES,
-      ].map(({ table, column }) => `${table}.${column}`),
+      ].map(({ table, column }) => `${table}.${column}`)
     );
     expect(planned).toEqual(migrationIdentitySurfaces());
     expect(
       new Set(
-        ACCOUNT_DELETION_D1_PURGE_SURFACES.map(
-          ({ table, column }) => `${table}.${column}`,
-        ),
-      ),
+        [
+          ...ACCOUNT_DELETION_D1_PURGE_SURFACES,
+          ...ACCOUNT_DELETION_WRITER_D1_SURFACES,
+        ].map(({ table, column }) => `${table}.${column}`)
+      )
     ).toEqual(
       new Set(
         ACCOUNT_DELETION_D1_SURFACES.map(
-          ({ table, column }) => `${table}.${column}`,
-        ),
-      ),
+          ({ table, column }) => `${table}.${column}`
+        )
+      )
     );
   });
 
   it("installs INSERT and UPDATE mutation fences for every authoritative identity table", () => {
     const migrationDirectory = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
-      "../migrations/app",
+      "../migrations/app"
     );
     const migration = readdirSync(migrationDirectory)
       .filter((filename) => filename.endsWith(".sql"))
       .sort()
       .map((filename) =>
-        readFileSync(path.join(migrationDirectory, filename), "utf8"),
+        readFileSync(path.join(migrationDirectory, filename), "utf8")
       )
       .join("\n");
     const triggerBlocks = new Map(
       [
         ...migration.matchAll(
-          /CREATE TRIGGER IF NOT EXISTS (adf_[A-Za-z0-9_]+)([\s\S]*?)END;/g,
+          /CREATE TRIGGER IF NOT EXISTS (adf_[A-Za-z0-9_]+)([\s\S]*?)END;/g
         ),
-      ].map((match) => [match[1], match[2]]),
+      ].map((match) => [match[1], match[2]])
     );
     for (const { table, column } of ACCOUNT_DELETION_D1_SURFACES) {
       if (table === "cf_conversations_fts") continue;
@@ -230,7 +244,7 @@ describe("Cloudflare account-deletion residual", () => {
     ]) {
       expect(triggerBlocks.get(name)).toContain("cf_account_deletion_intents");
       expect(triggerBlocks.get(name)).toContain(
-        "cf_account_deletion_tombstones",
+        "cf_account_deletion_tombstones"
       );
     }
   });
@@ -238,23 +252,23 @@ describe("Cloudflare account-deletion residual", () => {
   it("reports an empty account only after every D1 and R2 surface is empty", async () => {
     const empty = residualEnvironment();
     await expect(
-      readAccountProductResidual(empty.env, "account-user"),
+      readAccountProductResidual(empty.env, "account-user")
     ).resolves.toMatchObject({
       uid: "account-user",
       empty: true,
     });
     expect(empty.statements).toHaveLength(ACCOUNT_DELETION_D1_SURFACES.length);
     expect(empty.statements.every(({ uid }) => uid === "account-user")).toBe(
-      true,
+      true
     );
     expect(empty.bucket.list).toHaveBeenCalledTimes(
-      ACCOUNT_DELETION_R2_PREFIX_PATTERNS.length,
+      ACCOUNT_DELETION_R2_PREFIX_PATTERNS.length
     );
     expect(empty.conversationBucket.list).toHaveBeenCalledTimes(
-      ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS.length,
+      ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS.length
     );
     expect(empty.speechProfileBucket.list).toHaveBeenCalledTimes(
-      ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS.length,
+      ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS.length
     );
 
     const populatedPrefix = "cf-sync/account-user/";
@@ -264,7 +278,7 @@ describe("Cloudflare account-deletion residual", () => {
     });
     const result = await readAccountProductResidual(
       populated.env,
-      "account-user",
+      "account-user"
     );
     expect(result.empty).toBe(false);
     expect(result.d1["cf_account_cutover.uid"]).toBe(2);
@@ -276,11 +290,11 @@ describe("Cloudflare account-deletion residual", () => {
     });
     const isolatedResult = await readAccountProductResidual(
       isolated.env,
-      "account-user",
+      "account-user"
     );
     expect(isolatedResult.empty).toBe(false);
     expect(isolatedResult.r2[`conversation-recordings:${isolatedPrefix}`]).toBe(
-      1,
+      1
     );
     expect(isolatedResult.r2[`speech-profiles:${isolatedPrefix}`]).toBe(0);
   });
@@ -288,10 +302,10 @@ describe("Cloudflare account-deletion residual", () => {
   it("fails closed for invalid identities and incomplete D1 batches", async () => {
     const malformed = residualEnvironment({ malformed: true });
     await expect(
-      readAccountProductResidual(malformed.env, "uid/escape"),
+      readAccountProductResidual(malformed.env, "uid/escape")
     ).rejects.toThrow(/invalid account deletion uid/);
     await expect(
-      readAccountProductResidual(malformed.env, "valid-uid"),
+      readAccountProductResidual(malformed.env, "valid-uid")
     ).rejects.toThrow(/batch is incomplete/);
   });
 
@@ -305,7 +319,7 @@ describe("Cloudflare account-deletion residual", () => {
 
     const unsigned = await jobs.fetch(
       new Request(`https://jobs.test${path}`),
-      env,
+      env
     );
     expect(unsigned.status).toBe(401);
 
@@ -313,7 +327,7 @@ describe("Cloudflare account-deletion residual", () => {
       new Request(`https://jobs.test${path}`, {
         headers: await residualHeaders("other-user", path),
       }),
-      env,
+      env
     );
     expect(crossUser.status).toBe(403);
 
@@ -321,7 +335,7 @@ describe("Cloudflare account-deletion residual", () => {
       new Request(`https://jobs.test${path}`, {
         headers: await residualHeaders("account-user", path),
       }),
-      env,
+      env
     );
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -340,7 +354,7 @@ describe("Cloudflare account-deletion residual", () => {
       {
         ...state.env,
         INTERNAL_ASSERTION_SECRET: "account-deletion-residual-secret",
-      } as never,
+      } as never
     );
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({

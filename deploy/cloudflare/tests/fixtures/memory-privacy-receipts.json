@@ -1,0 +1,20 @@
+[
+  {
+    "secret": "memory-privacy-tests-secret-32-bytes",
+    "uid": "owner",
+    "memory_id": "deleted",
+    "receipt_id": "receipt_2744dc24ccd36bbec00d8be0798323bb63551e100af0a38de41a81c53b185049"
+  },
+  {
+    "secret": "memory-privacy-tests-secret-32-bytes",
+    "uid": "用户😀",
+    "memory_id": "记忆-茶",
+    "receipt_id": "receipt_d5dd5496cbbd318ff7b44fd04a067821c4afab6854b06febaa041e91a2d8fd8f"
+  },
+  {
+    "secret": "memory-privacy-tests-secret-32-bytes",
+    "uid": "other",
+    "memory_id": "deleted",
+    "receipt_id": "receipt_14cb767e333547872d455b1fe36e6d91f57e54bfb39e9263381174a8c0c97566"
+  }
+]

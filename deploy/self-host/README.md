@@ -1,5 +1,63 @@
 # Self-host production profile
 
+The Docker product fixture keeps its directory, credentials and logs private.
+Its generated public profile is mode `0444`, readable by the non-root container
+UID on Linux. The existing product CI lane imports the actual controlled
+provider under that UID on the container filesystem, proving profile access
+and private-file denial even when Docker Desktop maps host permissions.
+
+Current implementation: [local model/runtime boundaries](model-runtime.md).
+The sections below originated before the upstream runtime changed. Their
+SenseVoice/MOSS, generic embedding, webhook/TTS and full-cutover descriptions
+are historical acceptance plans until the corresponding SH3/SH4 packages are
+verified; they do not enable those providers in the current Compose profile.
+
+
+## Current main startup boundary (SH-1)
+
+Use `operations.sh self-check` for startup source closure and `operations.sh start`
+with a reviewed environment file. Local `start` builds the unchanged upstream
+backend runtime (`BACKEND_RUNTIME_IMAGE`), then the fork-only Dockerfile layer. That layer installs the hash-pinned `backend/requirements-fork.txt` only for the Server OS target, then writes the generated profile and source commit/tree labels. Set `SELF_HOST_STAGE`
+and `SELF_HOST_BRAND_MANIFEST` (a repository-relative public manifest); the
+manifest endpoints and `PUBLIC_*` environment values must agree. `SELF_HOST_STAGE`
+is `production`, `beta`, or `local`; Python derives its upstream env stage.
+
+For CI delivery, `operations.sh deploy-images` instead verifies the accepted
+`SELF_HOST_DELIVERY_RECEIPT` and starts its exact image IDs without building.
+`SELF_HOST_PROJECT` selects the isolated deployment project. Both Embedding and
+selected LLM provider services start before callers. `model_services.py` derives
+that service set from the same manifest/profile rendered into the accepted
+image. MiMo selections start only local Embedding and inject the required API
+credential into the backend. The two fork CD workflows, persistent
+host directories, boot test and Tunnel gateway are documented in
+[`scripts/fork/RELEASE.md`](../../scripts/fork/RELEASE.md).
+
+The fork image also prewarms the locked tiktoken `cl100k_base` vocabulary using
+the upstream build helper. `TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache` is packaged
+read-only for the runtime user, so retrieval token counting needs no outbound
+download. The existing product CI lane checks a fresh non-root image process
+with networking disabled and a read-only filesystem before starting services.
+This covers the actual first-chat failure recorded in
+[the real-model product run](../../dev/unified-main/implementation-2026-09-05/server-real-model-product.md).
+
+The API runs `fork.main:app`; queue consumers run `python -m fork.worker`, which
+validates per-queue credentials and supervises child failures. Canonical-memory
+projection delivery runs in `python -m fork.memory_maintenance_worker`: it pages
+the existing bounded registry and drains the existing leased PostgreSQL outbox
+into Typesense and Qdrant. It does not run TTL, consolidation, or model generation.
+Self-host API and worker processes
+require schema v8 (including onboarding admission, legal-hold, canonical-memory and retained frame-vision receipt authorities), installed by `python -m fork.migrate migrate`.
+Auth serving and migration use the same stage-aware image entrypoint: `SELF_HOST_STAGE=local` selects development, while `beta` and `production` enforce production guards. Ambient `NODE_ENV` cannot relax those two stages.
+
+**Startup admission is separate from full product/cutover acceptance.** The
+historical runbooks below still depend on unfinished provider and migration
+control-plane tools from the earlier target branch. In particular, source-write
+freeze/reconcile tools and the production Firestore import CLI are not shipped
+yet; `zero-vendor-acceptance.sh --self-check` remains nonzero until that closure
+is restored. Do not treat the startup self-check as a zero-vendor, full API, or
+production cutover authorization. The dated Server action plan tracks these
+remaining boundaries.
+
 This is the production entry point for a deployment that keeps identity, data,
 queues, object storage, vectors, LLM routing, embeddings, and pre-recorded STT
 behind operator-owned boundaries. It is separate from `dev/docker-compose.dev.yml`:
@@ -9,7 +67,8 @@ the dev file remains the emulator harness and is reused by the migration gate.
 
 `compose.production.yml` runs the backend, Better Auth server, PostgreSQL,
 password-protected Redis plus its durable queue worker, MinIO, Qdrant, and a
-reviewed SearXNG search boundary. Every service has a health check. PostgreSQL,
+dedicated canonical-memory projection worker, Typesense, and a reviewed SearXNG
+search boundary. Every service has a health check. PostgreSQL,
 Redis, MinIO, Qdrant, and backend sync staging use named persistent volumes. The
 SenseVoice model directory is an explicit read-only host mount. Remote
 base/state images are pinned by immutable multi-architecture digest as well as
@@ -27,7 +86,7 @@ silently create or update identity tables.
 `firestore-pg-migrate` independently owns the forward-only Firestore shim
 schema. It takes the PostgreSQL advisory migration lock, applies the version
 ledger and collection registry, and performs a read-only current-schema check
-before exit. Backend and queue-worker are admitted only after it succeeds;
+before exit. Backend, queue-worker, and memory-maintenance-worker are admitted only after it succeeds;
 their runtime Firestore clients contain no lazy DDL path.
 
 The profile selects Qdrant explicitly for vector projections. The backend also
@@ -36,12 +95,13 @@ authority in neutral/self-hosted direct launches, rather than inheriting the
 managed Pinecone default; an explicit Qdrant binding is still required for
 normal self-host operation.
 
-The profile deliberately does not ship a default inference vendor. Set
-`GENERIC_OPENAI_BASE_URL` to an operator-selected OpenAI-compatible endpoint and
-set its explicit model/key. Embeddings use that same generic provider boundary.
-Neutral route resolution accepts only this operator-owned `generic` provider for
-chat primaries and fallbacks; explicit OpenAI, Gemini, DeepSeek, OpenRouter, or
-other vendor route ids fail before a direct client is constructed.
+The profile selects pinned Qwen3 1.7B through a private Ollama service and a
+separate pinned BGE-M3 service. Provision both model stores with
+`prepare-model.py`, mount them read-only, and set their explicit store paths.
+All text features share the selected native chat/schema/tool adapter. It refuses
+BYOK, vendor/model fallback, implicit truncation and context shifting; exact
+artifact and runtime identity are checked before inference. See
+[model-runtime.md](model-runtime.md) for resource limits and acceptance boundaries.
 Incremental live STT is pinned to the mounted SenseVoice model. Its adapter
 decodes bounded five-second PCM windows (and VAD utterance boundaries) in the
 sync executor, so it emits before a recording ends without blocking the
@@ -56,17 +116,12 @@ id. Private targets may use HTTP; public targets require HTTPS plus
 and there is no default URL, model, download, or hosted-MOSS fallback.
 `STT_ROUTE_FALLBACK_TO_DEFAULT=false` prevents a missing local model from
 falling through to any managed STT policy default.
-Realtime multimodal sessions use the authenticated provider-neutral relay.
-`REALTIME_PROVIDER=relay` requires an explicit compatible WebSocket URL,
-server-only credential, provider id, model and exact target-host allowlist.
-`REALTIME_RELAY_WIRE_PROTOCOL` is also mandatory (currently only
-`openai_realtime_v1` is supported): the relay is byte-opaque, so this field tells signed clients
-which upstream event dialect to speak while `REALTIME_RELAY_PROVIDER_ID` remains
-descriptive metadata.
-There is no official endpoint default. The profile validator rejects official
-vendor hosts, and the relay limits each frame and session duration. Optional
-integrations require separately configured services; the core profile does not
-silently reach an official endpoint for them.
+The current Server backend has no consumer of the historical
+`REALTIME_PROVIDER` / `REALTIME_RELAY_*` settings. They no longer block Compose
+startup. The provider-neutral multimodal WebSocket relay described in the
+historical cutover plan is not implemented in this backend. This is separate
+from the working MiMo recording ASR and HTTP TTS paths; configuring Chat/ASR/TTS
+credentials does not establish a realtime multimodal relay.
 
 The backend also exposes two authenticated desktop model boundaries:
 
@@ -1272,3 +1327,27 @@ command output, and the pre-cutover `operations.sh backup` ID in the change
 record. The importer never deletes source objects or changes traffic. Rollback
 uses the retained GCS route plus the pre-cutover MinIO backup; do not delete the
 source buckets until the rollback window and restore drill are complete.
+
+
+### Runtime provider admission (SH2)
+
+The backend depends on the `qdrant-migrate` one-shot service. It runs
+`python -m fork.vector_qdrant migrate` with the same QDRANT_URL/API_KEY,
+QDRANT_COLLECTION_PREFIX and EMBEDDING_DIMENSION as the API. Repeat safely;
+`check` never creates collections. An existing collection with a different size
+or distance fails rather than recreating data. Changing embedding models needs
+an explicit new collection prefix, backfill and cutover; setting the generic
+EMBEDDING_PROVIDER alone does not configure upstream's embedding client.
+
+MinIO signs private downloads against PUBLIC_OBJECTS_URL while backend uploads
+use `http://minio:9000`. The reverse proxy must preserve the signed host/path;
+URLs are path-style SigV4 GET. Only 404 is absence; access/transport failures
+block deletion completion. Public logos/catalogue policy remains an explicit
+operator task; no bucket is made public by the runtime adapter.
+
+The account wipe now verifies all seven Qdrant namespaces plus configured UID
+object prefixes before publishing a minimal receipt. The provider write fence
+reads that receipt even in local stage. This does not attest to all unowned
+transient objects, every independent PG writer, external identity removal or
+unknown in-flight provider outcomes; see
+`dev/unified-main/implementation-2026-09-04/SH2-providers-verification.md`.

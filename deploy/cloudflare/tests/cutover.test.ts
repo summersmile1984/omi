@@ -9,10 +9,7 @@ const auth: AuthContext = {
   requestId: "request-1",
 };
 
-function envWithFence(
-  fetchImpl: typeof fetch,
-  fenceEnabled?: string,
-): EdgeEnv {
+function envWithFence(fetchImpl: typeof fetch, fenceEnabled?: string): EdgeEnv {
   return {
     API_CORE: { fetch: vi.fn(fetchImpl) },
     ACCOUNT_ACTIVATION_FENCE_ENABLED: fenceEnabled,
@@ -21,7 +18,7 @@ function envWithFence(
 }
 
 describe("cloudflareProductTrafficDenial", () => {
-  it("lets traffic through without calling api-core when the fence is unset (new-brand default)", async () => {
+  it("preserves an unconfigured deployment without calling api-core", async () => {
     const fetchImpl = vi.fn();
     const env = envWithFence(fetchImpl, undefined);
     const result = await cloudflareProductTrafficDenial(
@@ -32,6 +29,51 @@ describe("cloudflareProductTrafficDenial", () => {
     );
     expect(result).toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["new", true, 0],
+    ["legacy", false, 409],
+    ["migrating", false, 409],
+  ])(
+    "native bootstrap consults ownership for %s even without migration mode",
+    async (state, bound, status) => {
+      const fetchImpl = vi.fn(async () =>
+        Response.json({
+          state,
+          product_traffic_allowed: state !== "migrating",
+          migration: { destination_backend_bound: bound },
+        }),
+      );
+      const env = {
+        ...envWithFence(fetchImpl, "false"),
+        ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED: "true",
+      };
+      const result = await cloudflareProductTrafficDenial(
+        new Request("https://edge.internal/v1/x"),
+        env,
+        auth,
+        "req-native",
+      );
+      expect(result?.status ?? 0).toBe(status);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("fails closed when native ownership is unavailable", async () => {
+    const env = {
+      ...envWithFence(async () => {
+        throw new Error("unavailable");
+      }, "false"),
+      ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED: "true",
+    };
+    const result = await cloudflareProductTrafficDenial(
+      new Request("https://edge.internal/v1/x"),
+      env,
+      auth,
+      "req-native",
+    );
+    expect(result?.status).toBe(503);
   });
 
   it("lets traffic through when the fence is explicitly disabled", async () => {

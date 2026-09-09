@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Keep upstream checks intact while isolating nested Git fixtures from this hook.
+set -euo pipefail
+
+FORK_PUSH_ROOT="$(git rev-parse --show-toplevel)"
+while IFS= read -r fork_git_env_name; do
+  [[ -n "$fork_git_env_name" ]] && unset "$fork_git_env_name"
+done < <(git rev-parse --local-env-vars)
+cd "$FORK_PUSH_ROOT"
+exec "$FORK_PUSH_ROOT/scripts/pre-push-singleflight" "$@"

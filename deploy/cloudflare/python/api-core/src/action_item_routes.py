@@ -16,10 +16,12 @@ from enum import Enum
 from typing import Any
 
 from fastapi import APIRouter, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from conversation_routes import _first_conversation
+from brand_runtime import load_brand_runtime, load_share_origin
 from internal_auth import decode_context
 from vector_search import (
     embed_query,
@@ -44,7 +46,6 @@ MAX_REMINDER_ID_LENGTH = 512
 MAX_SHARE_TOKEN_LENGTH = 128
 MAX_SHARE_TASKS = 20
 TASK_SHARE_TTL_SECONDS = 60 * 60 * 24 * 30
-TASK_SHARE_BASE_URL = "https://h.omi.me/tasks"
 
 
 class TaskStatus(str, Enum):
@@ -191,6 +192,13 @@ async def _bounded_json(request: Request) -> object:
     if len(json.dumps(body, ensure_ascii=False).encode("utf-8")) > MAX_REQUEST_BYTES:
         raise ValueError("request body exceeds size limit")
     return body
+
+
+def _validation_response(error: ValidationError, location: tuple[object, ...] = ("body",)) -> JSONResponse:
+    # Match FastAPI's request-validation wire contract. Do not flatten the
+    # typed field errors into a generic 400 or include Pydantic documentation URLs.
+    detail = [{**item, "loc": [*location, *item["loc"]]} for item in error.errors(include_url=False)]
+    return JSONResponse({"detail": jsonable_encoder(detail)}, status_code=422)
 
 
 def _epoch(value: datetime | None) -> int | None:
@@ -495,7 +503,9 @@ async def create_action_item(request: Request):
     try:
         item = ActionItemCreate.model_validate(await _bounded_json(request))
         row = await _insert_item(request.scope["env"], str(context["uid"]), item)
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item"}, status_code=400)
     except Exception:
         return JSONResponse({"error": "action item unavailable"}, status_code=503)
@@ -668,7 +678,9 @@ async def share_action_items(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         payload = ShareTasksRequest.model_validate(await _bounded_json(request))
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid share request"}, status_code=400)
     if len(set(payload.task_ids)) != len(payload.task_ids) or any(
         not item_id or len(item_id) > MAX_ID_LENGTH for item_id in payload.task_ids
@@ -677,6 +689,11 @@ async def share_action_items(request: Request):
 
     uid = str(context["uid"])
     env = request.scope["env"]
+    try:
+        brand = load_brand_runtime(request.scope["env"])
+        share_origin = load_share_origin(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "public share identity is not configured"}, status_code=503)
     placeholders = ", ".join("?" for _ in payload.task_ids)
     try:
         result = (
@@ -696,7 +713,10 @@ async def share_action_items(request: Request):
 
         now = int(time.time())
         token = uuid.uuid4().hex
-        sender_name = str(context.get("displayName") or "Omi user").strip()[:120] or "Omi user"
+        sender_name = (
+            str(context.get("displayName") or f"{brand.display_name} user").strip()[:120]
+            or f"{brand.display_name} user"
+        )
         statements = [
             env.APP_DB.prepare(
                 "INSERT INTO cf_task_shares (token, sender_uid, sender_name, expires_at, created_at) "
@@ -712,13 +732,17 @@ async def share_action_items(request: Request):
         await env.APP_DB.batch(statements)
     except Exception:
         return JSONResponse({"error": "task sharing unavailable"}, status_code=503)
-    return {"url": f"{TASK_SHARE_BASE_URL}/{token}", "token": token}
+    return {"url": f"{share_origin}/tasks/{token}", "token": token}
 
 
 @router.get("/v1/action-items/shared/{token}")
 async def get_shared_action_items(request: Request, token: str):
     if not token or len(token) > MAX_SHARE_TOKEN_LENGTH:
         return JSONResponse({"error": "share link expired or not found"}, status_code=404)
+    try:
+        brand = load_brand_runtime(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
     try:
         now = int(time.time())
         share = await _task_share(request.scope["env"], token, now)
@@ -728,7 +752,7 @@ async def get_shared_action_items(request: Request, token: str):
     except Exception:
         return JSONResponse({"error": "task sharing unavailable"}, status_code=503)
     return {
-        "sender_name": str(share.get("sender_name") or "Omi user"),
+        "sender_name": str(share.get("sender_name") or f"{brand.display_name} user"),
         "tasks": [
             {"description": str(row.get("description") or ""), "due_at": _iso(row.get("due_at"))} for row in rows
         ],
@@ -743,10 +767,16 @@ async def accept_shared_action_items(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         payload = AcceptSharedTasksRequest.model_validate(await _bounded_json(request))
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid share token"}, status_code=400)
 
     env = request.scope["env"]
+    try:
+        brand = load_brand_runtime(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand runtime is not configured"}, status_code=503)
     uid = str(context["uid"])
     now = int(time.time())
     try:
@@ -780,7 +810,7 @@ async def accept_shared_action_items(request: Request):
                         "kind": "shared",
                         "token": payload.token,
                         "sender_uid": sender_uid,
-                        "sender_name": str(share.get("sender_name") or "Omi user"),
+                        "sender_name": str(share.get("sender_name") or f"{brand.display_name} user"),
                         "original_task_id": original_id,
                     }
                 ],
@@ -1056,7 +1086,9 @@ async def update_action_item(request: Request, action_item_id: str):
     try:
         update = ActionItemUpdate.model_validate(await _bounded_json(request))
         row = await _apply_update(request.scope["env"], str(context["uid"]), action_item_id, update)
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item update"}, status_code=400)
     except Exception:
         return JSONResponse({"error": "action item unavailable"}, status_code=503)
@@ -1074,7 +1106,9 @@ async def toggle_action_item_completion(request: Request, action_item_id: str):
     try:
         update = ActionItemUpdate.model_validate({"completed": value})
         row = await _apply_update(request.scope["env"], str(context["uid"]), action_item_id, update)
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid completion value"}, status_code=400)
     return _response(row) if row else JSONResponse({"error": "action item not found"}, status_code=404)
 
@@ -1120,7 +1154,9 @@ async def batch_update_action_items(request: Request):
             "missing_ids": missing_ids,
             "noop_ids": [],
         }
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item batch"}, status_code=400)
 
 
@@ -1134,7 +1170,9 @@ async def sync_batch_update(request: Request):
     try:
         body = await _bounded_json(request)
         payload = SyncBatchRequest.model_validate(body)
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item sync batch"}, status_code=400)
     uid = str(context["uid"])
     env = request.scope["env"]
@@ -1167,7 +1205,9 @@ async def sync_batch_update(request: Request):
                 ).bind(int(time.time()), uid, item.id).run()
                 row = await _first_item(env, uid, item.id)
             updated_ids.append(item.id)
-    except (ValidationError, ValueError, TypeError):
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item sync batch"}, status_code=400)
     except Exception:
         return JSONResponse({"error": "action items unavailable"}, status_code=503)
@@ -1190,8 +1230,10 @@ async def batch_create_action_items(request: Request):
         body = await _bounded_json(request)
         if not isinstance(body, list) or len(body) > 50:
             raise ValueError("invalid batch")
-        items = [ActionItemCreate.model_validate(raw) for raw in body]
-    except (ValidationError, ValueError, TypeError):
+        items = TypeAdapter(list[ActionItemCreate]).validate_python(body)
+    except ValidationError as error:
+        return _validation_response(error)
+    except (ValueError, TypeError):
         return JSONResponse({"error": "invalid action item batch"}, status_code=400)
     try:
         rows = [await _insert_item(request.scope["env"], str(context["uid"]), item) for item in items]

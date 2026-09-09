@@ -8,22 +8,25 @@ OPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$OPS_DIR/../.." && pwd)"
 COMPOSE_FILE="$OPS_DIR/compose.production.yml"
 ENV_FILE="${SELF_HOST_ENV:-$OPS_DIR/.env.production}"
-PY="${PYTHON:-python3}"
+PY="${PYTHON:-$REPO_ROOT/backend/.venv/bin/python}"
 SNAPSHOT_TOOL="$OPS_DIR/volume-snapshot.py"
 RUNTIME_EVIDENCE_TOOL="$OPS_DIR/runtime-evidence.py"
 COMPOSE_WRAPPER="$OPS_DIR/compose-clean-env.sh"
-CONFIG_CHECKER="$REPO_ROOT/.github/scripts/check_self_host_deployment.py"
-APPLICATION_SERVICES=(queue-worker backend auth-server)
+CONFIG_CHECKER="$OPS_DIR/check-config.py"
+APPLICATION_SERVICES=(memory-maintenance-worker queue-worker backend auth-server)
 STATE_SERVICES=(postgres redis minio qdrant typesense searxng)
+PROVIDER_SERVICES=(embedding llm)
 STATE_ARCHIVES=(redis minio qdrant typesense backend)
 ARCHIVE_FILES=(postgres.dump.enc redis.tar.gz.enc minio.tar.gz.enc qdrant.tar.gz.enc typesense.tar.gz.enc backend.tar.gz.enc)
 
 usage() {
-  echo "usage: SELF_HOST_ENV=... SELF_HOST_BACKUP_KEY_FILE=... $0 <self-check|start|status|runtime-evidence|metrics|backup DIR|verify-backup DIR|restore DIR|rollback-plan DIR>" >&2
+  echo "usage: SELF_HOST_ENV=... SELF_HOST_BACKUP_KEY_FILE=... $0 <self-check|start|deploy-images|status|runtime-evidence|metrics|backup DIR|verify-backup DIR|restore DIR|rollback-plan DIR>" >&2
 }
 
 compose() {
-  bash "$COMPOSE_WRAPPER" "$ENV_FILE" "$COMPOSE_FILE" "$@"
+  local selection=()
+  [[ -z "${SELF_HOST_PROJECT:-}" ]] || selection+=(--project-name "$SELF_HOST_PROJECT")
+  bash "$COMPOSE_WRAPPER" "$ENV_FILE" "$COMPOSE_FILE" "${selection[@]}" "$@"
 }
 
 effective_config_sha256() {
@@ -50,7 +53,7 @@ migration_fingerprint() {
   git -C "$REPO_ROOT" hash-object -- \
     auth-server/src/migrate.js \
     auth-server/src/auth.js \
-    backend/scripts/firestore_pg_migrate.py \
+    backend/fork/migrate.py \
     backend/firestore_pg/migrations.py | "$PY" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
 }
 
@@ -78,6 +81,9 @@ require_runtime() {
   [[ -f "$ENV_FILE" ]] || { echo "error: environment file not found: $ENV_FILE" >&2; exit 1; }
   [[ "$ENV_FILE" != *.example ]] || { echo "error: operations refuse the checked-in example environment" >&2; exit 1; }
   "$PY" "$CONFIG_CHECKER" --env-file "$ENV_FILE"
+  local providers
+  providers="$("$PY" "$OPS_DIR/model_services.py" --env-file "$ENV_FILE" --providers)"
+  read -r -a PROVIDER_SERVICES <<< "$providers"
   compose config --quiet
 }
 
@@ -219,39 +225,37 @@ open_snapshot() {
 }
 
 start_profile() {
-  if [[ "${SELF_HOST_REQUIRE_ATTESTED_BUILD:-false}" == true ]]; then
-    [[ "${OMI_SOURCE_GIT_COMMIT:-}" =~ ^[0-9a-f]{40}$ ]] || {
-      echo "error: attributed start requires OMI_SOURCE_GIT_COMMIT" >&2
-      exit 1
-    }
-    [[ "${OMI_SOURCE_GIT_TREE:-}" =~ ^[0-9a-f]{40}$ ]] || {
-      echo "error: attributed start requires OMI_SOURCE_GIT_TREE" >&2
-      exit 1
-    }
-    [[ "${OMI_RUNTIME_CONFIG_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] || {
-      echo "error: attributed start requires OMI_RUNTIME_CONFIG_SHA256" >&2
-      exit 1
-    }
-    local actual_config_sha256
-    actual_config_sha256="$(effective_config_sha256)"
-    [[ "$actual_config_sha256" == "$OMI_RUNTIME_CONFIG_SHA256" ]] || {
-      echo "error: reviewed environment changed before attributed build" >&2
-      exit 1
-    }
-    # Build from this checkout before any migration or serving container starts.
-    # Content-addressed image IDs and embedded source labels are verified again
-    # after the complete acceptance run, so a mutable old tag cannot be reused.
-    compose build --pull auth-server backend
+  local source_commit source_tree actual_config_sha256
+  source_commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  source_tree="$(git -C "$REPO_ROOT" rev-parse HEAD^{tree})"
+  [[ -z "${OMI_SOURCE_GIT_COMMIT:-}" || "$OMI_SOURCE_GIT_COMMIT" == "$source_commit" ]] || {
+    echo "error: requested source commit differs from this checkout" >&2; exit 1;
+  }
+  [[ -z "${OMI_SOURCE_GIT_TREE:-}" || "$OMI_SOURCE_GIT_TREE" == "$source_tree" ]] || {
+    echo "error: requested source tree differs from this checkout" >&2; exit 1;
+  }
+  export OMI_SOURCE_GIT_COMMIT="$source_commit" OMI_SOURCE_GIT_TREE="$source_tree"
+  actual_config_sha256="$(effective_config_sha256)"
+  [[ -z "${OMI_RUNTIME_CONFIG_SHA256:-}" || "$OMI_RUNTIME_CONFIG_SHA256" == "$actual_config_sha256" ]] || {
+    echo "error: reviewed environment changed before attributed build" >&2; exit 1;
+  }
+  export OMI_RUNTIME_CONFIG_SHA256="$actual_config_sha256"
+  if [[ "${1:-build}" == immutable ]]; then
+    "$PY" "$REPO_ROOT/scripts/fork/deploy_server.py" verify-images \
+      --receipt "${SELF_HOST_DELIVERY_RECEIPT:?accepted delivery receipt is required}" --env-file "$ENV_FILE"
+  else
+    SELF_HOST_ENV="$ENV_FILE" PYTHON="$PY" bash "$OPS_DIR/build-images.sh"
   fi
   # A previously successful one-shot container is not proof that the current
   # database is migrated: restore may have replaced PostgreSQL underneath it.
   # Quiesce callers, admit state services, and execute a fresh disposable
   # migration container before Auth/backend/worker traffic can resume.
   compose stop "${APPLICATION_SERVICES[@]}" >/dev/null 2>&1 || true
-  compose up --detach --wait "${STATE_SERVICES[@]}"
+  compose up --detach --wait --no-build "${STATE_SERVICES[@]}" "${PROVIDER_SERVICES[@]}"
   compose run --rm --no-deps -T auth-migrate
   compose run --rm --no-deps -T firestore-pg-migrate
-  compose up --detach --wait --no-deps "${APPLICATION_SERVICES[@]}"
+  compose run --rm --no-deps -T qdrant-migrate
+  compose up --detach --wait --no-build --no-deps "${APPLICATION_SERVICES[@]}"
 }
 
 runtime_evidence() {
@@ -281,9 +285,9 @@ backup_state() {
     echo "error: backup directory must be empty: $directory" >&2
     exit 1
   }
-  start_profile
+  start_profile "${SELF_HOST_START_MODE:-build}"
   compose stop "${APPLICATION_SERVICES[@]}"
-  trap 'start_profile >/dev/null 2>&1 || true' EXIT INT TERM
+  trap 'start_profile "${SELF_HOST_START_MODE:-build}" >/dev/null 2>&1 || true' EXIT INT TERM
 
   compose exec -T postgres sh -ec 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc --no-owner' \
     | seal_stdin "$directory/postgres.dump.enc"
@@ -300,7 +304,7 @@ backup_state() {
   config_sha256="$(effective_config_sha256)"
   migration_sha256="$(migration_fingerprint)"
   write_snapshot_manifest "$directory" "$git_sha" "$runtime_sha256" "$config_sha256" "$migration_sha256"
-  start_profile
+  start_profile "${SELF_HOST_START_MODE:-build}"
   trap - EXIT INT TERM
   echo "backup OK: $directory"
 }
@@ -314,7 +318,7 @@ restore_state() {
   }
   key_file="$(backup_key_file)"
   verify_backup "$directory"
-  compose stop queue-worker backend auth-server auth-migrate firestore-pg-migrate searxng typesense redis minio qdrant postgres || true
+  compose stop memory-maintenance-worker queue-worker backend auth-server auth-migrate firestore-pg-migrate embedding-artifact-check embedding searxng typesense redis minio qdrant postgres || true
   snapshot_volume restore redis /data "$directory/redis.tar.gz.enc"
   snapshot_volume restore minio /data "$directory/minio.tar.gz.enc"
   snapshot_volume restore qdrant /qdrant/storage "$directory/qdrant.tar.gz.enc"
@@ -344,7 +348,7 @@ status() {
   compose ps
   local service container state health
   local unhealthy=()
-  for service in "${STATE_SERVICES[@]}" auth-server backend queue-worker; do
+  for service in "${STATE_SERVICES[@]}" "${PROVIDER_SERVICES[@]}" "${APPLICATION_SERVICES[@]}"; do
     container="$(compose ps --quiet "$service")"
     if [[ -z "$container" ]]; then
       unhealthy+=("$service:missing")
@@ -364,7 +368,7 @@ status() {
 metrics() {
   require_runtime
   local service container state health restarts queue_name queue_key
-  for service in "${STATE_SERVICES[@]}" auth-server backend queue-worker; do
+  for service in "${STATE_SERVICES[@]}" "${PROVIDER_SERVICES[@]}" "${APPLICATION_SERVICES[@]}"; do
     container="$(compose ps --quiet "$service")"
     [[ -n "$container" ]] || { printf 'omi_container_up{service="%s"} 0\n' "$service"; continue; }
     read -r state health restarts < <(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}}' "$container")
@@ -383,6 +387,7 @@ metrics() {
 
 case "${1:-}" in
   self-check)
+    "$PY" "$CONFIG_CHECKER" --self-check
     [[ -f "$COMPOSE_FILE" && -f "$COMPOSE_WRAPPER" && -f "$SNAPSHOT_TOOL" && -f "$RUNTIME_EVIDENCE_TOOL" && -f "$CONFIG_CHECKER" ]] || exit 1
     "$PY" -m py_compile "$SNAPSHOT_TOOL" "$RUNTIME_EVIDENCE_TOOL"
     bash -n "$0" "$COMPOSE_WRAPPER"
@@ -397,6 +402,11 @@ case "${1:-}" in
   start)
     require_runtime
     start_profile
+    status
+    ;;
+  deploy-images)
+    require_runtime
+    start_profile immutable
     status
     ;;
   metrics)

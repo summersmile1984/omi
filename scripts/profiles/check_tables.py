@@ -7,12 +7,13 @@ Three properties, in the order they matter:
    upstream's `app/lib/env/environment_profile.dart`. Those values are parsed out
    of the upstream file at runtime, so upstream editing them fails this check on
    the next sync instead of the fork silently drifting.
-2. **Every target resolves.** Required capability and data-plane keys present,
+2. **The selected target resolves.** Required capability and data-plane keys present,
    identity provider correctly derived, https enforced where the stage demands it.
-3. **Generated tables are current.** `render.py --check` for each target that has
-   checked-in tables.
+3. **All five generated outputs are present and current.** `render.py --check`
+   against the selected build root. Default scope is omi_cloud. The CI-wired
+   test_profiles.py exercises both fork targets using temporary manifests.
 
-Usage: scripts/profiles/check_tables.py [--brand <id>]
+Usage: scripts/profiles/check_tables.py [--target TARGET] [--manifest PATH] [--output-root DIR]
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ def parse_upstream_enum(path: Path) -> dict[str, dict]:
     if not path.exists():
         raise ProfileError(f"upstream enum not found: {path}")
     text = path.read_text(encoding="utf-8")
-    body = text[text.index("enum AppEnvironmentProfile {"):]
+    body = text[text.index("enum AppEnvironmentProfile {") :]
     body = body[: body.index("\n  const AppEnvironmentProfile(")]
     out: dict[str, dict] = {}
     for match in ENTRY_RE.finditer(body + ","):
@@ -96,64 +97,53 @@ def check_equivalence() -> list[str]:
         for field, want in upstream[upstream_name].items():
             got = resolved[resolved_name].get(field)
             if got != want:
-                problems.append(
-                    f"{upstream_name} -> {resolved_name}: {field} is {got!r}, upstream says {want!r}"
-                )
+                problems.append(f"{upstream_name} -> {resolved_name}: {field} is {got!r}, upstream says {want!r}")
     return problems
 
 
-def check_targets(brand: str) -> list[str]:
-    problems: list[str] = []
-    for target in ("omi_cloud", "self_hosted", "cloudflare"):
-        # Fork targets template their URLs from a brand manifest; without one
-        # only omi_cloud can resolve, so the others are checked for structure by
-        # rendering with the brand the caller named.
+def check_targets(brand: str | None, targets: list[str], manifest_path: Path | None = None) -> list[str]:
+    problems = []
+    for target in targets:
         try:
-            resolved = resolve(target, "omi-upstream" if target == "omi_cloud" else brand)
+            resolve(target, brand, manifest_path)
         except ProfileError as error:
-            if target != "omi_cloud" and "needs brand key" in str(error):
-                continue  # no brand manifest yet: structure is still checked below
-            problems.append(f"{target}: {error}")
-            continue
-        for name, row in resolved["profiles"].items():
-            if row.get("stage") == "legacy":
-                continue
-            if not row.get("api_base_url"):
-                problems.append(f"{name}: api_base_url is empty")
-            if row["identity_provider"] not in ("firebase", "better_auth"):
-                problems.append(f"{name}: unknown identity provider {row['identity_provider']!r}")
-            if row["target"] != "omi_cloud" and row["managed"]:
-                problems.append(f"{name}: only omi_cloud may be managed")
+            problems.append(str(error))
     return problems
 
 
-def check_generated(brand: str) -> list[str]:
-    problems: list[str] = []
-    for target in ("omi_cloud", "self_hosted", "cloudflare"):
-        marker = REPO_ROOT / "app/lib/env/fork/deployment_profiles.g.dart"
-        if not marker.exists():
-            continue  # nothing checked in yet
-        if f"target: {target}" not in marker.read_text(encoding="utf-8"):
-            continue  # tables are checked in for a different target
-        proc = subprocess.run(
-            [sys.executable, str(Path(__file__).resolve().parent / "render.py"),
-             "--target", target, "--brand", brand, "--check"],
-            capture_output=True, text=True, cwd=REPO_ROOT,
-        )
-        if proc.returncode != 0:
-            problems.append(proc.stdout.strip() or proc.stderr.strip())
-    return problems
+def check_generated(brand: str | None, target: str, manifest_path: Path | None, output_root: Path) -> list[str]:
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve().parent / "render.py"),
+        "--target",
+        target,
+        "--check",
+        "--output-root",
+        str(output_root),
+    ]
+    if brand:
+        command.extend(["--brand", brand])
+    if manifest_path:
+        command.extend(["--manifest", str(manifest_path)])
+    proc = subprocess.run(command, capture_output=True, text=True, cwd=REPO_ROOT)
+    return [proc.stdout.strip() or proc.stderr.strip()] if proc.returncode else []
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--brand", default="omi-upstream")
+    parser.add_argument("--brand")
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--target", choices=("omi_cloud", "self_hosted", "cloudflare"), default="omi_cloud")
+    parser.add_argument("--output-root", type=Path, default=REPO_ROOT)
     args = parser.parse_args()
 
     sections = [
         ("upstream equivalence (omi_cloud vs app/lib/env/environment_profile.dart)", check_equivalence),
-        ("target resolution", lambda: check_targets(args.brand)),
-        ("generated tables current", lambda: check_generated(args.brand)),
+        (f"target resolution ({args.target})", lambda: check_targets(args.brand, [args.target], args.manifest)),
+        (
+            "generated tables current (all five outputs required)",
+            lambda: check_generated(args.brand, args.target, args.manifest, args.output_root),
+        ),
     ]
 
     failed = False

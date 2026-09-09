@@ -1,14 +1,15 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
+import { memoryBatchRequest } from "./memory-batch-body";
 import { requestId, withRequestId } from "../shared/request-id";
 import {
   createRealtimeBootstrap,
   REALTIME_BOOTSTRAP_HEADER,
   REALTIME_BOOTSTRAP_SIGNATURE_HEADER,
 } from "../shared/realtime-bootstrap";
-import { createRealtimeTicket } from "../shared/realtime-ticket";
-import { attachAuthContext, stripUntrustedHeaders, verifyBearer } from "./auth";
+import { attachAuthContext, stripUntrustedHeaders } from "./auth";
+import { verifyBearer } from "../shared/session-authority";
 import {
   createPublicChatAssertion,
   PUBLIC_CHAT_ASSERTION_HEADER,
@@ -22,6 +23,7 @@ import {
 import {
   ACCOUNT_CUTOVER_CONTROL_PATH,
   cloudflareProductTrafficDenial,
+  readCloudflareAccountControl,
 } from "./cutover";
 import type { EdgeEnv, EdgeVariables } from "./env";
 import type { AuthAudience, AuthContext } from "../shared/auth-context";
@@ -285,6 +287,18 @@ const proxyPublicCore = async (
   return withRequestId(response, id);
 };
 
+const proxyPublicScreenshots = async (
+  c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
+) => {
+  const id = requestId(c.req.raw);
+  // Shared visibility and image capabilities are checked by Core/the writer.
+  // Public reads carry no caller session, claimed identity or cache validators.
+  const response = await c.env.API_CORE.fetch(
+    new Request(c.req.raw, { headers: new Headers() }),
+  );
+  return withRequestId(response, id);
+};
+
 const proxyPublicJobs = async (
   c: Context<{ Bindings: EdgeEnv; Variables: EdgeVariables }>,
 ) => {
@@ -294,6 +308,12 @@ const proxyPublicJobs = async (
   );
   return withRequestId(response, id);
 };
+
+app.get("/v1/admin/feedback/reports", proxyPublicJobs);
+app.get("/v1/admin/feedback/reports/:report_date", proxyPublicJobs);
+app.get("/v1/admin/feedback/events/:event_id/context", proxyPublicJobs);
+app.post("/v1/admin/feedback/reports/:report_date/generate", proxyPublicJobs);
+app.post("/v1/admin/feedback/reports/generate-yesterday", proxyPublicJobs);
 
 // Hume signs the exact request bytes. Preserve only the provider signature
 // envelope and content type; caller credentials and internal identity headers
@@ -451,6 +471,7 @@ const proxyDeveloperCore = async (
         { uid: `developer:${subject}`, authority: "internal", requestId: id },
         policy,
         id,
+        { failClosed: policy.name === "dev:ask" },
       );
       if (rateLimitDenial) return withRequestId(rateLimitDenial, id);
     }
@@ -881,6 +902,9 @@ app.get("/v2/firmware/stable", proxyPublicFirmware);
 app.get("/v2/firmware/latest", proxyPublicFirmware);
 app.get("/v2/firmware/version", proxyPublicFirmware);
 app.get("/", proxyPublicCore);
+app.get("/email/unsubscribe", proxyPublicCore);
+app.get("/r/:code", proxyPublicCore);
+app.post("/email/unsubscribe", proxyPublicCore);
 app.get("/appcast.xml", proxyPublicCore);
 app.get("/updates/latest", proxyPublicCore);
 app.get("/download", proxyPublicCore);
@@ -906,15 +930,7 @@ app.post("/v2/desktop/channels/promote", proxyPublicCore);
 app.post("/v2/desktop/clear-cache", proxyPublicCore);
 app.get("/v2/desktop/update-policy", proxyPublicCore);
 app.get("/metrics", proxyMetricsCore);
-app.get("/v1/announcements/changelogs", proxyPublicCore);
-app.get("/v1/announcements/features", proxyPublicCore);
-app.get("/v1/announcements/general", proxyPublicCore);
-app.get("/v1/announcements/all", proxyPublicCore);
-app.get("/v1/announcements/:announcementId", proxyPublicCore);
 app.get("/v1/trends", proxyPublicCore);
-app.post("/v1/announcements", proxyPublicCore);
-app.put("/v1/announcements/:announcementId", proxyPublicCore);
-app.delete("/v1/announcements/:announcementId", proxyPublicCore);
 app.get("/v1/app-categories", proxyPublicCore);
 app.get("/v1/app/proactive-notification-scopes", proxyPublicCore);
 app.get("/v1/app-capabilities", proxyPublicCore);
@@ -981,6 +997,7 @@ app.get("/v2/integrations/:app_id/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/search/conversations", proxyIntegrationCore);
 app.post("/v2/integrations/:app_id/notification", proxyIntegrationCore);
 app.get("/v2/integrations/:app_id/tasks", proxyIntegrationCore);
+app.post("/v1/dev/user/ask", proxyDeveloperCore);
 app.get("/v1/dev/user/memories/vector/search", proxyDeveloperCore);
 app.get("/v1/dev/user/memories", proxyDeveloperCore);
 app.post("/v1/dev/user/memories/batch", proxyDeveloperCore);
@@ -1135,26 +1152,6 @@ app.all("/v4/web/listen", async (c) => {
   return withRequestId(response, id);
 });
 
-app.post("/v1/realtime/web-ticket", async (c) => {
-  const id = requestId(c.req.raw);
-  const auth = await verifyBearer(c.req.raw, c.env, id);
-  if (!auth) return c.json({ error: "unauthorized" }, 401);
-  const denial = await cloudflareProductTrafficDenial(
-    c.req.raw,
-    c.env,
-    auth,
-    id,
-  );
-  if (denial) return withRequestId(denial, id);
-  const ticket = await createRealtimeTicket(
-    auth,
-    c.env.INTERNAL_ASSERTION_SECRET,
-  );
-  if (!ticket) return c.json({ error: "realtime unavailable" }, 503);
-  c.header("cache-control", "no-store");
-  return c.json({ ticket, expires_in: 30 });
-});
-
 app.all("/v1/omni/relay", async (c) => {
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
@@ -1254,6 +1251,15 @@ const proxyAuthenticatedAccountDeletion = async (
   const id = requestId(c.req.raw);
   const auth = await verifyBearer(c.req.raw, c.env, id);
   if (!auth) return c.json({ error: "unauthorized" }, 401);
+  if (c.env.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED === "true") {
+    const control = await readCloudflareAccountControl(
+      c.req.raw,
+      c.env,
+      auth,
+      id,
+    );
+    if (control instanceof Response) return withRequestId(control, id);
+  }
   const headers = stripUntrustedHeaders(c.req.raw);
   await attachAuthContext(
     headers,
@@ -1460,6 +1466,7 @@ app.post("/v1/personas", proxyAuthenticatedJobs);
 app.patch("/v1/personas/:personaId", proxyAuthenticatedJobs);
 app.get("/v1/integrations/:app_key/oauth-url", proxyAuthenticatedJobs);
 app.get("/v1/calendar/google/events", proxyAuthenticatedJobs);
+app.get("/v1/calendar/capture-gaps", proxyAuthenticatedJobs);
 app.get("/v1/personas/twitter/profile", proxyAuthenticatedJobs);
 app.delete("/v1/users/delete-account", proxyAuthenticatedAccountDeletion);
 app.post(
@@ -1491,11 +1498,28 @@ const proxyAuthenticatedCore = async (
     recoverInvalidByok: c.req.path === "/v1/users/me/subscription",
   });
   if (headers instanceof Response) return withRequestId(headers, id);
-  const response = await c.env.API_CORE.fetch(
-    new Request(c.req.raw, { headers }),
-  );
+  let upstream = new Request(c.req.raw, { headers });
+  if (c.req.method === "POST" && c.req.path === "/v3/memories/batch") {
+    const bounded = await memoryBatchRequest(upstream);
+    if (bounded instanceof Response) return withRequestId(bounded, id);
+    upstream = bounded;
+  }
+  const response = await c.env.API_CORE.fetch(upstream);
   return withRequestId(response, id);
 };
+
+// Register the authenticated static owner before the public detail parameter.
+// Hono dispatches the first matching handler, including /pending as an ID.
+app.get("/v1/announcements/pending", proxyAuthenticatedCore);
+app.get("/v1/announcements/changelogs", proxyPublicCore);
+app.get("/v1/announcements/features", proxyPublicCore);
+app.get("/v1/announcements/general", proxyPublicCore);
+app.get("/v1/announcements/all", proxyPublicCore);
+app.get("/v1/announcements/:announcementId", proxyPublicCore);
+app.post("/v1/announcements", proxyPublicCore);
+app.put("/v1/announcements/:announcementId", proxyPublicCore);
+app.delete("/v1/announcements/:announcementId", proxyPublicCore);
+app.post("/v1/announcements/:announcementId/dismiss", proxyAuthenticatedCore);
 
 app.get("/v1/personas", proxyAuthenticatedCore);
 app.get("/v2/cf/apps/mcp/tools", proxyAuthenticatedCore);
@@ -1815,6 +1839,8 @@ app.get("/v1/users/me/subscription", proxyAuthenticatedCore);
 app.get("/v1/users/me/usage-quota", proxyAuthenticatedCore);
 app.get("/v1/users/me/paywall", proxyAuthenticatedCore);
 app.get("/v1/users/me/trial", proxyAuthenticatedCore);
+app.get("/v1/users/me/referral", proxyAuthenticatedCore);
+app.post("/v1/users/me/referral/claim", proxyAuthenticatedCore);
 app.get("/v1/users/me/llm-usage", proxyAuthenticatedCore);
 app.post("/v1/users/me/llm-usage", proxyAuthenticatedCore);
 app.get("/v1/users/me/llm-usage/top-features", proxyAuthenticatedCore);
@@ -1946,10 +1972,8 @@ app.post("/v2/realtime/session", async (c) => {
   );
   if (denial) return withRequestId(denial, id);
 
-  // The old endpoint accepted `openai`/`gemini` and minted a provider token.
-  // Cloudflare-native clients use the signed first-message ticket instead;
-  // reject those provider selectors rather than silently minting a token for
-  // an external AI service.
+  // This upstream route mints a direct live-model session, not an STT socket
+  // credential. Keep its provider/error contract without inventing an ASR token.
   const declaredBodyLength = Number(c.req.header("content-length") || "");
   if (
     Number.isFinite(declaredBodyLength) &&
@@ -1961,46 +1985,39 @@ app.post("/v2/realtime/session", async (c) => {
   if (new TextEncoder().encode(rawBody).byteLength > MAX_REALTIME_SESSION_BODY_BYTES) {
     return c.json({ error: "realtime_session_request_too_large" }, 413);
   }
-  if (rawBody.trim()) {
-    let body: { provider?: unknown };
-    try {
-      body = JSON.parse(rawBody) as { provider?: unknown };
-    } catch {
-      return c.json({ error: "invalid_realtime_session_request" }, 400);
-    }
-    if (
-      body === null ||
-      typeof body !== "object" ||
-      Array.isArray(body) ||
-      (body.provider !== undefined &&
-        body.provider !== "workers-ai" &&
-        body.provider !== "cloudflare-workers-ai")
-    ) {
-      return c.json(
-        {
-          error: "external_realtime_disabled",
-          reason: "use the Cloudflare Workers AI realtime transport",
-        },
-        409,
-      );
-    }
+  let body: { provider?: unknown };
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return c.json({ error: "invalid_realtime_session_request" }, 400);
   }
-
-  const ticket = await createRealtimeTicket(
-    auth,
-    c.env.INTERNAL_ASSERTION_SECRET,
-  );
-  if (!ticket) return c.json({ error: "realtime unavailable" }, 503);
-  const websocketUrl = new URL("/v4/web/listen", c.req.url);
-  websocketUrl.protocol = websocketUrl.protocol === "https:" ? "wss:" : "ws:";
+  if (
+    !body ||
+    typeof body !== "object" ||
+    Array.isArray(body) ||
+    (body.provider !== "openai" && body.provider !== "gemini")
+  ) {
+    return c.json(
+      {
+        error: 'provider must be "openai" or "gemini"',
+        reason: "bad_provider",
+        backend_route: "/v2/realtime/session",
+        retryable: false,
+      },
+      400,
+    );
+  }
   c.header("cache-control", "no-store");
-  return c.json({
-    provider: "workers-ai",
-    token: ticket,
-    expires_in: 30,
-    websocket_url: websocketUrl.toString(),
-    transport: "cloudflare-realtime",
-  });
+  return c.json(
+    {
+      error: "Direct realtime model sessions are disabled for this target",
+      reason: "external_realtime_disabled",
+      provider: body.provider,
+      backend_route: "/v2/realtime/session",
+      retryable: false,
+    },
+    409,
+  );
 });
 app.post("/v2/realtime/usage", proxyAuthenticatedAI);
 app.post("/v2/voice-message/transcribe", proxyAuthenticatedAI);
@@ -2068,6 +2085,9 @@ app.get("/memory/search", proxyAuthenticatedCore);
 app.get("/memory/archive/search", proxyAuthenticatedCore);
 app.get("/memory/vector/search", proxyAuthenticatedCore);
 app.get("/v3/memories", proxyAuthenticatedCore);
+app.get("/v3/memories/ledger-history", proxyAuthenticatedCore);
+app.get("/v1/jit/knowledge-ledger/prompt-snapshot", proxyAuthenticatedCore);
+app.get("/v1/jit/knowledge-ledger/mirror-snapshot", proxyAuthenticatedCore);
 app.post("/v3/memories", proxyAuthenticatedCore);
 app.post("/v3/memories/batch", proxyAuthenticatedCore);
 app.get("/v3/memories/review-queue", proxyAuthenticatedCore);
@@ -2081,8 +2101,18 @@ app.patch("/v3/memories/:memoryId/visibility", proxyAuthenticatedCore);
 app.patch("/v3/memories/:memoryId/read", proxyAuthenticatedCore);
 app.patch("/v3/memories/:memoryId/baseline", proxyAuthenticatedCore);
 app.post("/v3/memories/:memoryId/review", proxyAuthenticatedCore);
+app.post("/v3/memories/:memoryId/revert", proxyAuthenticatedCore);
 app.post("/v3/memory-imports/batch", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/shared", proxyPublicCore);
+app.get("/v1/conversations/:conversationId/shared/screenshots", proxyPublicScreenshots);
+app.get("/v1/screen-frame-content", proxyPublicScreenshots);
+app.get("/v1/screen-frame-egress/settings", proxyAuthenticatedCore);
+app.patch("/v1/screen-frame-egress/settings", proxyAuthenticatedCore);
+app.post("/v1/screen-frame-egress/adjudications", proxyAuthenticatedCore);
+app.get("/v1/conversations/:conversationId/screenshots", proxyAuthenticatedCore);
+app.patch("/v1/conversations/:conversationId/screenshot-sharing", proxyAuthenticatedCore);
+app.delete("/v1/conversations/:conversationId/screenshots", proxyAuthenticatedCore);
+app.delete("/v1/conversations/:conversationId/screenshots/:frameId", proxyAuthenticatedCore);
 app.get("/v1/conversations", proxyAuthenticatedCore);
 app.post("/v1/conversations", proxyAuthenticatedCore);
 app.post("/v1/conversations/from-segments", proxyAuthenticatedCore);
@@ -2098,6 +2128,25 @@ app.get(
 app.get("/v1/conversations/:conversationId", proxyAuthenticatedCore);
 app.delete("/v1/conversations/:conversationId", proxyAuthenticatedCore);
 app.get("/v1/conversations/:conversationId/photos", proxyAuthenticatedCore);
+app.get("/v1/conversations/:conversationId/share-recipients", proxyAuthenticatedCore);
+app.get("/v1/jit/rollout-decision", proxyAuthenticatedCore);
+app.get("/v1/jit/trigger-snapshot", proxyAuthenticatedCore);
+app.post("/v1/jit/trigger-feedback", proxyAuthenticatedCore);
+app.post("/v1/jit/proactivity/reservations", proxyAuthenticatedCore);
+app.get(
+  "/v1/conversations/:conversationId/photos/:photoId/image",
+  proxyAuthenticatedCore
+);
+app.get("/v1/frame-requests/pending", proxyAuthenticatedCore);
+app.get("/v1/frame-requests/status/:requestId", proxyAuthenticatedCore);
+app.get(
+  "/v1/frame-requests/temporary/:requestId/image",
+  proxyAuthenticatedCore
+);
+app.post("/v1/frame-requests", proxyAuthenticatedCore);
+app.post("/v1/frame-requests/:requestId/state", proxyAuthenticatedCore);
+app.post("/v1/frame-requests/:requestId/upload", proxyAuthenticatedCore);
+app.post("/v1/frame-requests/:requestId/promote", proxyAuthenticatedCore);
 app.get(
   "/v1/conversations/:conversationId/transcripts",
   proxyAuthenticatedCore,
@@ -2193,8 +2242,6 @@ app.post("/v1/users/training-data-opt-in", proxyAuthenticatedCore);
 app.post("/v1/users/fcm-token", proxyAuthenticatedCore);
 app.delete("/v1/users/fcm-token", proxyAuthenticatedCore);
 app.patch("/v1/users/geolocation", proxyAuthenticatedCore);
-app.get("/v1/announcements/pending", proxyAuthenticatedCore);
-app.post("/v1/announcements/:announcementId/dismiss", proxyAuthenticatedCore);
 app.get("/v1/action-items", proxyAuthenticatedCore);
 app.post("/v1/action-items", proxyAuthenticatedCore);
 app.get("/v1/action-items/ids", proxyAuthenticatedCore);
@@ -2249,6 +2296,7 @@ app.get("/v1/focus-stats", proxyAuthenticatedCore);
 app.post("/v1/screen-activity/sync", proxyAuthenticatedCore);
 app.get("/v1/screen-activity", proxyAuthenticatedCore);
 app.get("/v1/screen-activity/summary", proxyAuthenticatedCore);
+app.get("/v2/desktop/prompts", proxyAuthenticatedCore);
 app.get("/v1/crisp/unread", proxyAuthenticatedCore);
 app.get("/v1/integrations/:app_key", proxyAuthenticatedCore);
 app.get("/v1/calendar/onboarding/status", proxyAuthenticatedCore);
@@ -2329,6 +2377,10 @@ app.patch("/v1/users/notification-settings", proxyAuthenticatedCore);
 app.get("/v1/users/daily-summary-settings", proxyAuthenticatedCore);
 app.patch("/v1/users/daily-summary-settings", proxyAuthenticatedCore);
 app.get("/v1/users/daily-summaries", proxyAuthenticatedCore);
+app.post("/v1/users/desktop-usage/daily", proxyAuthenticatedCore);
+app.get("/v1/csat/config", proxyAuthenticatedCore);
+app.post("/v1/csat/ratings", proxyAuthenticatedCore);
+app.post("/v1/users/daily-summaries", proxyAuthenticatedCore);
 app.get("/v1/users/daily-summaries/:summaryId", proxyAuthenticatedCore);
 app.patch(
   "/v1/users/daily-summaries/:summaryId/visibility",

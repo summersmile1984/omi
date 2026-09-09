@@ -189,6 +189,7 @@ def environment(*, scopes=None, cutover_state="new"):
         MEMORY_VECTORS=FakeVectorIndex(),
         JOBS=FakeQueue(),
         INTERNAL_ASSERTION_SECRET=FIRST_PARTY_SECRET,
+        MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
         WORKERS_AI_INTEGRATION_MODEL="developer-category-test-model",
         WORKERS_AI_VECTOR_MODEL="developer-vector-test-model",
     )
@@ -232,12 +233,19 @@ def run(awaitable):
 
 
 def insert_vector_state(database, source_id, vector_id):
+    revision = database.connection.execute(
+        "SELECT item_revision FROM cf_memories WHERE uid = 'developer-user' AND id = ?",
+        (source_id,),
+    ).fetchone()[0]
     database.connection.execute(
         "INSERT INTO cf_vector_projection_state "
         "(uid, projection_kind, source_id, sub_id, vector_id, source_version, model, updated_at) "
-        "VALUES ('developer-user', 'memory', ?, '000000', ?, 10, 'developer-vector-test-model', 10)",
-        (source_id, vector_id),
+        "VALUES ('developer-user', 'memory', ?, '000000', ?, ?, 'developer-vector-test-model', 10)",
+        (source_id, vector_id, revision),
     )
+    from test_memory_vector_hydration import adopt_state
+
+    adopt_state(database)
 
 
 def test_developer_auth_is_strict_scope_bound_and_cutover_fenced():
@@ -501,15 +509,30 @@ def test_developer_memory_mutations_use_write_scope_d1_and_vector_outbox():
 
     deleted = run(delete_developer_memory(FakeRequest(env), memory_id))
     assert deleted == {"success": True}
-    missing = run(delete_developer_memory(FakeRequest(env), memory_id))
+    assert run(delete_developer_memory(FakeRequest(env), memory_id)) == {"success": True}
+    missing = run(delete_developer_memory(FakeRequest(env), "never-created-memory"))
     assert missing.status_code == 404
     outbox = database.connection.execute(
         "SELECT operation FROM cf_vector_projection_outbox "
         "WHERE uid = 'developer-user' AND source_kind = 'memory' AND source_id = ?",
         (memory_id,),
     ).fetchone()
-    assert dict(outbox) == {"operation": "delete"}
-    assert len(env.JOBS.messages) == 5
+    # Upstream finalization removes deterministic identities after provider
+    # absence; only its content-free receipt remains for a lost-response retry.
+    assert outbox is None
+    assert (
+        database.connection.execute(
+            "SELECT id FROM cf_memories WHERE uid = 'developer-user' AND id = ?", (memory_id,)
+        ).fetchone()
+        is None
+    )
+    assert (
+        database.connection.execute(
+            "SELECT count(*) FROM cf_memory_privacy_receipts WHERE uid = 'developer-user'"
+        ).fetchone()[0]
+        == 1
+    )
+    assert len(env.JOBS.messages) == 4
 
     read_only_database, read_only_env = environment()
     denied = run(

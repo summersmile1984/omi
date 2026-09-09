@@ -108,7 +108,12 @@ def auth_headers(uid=UID, *, authority="better-auth"):
 def environment():
     db = FakeDb()
     queue = FakeQueue()
-    env = SimpleNamespace(APP_DB=db, JOBS=queue, INTERNAL_ASSERTION_SECRET=SECRET)
+    env = SimpleNamespace(
+        APP_DB=db,
+        JOBS=queue,
+        INTERNAL_ASSERTION_SECRET=SECRET,
+        MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
+    )
     db.connection.execute(
         "INSERT INTO cf_conversations "
         "(uid, id, created_at, updated_at, started_at, finished_at, source, language, status, visibility, "

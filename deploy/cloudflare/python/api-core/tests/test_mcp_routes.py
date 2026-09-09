@@ -10,10 +10,10 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
+from memory_kernel_intake import document_id_from_seed
 from internal_auth import verify_request_context  # noqa: E402
 from mcp_routes import (  # noqa: E402
     SUPPORTED_SCOPES,
-    _memory_id,
     complete_action_item,
     create_action_item,
     create_memory,
@@ -191,6 +191,7 @@ def environment(*, scopes=None, state="new", key_prefix=None):
         TRANSCRIPT_CHUNK_VECTORS=FakeVectorIndex(),
         X_POST_VECTORS=FakeVectorIndex(),
         INTERNAL_ASSERTION_SECRET=INTERNAL_SECRET,
+        MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
         WORKERS_AI_INTEGRATION_MODEL="test-model",
         WORKERS_AI_VECTOR_MODEL="test-vector-model",
     )
@@ -220,13 +221,26 @@ def run(awaitable):
     return asyncio.run(awaitable)
 
 
-def insert_vector_state(db, kind, source_id, vector_id, *, sub_id="000000", version=10):
+def insert_vector_state(db, kind, source_id, vector_id, *, sub_id="000000", version=None):
+    if version is None:
+        version = (
+            db.connection.execute(
+                "SELECT item_revision FROM cf_memories WHERE uid = 'mcp-user' AND id = ?",
+                (source_id,),
+            ).fetchone()[0]
+            if kind == 'memory'
+            else 10
+        )
     db.connection.execute(
         "INSERT INTO cf_vector_projection_state "
         "(uid, projection_kind, source_id, sub_id, vector_id, source_version, model, updated_at) "
         "VALUES ('mcp-user', ?, ?, ?, ?, ?, 'test-vector-model', ?)",
         (kind, source_id, sub_id, vector_id, version, version),
     )
+    if kind == 'memory':
+        from test_memory_vector_hydration import adopt_state
+
+        adopt_state(db)
 
 
 def test_mcp_key_auth_is_exact_scoped_and_fenced_to_active_cloudflare_accounts():
@@ -368,7 +382,7 @@ def test_mcp_memory_create_list_edit_delete_is_uid_scoped_and_uses_workers_ai():
         )
     )
     assert created["category"] == "interesting"
-    memory_id = _memory_id("The user prefers green tea.")
+    memory_id = document_id_from_seed("The user prefers green tea.")
     stored = db.connection.execute(
         "SELECT category, reviewed, user_review, manually_added, memory_tier FROM cf_memories WHERE id = ?",
         (memory_id,),
@@ -378,7 +392,7 @@ def test_mcp_memory_create_list_edit_delete_is_uid_scoped_and_uses_workers_ai():
         "reviewed": 1,
         "user_review": 1,
         "manually_added": 1,
-        "memory_tier": "long_term",
+        "memory_tier": "short_term",
     }
     assert len(env.AI.calls) == 1
 
@@ -396,8 +410,22 @@ def test_mcp_memory_create_list_edit_delete_is_uid_scoped_and_uses_workers_ai():
     projection = db.connection.execute(
         "SELECT operation FROM cf_vector_projection_outbox WHERE uid = 'mcp-user' AND source_kind = 'memory'"
     ).fetchone()
-    assert dict(projection) == {"operation": "delete"}
-    assert [message["kind"] for message in env.JOBS.messages] == ["vector_project"] * 3
+    assert projection is None
+    assert (
+        db.connection.execute("SELECT id FROM cf_memories WHERE uid = 'mcp-user' AND id = ?", (memory_id,)).fetchone()
+        is None
+    )
+    assert (
+        db.connection.execute("SELECT count(*) FROM cf_memory_privacy_receipts WHERE uid = 'mcp-user'").fetchone()[0]
+        == 1
+    )
+    assert (
+        db.connection.execute(
+            "SELECT content FROM cf_memories WHERE uid = 'other-user' AND id = 'other-memory'"
+        ).fetchone()[0]
+        == "private"
+    )
+    assert [message["kind"] for message in env.JOBS.messages] == ["vector_project"] * 2
     assert run(get_memories(FakeRequest(env))) == []
     missing = run(delete_memory(FakeRequest(env), "other-memory"))
     assert missing.status_code == 404
@@ -482,8 +510,7 @@ def test_mcp_x_posts_list_and_search_hydrate_only_uid_scoped_d1_rows():
         ("other-user", "post-other", "Must never leak", "tweet", 30),
     ):
         db.connection.execute(
-            "INSERT INTO cf_x_posts "
-            "(uid, id, text, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO cf_x_posts " "(uid, id, text, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
             (uid, post_id, text, kind, created_at, created_at),
         )
     visible_vector = "1" * 64

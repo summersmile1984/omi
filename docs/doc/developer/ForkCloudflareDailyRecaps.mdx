@@ -1,0 +1,48 @@
+---
+title: "Fork: Cloudflare daily recaps"
+description: "On-demand daily recap ownership in the Cloudflare deployment target."
+---
+
+The fork's `POST /v1/users/daily-summaries` takes `{ "date": "YYYY-MM-DD" }`.
+Edge authenticates the client and sends a signed account context to API Core.
+Core resolves the account's latest registered device timezone, or UTC when
+absent, and applies the free-chat quota policy before reading an existing recap.
+Creating a recap requires no notification token and sends no push notification.
+
+An existing date returns its stored recap without calling Workers AI. Otherwise,
+one D1 row per account/date claims generation for 120 seconds; the model call has
+a 90-second deadline. Concurrent creation returns 409. Days without speech or
+useful summary content return 400 and immediately release the claim. Only a
+successful creation arms its 30-second cooldown.
+
+`POST /v1/users/daily-summaries/{id}/regenerate` preserves identity, original
+creation time and visibility. It reserves a separate 30-second cooldown before
+inference, returning 429 for a repeat request. Deleting the recap revokes any
+pending generation so its late response cannot recreate it.
+
+API Core reads bounded unlocked conversation evidence, actual tasks, per-device
+usage counters and up to three eligible canonical memory references. It uses
+IANA local-day bounds, including 23/25-hour daylight-saving transitions. The
+model supplies validated recap prose and conversation-number citations; it does
+not create the recap's tasks, memory identities or statistics. Transport failure
+returns 503; malformed structured output uses the basic-recap fallback and emits
+the shared fallback event.
+
+Publication checks the owned lease and selected source records in the same SQL
+write. If a source is locked, deleted, rejected or otherwise changed while the
+model runs, the generated payload is not saved. Account deletion fences and
+purges both recap and generation rows. User export includes recaps but excludes
+their internal generation tokens. Public shared reads continue to exclude
+private location and learned-memory fields.
+
+The implementation lives in `daily_summary_routes.py`,
+`daily_summary_generation.py` and `daily_summary_content.py` under
+`deploy/cloudflare/python/api-core/src/`. The existing Cloudflare route CI lane
+executes the Python behavior tests; the product lane runs actual local
+Auth/Workers/D1/Queue/R2 recording, recap, export and account deletion with
+controlled inference IO.
+
+These tests do not qualify hosted model quality or notification delivery. The
+settings-test endpoint shares recap generation, while its upstream notification
+token/scheduling/push contract remains a separate migration obligation. Production
+readiness also requires the complete product and two-target release qualifiers.

@@ -1,0 +1,389 @@
+---
+title: 'Cloudflare memory'
+description: 'Canonical write admission and durable projection work in the fork Cloudflare target'
+---
+
+The isolated Cloudflare target owns memory rows in App D1 `cf_memories`.
+New native, MCP and Developer memory intake starts in Short-term, including
+manual memories and batches. `category`, `manually_added` and `durability` do
+not grant Long-term admission. Existing Long-term records retain their tier
+until an explicit content correction or another canonical lifecycle action.
+The shared Server/Cloudflare HTTP contract verifies creation, persisted tier,
+editing and deletion; full canonical consolidation remains a separate
+implementation and qualification requirement.
+
+With migration 0172, native `POST /v3/memories` and
+`POST /v3/memories/batch` persist memory content, evidence, operation receipts,
+commit records and pending index work atomically with usage. Both routes now
+store raw submissions as pending Short-term using the upstream required-processing
+contract. They preserve content and source attribution, assign the correct
+single/batch source surface, and wait for a real normalization receipt before
+vector publication. The acceptance timestamp remains stable across internal
+retries. Client-authored promotion/processing fields cannot skip this step.
+Existing processed data remains readable without a bulk backfill. The current
+native list still shows pending submissions immediately; creating a memory does
+not invoke a model. [Verification](../../../dev/unified-main/implementation-2026-09-05/native-memory-normalization-2026-09-07.md).
+
+Default `GET /v3/memories` excludes archived, hidden, superseded, source-removed
+and user-rejected records. New required-pending submissions remain visible to
+their owner. Ordinary `/memory/search` includes only eligible processed records;
+it reports their stored processing state. Filtering happens before pagination
+and search counts, so excluded rows do not consume a page. Existing processed
+rows remain readable without creating normalization receipts. Active Short-term
+records are not hidden solely because their nominal TTL elapsed. Active-alias
+collapse, device/cursor parity and explicit native archive reads remain separate
+read-convergence work. [Verification](../../../dev/unified-main/implementation-2026-09-05/memory-default-read-2026-09-07.md).
+
+The batch request remains `{"memories": [...]}`, with at most 100 memories
+and a **1,000,000-byte UTF-8 request body**, including the JSON envelope and
+metadata. The single-memory content limit remains 50,000 characters. Larger
+requests return HTTP 413 with `error: "memory_batch_too_large"`, `max_bytes`
+and `max_memories`, without writing any items. Clients must split imports by
+both encoded size and item count; each request is a separate transaction.
+The macOS fork importer does this automatically for the Cloudflare target,
+while retaining per-batch success/failure counts and account-switch protection.
+A failed transaction returns 503 without a partial
+batch. Repeating a public POST allocates new IDs; this API does not accept a
+client-authored operation or ledger head.
+
+MCP `POST /v1/mcp/memories` and Developer single/batch memory creation also
+commit evidence, operation/head records, usage and pending work atomically.
+They use the upstream content-derived identity: submitting identical active
+content returns its existing record, preserving its category, tags and tier.
+No additional memory or usage is recorded for that duplicate. The Developer
+batch limit remains 25, and duplicate/new entries are checked together before
+any commit. A new explicit submission after privacy deletion receives a fresh
+identity and evidence; it does not restore the deleted record.
+
+MCP content corrections and Developer content/visibility/category/tag updates
+use the same canonical mutation transaction. A combined Developer PATCH makes
+one commit. Content corrections return to pending Short-term; metadata-only
+changes preserve the tier. A PATCH containing only null fields returns 422.
+Category classification retains its existing model call and prompt; successful
+classification does not grant normalization or Long-term admission.
+
+Cloudflare operators must provision one stable `MEMORY_PRIVACY_SECRET` of at
+least 32 UTF-8 bytes to API Core and Jobs. Keep it separate from authentication
+credentials and retain it across releases. Migration 0174 and the current
+creators use this key for internal deletion-receipt identities. These values
+are absent from API memory objects and exports; clients do not provide them.
+Replacing the secret requires a coordinated rekey migration.
+
+Migration 0175 adds canonical deletion preparation: complete-lineage selection,
+transaction-time account/head/item checks, content scrubbing, a new privacy
+commit and sealed deletion receipts. A content-free cleanup inventory survives
+provider failures. Migration 0176 connects native single/batch/all/default,
+MCP and Developer deletion to this owner and guards final physical erasure.
+The new legal-hold/destructive gate authority is server-owned; no user request
+may create a hold or choose an operation token. It protects canonical memory
+deletion, rather than all Cloudflare deletion families.
+
+Deletion returns HTTP 200 only after vector cleanup and physical memory/history
+erasure. While an external writer or provider deletion is pending, it returns
+503 with `error: "memory_cleanup_pending"` and `Retry-After: 2`. The existing
+Jobs Queue and schedule continue the durable request without another client
+call. Jobs uses signed private Core continuations; Core rechecks authority and
+artifact/mapping absence inside the final D1 transaction. A provider accepting
+an asynchronous deletion is insufficient to acknowledge success.
+
+All/default deletion persists its scope across batches of at most 100 items.
+Default retains Archive, including linked Archive records. Finalization removes
+referencing journal, review, Archive and lifecycle history as well as the memory
+row. Source conversations and imported source artifacts remain. Removing memory
+usage-source identities also removes their contribution to historical usage
+counts. Opaque 30-day receipts allow idempotent retries after finalization;
+pending cleanup continues to fence late writers even if a receipt expires.
+Unknown IDs return 404. Developer deletion retains its active paid-lock check
+(402); native privacy deletion remains available for locked memories.
+
+The local actual Workers recording flow verifies indexed memory deletion and
+autonomous Jobs completion with a controlled Vectorize provider. See the
+[deletion verification record](../../../dev/unified-main/implementation-2026-09-05/memory-privacy-delete-2026-09-07.md)
+for the exact verification scope and remaining production requirements.
+
+Migration 0173 moves native `PATCH /v3/memories/{id}` content corrections into
+the same transaction as the operation receipt, commit/head and pending index
+work. Corrected content returns to pending Short-term and clears the previous
+graph admission, following the upstream correction policy. Old vector mappings
+are revoked while the revised content awaits processing. Pre-journal memories
+are adopted in place when edited; their IDs and capture provenance are retained.
+Closed or superseded records cannot be reopened by this endpoint. Locks return
+402; concurrent target/head/generation changes and failed writes return 503
+without a partial correction.
+
+Native visibility, review votes, read/dismiss and baseline changes also use the
+canonical mutation transaction. They retain their existing request and response
+shapes, paid-lock admission and owner isolation. A concurrent target/head change
+returns 503 without a partial item, journal or feedback update. Product metadata
+changes preserve content and tier; a positive vote does not promote a pending
+memory. Review rejection/reacceptance follows the original processing-status
+policy. Belief processing remains at the target's default-off setting.
+
+Migration 0177 persists an existing graph-backed Long-term memory's refreshed
+graph assertion in that same transaction. The exact current item revision and
+admitted target guard must authorize the assertion. It is included in owner
+export and removed by memory privacy/account erasure. This completes graph
+storage for these user mutations and the consolidation adapter below. Shared
+graph-query convergence is still unfinished. See the
+[product-mutation verification record](../../../dev/unified-main/implementation-2026-09-05/memory-product-mutation-2026-09-07.md).
+
+Review-queue resolution also shares canonical apply and privacy deletion.
+Acceptance and correction return the candidate to pending Short-term; they do
+not invalidate conflict peers or grant promotion. A correction's target ID is
+audit metadata for this canonical route. Rejection and low-confidence timeout
+remove the candidate's canonical lineage and derived history. While provider
+cleanup remains pending, resolution returns 503 `memory_cleanup_pending` with
+`Retry-After: 2`; a retry resumes cleanup before acknowledging completion.
+
+Review source identity is its actual commit, item revision, content hash and
+consolidation `review` route. Historical timestamp-based rows become stale and
+cannot write. Native intake no longer derives review decisions from conflicting
+fields; the consolidation persistence adapter now creates reviews from validated
+model decisions; the scheduled producer is described below. Completed
+privacy erasure removes its review projection, so subsequent retrieval returns
+404. Accepted/corrected decisions remain redacted and replay without a new
+commit. [Verification record](../../../dev/unified-main/implementation-2026-09-05/memory-review-canonical-2026-09-07.md).
+
+`memory_consolidation_apply.apply_consolidation_batch` persists up to 20 upstream
+decisions in one D1 transaction. It validates the complete partition and reloads
+all model-referenced sources before admitting any writes. Required normalization,
+promotion admission receipts, graph assertions, supersession, Archive/review/reject
+outcomes and journal/outbox records share that transaction. A concurrent account,
+source or candidate change requires fresh planning; storage failure rolls back
+the whole batch. Review records use the original deterministic source-bound
+builder and are consumable by the existing public review API.
+
+D1 supports transactional batches: all prepared statements submitted to one
+`APP_DB.batch()` succeed together or roll back together on failure
+([Cloudflare contract](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)).
+The model call and candidate gathering happen before this batch. The batch then
+checks the observed account/head/item versions and commits the memory, journal
+and outbox together; a changed observation requires fresh planning. This does not
+make the earlier network reads or later R2, Vectorize and Queue operations part
+of the same transaction. Those external updates follow their durable outbox.
+
+Migration 0182 distinguishes read-only consolidation context from memory writes.
+An eligible hidden owner-rejection example may inform a decision without being
+edited. Candidate and feedback snapshots are checked again inside the D1
+transaction; changed context cancels the entire batch. Write targets retain their
+active/unlocked requirements. Apply this migration before deploying the updated
+Core Worker; earlier writers use the new read-set column's empty default.
+The [hosted follow-up](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-hosted-2026-09-08.md)
+verified D1 rollback, whole-source batch continuation and terminal size-failure
+isolation through real Auth, Workers, D1, Vectorize, Cron and Queue. Consolidation
+outputs/usage and the hidden historical feedback state were controlled fixtures;
+this is not live model-quality or production release qualification.
+
+The Cloudflare model adapter preserves the original consolidation prompt and
+output schema and invokes Workers AI before the guarded D1 apply. Its optional
+`WORKERS_AI_MEMORY_CONSOLIDATION_MODEL` setting defaults to
+`@cf/qwen/qwen3.8-27b`; an override must support the same Chat Completions
+request and response contract. The original prompt requests JSON, and the
+reply is validated after ordinary generation; the adapter adds no provider
+`response_format`. Usage is reported under the
+`memory_consolidation` feature. Failed calls, malformed decisions or stale
+sources leave the memories pending. This invocation does not alter the default
+prompt or require a tokenizer download. See the [model verification record](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md).
+
+Migration 0180 adds durable consolidation attempts. The batch runner uses the
+original three-attempt limit, 10-minute task lease, terminal review and quarantine
+policy. A retry is isolated from fresh batch work; delayed index admission refunds
+its attempt and persists a five-second retry time. Successful memory application
+and retry cleanup share one transaction, which also rejects expired or replaced
+task ownership. Account erasure includes these non-content operational records.
+
+Migration 0181 connects consolidation to the existing Jobs cron and Queue. Memory
+writes atomically register pending work; Core processes bounded pages and stores
+scan progress between deliveries. Intake arriving during a scan remains pending
+for the next cycle, including captures with older timestamps. Queue continuation
+uses a new delivery, so a scan can exceed three pages without exhausting message
+retries. An internal signed request binds the account and generation to Core.
+Existing accounts are included; no client setting is required.
+
+Model requests retain the existing 110,000-byte message limit. Oversized batches
+now use smaller whole-source batches with freshly gathered candidates and owner
+feedback. Unselected items resume through the durable dispatcher without spending
+failure attempts. A single source that still cannot fit reaches the original
+three-failure review path; its source content is retained and no model call is
+made. This byte bound does not promise an exact token count. The separate native
+intake limit remains 1,000,000 request bytes.
+
+Recurrence handoff remains unfinished;
+recurrence-bearing batches are rejected before writes until their workflow owner
+is connected. Normalization for other intake families and default-read alignment also remain
+required. No default prompt was changed. See the
+[consolidation verification record](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-apply-2026-09-07.md).
+
+The user export includes owned operations, commits and graph assertions under
+`memory_ledger_data`. These native intake and user-mutation records do not
+yet constitute complete history for other writers,
+source deletion or consolidation. History/revert and JIT
+remain unqualified until every writer shares the same authority.
+
+Migration 0161 enforces the current row's paid-plan lock inside interactive
+updates. A lock acquired after an API pre-read still returns 402 and rolls back
+the transaction. Database failures return 503. Privacy tombstones and account
+erasure remain available for locked rows.
+
+Migration 0162 commits each mutation's monotonic `item_revision` and vector
+projection outbox together. Wall-clock `updated_at` remains a presentation
+timestamp; two edits in the same second receive distinct revisions. Existing
+rows are rebased above prior stored and pending timestamp versions. Creation
+also advances beyond a pending deletion when an identity is recreated. Records
+behind an account-deletion fence are left to that erasure owner.
+
+Native memory routes, MCP, developer API, X extraction and conversation cascade
+deletion share this database authority. A failure to persist projection work
+rolls back the memory mutation; a downstream model or Vectorize failure leaves
+durable retry work after the business write has committed. Existing notification
+calls wake Jobs after commit; scheduled reconciliation also drains the outbox.
+
+The `cf_memory_projection_sources` view centralizes index eligibility: active,
+processed source, current account generation, no expired capture, paid-plan lock,
+archive tier, rejection or restricted sensitivity label. A missing user review
+is distinct from explicit rejection. Jobs uses the source revision when reading
+and acknowledging work. An edit while embedding is in flight leaves its later
+revision queued for another pass.
+
+Migration 0163 assigns each external memory-vector publication a unique attempt
+and immutable vector IDs. D1 records these IDs before calling Vectorize. The
+publication transaction compares the current source content and revision;
+an older task cannot overwrite the current mapping or vector bytes. Canonical
+revision changes revoke old serving mappings in the same transaction. Deletion
+work only retracts mappings through the revision it observed.
+
+Migration 0179 adds publication completeness and query-readiness records. The
+memory Vectorize index requires a string metadata index named `publication_id`
+before any new publication; the release resource policy provisions and verifies
+it. The value is the immutable opaque vector ID, not source text or user identity.
+Existing publications without that key are republished by the regular reconciler.
+Consolidation checks actual filtered ANN visibility in batches of at most 20,
+retains verified progress, and defers inference while an eligible source is
+missing, incomplete or still indexing. The dependency wait retains pending input
+and does not consume a model failure attempt. Mapping changes during retrieval
+invalidate admission through a transport sequence separate from the business
+ledger. Normal read authorization continues to come from D1.
+
+The artifact journal survives lost provider responses and account deletion.
+A successful write receipt releases its writer; an uncertain write retains the
+full 15-minute Queue/cron invocation bound. Cleanup retires unreferenced IDs and
+waits for observed absence after a previously observed vector, or an exact
+processed deletion receipt. It does not infer completion from local timestamps
+or from acceptance of an asynchronous mutation. Account erasure remains pending
+until the journal is empty. Hosted cleanup latency still requires qualification.
+
+Individual memory projection deletion tasks also retain their exact outbox
+record until the artifact owner confirms cleanup. Queue delivery retries while
+an eligible writer or external deletion is pending. The check covers only the
+owner, memory and revisions through the task's observed revision; unrelated
+memories and newer publications remain independent. This acknowledges the
+projection task, not complete canonical privacy deletion: the public deletion
+transaction and history finalization still require migration to the shared
+canonical apply owner.
+
+Full-migration ASGI/SQLite regressions cover admission races, same-second edits,
+transaction rollback, upgrade state and cascade deletion. The existing product
+lane runs real local Auth, Workers, D1, Queue and R2 through public HTTP/WebSocket
+recording, memory mutation, export, cascade deletion and account erasure.
+Its inference IO remains controlled, and that product lane does not exercise
+hosted Vectorize. The Worker suite separately drives the production projector
+through real SQLite transactions and controlled asynchronous Vectorize IO.
+
+Native, MCP, developer and chat-tool vector searches now use one canonical D1
+snapshot for memory content, revision, model/publication metadata and access.
+The result limit is applied after rejection and chunk deduplication. Native
+diagnostics distinguish missing items, stale projections, stale vector IDs and
+access denials; the hydration read count includes rejected candidates.
+
+Repairs recheck canonical intent in the write transaction, preserve a newer
+publication, and reuse the existing artifact journal and projection outbox.
+Due work receives a post-commit Queue hint. The native
+`repair_purge_outbox_records` contains actual pending D1 artifact records,
+identified by vector ID and `storage: cf_memory_vector_artifacts`; these are
+not fabricated Firestore records. Unknown provider IDs without a trusted
+uid-scoped owner are counted and logged without authorizing external deletion.
+
+Equivalent publication ownership for the other projection families remains
+required, along with hosted provider qualification. Ledger
+history/revert also require append-only lineage and exact idempotency. These
+remain tracked in the fork CF-4 migration ledger and block full production
+product qualification; no default prompts or extraction policies are changed.
+
+Provider contracts: [Vectorize client API](https://developers.cloudflare.com/vectorize/reference/client-api/),
+[ordered asynchronous writes](https://blog.cloudflare.com/building-vectorize-a-distributed-vector-database-on-cloudflare-developer-platform/),
+and [Queue invocation limits](https://developers.cloudflare.com/queues/platform/limits/).
+
+### Exact duplicate admission
+
+The real Qwen 2026-09-07 fixed replay returned one incorrect `promote/create`
+for a pending source whose complete content matched an existing same-user,
+same-subject long-term candidate. Both targets now share the pure fork admission
+rule: reject that create before any business mutation, preserving pending input.
+The Server retains original retry bookkeeping. Cloudflare raises its existing
+apply-skipped result; its durable retry/scheduling workflow is still unfinished.
+This does not infer equivalence from similarity scores, truncated prompts or
+paraphrases. Default prompts and original upstream source remain unchanged.
+
+### Consolidation candidate retrieval
+
+The leased runner and batch planner read bounded source IDs under their owner,
+queries real BGE-M3/Vectorize, reuses the canonical D1 freshness/visibility
+hydrator, then invokes the unchanged Qwen prompt and applies the complete batch.
+Long input is searched through overlapping windows, including its tail. A source
+or account change prevents inference; rejected-owner examples retain upstream
+text bounds and hidden-state eligibility without exposing restricted examples.
+
+The 2026-09-07 isolated hosted trial used the actual Jobs vector publisher and
+Core candidate lookup with no injected IDs or scores. Real Qwen promoted a user
+preference, rejected fiction and archived the duplicate using a retrieved score
+of 1. Normalization receipts, graph/default reads and account isolation passed.
+The probe waited about 28 seconds for Vectorize visibility before the duplicate
+call. Query-readiness admission is now implemented in the production context
+owner; durable retry invocation and scheduling are implemented. Recurrence
+handoff remains unfinished. Byte-aware whole-source batching is covered by local
+regression tests; it has not yet been exercised in a hosted trial. These isolated
+trials are not a production release qualification.
+Detailed evidence: [context trial](../../../dev/unified-main/implementation-2026-09-05/memory-consolidation-context-2026-09-07.md).
+
+### Explicit canonical history
+
+`GET /v3/memories/ledger-history` is now implemented in Core and authenticated
+Edge. It retains the original bare-array `MemoryDB` response, closed/rejected/
+preserved-legacy admission, stable newest-first order and `Cache-Control: no-store`.
+Hidden, deleted, source-purged, sensitive, locked and pending rows are excluded.
+Default memory lists retain their separate current-memory behavior.
+
+`limit` is capped at 500; `offset + limit > 5000` returns 413. A provider window
+of 501 rows, consumed read deadline or the adapter's 4,000,000-byte scan limit
+sets `X-Omi-List-Truncated: true`. D1 pages hold at most 32 records and 1,000,000
+document bytes, charging a larger single record separately. A partial response
+must not be presented as exhaustive history. Storage or changed authority returns
+503. Disabled/unknown JIT rollout returns the original empty array without a
+history scan. Reads do not create migration, control or commit records.
+
+The source projector preserves upstream history policy and wire rules. Core
+rechecks account/head, bounded row cohorts and current rollout before releasing
+the response. The [verification record](../../../dev/unified-main/implementation-2026-09-05/memory-history-2026-09-08.md)
+separates hosted consumer validation from still-required native ledger creation,
+common two-target contracts and production release. Restore has its own
+append/close verification below.
+
+## Restore a closed ledger fact
+
+`POST /v3/memories/{memory_id}/revert` accepts `{"operation_id":"<UUID>"}` and
+returns the original `{"status":"ok","memory":...}` with `Cache-Control: no-store`.
+Use the same operation UUID when retrying a lost response. Restoration appends a
+new current fact and closes the old current tail; it does not overwrite the
+selected history row. A standalone closed source gets one durable reopen receipt.
+
+The upstream fact identity, visibility, privacy, lock, chain and replay rules are
+staged into Core. Both rows, journal, graph, outbox, receipt and canonical head
+commit in one guarded D1 batch. A stale source is re-read before retrying; a
+locked source returns 402, an invalid restore 409, and unavailable authority 503.
+The adapter limits each read record to 1,000,000 encoded bytes and total reads to
+4,000,000 bytes; exceeding these bounds makes no partial write. Account deletion
+and per-memory deletion also remove associated reopen receipts. This endpoint
+requires no AI call and changes no default prompt.
+
+The [restore verification record](../../../dev/unified-main/implementation-2026-09-05/memory-revert-2026-09-08.md)
+tracks local and hosted evidence separately from full production acceptance.

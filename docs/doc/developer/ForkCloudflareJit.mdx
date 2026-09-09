@@ -1,0 +1,213 @@
+---
+title: 'Cloudflare JIT admission and budgets'
+description: 'Read current admission and reserve cross-device proactive-work budgets.'
+---
+
+Clients read the current server decision using their normal session token:
+
+```http
+GET /v1/jit/rollout-decision
+Authorization: Bearer <session-token>
+```
+
+```json
+{
+  "rollout": "disabled",
+  "kill_switch": "disabled",
+  "effective": "disabled",
+  "reason": "flag_absent",
+  "error_class": "absent",
+  "cache_hit": false,
+  "cache_ttl_seconds": 0
+}
+```
+
+`rollout`, `kill_switch` and `effective` each use `enabled`, `disabled` or
+`unknown`. Only an `effective` value of `enabled` permits the client to proceed
+to the relevant business API. An enabled kill switch disables work. Missing
+rollout configuration normally produces `disabled`; provider failure produces
+`unknown` for an ordinary account. The existing upstream admission exceptions
+remain subject to a known enabled kill switch.
+
+The Cloudflare implementation reads the current account's state on every request
+and returns `Cache-Control: no-store`, `cache_hit: false` and a zero cache TTL.
+Clients cannot choose an account or override admission through query parameters
+or identity headers. Unauthenticated requests return `401`; accounts blocked by
+migration or deletion do not receive actionable authority.
+
+This read does not reserve a proactive-work budget, perform inference or provide
+a trigger watchlist. Those operations retain their own authorization checks.
+An enabled rollout response alone does not establish the availability of every
+JIT operation. Trigger snapshots, feedback and knowledge-ledger snapshots remain
+separate migration obligations.
+
+## Proactivity reservations
+
+`POST /v1/jit/proactivity/reservations` preserves the upstream reservation request
+and response. The caller supplies `event_id`, `candidate_id`, `device_id`,
+`operation` and its current `account_generation`. Event, candidate and device IDs
+are lowercase 64-character SHA256 digests; raw content is not accepted in those
+fields. A trigger reference supplies both `trigger_memory_id` and
+`trigger_revision`. Full turns also require a `parent_event_id` digest.
+
+| Operation | Original budget and authority |
+| --- | --- |
+| `planned_notification` | One per trigger/day; counts toward three total notifications/day; requires an eligible current trigger |
+| `ambient_notification` | Shares the three-notification daily limit |
+| `nano_triage` | Eight per day across devices |
+| `full_turn` | Three per day and one per candidate; requires a matching parent notification |
+
+The parent must belong to the same owner, generation, candidate, device, budget
+day/timezone and trigger revision, and must not have terminal feedback. Trigger
+compiler, intent, privacy, evidence and snooze checks use the original upstream
+rules. This endpoint reserves authority; it does not send a notification or call
+an AI provider.
+
+A successful response contains `reserved` and `receipt`. An identical replay
+returns the original receipt with `reserved=false`, without charging the budget
+again. Reusing the event identity with different input conflicts. Replays still
+check current authority; a revoked trigger or disabled rollout cannot be
+bypassed by replaying an old successful receipt.
+
+Cloudflare uses the account's latest existing FCM device registration as timezone
+authority, ordered by `updated_at` and `device_key`. The request cannot set a
+timezone. Missing or invalid zones fail closed; a timezone change cannot split
+an active budget window. The Worker packages upstream-pinned `tzdata==2024.1`
+for ZoneInfo local-midnight and DST behavior.
+
+All four reservation state families commit through one D1 batch. The transaction
+rechecks account generation/deletion, rollout flags, memory control, timezone,
+trigger revision/metadata and every observed budget/receipt. Conflicts retry the
+whole policy evaluation up to five times, preserving the original server time.
+A failure rolls back the entire batch. User export includes owned JIT records;
+account deletion purges reservation state and transient transaction guards.
+
+D1's `batch()` provides an atomic SQL transaction. The upstream Firestore
+read/compute/write callback cannot be reused as an open database transaction:
+Core reads authority, evaluates the original policy, then checks those exact
+snapshots and commits the writes in one batch. A failed snapshot check raises
+a database error, so every write in that batch rolls back before the policy
+retries. See the [D1 batch API](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch).
+
+The Edge uses the original `agent:execute_tool` rate policy. Invalid requests
+return `422`, disabled work `403`, budget/authority conflicts `409`, and malformed
+or unavailable stored authority `503`. Normal authentication remains required.
+
+This adapter's acceptance is distinct from full production release qualification
+and the native trigger/watchlist workflow. The remaining JIT routes are required
+before that complete flow can be delivered.
+
+On 2026-09-08, the actual hosted Core/D1 path passed 12 concurrent notification
+requests with exactly three reservations, 12 triages with exactly eight
+reservations, idempotent replay, parent ownership, trigger revocation and an
+injected final-write failure with zero partial records. The fixture used
+synthetic signed principals and seeded trigger authority. A subsequent hosted
+run also verified public Auth/Edge reservations alongside the trigger snapshot
+below. Queued erasure, shared two-target reservation behavior and the native
+workflow remain unqualified; the route manifest remains blocked pending its
+completion gate.
+
+## Trigger watchlist snapshot
+
+`GET /v1/jit/trigger-snapshot` uses the original exhaustive desktop watchlist
+contract. It returns the authenticated owner and generation, canonical head and
+sequence, deterministic snapshot revision, original runtime policy, and action
+rows. Each row includes memory ID/revision, trigger condition, action prompt,
+one-per-day wakeup budget and any snooze expiry. A snoozed trigger remains in
+the watchlist with its expiry, as required by the desktop matcher.
+
+The complete scan includes at most 500 trigger records. A 501st record, any
+invalid active trigger, an unavailable generation, or a state change during
+the scan yields `complete=false` with an empty `rows` array and an explicit
+`failure_reason`. Inactive rows remain part of the revision fingerprint but
+do not become actionable rows. A proven absence of canonical head and memory
+can produce a complete empty watchlist; missing control with existing memory
+does not prove absence.
+
+Cloudflare reads generation from the existing account cutover owner and checks
+it against canonical control. It then rechecks the head and actual trigger
+rows before releasing authority, including metadata-only changes by older
+writers. Rollout is read again immediately before responding. A disabled or
+killed rollout returns the original content-free disabled envelope. Responses
+use `Cache-Control: no-store`; the caller cannot select another owner through
+query parameters or identity headers.
+
+Reservation and feedback callers must use the account generation from their
+current actionable snapshot. A freshly authenticated Cloudflare account can
+already have generation 1; hard-coding the internal test fixture's generation 0
+correctly produces an authority conflict.
+
+This read performs no model call or mutation. Native trigger creation and
+ledger prompt/mirror qualification remain separate required work.
+
+The hosted public run passed real signup, session restore and JWT authentication;
+500-row completeness and 501-row rejection; sensitive-trigger revocation;
+reservation/replay/concurrent quotas; and logout revocation. Trigger rows were
+controlled SQL fixtures, not native trigger-creation evidence. All owned test
+Workers and databases were removed afterwards.
+
+## User trigger feedback
+
+`POST /v1/jit/trigger-feedback` uses the upstream request and receipt models and
+feedback policy. The request includes `feedback_id`, `event_id`,
+`trigger_memory_id`, `account_generation`, `trigger_revision`, `action` and an
+aware `recorded_at`. The five actions are `useful`, `false_positive`,
+`missed_or_late`, `snooze` and `disable`. Snooze requires a later
+`snoozed_until`; the other actions must omit it. Feedback/event IDs are SHA256
+digests and the API accepts no free-text feedback note.
+
+The referenced planned-notification receipt must belong to the same account,
+generation and trigger revision. Feedback changes only the bounded feedback
+arguments, curation weight and, for disable, visibility status. It preserves
+the trigger's condition, action prompt and content. User feedback is available
+when proactive rollout is disabled or killed. The Edge applies the existing
+`memories:modify` rate limit, 120 requests per hour per user.
+
+Migration `0190_jit_trigger_feedback.sql` adds immutable content-free receipts.
+The canonical memory transaction writes the updated item, graph projection,
+operation, head, outbox, receipt and notification's feedback link in one D1
+batch. Existing Candidate and memory guards recheck every observed authority;
+known concurrent snapshot conflicts retry the whole operation up to three
+times. A failed final receipt write rolls back all preceding writes.
+
+An identical request returns `applied=false` with the original receipt and the
+current trigger revision. Replays recheck the account, notification and current
+target, including a hidden trigger after disable. Receipt identity remains
+durable after the trigger's rolling 32-ID feedback window advances. Changed
+payloads, stale revisions and unavailable authority return `409`; invalid input
+returns `422`. Export includes only the owner's `jit_trigger_feedback` records;
+the existing account-deletion registry owns their removal.
+
+The shared Server mutation adapter also includes changed arguments in the
+operation digest. Previously the adapter omitted arguments even though the
+lower-level apply kernel required them, rejecting valid feedback with
+`payload_mismatch`. The regression executes the actual operation builder;
+unchanged prior source fails that test. Default prompts are unchanged.
+
+Verification scope and remaining release obligations are recorded in the
+[feedback execution record](../../../dev/unified-main/implementation-2026-09-05/jit-trigger-feedback-2026-09-08.md).
+
+## Knowledge-ledger snapshots
+
+`GET /v1/jit/knowledge-ledger/prompt-snapshot` returns the upstream prompt
+snapshot envelope. `mode=enabled` requires a current completed migration and
+projection receipt. Without those records, the response stays in compatibility
+mode with empty rows. An enabled snapshot contains at most 64 selected memory
+rows, with evidence and document bodies omitted. The endpoint reads memory;
+it does not change the model's default prompt or invoke an AI provider.
+
+`GET /v1/jit/knowledge-ledger/mirror-snapshot` returns a page of the authoritative
+ledger, including historical rows and lineage aliases. `page_size` defaults to
+200 and must be between 1 and 500. Follow the opaque `next_cursor` until
+`final_page=true`; every page must have no `failure_reason` and the same epoch.
+Use the original page/chain revision and cumulative counts when assembling the
+mirror. Cursors belong to the authenticated account and expire after 15 minutes.
+A changed epoch requires a fresh scan. A failed or oversized page is never a
+complete result, even when its returned rows are empty.
+
+Cloudflare uses the API Core `MEMORY_V3_CURSOR_SECRET` secret for cursor signing.
+Account identity comes from authentication. Both responses are `no-store` and
+recheck current rollout and memory authority before returning actionable data.
+Privacy retirement removes the derived prompt snapshot in the same transaction.
+The consumer implementation does not create migration receipts; production
+availability still requires the migration publisher and the full native JIT flow.

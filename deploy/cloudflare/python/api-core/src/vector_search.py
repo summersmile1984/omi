@@ -1,8 +1,9 @@
 """Cloudflare Vectorize candidate projection helpers.
 
-D1 remains authoritative. Vectorize stores only embeddings plus a hashed tenant
-namespace; every candidate ID is mapped through ``cf_vector_projection_state``
-and then hydrated from the uid-scoped D1 source table before it can be returned.
+D1 remains authoritative. Vectorize stores embeddings, a hashed tenant namespace
+and narrow query metadata (memory publications use an opaque immutable ID).
+Every candidate ID is mapped through ``cf_vector_projection_state`` and hydrated
+from the uid-scoped D1 source table before it can be returned.
 """
 
 from __future__ import annotations
@@ -21,9 +22,7 @@ VECTOR_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 PROJECTION_KINDS = frozenset(
     {"memory", "action_item", "conversation", "transcript_chunk", "x_post", "workstream", "screen_activity"}
 )
-SOURCE_KINDS = frozenset(
-    {"memory", "action_item", "conversation", "x_post", "workstream", "screen_activity"}
-)
+SOURCE_KINDS = frozenset({"memory", "action_item", "conversation", "x_post", "workstream", "screen_activity"})
 
 
 def vector_namespace(uid: str) -> str:
@@ -141,6 +140,8 @@ async def hydrate_candidate_ids(
     *,
     minimum_score: float | None = None,
 ) -> list[tuple[str, float]]:
+    if projection_kind == "memory":
+        raise ValueError("memory candidates require canonical snapshot hydration")
     if projection_kind not in PROJECTION_KINDS:
         raise ValueError("invalid projection kind")
     filtered = [match for match in matches if minimum_score is None or match[1] >= minimum_score]
@@ -188,6 +189,8 @@ def vector_outbox_statement(
 ):
     if source_kind not in SOURCE_KINDS or operation not in {"upsert", "delete"}:
         raise ValueError("invalid vector projection request")
+    if source_kind == "memory":
+        raise ValueError("memory projection work belongs to the canonical D1 mutation")
     now = int(time.time())
     return env.APP_DB.prepare(
         "INSERT INTO cf_vector_projection_outbox "

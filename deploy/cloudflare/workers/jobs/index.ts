@@ -1,3 +1,9 @@
+import {processCandidateIntegrationMessage,reconcileCandidateIntegrations} from "./candidate-integrations";
+import { processTaskRecurrenceMessage, reconcileTaskRecurrence } from "./task-recurrence";
+import { processMemoryConsolidationMessage, reconcileMemoryConsolidation } from "./memory-consolidation";
+import { processMemoryPrivacyMessage, reconcileMemoryPrivacyDeletions } from "./memory-privacy-cleanup";
+import { cleanupExpiredMemoryPrivacyReceipts } from "./memory-privacy";
+import { cleanupFramePixels } from "./frame-request-storage";
 import { Hono, type Context } from "hono";
 import { verifyRequestAuthContext } from "../shared/auth-context";
 import {
@@ -82,6 +88,8 @@ import {
   registerGoogleCalendarRoutes,
 } from "./google-calendar";
 import { registerAdminNotificationRoutes } from "./admin-notification";
+import { registerFeedbackReportRoutes, ensureDailyFeedbackReport } from "./feedback-reports";
+import { registerShareEmailRoutes, expireShareEmailDispatches } from "./share-email";
 import { registerTwitterProfileRoutes } from "./twitter-profile";
 import { registerTwitterOwnershipRoutes } from "./twitter-ownership";
 import {
@@ -200,6 +208,7 @@ async function requestContext(c: Context<{ Bindings: JobsEnv }>) {
 
 registerSyncRoutes(app, requestContext);
 registerConversationFinalizationRoutes(app, requestContext);
+registerShareEmailRoutes(app, requestContext);
 registerAccountDeletionRoutes(app, requestContext);
 registerRecordingDeletionRoutes(app, requestContext);
 registerStripeBillingRoutes(app, requestContext);
@@ -214,6 +223,7 @@ registerXConnectorRoutes(app, requestContext);
 registerTaskIntegrationRoutes(app, requestContext);
 registerGoogleCalendarRoutes(app, requestContext);
 registerAdminNotificationRoutes(app);
+registerFeedbackReportRoutes(app);
 registerTwitterProfileRoutes(app, requestContext);
 registerTwitterOwnershipRoutes(app, requestContext);
 registerAppOwnerMigrationRoutes(app, requestContext);
@@ -1053,6 +1063,14 @@ async function processJobMessage(
     await processWrappedJobMessage(message, env);
     return;
   }
+  if (message.body.kind === "candidate_integration") {
+    await processCandidateIntegrationMessage(message, env);
+    return;
+  }
+  if (message.body.kind === "task_recurrence") {
+    await processTaskRecurrenceMessage(message, env);
+    return;
+  }
   if (message.body.kind === "task_intelligence_evaluate") {
     await processTaskIntelligenceMessage(message, env);
     return;
@@ -1079,6 +1097,14 @@ async function processJobMessage(
   }
   if (message.body.kind === "stripe_webhook") {
     await processStripeWebhookMessage(message, env);
+    return;
+  }
+  if (message.body.kind === "memory_consolidate") {
+    await processMemoryConsolidationMessage(message, env);
+    return;
+  }
+  if (message.body.kind === "memory_privacy_cleanup") {
+    await processMemoryPrivacyMessage(message, env);
     return;
   }
   if (message.body.kind === "vector_project") {
@@ -1230,13 +1256,21 @@ export default {
       }
       return;
     }
-    for (const message of batch.messages) {
+    const processSafely = async (message: Message<JobMessage>) => {
       try {
         await processJobMessage(message, env);
       } catch {
         message.retry({ delaySeconds: QUEUE_RETRY_DELAY_SECONDS });
       }
-    }
+    };
+    // A configured Queue batch contains at most ten messages. Independent
+    // model waits must overlap; D1 leases still serialize each account scan.
+    const consolidation = batch.messages.filter(m => m.body.kind === "memory_consolidate");
+    const ordinary = batch.messages.filter(m => m.body.kind !== "memory_consolidate");
+    await Promise.all([
+      ...consolidation.map(processSafely),
+      (async () => { for (const message of ordinary) await processSafely(message); })(),
+    ]);
   },
   async scheduled(
     _controller: ScheduledController,
@@ -1253,6 +1287,9 @@ export default {
         : [];
     const results = await Promise.allSettled([
       drainAssetCleanup(env),
+      cleanupFramePixels(env),
+      ensureDailyFeedbackReport(env, now),
+      expireShareEmailDispatches(env, now),
       evaluateFairUseBatch(env),
       drainNotifications(env),
       drainIntegrationWebhooks(env, now),
@@ -1261,11 +1298,16 @@ export default {
       reconcileRecordingDeletions(env, now),
       reconcileAppDeletions(env, now),
       cleanupExpiredAccountDeletionTombstones(env, now),
+      cleanupExpiredMemoryPrivacyReceipts(env, now),
+      reconcileMemoryPrivacyDeletions(env),
       reconcileStripeWebhookEvents(env, now),
       reconcileVectorProjections(env, now),
+      reconcileMemoryConsolidation(env, now),
       reconcileConversationFinalizations(env, now),
       reconcileConversationMerges(env, now),
       reconcileTaskIntelligenceJobs(env, now),
+      reconcileTaskRecurrence(env),
+      reconcileCandidateIntegrations(env),
       reconcileAppOwnerMigrationJobs(env, now),
       reconcileXConnections(env, now),
       cleanupExpiredTaskIntegrationOAuthStates(env, now),

@@ -35,6 +35,10 @@ def _signed_headers(secret: str) -> dict[str, str]:
 
 class FakeRequest:
     def __init__(self, env, headers=None):
+        if not hasattr(env, "BRAND_RUNTIME_JSON"):
+            env.BRAND_RUNTIME_JSON = json.dumps(
+                {"brand_id": "omi-upstream", "display_name": "Omi", "ai_persona_name": "Omi"}
+            )
         self.scope = {"env": env}
         self.headers = headers or {}
 
@@ -340,3 +344,43 @@ def test_generate_app_icon_preserves_auth_and_provider_failure_boundaries():
     )
     assert failed.status_code == 502
     assert json.loads(failed.body) == {"error": "app icon generation unavailable"}
+
+
+def test_app_generation_uses_configured_platform_and_preserves_input_and_generated_content():
+    calls = []
+
+    class AI:
+        async def run(self, _model, payload):
+            calls.append(payload)
+            return {
+                "response": json.dumps(
+                    {
+                        "name": "Omi Research",
+                        "description": "Omi remains literal",
+                        "capabilities": ["chat"],
+                        "chat_prompt": "Discuss Omi unchanged.",
+                    }
+                )
+            }
+
+    env = SimpleNamespace(
+        INTERNAL_ASSERTION_SECRET="secret",
+        AI=AI(),
+        APP_DB=FakeD1(),
+        BRAND_RUNTIME_JSON=json.dumps(
+            {"brand_id": "atlas", "display_name": "Atlas {research}", "ai_persona_name": "Mira"}
+        ),
+    )
+    payload = GenerateAppRequest(prompt="Build an Omi research assistant")
+    result = asyncio.run(generate_app(FakeRequest(env, _signed_headers("secret")), payload))
+    assert calls[0]["messages"][0]["content"].startswith("You are an expert app designer for Atlas {research},")
+    assert "Atlas {research} apps can have" in calls[0]["messages"][0]["content"]
+    assert calls[0]["messages"][1]["content"].endswith(payload.prompt)
+    assert result["app"]["name"] == "Omi Research"
+    assert result["app"]["chat_prompt"] == "Discuss Omi unchanged."
+    for raw in [None, "{}"]:
+        env.BRAND_RUNTIME_JSON = raw
+        response = asyncio.run(generate_app(FakeRequest(env, _signed_headers("secret")), payload))
+        assert response.status_code == 503
+        assert json.loads(response.body) == {"error": "brand runtime is not configured"}
+    assert len(calls) == 1

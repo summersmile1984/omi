@@ -1,0 +1,75 @@
+---
+title: "Cloudflare frame requests"
+description: "Frame request metadata and client lifecycle in the Cloudflare target"
+---
+
+Core implements frame metadata, image upload, promotion, private reads and
+cleanup. The eight public routes use Edge's Better Auth verification, account
+cutover checks and per-account rate limits: 120 reads, 120 writes and 30 uploads
+per hour. The route inventory is staging-only; this is not evidence of a live
+production service or complete JIT processing.
+
+Create a request with `POST /v1/frame-requests`, supplying `device_id` and
+`dedupe_key`. Optional fields are `account_generation` (default 0),
+`conversation_id`, `screenshot_id` and `requested_ttl_seconds`. The server derives
+an opaque request identifier and returns `request` plus `deduplicated`.
+The lifetime is bounded to six days. Repeating a live logical request returns
+its original identifier even after the minute bucket changes. Retrying after a
+terminal state creates a new identifier and increments `attempt_number`.
+
+For an authenticated client, read `GET /v1/account/cutover/control` and carry its
+`account_generation` through creation, polling, state, upload, promotion and
+temporary reads. The default `0` is for a legacy account with no cutover record;
+a newly bootstrapped Cloudflare account has generation `1`. Sending a stale
+generation returns 404. The current JIT rollout must also permit work. Missing
+rollout and an enabled deployment kill switch retain their upstream denial.
+
+Poll `GET /v1/frame-requests/pending` with `device_id`, `account_generation` and
+an optional `limit` from 1 to 32. Only that device's unexpired requested records
+are returned. Each device and account generation may have at most eight active
+requests; exceeding the limit returns 400. A conversation can have only one
+active or attached request.
+
+Read one request with `GET /v1/frame-requests/status/{request_id}` and the
+`account_generation` query parameter. Responses contain the request envelope
+and must not be cached. A request owned by another account is unavailable.
+
+POST `/v1/frame-requests/{request_id}/state` with `device_id`,
+`account_generation` and `state` to claim the request or report a supported
+terminal state. A terminal update requires `terminal_reason`. A device mismatch
+returns 403; an invalid or conflicting transition returns 409. Re-read the
+request after a conflict before deciding what to do next.
+
+Upload pixels with `POST /v1/frame-requests/{request_id}/upload`. Send the image
+in multipart field `file`, and pass `device_id` and `account_generation` in the
+query string. The request must already be claimed by that device. JPEG, PNG and
+WebP are accepted up to 10 MiB and 25 million source pixels; the actual content
+is validated. Allow up to 64 KiB of multipart overhead, with one file and at
+most eight additional small fields. Cloudflare Images performs the image
+conversion through Core's `IMAGES` binding. Core preserves the image's EXIF
+orientation, removes metadata, bounds the output to a 1920-pixel long side and
+2.5 million pixels, and stores JPEG in R2. Viewing the stored image does not
+run this conversion again. Invalid images return 415; oversized uploads return
+413. If image processing is unavailable, the request remains retryable and
+returns 503 without publishing image storage.
+
+An uploaded request without a `conversation_id` can be read at
+`GET /v1/frame-requests/temporary/{request_id}/image`, with the same
+`account_generation`. Expired requests return 410. This read does not extend
+retention or promote the image.
+
+For a request created with a conversation ID, POST
+`/v1/frame-requests/{request_id}/promote` with `device_id`,
+`account_generation` and that `conversation_id`. The request must be uploaded.
+The operation returns an attached request and adds a photo to the conversation.
+Retries return the existing attachment. Read it through
+`GET /v1/conversations/{conversation_id}/photos/{photo_id}/image`, using the
+request ID as `photo_id`. The photo's `storage_id` is opaque and its `base64`
+field is empty.
+
+JSON state updates cannot create uploaded or attached evidence and return 409
+for those transitions; use the pixel endpoints. The temporary image expires
+with its request, while an attached photo follows the conversation's lifetime.
+Removing its conversation revokes reads immediately and queues physical erasure.
+Failed erasure is retried and reported by the frame's cleanup fields. Metadata
+participates in account export and deletion.

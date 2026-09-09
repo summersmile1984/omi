@@ -2,14 +2,15 @@
 // LIFECYCLE: permanent
 // Fail-closed Firebase Auth export -> Better Auth identity migration.
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import {
   encodeFirebasePasswordHash,
-  parseFirebaseScryptConfig,
-} from "./firebase-migration-password.js";
+  serverFirebaseScrypt,
+} from "../../auth/shared/firebase-scrypt.mjs";
 import {
   assertRequiredSocialProviders,
   SocialProviderConfigurationError,
@@ -65,13 +66,17 @@ function parseJson(raw, label) {
   try {
     return JSON.parse(raw.toString("utf8"));
   } catch (error) {
-    throw new FirebaseIdentityMigrationError(`${label} is not valid UTF-8 JSON`);
+    throw new FirebaseIdentityMigrationError(
+      `${label} is not valid UTF-8 JSON`,
+    );
   }
 }
 
 function requiredString(value, label) {
   if (typeof value !== "string" || !value.trim()) {
-    throw new FirebaseIdentityMigrationError(`${label} must be a non-empty string`);
+    throw new FirebaseIdentityMigrationError(
+      `${label} must be a non-empty string`,
+    );
   }
   return value.trim();
 }
@@ -91,11 +96,15 @@ function firebaseTimestamp(value, label, fallback = null) {
   }
   const milliseconds = Number(value);
   if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) {
-    throw new FirebaseIdentityMigrationError(`${label} must be epoch milliseconds`);
+    throw new FirebaseIdentityMigrationError(
+      `${label} must be epoch milliseconds`,
+    );
   }
   const parsed = new Date(milliseconds);
   if (!Number.isFinite(parsed.getTime())) {
-    throw new FirebaseIdentityMigrationError(`${label} is outside the supported date range`);
+    throw new FirebaseIdentityMigrationError(
+      `${label} is outside the supported date range`,
+    );
   }
   return parsed.toISOString();
 }
@@ -153,10 +162,14 @@ function normalizeProviderAccounts(user, userId, timestamps) {
 
 export function planFirebaseIdentityImport(source, hashConfig) {
   if (!source || typeof source !== "object" || Array.isArray(source)) {
-    throw new FirebaseIdentityMigrationError("Firebase export must be an object");
+    throw new FirebaseIdentityMigrationError(
+      "Firebase export must be an object",
+    );
   }
   if (!Array.isArray(source.users)) {
-    throw new FirebaseIdentityMigrationError("Firebase export must contain a users array");
+    throw new FirebaseIdentityMigrationError(
+      "Firebase export must contain a users array",
+    );
   }
   const users = [];
   const accounts = [];
@@ -165,19 +178,25 @@ export function planFirebaseIdentityImport(source, hashConfig) {
   const seenProviderAccounts = new Set();
   for (const [index, rawUser] of source.users.entries()) {
     if (!rawUser || typeof rawUser !== "object" || Array.isArray(rawUser)) {
-      throw new FirebaseIdentityMigrationError(`users[${index}] must be an object`);
+      throw new FirebaseIdentityMigrationError(
+        `users[${index}] must be an object`,
+      );
     }
     const unknown = Object.keys(rawUser).filter(
       (key) => !FIREBASE_EXPORT_FIELDS.has(key),
     );
     if (unknown.length) {
       throw new FirebaseIdentityMigrationError(
-        `users[${index}] contains unsupported fields: ${unknown.sort().join(", ")}`,
+        `users[${index}] contains unsupported fields: ${unknown
+          .sort()
+          .join(", ")}`,
       );
     }
     const userId = requiredString(rawUser.localId, `users[${index}].localId`);
     if (seenIds.has(userId)) {
-      throw new FirebaseIdentityMigrationError(`duplicate Firebase uid ${userId}`);
+      throw new FirebaseIdentityMigrationError(
+        `duplicate Firebase uid ${userId}`,
+      );
     }
     seenIds.add(userId);
     if (rawUser.disabled === true) {
@@ -203,9 +222,14 @@ export function planFirebaseIdentityImport(source, hashConfig) {
         `user ${userId}: phoneNumber identities require explicit reconciliation before import`,
       );
     }
-    const email = requiredString(rawUser.email, `user ${userId}: email`).toLowerCase();
+    const email = requiredString(
+      rawUser.email,
+      `user ${userId}: email`,
+    ).toLowerCase();
     if (seenEmails.has(email)) {
-      throw new FirebaseIdentityMigrationError(`duplicate Firebase email ${email}`);
+      throw new FirebaseIdentityMigrationError(
+        `duplicate Firebase email ${email}`,
+      );
     }
     seenEmails.add(email);
     const createdAt = firebaseTimestamp(
@@ -276,8 +300,12 @@ export function planFirebaseIdentityImport(source, hashConfig) {
       );
     }
   }
-  users.sort((left, right) => left.id.localeCompare(right.id));
-  accounts.sort((left, right) => left.id.localeCompare(right.id));
+  // Reconciliation reads PostgreSQL ORDER BY id COLLATE "C". Both sides
+  // must compare UTF-8 bytes rather than a host's language-sensitive order.
+  const compareIdentityBytes = (left, right) =>
+    Buffer.compare(Buffer.from(left.id, "utf8"), Buffer.from(right.id, "utf8"));
+  users.sort(compareIdentityBytes);
+  accounts.sort(compareIdentityBytes);
   const canonical = { users, accounts };
   return Object.freeze({
     users,
@@ -304,14 +332,22 @@ function parseArguments(argv) {
     const flag = rest[index];
     const value = rest[index + 1];
     if (!new Set(["--users", "--hash-config"]).has(flag) || !value) {
-      throw new FirebaseIdentityMigrationError(`invalid argument ${flag || "<missing>"}`);
+      throw new FirebaseIdentityMigrationError(
+        `invalid argument ${flag || "<missing>"}`,
+      );
     }
     options[flag.slice(2)] = value;
   }
   if (!options.users || !options["hash-config"]) {
-    throw new FirebaseIdentityMigrationError("--users and --hash-config are required");
+    throw new FirebaseIdentityMigrationError(
+      "--users and --hash-config are required",
+    );
   }
-  return { command, usersPath: options.users, hashConfigPath: options["hash-config"] };
+  return {
+    command,
+    usersPath: options.users,
+    hashConfigPath: options["hash-config"],
+  };
 }
 
 async function readPrivateInput(filePath, label) {
@@ -319,18 +355,26 @@ async function readPrivateInput(filePath, label) {
   try {
     metadata = await lstat(filePath);
   } catch (_error) {
-    throw new FirebaseIdentityMigrationError(`${label} is missing or unreadable`);
+    throw new FirebaseIdentityMigrationError(
+      `${label} is missing or unreadable`,
+    );
   }
   if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    throw new FirebaseIdentityMigrationError(`${label} must be a regular file, not a symlink`);
+    throw new FirebaseIdentityMigrationError(
+      `${label} must be a regular file, not a symlink`,
+    );
   }
   if ((metadata.mode & 0o77) !== 0) {
-    throw new FirebaseIdentityMigrationError(`${label} must be mode 0600 or stricter`);
+    throw new FirebaseIdentityMigrationError(
+      `${label} must be mode 0600 or stricter`,
+    );
   }
   try {
     return await readFile(filePath);
   } catch (_error) {
-    throw new FirebaseIdentityMigrationError(`${label} is missing or unreadable`);
+    throw new FirebaseIdentityMigrationError(
+      `${label} is missing or unreadable`,
+    );
   }
 }
 
@@ -341,7 +385,7 @@ async function loadPlan(usersPath, hashConfigPath) {
   ]);
   const source = parseJson(usersRaw, "Firebase user export");
   const configDocument = parseJson(configRaw, "Firebase hash configuration");
-  const config = parseFirebaseScryptConfig(
+  const config = serverFirebaseScrypt.parseConfig(
     configDocument.hash_config ?? configDocument,
   );
   return {
@@ -357,9 +401,12 @@ async function assertSchema(client) {
        AND table_name IN ('user', 'account', 'session', 'auth_identity_imports')`,
   );
   const present = new Set(result.rows.map((row) => row.table_name));
-  const missing = ["user", "account", "session", "auth_identity_imports"].filter(
-    (table) => !present.has(table),
-  );
+  const missing = [
+    "user",
+    "account",
+    "session",
+    "auth_identity_imports",
+  ].filter((table) => !present.has(table));
   if (missing.length) {
     throw new FirebaseIdentityMigrationError(
       `Better Auth schema is missing: ${missing.join(", ")}`,
@@ -450,7 +497,9 @@ async function verifyDatabase(client, plan, sourceSha256) {
 async function applyDatabase(client, plan, sourceSha256) {
   await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
   try {
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('omi-auth-identity-import'))");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtext('omi-auth-identity-import'))",
+    );
     await assertSchema(client);
     const existingLedger = await client.query(
       `SELECT "sourceSha256" FROM "auth_identity_imports"`,
@@ -546,13 +595,16 @@ export async function runIdentityImport(
     };
   }
   if (!databaseUrl) {
-    throw new FirebaseIdentityMigrationError("DATABASE_URL is required for apply or verify");
+    throw new FirebaseIdentityMigrationError(
+      "DATABASE_URL is required for apply or verify",
+    );
   }
   assertRequiredSocialProviders(new Set(plan.requiredSocialProviders), env);
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   const client = await pool.connect();
   try {
-    if (command === "apply") return await applyDatabase(client, plan, sourceSha256);
+    if (command === "apply")
+      return await applyDatabase(client, plan, sourceSha256);
     await assertSchema(client);
     return await verifyDatabase(client, plan, sourceSha256);
   } finally {

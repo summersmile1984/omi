@@ -9,25 +9,34 @@ account-cutover importer and verification contract.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime, timezone
 import json
 import time
 from typing import Literal
 import uuid
 
+from memory_privacy_delete import MemoryNotFound, delete_memory_scope, delete_selected_memories
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from internal_auth import decode_context
+from feedback_contract import FeedbackSurface, FeedbackTargetKind
+from feedback_store import feedback_event_statement
+from memory_mutation_errors import memory_mutation_error
+from memory_apply_intake import create_native_memories
+from memory_apply_edit import edit_native_memory
+from memory_product_mutation import mutate_visibility, mutate_review, mutate_product_fields
 from account_routes import usage_source_statement
-from memory_review_routes import build_review_queue_statements
-from vector_search import embed_query, hydrate_candidate_ids, query_vector_ids
+from memory_vector_hydration import hydrate_memory_vectors
+from memory_default_read import default_read_predicate
+from vector_search import embed_query, query_vector_ids
 
 router = APIRouter()
 
 MAX_REQUEST_BYTES = 256_000
-MAX_BATCH_REQUEST_BYTES = 8_000_000
+MAX_BATCH_REQUEST_BYTES = 1_000_000
 MAX_D1_JSON_BIND_BYTES = 1_800_000
 MAX_CONTENT_LENGTH = 50_000
 MAX_ID_LENGTH = 256
@@ -166,10 +175,18 @@ def _auth_context(request: Request) -> dict[str, object] | None:
     )
 
 
+class RequestBodyTooLarge(ValueError):
+    pass
+
+
 async def _bounded_json(request: Request, max_bytes: int = MAX_REQUEST_BYTES) -> object:
-    raw = await request.body()
-    if len(raw) > max_bytes:
-        raise ValueError("request body exceeds size limit")
+    # Do not retain an additional Request._body copy throughout a large atomic
+    # apply. Enforce the same wire limit while consuming the ASGI stream.
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > max_bytes:
+            raise RequestBodyTooLarge("request body exceeds size limit")
+        raw.extend(chunk)
     return json.loads(raw)
 
 
@@ -210,44 +227,27 @@ def _is_per_file_local_import(tags: list[str]) -> bool:
     )
 
 
-def _json_bind_chunks(rows: list[dict[str, object]]) -> list[tuple[str, str]]:
-    chunks: list[tuple[str, str]] = []
-    current: list[str] = []
+def _usage_id_chunks(rows: list[dict[str, object]]) -> Iterator[str]:
     current_ids: list[str] = []
     current_size = 2
     for row in rows:
-        encoded = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
-        encoded_size = len(encoded.encode("utf-8"))
+        encoded_size = len(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         if encoded_size + 2 > MAX_D1_JSON_BIND_BYTES:
             raise ValueError("memory row exceeds D1 bind limit")
-        additional_size = encoded_size + (1 if current else 0)
-        if current and current_size + additional_size > MAX_D1_JSON_BIND_BYTES:
-            chunks.append(
-                (
-                    "[" + ",".join(current) + "]",
-                    json.dumps(current_ids, ensure_ascii=False, separators=(",", ":")),
-                )
-            )
-            current = []
+        additional_size = encoded_size + (1 if current_ids else 0)
+        if current_ids and current_size + additional_size > MAX_D1_JSON_BIND_BYTES:
+            yield json.dumps(current_ids, ensure_ascii=False, separators=(",", ":"))
             current_ids = []
             current_size = 2
             additional_size = encoded_size
-        current.append(encoded)
         current_ids.append(str(row["id"]))
         current_size += additional_size
-    if current:
-        chunks.append(
-            (
-                "[" + ",".join(current) + "]",
-                json.dumps(current_ids, ensure_ascii=False, separators=(",", ":")),
-            )
-        )
-    return chunks
+    if current_ids:
+        yield json.dumps(current_ids, ensure_ascii=False, separators=(",", ":"))
 
 
 def _batch_row(uid: str, memory_id: str, memory: MemoryCreate, now: int) -> dict[str, object]:
     manually_added = memory.category == "manual"
-    tier = "long_term" if manually_added or (memory.durability or "").lower() == "long_term" else "short_term"
     return {
         "uid": uid,
         "id": memory_id,
@@ -267,7 +267,7 @@ def _batch_row(uid: str, memory_id: str, memory: MemoryCreate, now: int) -> dict
         "uncertainty_reasons_json": json.dumps(memory.uncertainty_reasons, ensure_ascii=False, separators=(",", ":")),
         "durability": memory.durability,
         "manually_added": int(manually_added),
-        "memory_tier": tier,
+        "memory_tier": "short_term",
         "valid_at": now,
         "created_at": now,
         "updated_at": now,
@@ -327,8 +327,8 @@ _SELECT = (
     "subject_entity_id, subject_attribution, object_entity_ids_json, qualifiers_json, capture_confidence, veracity, "
     "uncertainty_reasons_json, durability, conversation_id, reviewed, user_review, manually_added, edited, scoring, "
     "app_id, data_protection_level, is_locked, is_read, is_dismissed, kg_extracted, is_baseline, memory_tier, "
-    "valid_at, invalid_at, superseded_by, primary_capture_device, capture_device_ids_json, created_at, updated_at "
-    "FROM cf_memories "
+    "valid_at, invalid_at, superseded_by, primary_capture_device, capture_device_ids_json, created_at, updated_at, "
+    "status, processing_state FROM cf_memories "
 )
 
 
@@ -339,18 +339,6 @@ async def _first_active(env: object, uid: str, memory_id: str) -> dict[str, obje
         .first()
     )
     return row if isinstance(row, dict) else None
-
-
-async def _mutable_memory(env: object, uid: str, memory_id: str) -> dict[str, object] | JSONResponse:
-    row = await _first_active(env, uid, memory_id)
-    if row is None:
-        return JSONResponse({"error": "memory not found"}, status_code=404)
-    if _bool(row.get("is_locked")):
-        return JSONResponse(
-            {"error": "A paid plan is required to access this memory."},
-            status_code=402,
-        )
-    return row
 
 
 def _query_value(request: Request, name: str) -> str | None:
@@ -399,8 +387,8 @@ def _product_search_item(row: dict[str, object]) -> dict[str, object]:
         "memory_layer": "product_memory",
         "tier": str(row.get("memory_tier") or "long_term"),
         "content": str(row.get("content") or ""),
-        "lifecycle_status": "active",
-        "processing_state": "processed",
+        "lifecycle_status": str(row["status"]),
+        "processing_state": str(row["processing_state"]),
         "confidence": confidence,
         "visibility": row.get("visibility"),
         "visibility_source": "universal_memory_service",
@@ -618,11 +606,9 @@ async def search_product_memory(request: Request):
         return JSONResponse({"error": "invalid pagination"}, status_code=400)
 
     uid = str(context["uid"])
-    where = (
-        "WHERE uid = ? AND deleted_at IS NULL AND invalid_at IS NULL "
-        "AND memory_tier != 'archive' AND COALESCE(user_review, 1) != 0 AND is_locked = 0"
-    )
-    args: list[object] = [uid]
+    eligibility, policy_args = default_read_predicate(include_pending=False)
+    where = "WHERE uid = ? AND " + eligibility + " AND is_locked = 0"
+    args: list[object] = [uid, *policy_args]
     if tokens:
         clauses = ["LOWER(content) LIKE ? ESCAPE '\\'" for _ in tokens]
         where += " AND (" + " OR ".join(clauses) + ")"
@@ -812,56 +798,16 @@ async def search_vector_memory(request: Request):
             vector,
             top_k=candidate_limit,
         )
-        hydrated = await hydrate_candidate_ids(env, uid, "memory", candidates)
-        ordered_ids = [source_id for source_id, _ in hydrated[:limit]]
-        rows: list[dict[str, object]] = []
-        if ordered_ids:
-            placeholders = ",".join("?" for _ in ordered_ids)
-            result = (
-                await env.APP_DB.prepare(
-                    _SELECT
-                    + "WHERE uid = ? AND id IN ("
-                    + placeholders
-                    + ") AND deleted_at IS NULL AND invalid_at IS NULL "
-                    + "AND memory_tier != 'archive' AND COALESCE(user_review, 1) != 0 AND is_locked = 0"
-                )
-                .bind(uid, *ordered_ids)
-                .all()
-            )
-            raw_rows = result.get("results", []) if isinstance(result, dict) else []
-            by_id = {
-                str(row["id"]): row for row in raw_rows if isinstance(row, dict) and isinstance(row.get("id"), str)
-            }
-            rows = [by_id[memory_id] for memory_id in ordered_ids if memory_id in by_id]
+        hydration = await hydrate_memory_vectors(env, uid, candidates)
+        rows = hydration.rows[:limit]
     except ValueError:
         return JSONResponse({"error": "invalid search parameters"}, status_code=400)
     except Exception:
         return JSONResponse({"error": "memory vector search unavailable"}, status_code=503)
 
-    scores = {source_id: score for source_id, score in hydrated if source_id in {str(row["id"]) for row in rows}}
-    source_versions: dict[str, str] = {}
-    if scores:
-        placeholders = ",".join("?" for _ in scores)
-        try:
-            state_result = (
-                await env.APP_DB.prepare(
-                    "SELECT source_id, source_version FROM cf_vector_projection_state "
-                    "WHERE uid = ? AND projection_kind = 'memory' AND source_id IN (" + placeholders + ")"
-                )
-                .bind(uid, *scores.keys())
-                .all()
-            )
-            state_rows = state_result.get("results", []) if isinstance(state_result, dict) else []
-            source_versions = {
-                str(row["source_id"]): str(row.get("source_version"))
-                for row in state_rows
-                if isinstance(row, dict) and isinstance(row.get("source_id"), str)
-            }
-        except Exception:
-            return JSONResponse({"error": "memory vector search unavailable"}, status_code=503)
-
+    scores = hydration.scores
+    source_versions = hydration.versions
     items = [_response(row) for row in rows]
-    rejected = max(0, len(candidates) - len(hydrated))
     return {
         "uid": uid,
         "query": query,
@@ -870,7 +816,7 @@ async def search_vector_memory(request: Request):
         "projection_commit_ids_by_memory_id": {
             str(row["id"]): source_versions[str(row["id"])] for row in rows if str(row["id"]) in source_versions
         },
-        "decisions": {str(row["id"]): "USE_MEMORY" for row in rows},
+        "decisions": hydration.decisions,
         "total_count": len(items),
         "returned_count": len(items),
         "limit": limit,
@@ -888,17 +834,17 @@ async def search_vector_memory(request: Request):
         "legacy_fallback_used": False,
         "vector_query_count": 1,
         "queried_candidate_count": len(candidates),
-        "hydrated_candidate_count": len(items),
-        "candidate_hydration_read_count": len(hydrated),
-        "hydration_rejected_missing_count": rejected,
-        "hydration_rejected_stale_projection_count": 0,
-        "hydration_rejected_stale_vector_count": 0,
-        "hydration_rejected_access_denied_count": max(0, len(hydrated) - len(items)),
+        "hydrated_candidate_count": hydration.authoritative_count,
+        "candidate_hydration_read_count": hydration.reads,
+        "hydration_rejected_missing_count": hydration.rejected["missing"],
+        "hydration_rejected_stale_projection_count": hydration.rejected["stale_projection"],
+        "hydration_rejected_stale_vector_count": hydration.rejected["stale_vector"],
+        "hydration_rejected_access_denied_count": hydration.rejected["access_denied"],
         "vector_rejected_count": 0,
-        "repair_purge_candidate_count": 0,
-        "repair_purge_candidates": [],
-        "repair_purge_outbox_record_count": 0,
-        "repair_purge_outbox_records": [],
+        "repair_purge_candidate_count": len(hydration.repairs),
+        "repair_purge_candidates": hydration.repairs,
+        "repair_purge_outbox_record_count": len(hydration.records),
+        "repair_purge_outbox_records": hydration.records,
         "archive_default_visible": False,
         "telemetry": {"source": "cloudflare_vectorize", "projection_kind": "memory"},
         "policy": _product_search_policy(),
@@ -927,8 +873,9 @@ async def list_memories(request: Request):
         if not categories or any(item not in MEMORY_CATEGORIES for item in categories):
             return JSONResponse({"error": "invalid memory categories"}, status_code=400)
     uid = str(context["uid"])
-    query = _SELECT + "WHERE uid = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-    args: list[object] = [uid]
+    eligibility, policy_args = default_read_predicate(include_pending=True)
+    query = _SELECT + "WHERE uid = ? AND " + eligibility
+    args: list[object] = [uid, *policy_args]
     if categories:
         query += " AND category IN (" + ",".join("?" for _ in categories) + ")"
         args.extend(categories)
@@ -955,39 +902,10 @@ async def create_memory(request: Request):
     env = request.scope["env"]
     now = int(time.time())
     memory_id = uuid.uuid4().hex
-    manually_added = memory.category == "manual"
-    tier = "long_term" if manually_added or (memory.durability or "").lower() == "long_term" else "short_term"
+    # Category and durability describe capture; only canonical consolidation
+    # may admit a new item into Long-term (INV-MEM-4).
     try:
-        memory_statement = env.APP_DB.prepare(
-            "INSERT INTO cf_memories "
-            "(uid, id, content, category, visibility, tags_json, headline, predicate, arguments_json, "
-            "subject_entity_id, subject_attribution, object_entity_ids_json, qualifiers_json, capture_confidence, "
-            "veracity, uncertainty_reasons_json, durability, manually_added, memory_tier, valid_at, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-        ).bind(
-            uid,
-            memory_id,
-            memory.content,
-            memory.category,
-            memory.visibility,
-            json.dumps(memory.tags, ensure_ascii=False, separators=(",", ":")),
-            memory.headline,
-            memory.predicate,
-            json.dumps(memory.arguments, ensure_ascii=False, separators=(",", ":")),
-            memory.subject_entity_id,
-            memory.subject_attribution,
-            json.dumps(memory.object_entity_ids, ensure_ascii=False, separators=(",", ":")),
-            json.dumps(memory.qualifiers, ensure_ascii=False, separators=(",", ":")),
-            memory.capture_confidence,
-            memory.veracity,
-            json.dumps(memory.uncertainty_reasons, ensure_ascii=False, separators=(",", ":")),
-            memory.durability,
-            int(manually_added),
-            tier,
-            now,
-            now,
-            now,
-        )
+        intake_row = _batch_row(uid, memory_id, memory, now)
         usage_statement = usage_source_statement(
             env,
             uid=uid,
@@ -997,13 +915,13 @@ async def create_memory(request: Request):
             memories_created=1,
             updated_at=now,
         )
-        review_statements = await build_review_queue_statements(
+        await create_native_memories(
             env,
-            uid=uid,
-            candidate_rows=[_batch_row(uid, memory_id, memory, now)],
-            now=now,
+            uid,
+            [intake_row],
+            [usage_statement],
+            source_surface='v3_manual' if intake_row['manually_added'] else 'v3_api',
         )
-        await env.APP_DB.batch([memory_statement, usage_statement, *review_statements])
         row = await _first_active(env, uid, memory_id)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
@@ -1021,6 +939,11 @@ async def create_memories_batch(request: Request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         batch = MemoryBatchCreate.model_validate(await _bounded_json(request, MAX_BATCH_REQUEST_BYTES))
+    except RequestBodyTooLarge:
+        return JSONResponse(
+            {"error": "memory_batch_too_large", "max_bytes": MAX_BATCH_REQUEST_BYTES, "max_memories": MAX_BATCH_CREATE},
+            status_code=413,
+        )
     except (json.JSONDecodeError, ValidationError, ValueError, TypeError):
         return JSONResponse({"error": "invalid memory batch"}, status_code=422)
     accepted = [memory for memory in batch.memories if not _is_per_file_local_import(memory.tags)]
@@ -1031,34 +954,15 @@ async def create_memories_batch(request: Request):
     now = int(time.time())
     rows = [_batch_row(uid, uuid.uuid4().hex, memory, now) for memory in accepted]
     try:
-        chunks = _json_bind_chunks(rows)
+        # Only IDs are needed for usage; validate row sizes without building
+        # a second serialized copy of the batch.
+        id_chunks = list(_usage_id_chunks(rows))
     except ValueError:
         return JSONResponse({"error": "memory batch exceeds the size limit"}, status_code=413)
 
     env = request.scope["env"]
     statements: list[object] = []
-    for rows_json, ids_json in chunks:
-        statements.append(
-            env.APP_DB.prepare(
-                "INSERT INTO cf_memories "
-                "(uid, id, content, category, visibility, tags_json, headline, predicate, arguments_json, "
-                "subject_entity_id, subject_attribution, object_entity_ids_json, qualifiers_json, capture_confidence, "
-                "veracity, uncertainty_reasons_json, durability, manually_added, memory_tier, valid_at, created_at, "
-                "updated_at) "
-                "SELECT json_extract(value, '$.uid'), json_extract(value, '$.id'), "
-                "json_extract(value, '$.content'), json_extract(value, '$.category'), "
-                "json_extract(value, '$.visibility'), json_extract(value, '$.tags_json'), "
-                "json_extract(value, '$.headline'), json_extract(value, '$.predicate'), "
-                "json_extract(value, '$.arguments_json'), json_extract(value, '$.subject_entity_id'), "
-                "json_extract(value, '$.subject_attribution'), json_extract(value, '$.object_entity_ids_json'), "
-                "json_extract(value, '$.qualifiers_json'), json_extract(value, '$.capture_confidence'), "
-                "json_extract(value, '$.veracity'), json_extract(value, '$.uncertainty_reasons_json'), "
-                "json_extract(value, '$.durability'), CAST(json_extract(value, '$.manually_added') AS INTEGER), "
-                "json_extract(value, '$.memory_tier'), CAST(json_extract(value, '$.valid_at') AS INTEGER), "
-                "CAST(json_extract(value, '$.created_at') AS INTEGER), "
-                "CAST(json_extract(value, '$.updated_at') AS INTEGER) FROM json_each(?)"
-            ).bind(rows_json)
-        )
+    for ids_json in id_chunks:
         statements.append(
             env.APP_DB.prepare(
                 "INSERT INTO cf_usage_sources "
@@ -1073,18 +977,7 @@ async def create_memories_batch(request: Request):
             ).bind(uid, ids_json)
         )
     try:
-        statements.extend(
-            await build_review_queue_statements(
-                env,
-                uid=uid,
-                candidate_rows=rows,
-                now=now,
-            )
-        )
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
-    try:
-        await env.APP_DB.batch(statements)
+        await create_native_memories(env, uid, rows, statements, source_surface='v3_batch')
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
     return {"memories": [_response(row) for row in rows], "created_count": len(rows)}
@@ -1103,32 +996,11 @@ async def delete_memories_batch(request: Request):
         return {"status": "ok"}
     uid = str(context["uid"])
     env = request.scope["env"]
-    placeholders = ",".join("?" for _ in deletion.memory_ids)
     try:
-        rows = (
-            await env.APP_DB.prepare(
-                "SELECT id FROM cf_memories WHERE uid = ? AND deleted_at IS NULL AND invalid_at IS NULL "
-                f"AND id IN ({placeholders})"
-            )
-            .bind(uid, *deletion.memory_ids)
-            .all()
-        )
-        found = {
-            str(row["id"])
-            for row in (rows.get("results", []) if isinstance(rows, dict) else [])
-            if isinstance(row, dict) and row.get("id")
-        }
-        if found != set(deletion.memory_ids):
-            return JSONResponse({"error": "memory not found"}, status_code=404)
-        now = int(time.time())
-        statements = [
-            env.APP_DB.prepare(
-                "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
-                "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-            ).bind(now, now, uid, memory_id)
-            for memory_id in deletion.memory_ids
-        ]
-        await env.APP_DB.batch(statements)
+        if not await delete_selected_memories(env, uid, deletion.memory_ids):
+            return JSONResponse({"error": "memory_cleanup_pending"}, status_code=503, headers={"retry-after": "2"})
+    except MemoryNotFound:
+        return JSONResponse({"error": "memory not found"}, status_code=404)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
     return {"status": "ok"}
@@ -1143,14 +1015,11 @@ async def delete_memory(request: Request, memory_id: str):
         return JSONResponse({"error": "memory not found"}, status_code=404)
     uid = str(context["uid"])
     env = request.scope["env"]
-    now = int(time.time())
     try:
-        if await _first_active(env, uid, memory_id) is None:
-            return JSONResponse({"error": "memory not found"}, status_code=404)
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(now, now, uid, memory_id).run()
+        if not await delete_selected_memories(env, uid, [memory_id]):
+            return JSONResponse({"error": "memory_cleanup_pending"}, status_code=503, headers={"retry-after": "2"})
+    except MemoryNotFound:
+        return JSONResponse({"error": "memory not found"}, status_code=404)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
     return {"status": "ok"}
@@ -1162,16 +1031,12 @@ async def delete_all_memories(request: Request):
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     uid = str(context["uid"])
-    now = int(time.time())
     scope = _query_value(request, "scope") or "all"
     if scope not in {"all", "default"}:
         return JSONResponse({"error": "invalid memory deletion scope"}, status_code=400)
-    tier_filter = " AND memory_tier != 'archive'" if scope == "default" else ""
     try:
-        await request.scope["env"].APP_DB.prepare(
-            "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
-            "WHERE uid = ? AND deleted_at IS NULL AND invalid_at IS NULL" + tier_filter
-        ).bind(now, now, uid).run()
+        if not await delete_memory_scope(request.scope['env'], uid, scope):
+            return JSONResponse({"error": "memory_cleanup_pending"}, status_code=503, headers={"retry-after": "2"})
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
     return {"status": "ok"}
@@ -1194,14 +1059,10 @@ async def update_memory_content(request: Request, memory_id: str):
     uid = str(context["uid"])
     env = request.scope["env"]
     try:
-        if await _first_active(env, uid, memory_id) is None:
+        if not await edit_native_memory(env, uid, memory_id, update.value, int(time.time())):
             return JSONResponse({"error": "memory not found"}, status_code=404)
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET content = ?, edited = 1, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(update.value, int(time.time()), uid, memory_id).run()
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error)
     return {"status": "ok"}
 
 
@@ -1221,14 +1082,10 @@ async def update_memory_visibility(request: Request, memory_id: str):
     uid = str(context["uid"])
     env = request.scope["env"]
     try:
-        if await _first_active(env, uid, memory_id) is None:
+        if not await mutate_visibility(env, uid, memory_id, raw_value, int(time.time())):
             return JSONResponse({"error": "memory not found"}, status_code=404)
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET visibility = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(raw_value, int(time.time()), uid, memory_id).run()
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error)
     return {"status": "ok"}
 
 
@@ -1244,14 +1101,19 @@ async def review_memory(request: Request, memory_id: str):
     env = request.scope["env"]
     value = raw_value == "true"
     try:
-        if await _first_active(env, uid, memory_id) is None:
+        feedback = feedback_event_statement(
+            env,
+            uid,
+            memory_id,
+            1 if value else -1,
+            surface=FeedbackSurface.memory,
+            target_kind=FeedbackTargetKind.memory,
+            after_mutation=True,
+        )
+        if not await mutate_review(env, uid, memory_id, value, int(time.time()), feedback=feedback):
             return JSONResponse({"error": "memory not found"}, status_code=404)
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET reviewed = 1, user_review = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(int(value), int(time.time()), uid, memory_id).run()
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error)
     return {"status": "ok"}
 
 
@@ -1271,31 +1133,15 @@ async def update_memory_read_status(request: Request, memory_id: str):
     uid = str(context["uid"])
     env = request.scope["env"]
     try:
-        existing = await _mutable_memory(env, uid, memory_id)
-        if isinstance(existing, JSONResponse):
-            return existing
-        assignments: list[str] = []
-        values: list[object] = []
-        if update.is_read is not None:
-            assignments.append("is_read = ?")
-            values.append(int(update.is_read))
-        if update.is_dismissed is not None:
-            assignments.append("is_dismissed = ?")
-            values.append(int(update.is_dismissed))
-        now = int(time.time())
-        assignments.append("updated_at = ?")
-        values.extend((now, uid, memory_id))
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET "
-            + ", ".join(assignments)
-            + " WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(*values).run()
+        values = update.model_dump(exclude_none=True)
+        if not await mutate_product_fields(env, uid, memory_id, values, int(time.time())):
+            return JSONResponse({"error": "memory not found"}, status_code=404)
         updated = await _first_active(env, uid, memory_id)
         if not isinstance(updated, dict):
             return JSONResponse({"error": "memory not found"}, status_code=404)
         return _response(updated)
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error)
 
 
 @router.patch("/v3/memories/{memory_id}/baseline")
@@ -1313,13 +1159,8 @@ async def update_memory_baseline(request: Request, memory_id: str):
     uid = str(context["uid"])
     env = request.scope["env"]
     try:
-        existing = await _mutable_memory(env, uid, memory_id)
-        if isinstance(existing, JSONResponse):
-            return existing
-        await env.APP_DB.prepare(
-            "UPDATE cf_memories SET is_baseline = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(int(value), int(time.time()), uid, memory_id).run()
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+        if not await mutate_product_fields(env, uid, memory_id, {'is_baseline': value}, int(time.time())):
+            return JSONResponse({"error": "memory not found"}, status_code=404)
+    except Exception as error:
+        return memory_mutation_error(error)
     return {"status": "ok"}

@@ -22,15 +22,15 @@
 |---|---|
 | 镜像 | `BACKEND_IMAGE` 由 `deploy/self-host/Dockerfile` 构建：`FROM` 上游 `backend/Dockerfile` 产物层 + `pip install -r backend/requirements-fork.txt`（不改上游 requirements/锁文件）；入口 `uvicorn fork.main:app`（`backend/fork/main.py` import 上游 `main.app` 后应用补丁注册表），上游后端文件零改动 |
 | 环境 | `.env.production.example` 改为由 `scripts/profiles/render.py --target self_hosted --stage production --brand <id>` 生成 `.env.production`（品牌域名、`OMI_DEPLOYMENT_PROFILE=self_hosted`、`CAPABILITIES_JSON`）；示例文件保留为文档 |
-| Web | 新增 `web` 服务：上游 `web/app/Dockerfile`（Next.js standalone）+ profile 注入（`window.__DEPLOYMENT_PROFILE__`）；反向代理路径 `/api/auth/*` → auth-server、`/api/proxy/*` → backend |
-| Web 实时 | 沿用上游 `/v4/web/listen` 首帧 token 协议，无新增路由；Web 端用 cookie 会话经 `/api/auth/token` 换 JWT 后按上游方式发首帧 |
+| Web | `deploy/web/build.ts --target self_hosted` 将同一 Moonshine 源码/profile 构建为独立 Bun 工件；`deploy/web/Dockerfile` 可打包该工件。Auth 直接连接显式 auth origin，由身份服务验证 CORS；API proxy 保留当前上游语义。|
+| Web 实时 | 沿用上游 `/v4/web/listen` 首帧 token 协议，无新增路由；Web 端用显式 session bearer 经 profile auth origin 的 `/api/auth/token` 换 JWT 后按上游方式发首帧 |
 | CI 版 compose | `compose.ci.yml`：去掉 searxng/typesense（或 stub），STT/TTS/LLM 用 `PROVIDER_MODE=offline` stub；`ci/contract.sh` 起栈 → 跑 `contracts/` + OpenAPI `--check` + `auth-flow-smoke.py` + 一条对话闭环 |
 | 发布 | 标签 `<brand>/selfhost/v*` → `fork-deploy-selfhost.yml`：构建两镜像 → 推 `${FORK_REGISTRY}` → `operations.sh deploy`（新增子命令：拉镜像、`compose up -d`、`auth-migrate`/`firestore-pg-migrate` 一次性任务、`cutover-live-smoke.py`） |
 | 备份 | `volume-snapshot.py` 已有；补 `pg_dump` 逻辑备份与 MinIO 桶同步到运营方对象存储的 cron 示例 |
 
 ## 3. `deploy/cloudflare/` 契约
 
-**现状（CF 分支，616 文件）**：TS Workers `edge`（639 条 Hono 字面路由）、`auth`、`jobs`、`rate-limit`（DO）、`realtime`（DO）；Python Workers `api-core`（434 路由，80 模块）、`api-ai`（30 路由）；`migrations/{auth(10),app(155)}`；`manifests/`（`routes.yaml` 628 条含 owner/target_runtime/auth_authority/rollback、`backend-routes.json` 577 条含 `migration_state`、`redis-primitives.yaml` 每个 Redis 键族→D1/KV/DO/Queue/Workflow/R2 映射、`resources.yaml`、`r2-namespaces.yaml`、`vector-namespaces.yaml`）；`scripts/deploy.mjs` 完整资格流程；104 个 TS 测试 + 70 个 Python 测试；独立生产已上线（workers.dev 域）。
+**现状（CF 分支，616 文件）**：TS Workers `edge`（639 条 Hono 字面路由）、`auth`、`jobs`、`rate-limit`（DO）、`realtime`（DO）；Python Workers `api-core`（434 路由，80 模块）、`api-ai`（30 路由）；`migrations/{auth(10),app(155)}`；`manifests/`（`routes.yaml` 628 条含 owner/target_runtime/auth_authority/rollback、`backend-routes.json` 577 条含 `migration_state`、`redis-primitives.yaml` 每个 Redis 键族→D1/KV/DO/Queue/Workflow/R2 映射、`resources.yaml`、`r2-namespaces.yaml`、`vector-namespaces.yaml`）；历史发布脚本（当前入口已迁为 `deploy/cloudflare/scripts/release.mjs`）；104 个 TS 测试 + 70 个 Python 测试；独立生产已上线（workers.dev 域）。
 
 **合入 main 时的调整**：
 
@@ -42,9 +42,9 @@
 | 未迁移路由 | `LEGACY_BACKEND_URL` 语义改为 **`ORIGIN_BACKEND_URL`**：可指向同一品牌的自托管后端（混合部署，§4）；未配置时返回与上游同形的 404（不新增 `/v1/capabilities` 之类上游没有的端点）；客户端从**静态 profile** 的能力表得知该目标不提供哪些路由族并隐藏入口 |
 | 账户围栏 | `cloudflareProductTrafficDenial`（409）读 profile `account_activation_fence`，新品牌默认关闭；它是 `omi_cloud→cloudflare` 迁移工具的内部状态，不得进入客户端契约 |
 | 请求限制 | `sync_upload_batch_limit=2`、`max_request_bytes=100MB` 进 profile（客户端读表） |
-| Web | vinext 构建保留（`web/app/vite.config.ts`、`wrangler.jsonc`、`next.config.js` 的 `VINEXT_BUILD` 别名为**加法**，不替换上游 Next 配置）；`NEXT_PUBLIC_AUTH_MODE` 退役为 profile；`/v4/web/listen` 改回上游首帧 token 协议，删除 web-ticket 与 bootstrap 头 |
+| Web | `deploy/web/build.ts --target cloudflare` 从同一源码/profile 输出 Workers fetch + Assets；不依赖外置 Bun 服务。CLIENT-1 的完整身份与CF-2实时闭环必须在联合候选树验收，构建本身不是闭环证据。|
 | CI | `ci/contract.sh`：`wrangler dev`（miniflare + 本地 D1 迁移）起 auth/rate-limit/api-core/api-ai/edge → 同一 `contracts/` 套件；`npm run validate:manifest`、`verify:migrations`、`validate:backend-routes` 进 `checks-manifest.fork.yaml`（现有 `pretest` 保持） |
-| 发布 | 标签 `<brand>/cloudflare/v*` → `fork-deploy-cloudflare.yml` 调 `scripts/deploy.mjs`（顺序 rate-limit → auth → jobs → realtime → api-* → edge → web；D1 迁移 apply + `verify:migrations`；`smoke:production`）；`CLOUDFLARE_PRODUCTION_CONFIRM` 短语由工作流 `environment` 审批门代替 |
+| 发布 | `deploy/cloudflare/scripts/release.mjs prepare/check/dry-run` 冻结同 stage 双 Web、8 Worker、CF3资源与SQL；`apply` 使用固定 Wrangler、实际版本观测与事务 journal；CF4/CI1/旧Worker对新schema资格和明确授权缺失时 fail-closed。标签工作流仍待交付；当前可执行契约见 `deploy/cloudflare/release.md`。 |
 | 工具链钉死 | wrangler `4.127.0`、`uvx uv==0.12.3 run pywrangler`、Python ≥3.13、Node 22 —— 写进 `deploy/cloudflare/.tool-versions` 与工作流 |
 
 ## 4. 混合部署（可选，但只有单仓库才可能）
@@ -64,17 +64,35 @@
 | 资产 | 路径 | 用途 |
 |---|---|---|
 | Better Auth 共享配置 | `auth/shared/`（TS 包）：JWT 插件参数（ES256、TTL、轮换）、claims 形状（`sub`+`uid`）、Firebase scrypt 校验与首登重哈希、`omi-capabilities` 端点形状 | `auth-server/`（Express+PG）与 `deploy/cloudflare/workers/auth`（Hono+D1）各写一个 adapter（存储 + HTTP 框架），逻辑只有一份 |
-| Web 同源代理 | `web/app/src/lib/auth-proxy.ts`（CF 已有）改为运行时无关（`fetch` 抽象）：Next 服务端路由与 vinext Worker 共用 | 会话令牌剥离、`Set-Cookie` 转发、`redirect: manual` |
-| Web 实时鉴权 | 上游 `/v4/web/listen` 首帧 token 协议（`contracts/realtime/web-listen.md` 只记录上游现状与夹具）；CF Edge 对首帧 JWT 做 JWKS 校验 | 两端同一首帧格式，来源是上游 |
+| Web 构建与HTTP边界 | `deploy/web/` 保留上游 API proxy、SSR 与响应头；CLIENT-1 直接连接 profile 的 auth origin，不让 Web proxy 代管 OAuth cookie | 显式 session bearer、可信 CORS、独立 MCP origin 与 API/WS mount path |
+| Web 实时鉴权 | 上游 `/v4/web/listen` 首帧 token 协议（`contracts/realtime/web-listen.md` 只记录上游现状与夹具）；CF Realtime 通过 AUTH-1 权威服务验证首帧 JWT，并保留会话撤销与账户删除语义 | 两端同一首帧格式，来源是上游 |
 | 限流策略表 | 上游 `backend/utils/rate_limit_config.py`（只读）；CF 补充策略放 `deploy/cloudflare/manifests/rate-limits.yaml`，fork 测试断言其 ⊇ 上游表 | 自托管直接用上游表；CF 镜像 |
 | 路由清单 | `deploy/cloudflare/manifests/backend-routes.json` 由 `deploy/cloudflare/scripts/route_inventory.py` 生成（import 上游 FastAPI app 与 `export_openapi.py` 的 hermetic bootstrap 函数，不修改上游脚本） | 新上游路由出现即失败，强制分类（CF 分支 2026-08-29 404 事故的守卫） |
 | 契约套件 | `contracts/`（上游 parity 夹具）+ 新增 `contracts/auth/`、`contracts/realtime/`、`contracts/api-smoke/`（登录→录音上传→对话→记忆→导出） | `fork-contract-selfhost.yml`、`fork-contract-cloudflare.yml` 共用 |
 
-## 6. 决策 D3：Web 运行时（已定：保留上游 Next.js，不引入 Bun）
+## 6. 决策 D3（2026-09-04 更正）：跟随当前上游 Moonshine，以 fork adapter 交付两种工件
 
-- 事实：shim 分支把 `web/app` 从 Next.js 迁到 **Moonshine on Bun**（删除 `next.config.js`、`next-env.d.ts`、`package-lock.json`、`vitest.config.ts` 与 `src/app/**` 路由，新增 138 个文件）；CF 分支保留 Next.js 源并用 **vinext** 构建到 Workers（`vite.config.ts` + `wrangler.jsonc` + `next.config.js` 的条件别名，纯加法）。二者互斥，且 Moonshine 迁移与上游 `web/app` 的每次改动都会冲突（上游 web/app 是活跃目录）。
-- **推荐**：保留上游 Next.js 源为唯一 Web 源码；自托管目标用 `next build` standalone 容器（上游 `web/app/Dockerfile` 已有）；Cloudflare 目标用 vinext；Moonshine 迁移打 tag `archive/web-moonshine-2026-09` 后不合入。Web 运行时**不引入 Bun**：自托管用上游 `web/app/Dockerfile` 的 Node standalone 镜像原样运行，与上游同步。
-- 影响：`01-branch-consolidation.md` 的 M2 步骤按此执行；20 个互冲突文件中 `web/app` 的 13 个全部以 CF 分支版本为基础重做。
+原“保留 Next/vinext、放弃 Moonshine”的决定依据已过时：当前主线
+`d238a85af9d999992d9f0352db682cd9f11fc951` 与本轮固定上游
+`c70152426f22eda60f17f52b7d66ede30089a783` 都已使用 Moonshine/Bun。
+不能以旧分支状态为由另维护一个 Next Web。
+
+`deploy/web/build.ts` 在隔离目录复制当前 `web/app`，应用完整源路径的 CLIENT-1
+覆盖映射并运行原 Moonshine compiler/assets。相对 import 与 `@/` import
+自然命中同一源文件；上游目录、测试和锁文件不写回。profile 由现有 brand/schema
+与 resolver 提供，客户端只注入白名单公开字段，API/WS 保留 mount path，MCP
+消费独立显式地址。Firebase service worker 不进入 Better Auth/webhook 工件。
+
+标准 OS 工件为可独立搬移的 `start.js + public/`，使用上游同版 Bun 1.3.14。
+CF 工件把原生成 server entry 以 workerd 条件重打包，再将唯一 Bun 启动 owner
+适配成 Workers fetch，静态资源交给 Assets binding。它保留当前上游 SSR、
+marketplace metadata、route modules、loader 与安全响应头，不复制一个独立 Web
+应用，也不引入外置 Bun 回源作为纯 CF 的完成证据。
+
+本地证明已有 26 route 编译、两 target 工件、CF dry-run/真实 workerd HTTP 与
+浏览器登录表单 hydration。完整 AUTH-1/CLIENT-1/CF-2 流程、品牌文案/资源检查和
+发布器接线仍必须在 INTEGRATION-1 联合候选树完成；构建清单明确
+`release_ready: false`，不会以本次有限证明宣称能生产发布。
 
 ## 7. 未移植清单（Cloudflare 目标的已知缺口，进 `/v1/capabilities`）
 

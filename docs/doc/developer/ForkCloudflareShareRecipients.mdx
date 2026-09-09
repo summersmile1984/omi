@@ -1,0 +1,36 @@
+---
+title: 'Cloudflare conversation share recipients'
+description: 'Read calendar-backed recipient suggestions for a conversation in a self-hosted fork.'
+---
+
+An authenticated client can request suggested recipients for a conversation it
+owns:
+
+```http
+GET /v1/conversations/{conversation_id}/share-recipients
+Authorization: Bearer <session-token>
+```
+
+```json
+{
+  "recipients": [
+    { "name": "Alex Chen", "email": "alex@example.com" }
+  ]
+}
+```
+
+Suggestions come from the conversation's calendar meeting context or linked
+calendar event. They exclude the account owner's email, duplicates, and attendees
+without a captured name and valid email. Screen-derived meeting identities do not
+produce suggestions. At most five recipients are proposed; meetings with more
+than ten distinct attendees produce no proposal. The result is also empty when
+the owner's email is unavailable on an otherwise valid account.
+
+The endpoint returns `402` for a locked conversation and `404` when the caller
+cannot access the conversation. If its calendar metadata changes during the
+request, `409` asks the client to retry. An unavailable identity or data service
+returns an error instead of a successful empty list. Responses are not cached.
+
+This is a read-only endpoint. It does not publish the conversation or send email.
+The separate `POST /v1/conversations/{conversation_id}/share-email` operation is
+still undergoing Cloudflare migration and is not qualified by this endpoint.

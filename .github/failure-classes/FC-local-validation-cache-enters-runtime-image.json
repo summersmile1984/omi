@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "FC-local-validation-cache-enters-runtime-image",
+  "violated_contract": "Runtime Docker build contexts must exclude local validation environments and request-test scratch state; running local checks must not silently add those artifacts to the serving image.",
+  "canonical_prevention": "Exercise every runtime context filter through the actual Docker builder with synthetic local-only files and real runtime source witnesses. On 2026-09-04 self-host builds copied a 581MB OpenAPI venv and a 110MB test scratch directory because the context filters excluded only .venv; repeated source and chown layers contributed to host disk exhaustion.",
+  "canonical_prevention_artifact": [
+    "deploy/self-host/ci/build_context.py",
+    "backend/Dockerfile.dockerignore",
+    "deploy/self-host/Dockerfile.dockerignore"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "backend/Dockerfile.dockerignore",
+    "deploy/self-host/Dockerfile.dockerignore"
+  ],
+  "status": "open"
+}

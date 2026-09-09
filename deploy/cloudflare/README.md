@@ -8,61 +8,37 @@ Post-deploy acceptance, test identities, evidence capture, observation windows,
 known product gaps, and rollback criteria are defined in
 [`dev/cloudflare-staging-validation-plan.md`](../../dev/cloudflare-staging-validation-plan.md).
 
-## Independent Cloudflare production release
+## Current main release workflow
 
-This branch also owns a production release that is isolated from both staging
-and the legacy Google serving plane. It creates `omi-cf-*-production` D1, R2,
-Queue, Vectorize, Worker, and Web resources and publishes these public origins:
+`deploy:staging` (profile stage `beta`) and `deploy:production` now prepare local,
+immutable candidates from the current Moonshine/Bun source. Both Server OS and
+Cloudflare Web artifacts, all nine Worker bundles, CF3 resource configurations,
+SQL authorities and dependency locks are qualified before any remote mutation.
+These commands do not deploy. See [the release workflow](release.md) for exact
+inputs, qualification, remote apply, version ownership and recovery commands.
 
-- `https://omi-cf-edge-production.summersmile1984.workers.dev`
-- `https://omi-web-app-production.summersmile1984.workers.dev`
+The prepare CLI also executes the frozen candidate's four local Wrangler
+product suites and the same Server HTTP core through
+`contracts/deployment/regress.mjs`. Either target failing fails prepare;
+The separately saved `product_report` records the exact scope and candidate digest.
+For source iteration use `npm run test:product`; for an interactive isolated
+Wrangler API use `npm run dev:product -- --output /absolute/new-target`.
 
-The release does not merge another adaptation branch, reuse any staging
-resource or secret, or change `api.omi.me` / `app.omi.me` DNS. It starts with an
-empty Better Auth/D1 data plane for new Cloudflare-native accounts. Existing
-Firebase identities and Firestore/GCS history are not silently copied or
-reclassified; routing an existing production-family client remains a separate
-`INV-DATA-1` + `INV-CUTOVER-1` migration ceremony.
+A local candidate always has `release_ready=false`. CF-4 product coverage, CI-1
+cross-target contracts, prior Worker/new-schema compatibility and actual remote
+resource/domain/version observations remain required. The first-release schema
+runner now verifies fresh Worker absence, empty D1 authorities and frozen SQL;
+it refuses retained-version upgrades/restore until their executable compatibility
+harness exists. CF-4 and CI-1 are still missing, so remote `apply` and `restore`
+reject before contacting Cloudflare. Operator-written approval JSON cannot bypass
+their absence. See [Eddy's observed first-release schema evidence](../../dev/unified-main/implementation-2026-09-05/eddy-first-release-schema.md).
 
-The command requires an exact operator confirmation, runs the full Cloudflare,
-Python Worker, and Web qualification suites, creates only missing production
-resources, applies and verifies both production D1 migration authorities,
-dry-runs every rendered production config, deploys dependencies before Edge,
-then deploys Web and verifies both readiness endpoints:
+Credentials come from the existing CF3 secret-name map. The publisher never
+generates new application credentials or infers a resource owner from an error.
+Unknown remote results require journal reconciliation; data resources and
+first-release Workers are retained until cleanup ownership is separately proven.
 
-```bash
-CLOUDFLARE_PRODUCTION_CONFIRM=deploy-independent-cloudflare-production \
-  npm run deploy:production
-```
-
-The first release generates new per-boundary secrets plus one shared internal
-assertion secret. The non-committed operator copy is written to
-`.wrangler/production-operator-secrets.json` with mode `0600`; it is never
-printed and must be retained for disaster recovery. Existing production
-Workers fail closed if that local store is unexpectedly missing. Optional
-Google Calendar, Stripe, Twilio, and social OAuth provider credentials remain
-unset until their own provider qualification is complete.
-
-Every release records a mode-`0600`
-`.wrangler/releases/production-before-*.json` snapshot. A failed first release
-removes only Workers created by that attempt; a failed update restores the
-previous active versions. Manual rollback uses the same exact confirmation:
-
-```bash
-CLOUDFLARE_PRODUCTION_CONFIRM=deploy-independent-cloudflare-production \
-  npm run rollback:production -- \
-  .wrangler/releases/production-before-<timestamp>.json
-```
-
-Authenticated acceptance uses a dedicated empty Better Auth account and the
-production URLs. Never reuse an operator or customer token:
-
-```bash
-CLOUDFLARE_SMOKE_TOKEN_FILE=/secure/production-smoke-token.json \
-  npm run smoke:production
-```
-
-### Independent production evidence (2026-09-01)
+### Historical production evidence (2026-09-01; not current main qualification)
 
 The first independent release is live without changing `api.omi.me` or
 `app.omi.me`. Auth D1 has 10 applied migrations and App D1 has 150, with no
@@ -107,6 +83,11 @@ The first staging slice contains:
   the public firmware stable/latest/version APIs. It also exposes staging-only
   D1-backed action-item and canonical memory CRUD surfaces, plus account usage,
   chat quota, subscription snapshot, and configured price-catalog reads.
+  Migration 0161 enforces memory locks inside D1 writes across native, MCP,
+  developer and conflict-review mutations. Locked writes return 402 and roll
+  back their transaction; privacy deletion remains available. This does not
+  qualify the remaining memory ledger history/revert routes. See the
+  [verification record](../../dev/unified-main/implementation-2026-09-05/eddy-memory-mutation-lock-2026-09-06.md).
 - `api-core`: a public firmware stable-release API backed by the GitHub Releases
   API; it keeps firmware metadata outside the Worker filesystem.
 - `api-ai`: a minimal FastAPI/Python Worker composition root for provider APIs.
@@ -127,17 +108,175 @@ for staging. It is not dual-written to the legacy Redis set; a production
 cutover must explicitly import the existing set before routing these mutations
 to Workers.
 
+The public `GET/POST /email/unsubscribe` pair is now owned by API Core for
+lifecycle consent. The signed query token supplies identity independently of
+app cookies or bearer tokens. GET is scanner-safe; POST accepts the RFC 8058 form
+without body-dependent admission. Auth owns account existence; one fenced App D1
+row owns suppression and participates in export/account deletion. Configure Core
+with the independent `LIFECYCLE_EMAIL_SIGNING_SECRET` reference described in
+[resources.md](resources.md). Invalid links and deleted accounts receive neutral
+HTML with no token echo; confirmation pages disable caching/referrers. Lifecycle
+mail sending and external delivery are not verified by these endpoints.
+
+`GET /v1/calendar/capture-gaps` is now owned by Jobs alongside the event picker.
+It reuses the encrypted Calendar grant and bounded refresh path, then joins at
+most 250 provider events with 500 uid-scoped D1 recording intervals using the
+indexed start-time range. The upstream 31-day window, 24-hour recording lookback,
+ten-second coverage threshold and discarded/attendance exclusions are preserved.
+It does not create or change recordings; provider/database failures are errors,
+not an empty successful result. Missing/invalid dates return query-field 422;
+zone-less dates are UTC. [Verification](../../dev/unified-main/implementation-2026-09-05/eddy-calendar-capture-gaps-2026-09-06.md)
+separates real dual-target admission from controlled provider joins.
+
+Task request model validation returns HTTP 422 with FastAPI's `detail` field-error
+array, including the `body` location and no Pydantic documentation URL. The same
+response owner serves task creation, updates, shares and sync/batch model errors.
+Non-model domain rejections retain their route-specific statuses. The regression
+suite runs the real ASGI route beside current upstream `ActionItemCreateRequest`
+and `ActionItemUpdateRequest`; this validates typed rejection parity, not the
+entire task schema or all query/batch semantics.
+
 ## Local setup
 
 ```bash
 npm ci
-uvx uv==0.12.3 run pywrangler init
+npm run python -- api-core sync
+npm run python -- api-ai sync
+npm run python -- api-core dev --port 8787 --inspector-port 9236
 ```
 
-The Python projects have their own `pyproject.toml`; run `uvx uv==0.12.3 run pywrangler dev`
-from the project directory after installing the Python Worker dependencies. The
-deploy script uses the pinned launcher because older globally installed uv
-versions are rejected by `pywrangler`.
+`scripts/python-worker.mjs` is the shared Python entry for local development,
+dry runs, and the current release candidate builder. It runs an isolated
+`workers-py==1.16.7` tool with `uv==0.12.3`, verifies the installed Wrangler and
+workerd against the unchanged npm lock, and consumes each project's committed
+`pylock.toml`. Dependency preparation and the unchanged-lock check finish before
+the deploy command. Do not run the floating project `uv run pywrangler`: as of
+2026-09-04 it resolves workers-py 1.17.1, whose minimum Wrangler 4.127.1 is newer
+than this repository's locked 4.127.0. The pinned tool's own version guard stays
+active. First installation needs access to the Python package registry.
+
+For an already-installed offline tool, set
+`CLOUDFLARE_PYWRANGLER_EXECUTABLE=/absolute/path/to/pywrangler`; the entry verifies
+that it really is version 1.16.7 and still supplies pinned uv. A different tool
+version fails closed. No project virtual environment or lock is upgraded by this
+selection. This override is useful when a registry cache cannot resolve a fresh
+tool environment; it does not establish that a clean online installation passed.
+
+Every non-sync Python invocation projects the project's ordinary `src` files
+and canonical `python/shared/*.py` modules into a private temporary stage via
+`scripts/python-source.mjs`. Duplicate module owners, source links and alternate
+build roots fail closed. The original working directory and locked dependencies
+remain authoritative; generated configuration and local secrets are private,
+relative migration paths retain their original owner, and cleanup runs after the
+command. Neither the source tree nor CF5's regular-source-only rule is changed.
+Dev runs use that source snapshot; restart the command after editing source.
+CPython tests load the same canonical shared directory through their conftest.
+
+API Core also stages the upstream screenshot wire types, canonicalizer, palette,
+privacy prompt and survivor selection through `scripts/screen_frame_sources.py`.
+The compiler uses the existing `backend/.venv/bin/python` prerequisite and
+copies ordinary source files; only the model import paths are relocated. The
+prompt and selection expressions come from their upstream syntax trees. A
+missing expression or competing staged module fails the build. These backend
+owners participate in the release source identity and the existing route CI
+lane, so an upstream change requires a fresh candidate and verification.
+Core pins Pillow 11.3.0 to the Pyodide 0.28.3 wheel and its SHA-256 in its own
+`pylock.toml`; `npm run python -- api-core sync` prepares it with the other
+dependencies. The independent [screenshot writer](workers/screen-frame-writer/README.md)
+now owns the isolated `SCREEN_FRAMES` bucket, one-use approval receipts,
+revocable content capabilities and erasure. Core and Jobs receive a service
+binding only. Core and the writer share a dedicated signing key; Jobs can
+request cleanup through its request-bound internal assertion. The eight public
+screenshot routes remain blocked pending hosted model access, the full request
+envelope, public Edge routing and business qualification. Screenshot processing
+now uses native Images for source decoding and resizing; Core keeps the upstream
+final JPEG/thumbnail encoder and exact-byte judge/approval contract. PNG alpha is
+discarded without a source-sized pixel allocation, preserving the original RGB
+colors. Native 64-megapixel and 20 MiB single-candidate evidence is recorded in
+[the codec verification](../../dev/unified-main/implementation-2026-09-05/screen-image-hosted-2026-09-06.md).
+
+Local development on Linux/macOS resolves the native executable from the locked
+`workerd` package export, then uses its official Pyodide bundle/package cache
+flags. The shell wrapper executes that binary directly, preserving Miniflare's
+control file descriptor; the npm Node shim forwards only standard input/output
+and would leave Wrangler waiting for readiness while its worker already runs. The default cache is `.wrangler/pyodide`;
+`CLOUDFLARE_PYODIDE_CACHE_DIR` can select another directory. workerd validates a
+cached bundle against its compiled integrity digest. The first download still
+needs trusted TLS access to Cloudflare's Pyodide distribution. This does not
+disable certificate checks or replace the runtime. See Cloudflare's
+[Python runtime](https://developers.cloudflare.com/workers/languages/python/how-python-workers-work/)
+and the pinned workerd's
+[cache/integrity implementation](https://github.com/cloudflare/workerd/blob/v1.20260826.1/src/workerd/server/pyodide.c++).
+
+Pass `--config` relative to `python/api-core` or `python/api-ai`, and keep
+`python_modules` beside that config as required by Wrangler. Use a separate
+inspector port for each concurrently running Worker. Secrets belong in local
+`.dev.vars`; do not commit local configs, credentials or persistent D1 fixtures.
+An individual Core health response does not qualify bindings to Auth, Edge, AI,
+Jobs, queues, R2 or Vectorize. The real local HTTP/WS scope and residual gaps are
+recorded in [`12-cf-runtime-evidence.md`](../../dev/unified-main/12-cf-runtime-evidence.md).
+
+```bash
+npm run python -- api-core deploy --dry-run
+npm run python -- api-ai deploy --dry-run
+```
+
+These commands do not create or deploy remote resources. The shared release
+builder uses this fixed Python entry to prepare dependencies and compile both
+Python Workers, then verifies the frozen modules with locked Wrangler.
+
+## Brand and stage resource plans
+
+The default chat identity is public deployment configuration, projected from the
+same validated manifest as the Web profile. `profile_input.py` emits
+`brand_runtime = {brand_id, display_name, ai_persona_name}`; CF3 verifies its brand
+binding and display-name agreement with the Web input, then writes
+`BRAND_RUNTIME_JSON` to Core and AI. Generated resource/configuration hashes in
+release candidates therefore include this identity. Direct Wrangler development
+configs explicitly select the checked-in `omi-upstream` manifest; the template
+contract tests compare their values with that manifest.
+
+Core's default greeting and unnamed share sender use that identity. AI's default
+chat, initial-message, stateless reply and CF completion prompts use the persona;
+quota text and unnamed app labels use the product display name. Existing user,
+plugin and persisted message text is not searched or replaced. A missing,
+malformed, extra-field, non-string, empty or control-character configuration
+returns HTTP 503 before chat quota/session/provider effects. There is no upstream
+brand fallback for an unconfigured Cloudflare deployment: regenerate the resource
+plan/rebuild the Worker before use. An otherwise valid configuration retains the
+existing provider and storage error classification.
+
+`BRAND_SUPPORT_EMAIL` is a separate public scalar projected only from the same
+manifest's existing `brand.support_email`; it does not extend the three-field
+identity JSON or introduce an operator naming input. CF3 requires a plain email
+address, writes it only to Core, and hashes it with the generated configuration.
+The direct template uses `omi-upstream`'s declared `help@omi.me`; the local runner
+records its explicit synthetic contact. Missing/invalid contact makes both
+fair-use status and public case presentation return503. Fair-use warning/support
+text, the public case contact field, overage product names and unnamed task-share
+sender/provenance use the brand projection. Existing fee calculations, thresholds,
+user names and task descriptions are preserved; this change sends no email.
+
+This covers default text chat identity, not every white-label product surface.
+Share URL routing, OAuth/email templates
+and the remaining CF4 route capabilities require their own owner verification.
+The old chat-share URL constant is not made correct by changing a display name.
+
+The app draft generator also formats its owned platform template with the
+configured product display name, preserving creator input and generated plugin
+text. Goal advice labels existing assistant chat lines with the configured AI
+persona. Both reject missing brand configuration before model/context work while
+keeping their existing provider-error behavior. The local contract exercises
+public app generation and goal creation/advice through real Core/AI/D1 and
+inference-only prompt echoes; remote vector retrieval quality is not qualified.
+
+`npm run resources -- --manifest /path/to/brand.json --inventory /path/to/resources.json --web-build /path/to/web-build --output /path/to/plan`
+renders the eight current Worker/Web configurations, both D1 migration authorities,
+secret **name** mappings, and a plan-bound rollback contract. It consumes the same
+rendered profile as the Moonshine builder. See [resource plan input and validation](resources.md)
+for the complete local workflow, existing-resource ownership, and qualification limits.
+Rendering performs no Cloudflare API call and never creates, renames, or deletes resources.
+The current release builder consumes this exact plan and freezes its eight configurations.
 
 ## Staging resources
 
@@ -181,9 +320,12 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
 - `manifests/backend-routes.json` is generated from the hermetically imported
   FastAPI app and records every registered HTTP and WebSocket route. Each entry
   must be reviewed as `staging-owned`, `legacy-owned`, or `blocked`; regenerating
-  after a new backend route leaves it `unclassified` and fails the OpenAPI CI
-  gate. The current inventory contains 577 backend routes, all matching
-  Cloudflare staging owners (0 remain `legacy-owned`). Edge directly serves
+  after a new backend route leaves it `unclassified` and fails the fork route
+  gate. The current inventory contains 619 backend route identities: 602 have
+  Cloudflare staging owners, 17 are blocked with planned owners and missing
+  contracts in [the CF-4 ledger](../../dev/unified-main/09-cloudflare-route-migrations.md),
+  and 0 remain `legacy-owned`. This is a coverage classification, not a
+  complete Cloudflare product qualification. Edge directly serves
   the dependency-free `/v1/health`, Apple domain-association, and OpenAI Apps
   challenge compatibility routes. This guard was added
   after the 2026-08-29 staging conversation-page API 404 incident exposed that
@@ -197,6 +339,19 @@ Four reviewed inventories keep the remaining legacy infrastructure explicit:
   model/dimensions, authoritative hydration source, and the versioned Vectorize
   re-embedding target. Existing 3072-dimensional projections cannot be copied
   into Vectorize unchanged.
+  Memory migration 0162 couples each canonical revision to durable projection
+  work in D1; Jobs consumes that revision instead of a wall-clock timestamp.
+  Migration 0163 journals every external memory-vector attempt before writing,
+  uses immutable vector IDs, and compares the canonical revision at publication.
+  Account erasure waits for in-flight writers and observed external cleanup;
+  accepting an asynchronous delete request does not clear its journal.
+  Individual memory deletion tasks now retain their exact projection outbox
+  until that memory's artifacts through the observed revision have drained.
+  Queue delivery retries while cleanup is pending; other sources, owners and
+  newer revisions do not delay that completion or lose their mappings. See the
+  [hosted deletion verification](../../dev/unified-main/implementation-2026-09-05/memory-vector-delete-2026-09-07.md).
+  The [memory write contract](../../docs/doc/developer/ForkCloudflareMemory.mdx)
+  describes the implemented boundary and remaining external-index qualification.
 - `manifests/r2-namespaces.yaml` records every legacy `BUCKET_*` binding, object
   prefix, lifecycle, data classification, and isolated R2 bucket target. It
   forbids dual-write cutovers and requires residual scans before deletion.
@@ -209,14 +364,43 @@ Worker-side Redis dependency therefore fails before release. Refresh a
 deliberately changed route surface with:
 
 ```bash
-backend/scripts/openapi_runner.sh scripts/export_openapi.py \
-  --surface cloudflare-route-inventory \
-  --write ../deploy/cloudflare/manifests/backend-routes.json
+backend/scripts/openapi_runner.sh ../deploy/cloudflare/scripts/route_inventory.py --write
 ```
 
 Then assign the new entries an explicit owner/runtime; the generated
 `unclassified` state cannot pass the check. Inventory-only targets are not
 provisioned resources and do not imply a production cutover.
+
+`bash deploy/cloudflare/ci/routes.sh` (from the repository root, after
+`make setup-backend`) runs the same local/CI route lane: hermetic backend
+registration and drift negatives, inventory/manifest validation, TypeScript
+checks/tests, and API Core Python tests. CI provisions Node 22 and the pinned
+backend interpreter. Unit tests use the documented Workers stubs; this lane
+does not claim workerd, browser, authentication integration, or production
+qualification. `verify:migrations` reads remote D1 and is intentionally outside
+this credential-free lane. Runtime contracts remain part of CI-1.
+
+Vitest uses at most four workers in local runs and CI because these tests also
+launch Python interpreters; the shared Mac Studio's CPU count is not a safe
+process budget. Ordinary tests keep Vitest's 5-second deadline. The staged
+screenshot integration has a 15-second deadline, sized above the observed
+6.739-second run in [34301227612](https://github.com/summersmile1984/omi/actions/runs/34301227612).
+It still executes the unchanged upstream wire, image codec, prompt and survivor
+policy assertions; no retries or skipped tests turn a failure into a pass.
+Keep independent database scenarios in separate cases and build large fixture
+payloads in linear time. Ubuntu run `34339851267` exposed three OAuth schemas
+sharing one deadline and quadratic Hume fixture serialization. Their original
+assertions and 5-second deadline remain; Hume's 524,285-byte input is unchanged.
+
+API Core now serves `GET /v2/desktop/prompts` through authenticated Edge
+routing. Migration `0153_desktop_prompts.sql` stores operator-authored global
+prompt documents in `cf_desktop_prompts`; `active=1` rows retain upstream
+channel/build targeting, stable per-user rollout, defaults, and bounded
+options. Missing configuration returns an empty list; missing D1 or malformed
+configuration returns 503. Seed this table through reviewed operator migrations
+or the existing D1 administration workflow; this route creates no admin write
+API and never returns targeting metadata. No account data is stored in this
+global configuration table.
 
 The authenticated App Generator routes (`GET /v1/app/generate-prompts`,
 `POST /v1/app/generate`,
@@ -232,62 +416,48 @@ usage in D1, and each route has a 30-per-hour Edge Durable Object rate limit.
 ```bash
 npm test
 npm run typecheck
-npm run verify:migrations
-npm run deploy:staging
+npm run verify:migrations -- --candidate /path/to/candidate
+npm run deploy:staging -- --manifest /path/to/brand.json --inventory /path/to/resources.json --output /path/to/new-candidate
 npm run smoke:staging
 ```
 
-### Web Worker staging
+### Web Worker and Server OS from one source
 
-The Next.js 16 app has a separate Cloudflare Worker build through vinext. It
-uses service bindings for both authenticated API traffic (`EDGE`) and Better
-Auth (`AUTH`), so server-side routes never make public Worker-to-Worker
-`workers.dev` fetches. Browser WebSockets connect to the public Edge Worker
-directly. Staging is compiled in Better Auth mode; the existing Firebase client
-path remains the default for non-staging builds.
+The current upstream Web app is Moonshine/Bun. The fork-owned
+[`deploy/web/build.ts`](../web/build.ts) stages that source with the profile/auth
+and capability overlays, typechecks production sources, and builds either a
+portable Bun artifact or a Worker with static assets. The release builder builds
+both targets for the same brand and stage. Browser JWT/session and API/WS URLs
+come from that same rendered profile; optional OAuth and direct provider flows
+remain gated by their actual capability contract.
 
 ```bash
-cd web/app
-npm ci
-npx vinext check                 # 97% compatible; image optimization is the only partial feature
-npx tsc --noEmit
-npm test
-npm run build:vinext:staging
-npm run deploy:vinext:staging
+bun deploy/web/build.ts --target cloudflare --stage beta --manifest /path/to/brand.json --output /path/to/new-web-build
 ```
 
-The Vinext build sets `VINEXT_BUILD=1` so the Cloudflare bundle keeps the real
-`cloudflare:workers` module. The ordinary `npm run build` path aliases that
-module to a Node-only stub and remains available for the existing Next.js
-workflow.
-
-The staging deployment is `omi-web-app-staging` at
-`https://omi-web-app-staging.summersmile1984.workers.dev`. The staging build
-script pins `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_WS_BASE_URL`,
-`NEXT_PUBLIC_AUTH_MODE=better-auth`, and the Auth Worker URL; production DNS and
-production identity are not changed by this command. The `/login` page always
-exposes email/password sign-up and sign-in. Google/Apple buttons are driven by
-the Auth Worker's capability response and remain hidden unless the matching
-staging OAuth client ID and secret are both configured.
+Run this command from the repository root. Publication uses the generated frozen
+artifact through the common [release workflow](release.md); retired framework
+commands and publisher compatibility aliases have been removed.
 
 The integrations page opens the provider window synchronously before fetching
 the OAuth URL, then navigates that window after the request completes. This is
 required for browsers that block a popup opened after an asynchronous request;
 if a popup is blocked, the flow falls back to the current tab.
 
-Better Auth browser sessions are cookie-only: the same-origin auth proxy
-forwards `Set-Cookie` but removes the session token from successful sign-in and
-sign-up JSON. The public Better Auth base path is `/api/auth`; keeping
-that path and the Web Worker origin through provider callbacks lets the
-encrypted OAuth state and session cookies remain same-origin. The API proxy
-forwards the httpOnly session cookie only over the `EDGE`
-service binding; its public local-development fallback accepts bearer tokens
-and never receives browser cookies. Web recording exchanges the cookie at
-`POST /v1/realtime/web-ticket` for a signed 30-second ticket. The browser sends
-that ticket as its first WebSocket message, and the isolated Durable Object
-claims it once, so the Realtime Worker never receives a long-lived Better Auth
-session token or an Auth service binding. MCP OAuth discovery, login
-continuation, and consent stay on the same Web origin. The historical root
+The unified Web builder (`deploy/web/`) uses CLIENT-1's explicit profile Auth
+origin and session bearer. It does not use the retired cookie-only Web proxy.
+Web recording obtains an AUTH-1 product JWT, then sends
+`{ "type": "auth", "token": "<JWT>" }` to `/v4/web/listen`. Realtime calls the
+Auth service binding for signature plus current session/user ownership, then
+applies uid admission, the optional account migration fence and fair-use policy
+before starting ASR. Its internal signed bootstrap only admits the isolated
+upgrade; it is never a browser credential. The fork web-ticket endpoint is
+retired. Native `/v4/listen` and `/v2/voice-message/transcribe-stream` retain
+their shipped Bearer upgrade protocol. See `contracts/realtime/web-listen.md`
+for the source wire contract and verification boundaries.
+
+MCP retains a separate issuer and explicit profile origin; the unified Web
+MCP browser/callback flow still needs its own qualification. The historical root
 `GET/POST /authorize` and `POST /token` paths are aliases to Better Auth's
 `/api/auth/oauth2/*` provider, so older MCP clients use the same D1
 client/consent/token authority instead of the legacy Firebase-backed handler.
@@ -313,38 +483,32 @@ This prevents a captured assertion for one service or route from being replayed
 against another. The explicit legacy fallback is the only path that preserves a
 client bearer, because the legacy backend remains its verifier during cutover.
 
-The isolated staging profile has one server-authoritative account/data-plane
-binding. On its first authenticated control read, a Better Auth principal is
-atomically registered in D1 as a bound `new` account; this is safe only because
-the profile cannot contain a historical Firebase account. Edge checks that
-control row before Core, AI, Jobs, or Realtime product traffic and fails closed
-unless `state=new`, product traffic is allowed, and the destination is bound.
-Auth/profile and the control endpoint remain reachable while product traffic is
-fenced. Missing rows outside the exact
-`ACCOUNT_CUTOVER_PROFILE=isolated-staging` configuration still project as
-`legacy`; no existing-account migration or production cutover is inferred.
+An isolated allocation has one server-authoritative account/data-plane binding.
+For `allocation: new`, the resource renderer enables
+`ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED` on Core, Edge and Realtime, retaining the
+configured `ACCOUNT_CUTOVER_MANIFEST_ID` on Core/Jobs. The first authenticated
+control read atomically registers a Better Auth principal as a bound `new`
+account. This is an explicit native-account policy for an allocation with no
+imported legacy authority; it never overwrites an existing ownership record or
+initializes a Firebase principal. Missing rows with bootstrap disabled still
+project as `legacy`. Existing allocations retain their template policies.
 
-`deploy:staging` first runs the TypeScript/Python/Web tests and dry-run builds,
-then records the active version of all six backend Workers and the Web Worker.
-It applies the isolated migrations, publishes backend Workers in dependency
-order, verifies Edge `/ready`, deploys the already-qualified Web bundle, checks
-Web `/api/worker-ready`, and runs the staging smoke. Edge readiness calls Auth,
-Core, AI, Realtime, and Jobs only through Service Bindings. Core, AI, Realtime,
-and Jobs have no public `workers.dev` or preview URL; only Edge, Web, and the
-staging Auth compatibility surface remain public.
+Edge and Realtime consult this owner before product traffic even when the
+separate migration-only `account_activation_fence` capability is false. They
+require `state=new`, allowed traffic and a bound destination, including during
+account deletion. Auth/profile and control remain reachable. Native privacy
+requests also initialize/read ownership, so deletion can be the first request
+after signup; Jobs retains the authoritative deletion eligibility check and
+privacy stays reachable while ordinary traffic is fenced. A failed ownership
+read returns 503 before dispatching to Jobs.
 
-If any post-deploy check fails, the command restores every Worker version from
-the pre-release snapshot and checks the restored Edge `/ready` and Web
-`/api/worker-ready` readiness envelopes. A `200` with HTML or a body whose
-`status` is not `ready` is rejected. Snapshots are owner-only files under
-`deploy/cloudflare/.wrangler/releases/`. Automatic rollback messages use only
-the bounded snapshot filename; including the full worktree path can exceed
-Wrangler's 120-character message limit and reopen an interactive prompt instead
-of completing recovery. A prior snapshot can also be restored explicitly:
-
-```bash
-npm run rollback:staging -- .wrangler/releases/staging-before-<timestamp>.json
-```
+The current release workflow records exact prior versions for all nine Workers,
+then verifies SQL history, applies additive migrations, deploys dependencies in
+the CF3-derived order, and verifies both public readiness envelopes plus the
+active version annotations. A failed or lost process response is reconciled with
+actual version/ledger observations. Recovery requires a separate explicit command
+and a fresh prior-version/new-schema proof. It never interprets an unknown
+version as a first release or deletes a Worker based on a missing snapshot.
 
 D1 migrations and R2/Queue resources are not versioned by Workers rollback;
 staging migrations must therefore remain backward-compatible with the captured
@@ -401,12 +565,11 @@ electron-updater resolves installers relative to the feed directory, so a
 mirrored `latest.yml` also routes the sibling `.exe`/`.blockmap` downloads
 through R2.
 
-Before applying D1 migrations, the release resolves each exact staging
-database name through `wrangler d1 list --json` and writes a mode-`0600`
-temporary config containing its UUID. This avoids Wrangler 4.127 treating a
-`database_name` as the remote API identifier when a migration is actually
-pending, while keeping account-specific UUIDs out of the repository. The
-temporary config is removed after each migration command.
+Before applying D1 migrations, the release observes each exact database name and
+UUID from its candidate inventory, validates the remote migration-name ledger as
+an exact prefix, and uses the frozen authority configuration and SQL directory.
+Ledger observations do not prove historical SQL hashes or old Worker compatibility;
+the prior-schema qualification runner owns that additional evidence.
 
 `smoke:staging` checks Edge health by default. To enable the authenticated
 checks, provide a staging Better Auth token through an environment variable or
@@ -444,9 +607,9 @@ empty chat history, so cleanup cannot erase an operator's existing chat. This
 chat check invokes one billable model inference per authenticated smoke. The
 raw-audio Workers AI boundary still uses an empty body and does not invoke ASR
 inference; use a separate explicit audio request for ASR quality or latency
-qualification. `deploy:staging` requires one of the two token inputs above and
-refuses to begin qualification when neither is configured; standalone
-`smoke:staging` may still run its public-only checks.
+qualification. This historical standalone smoke does not grant current-main
+release eligibility; the fixed CF-4 and CI-1 runners must supply the complete
+product acceptance contract. Standalone `smoke:staging` may run public-only checks.
 
 The staging deployment script requires an already authenticated Wrangler session or a
 scoped `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`; it never prints
@@ -464,6 +627,13 @@ printf '%s' "$BETTER_AUTH_URL" | npx wrangler secret put BETTER_AUTH_URL --name 
 cf_internal_secret="$(openssl rand -base64 48)"
 for worker_name in omi-cf-auth-staging omi-cf-edge-staging omi-cf-api-core-staging omi-cf-api-ai-staging omi-cf-realtime-staging omi-cf-jobs-staging; do
 printf '%s' "$cf_internal_secret" | npx wrangler secret put INTERNAL_ASSERTION_SECRET --name "$worker_name"
+done
+# One independent, stable memory privacy HMAC key shared by Core and Jobs.
+# Keep it across releases. Auth-key rotation must not rotate memory identities;
+# replacing this key requires a coordinated receipt/row rekey migration.
+cf_memory_privacy_secret="$(openssl rand -base64 48)"
+for worker_name in omi-cf-api-core-staging omi-cf-jobs-staging; do
+printf '%s' "$cf_memory_privacy_secret" | npx wrangler secret put MEMORY_PRIVACY_SECRET --name "$worker_name"
 done
 # Independent Edge-only HMAC pepper for BYOK enrollment fingerprints. Keep it
 # stable; rotating it requires users to re-enroll their four provider keys.
@@ -783,9 +953,8 @@ POST /v1/stt/transcribe-workers-ai
                               Edge → Python API AI → Workers AI binding (raw audio)
 POST /v2/voice-message/transcribe
                               Edge → Python API AI → Workers AI binding (Web/Flutter multipart or desktop PCM)
-POST /v2/realtime/session     Edge → signed Workers AI ticket → Realtime DO
+POST /v2/realtime/session     Edge → explicit 409 live-model capability denial (CF-4 owner pending)
 POST /v2/realtime/usage       Edge → Python API AI → D1 usage projection
-POST /v1/realtime/web-ticket  Edge cookie session → 30-second signed WebSocket ticket
 POST /v1/stt/transcribe-async
                               Edge → Jobs → R2 → Queue → Workers AI Whisper
 GET  /v1/stt/transcribe-async/{jobId}
@@ -912,7 +1081,9 @@ GET  /v1/announcements/general
                               Edge → Python API Core → D1 announcement projection
 GET  /v1/announcements/pending
 POST /v1/announcements/{announcementId}/dismiss
-                              Edge → Python API Core → D1 + per-user dismissal
+                              Edge → Python API Core → D1 + per-user dismissal; Better Auth
+                              identity is required before dispatch. Register /pending before the
+                              public /:announcementId matcher so the signed Core context survives.
 GET  /v1/announcements/all
 GET  /v1/announcements/{announcementId}
 POST /v1/announcements
@@ -1041,6 +1212,7 @@ PATCH /v1/users/notification-settings
 GET  /v1/users/daily-summary-settings
 PATCH /v1/users/daily-summary-settings
 GET  /v1/users/daily-summaries
+POST /v1/users/daily-summaries
 GET  /v1/users/daily-summaries/{summaryId}
 PATCH /v1/users/daily-summaries/{summaryId}/visibility
 DELETE /v1/users/daily-summaries/{summaryId}
@@ -1444,7 +1616,13 @@ conversation authority moves in production.
 
 The chat history and desktop persistence routes use explicit uid/app/session-
 scoped D1 projections. Empty history returns a deterministic Worker-owned
-greeting. Main chat clear removes only the current session and its messages;
+greeting. `/v2/messages` GET/POST/DELETE share the canonical D1 target resolver:
+explicit `chat_session_id` requires caller ownership (missing/foreign is 404)
+and the selected session determines its app, even when a conflicting `app_id`
+is supplied. Omitted IDs select the latest app-scoped session; an unmigrated
+principal with no session keeps its legacy app-scoped history. Offset pages past
+empty history return `[]`. Explicit clear keeps the selected session and resets
+count/preview; default clear removes only the selected session and its messages;
 desktop scoped deletes update retained session counts in the same D1 batch.
 Session create/list/read/update/delete, starred filtering,
 reported-message hiding, idempotent `client_message_id` retries, and monotonic
@@ -1458,7 +1636,20 @@ Chat generation remains API-AI-owned. Default text chat now acquires a D1 chat
 session, reads its bounded unreported history, calls the configured Workers AI
 chat model, commits the human/AI exchange plus session count/preview in one D1
 batch, and emits the legacy `data:` plus base64 `done:` SSE contract used by
-Web/mobile clients.
+Web/mobile clients. The ordinary source `python/shared/chat_target.py` owns
+selection and transactional provider-result commits for text chat, initial
+messages and the existing narrow completion contract. Migration
+`0155_chat_clear_epoch.sql` adds an empty default epoch to existing sessions;
+explicit clear rotates it. The target captured before model IO includes uid,
+session, app and epoch. Conditional D1 inserts reject a late result after clear
+or deletion without recreating its session; paid model work remains accounted.
+The narrow completion contract also resolves its target before idempotent cache
+replay. Reusing a key for a different owned session/app, or an old cached row
+without a provable session, returns 409 without another provider or quota write;
+missing/foreign explicit sessions still return 404. Its context read uses the
+selected app as well as UID/session, including non-default app sessions.
+This forward migration has only local qualification here; previous-release and
+remote rollout/rollback eligibility remain pending.
 Before provider work, API AI atomically reserves one D1 quota event. The
 conditional insert is the Free-plan hard-cap boundary, so concurrent requests
 cannot both consume the final monthly slot; paying plans retain the legacy
@@ -1748,11 +1939,43 @@ state all returned `200`; resolving a missing event returned `404`. The two
 temporary states, event, notification, and usage rows were verified at zero
 after cleanup.
 
+`POST /v1/users/desktop-usage/daily` now reaches Python Core through the
+600/hour authenticated Edge policy. D1 owns one row per uid/date/device;
+concurrent retries merge each bounded running counter by maximum. Exact dates
+must be within two days of today in the supplied IANA timezone. Export includes
+these rows, and account deletion fences and purges them. The real local
+recording contract covers concurrent delivery, export and queued erasure; this
+does not imply an Eddy production deployment.
+
 The daily-summary routes use an explicit D1 projection (indexed date/visibility
-plus bounded JSON fields). List/detail/delete/visibility now have a staging
-owner, while the test/regenerate route computes a deterministic summary from
-unlocked D1 conversations. Legacy LLM generation, push notification, and
-shared-summary Redis indexes remain outside this Worker boundary.
+plus bounded JSON fields). On-demand create and in-place regenerate now use the
+Workers AI synthesis binding, the upstream free-chat admission policy and the
+user's IANA local-day boundaries (latest registered device timezone, UTC when
+absent). Create reuses an existing date without inference. One D1 day lease
+serializes generation, with a 90-second model deadline and 120-second lease;
+empty or contentless days release it without a create cooldown. Successful
+creation arms the 30-second create cooldown; regenerate reserves its separate
+30-second cooldown before inference. Summary deletion revokes its writer.
+
+`daily_summary_content.py` bounds recent conversation material to 200 rows and
+24,000 rendered characters, reports truncation through shared fallback telemetry,
+and declines days without speech or useful summary content. Tasks, local usage
+stats and up to three eligible canonical memory references come from D1. Model
+output supplies only validated prose and mapped source citations; provider
+failure returns 503, while malformed JSON uses the upstream basic-recap fallback
+with telemetry. Persistence atomically checks the lease and selected source
+snapshots, so locks, memory rejection, source deletion or an expired writer
+cannot publish stale content. Export includes recaps but omits generation tokens;
+the existing account deletion owner purges both projection and control rows.
+
+The export download filename uses the validated runtime brand ID, such as
+`eddy-export.json`. A legacy deployment missing presentation metadata can still
+export its owner's data as `user-data-export.json`, with a shared fallback event.
+
+The settings-test route shares this generation owner, but scheduled delivery,
+push notification and notification-token requirements remain an explicit
+unqualified upstream boundary. A successful manual recap is not proof that the
+notification pipeline or the complete Cloudflare target is deployed.
 
 The conversation routes use an explicit D1 projection (indexed metadata plus
 bounded JSON transcript/structured fields). The POST `/v1/cf/conversations`
@@ -2243,7 +2466,9 @@ the Edge matcher. Limits and one-hour windows mirror
 available as staging Worker vars. The object serializes concurrent increments
 and persists the fixed window; a limiter dependency failure preserves the
 legacy first-party fail-open behavior and emits bounded `recordFallback`
-telemetry. The same Durable Object also exposes an internal-only `/reserve` →
+telemetry. Callers explicitly selecting `failClosed` receive 503 for both transport
+failures and malformed success responses; a partial `{ allowed: true }` reply is
+not an admission decision. The same Durable Object also exposes an internal-only `/reserve` →
 `/release` primitive for future reversible quota callers: each reservation gets
 a one-time token, release is atomic and idempotent, stale tokens cannot
 decrement a later window, and reservation storage is reclaimed by the window
@@ -2386,7 +2611,12 @@ fixed OpenAI Chat Completions endpoint with the user's request-local OpenAI key
 and does not reserve or settle Omi quota. The API AI Worker never accepts raw
 BYOK header presence as authority. Model output is validated before both
 exchange rows are committed; a provider or D1 failure emits no partial
-persisted exchange. The Worker emits one compatibility `data:` frame followed
+persisted exchange. After app authorization and quota admission, a first default
+session is atomically visible before model IO; concurrent first requests share
+its ID and quota ownership. Clear/delete fences the captured epoch, and a late
+model completion cannot recreate a removed owner. Model failure may leave a
+zero-message session removable with the public clear endpoint; a rejected first
+quota request creates neither a session nor messages. The Worker emits one compatibility `data:` frame followed
 by the legacy base64 `done:` message; native provider-token streaming remains a
 later latency qualification.
 
@@ -2503,9 +2733,20 @@ surface a 404.
 
 The memory-summary and chat-message feedback routes store uid-scoped ratings
 in `cf_user_feedback`. Chat feedback also updates the matching D1 message JSON
-in the same batch, preserving the client-visible rating projection. The legacy
+in the same batch, preserving the client-visible rating projection. Every vote,
+including voice/notification chat and memory keep/discard, also appends its
+upstream envelope to `cf_feedback_events` in that transaction. The legacy
 LangSmith submission remains a non-blocking observability side effect and is
 not part of the staging request success boundary.
+
+Jobs owns the five `/v1/admin/feedback` routes with its existing `ADMIN_KEY` and
+hashed reader attribution. Core's signed internal service builds bounded,
+pointer-only daily reports in App D1 and hydrates individual windows on demand.
+The existing five-minute scheduled lane ensures yesterday's report after 01:30
+UTC. Leased publication preserves an earlier report on failure; per-user event
+and report-entry erasure prevents stale context reads or republication. See
+[the feedback contract](../../docs/doc/developer/ForkCloudflareFeedback.mdx)
+for the exact bounds, legacy defaults, unavailable encrypted context and tests.
 
 Developer webhook configuration routes now use the staging D1 table
 `cf_user_developer_webhooks`; supported types are `audio_bytes`,
@@ -2533,3 +2774,334 @@ discarded. Transcription audio is removed after completion or terminal failure;
 R2 lifecycle rules expire any `cf-transcriptions/` or `cf-sync/` cleanup orphan
 after one day. `GET /v1/cf/jobs/{jobId}` exposes the state machine without returning
 payload data, and requires the same authenticated uid that created the job.
+
+Realtime callbacks retain their admitting socket across every asynchronous quota
+or binary-decoding boundary. After either wait, a superseded/closed socket must
+not enqueue or forward audio to the replacement provider. The same check precedes
+provider startup after fair-use admission. The production-session regressions in
+`tests/realtime.test.ts` suspend both quota and Blob reads, replace the connection,
+and verify that only the current connection's audio reaches its provider.
+
+The recording stream now opens its UID-scoped conversation in D1 before reporting
+`ready` / `conversation_session`. Transcript segments commit before broadcast;
+reconnect advances a connection token and resumes persisted timestamps. The old
+connection cannot write through that token, and completed/deleted generations
+are never reopened. Within a native Durable Object, pending D1 opens serialize
+across socket replacement so an old response cannot acquire ownership last.
+Migration `0154_live_recording_sessions.sql` adds this identity owner and the same
+account-deletion fences; Jobs includes it in purge/residual checks. Explicit
+`POST /v1/conversations/:id/finalize` retains the existing Queue/Jobs/Core owner.
+Silence/disconnect auto-finalization, continuous-capture rotation, every missing
+route and remote provider qualification remain separate unfinished CF-4 work.
+
+Chat and task sharing now mint `/chat/:token` and `/tasks/:token` capabilities
+from `PUBLIC_SHARE_BASE_URL`, projected from the same validated profile used by
+all clients. The share custom domain belongs to the existing Web Worker; Edge
+and Auth trust its exact origin alongside the Web origin. The fork Web build
+adds the two pages and a strict public proxy that validates and reduces previews
+before returning `private, no-store` responses. Task acceptance reuses the
+existing Better Auth session/JWT and authenticated API proxy. Missing brand/share
+configuration fails before D1 mutation. Unit and local product contracts cover
+owner isolation, expired/locked/invalid capabilities, self and duplicate
+acceptance, malformed responses and a real recipient copy. This local evidence
+does not qualify remote routes or authorize a deployment.
+
+`bash deploy/cloudflare/ci/product.sh` builds an isolated actual seven-Worker target,
+applies all normal migrations, runs the shared identity/onboarding/Tasks suite and
+a separate recording/Queue contract, then stops its process tree. Both fork
+manifest lanes execute this same command. Read `contracts/README.md` for tools,
+metadata, synthetic inference boundaries and retained evidence. A local green
+report never sets release qualification or authorizes remote deployment.
+
+### Developer conversation questions
+
+`POST /v1/dev/user/ask` combines the existing Developer key authority, the
+25/hour `dev:ask` limiter, tenant-scoped summary/transcript Vectorize retrieval,
+D1 source rechecks and native Workers AI. Its default prompt and wire types
+are staged from unchanged upstream sources. `WORKERS_AI_DEVELOPER_ASK_MODEL`
+selects its native Llama 3.3 70B FP8 fast model independently of integration
+classification; missing or invalid source citations return 503. Python timezone validation loads
+packaged TZif data rather than assuming a host OS database. See
+[the Developer Ask contract](../../docs/doc/developer/ForkCloudflareDeveloperAsk.mdx)
+for provider errors, usage accounting and verification boundaries.
+
+## Calendar share recipients
+
+`GET /v1/conversations/{conversation_id}/share-recipients` runs in Core behind
+Edge session authentication and account admission. The build stages the original
+upstream response models and calendar-recipient functions through
+`scripts/share_email_sources.py`; their owners are included in the release source
+identity. It reads the owned conversation's calendar metadata from D1 and the
+owner's email from Auth, then rechecks the conversation after that awaited lookup.
+Locked conversations return 402, unavailable subjects return 404, and concurrent
+calendar changes return 409. Missing owner email returns an empty suggestion with
+sanitized fallback telemetry; Auth failures return an error. All responses disable
+caching. It neither invokes a model nor sends mail.
+
+Recipient suggestions do not qualify outbound delivery. The internal POST
+transaction and its remaining provider boundary are described below.
+
+## Share-email transaction (internal qualification)
+
+Jobs registers the upstream POST share-email handler and delegates preparation,
+claim and finalization to Core's signed `/internal/share-email/` service. The
+public Edge route remains unregistered until native sender/delivery qualification.
+The read-only recipient endpoint remains independently available.
+
+Migration 0171 adds recipient claims, per-UTC-day quota and dispatch receipts.
+One D1 batch reserves new recipients, charges their quota, publishes the owned
+conversation and records its write revision. Every conversation write advances
+that revision, including a same-value visibility write. A definite provider
+rejection refunds the original day's charge and revokes only publication still
+owned by that attempt. Other actors' share changes remain authoritative.
+
+Jobs calls the Cloudflare Email Service structured binding once after Core
+atomically changes the attempt from prepared to dispatching. Accepted and unknown
+outcomes retain the claim and share link; unknown outcomes return 504 and emit
+sanitized shared fallback telemetry. A repeated confirmed/ambiguous recipient is
+not sent again. An active in-flight duplicate returns 409. The scheduled sweep
+expires at most 100 prepared and 100 dispatching attempts per invocation; it never
+sends email. Abandoned prepared attempts release claims and quota; abandoned
+dispatching attempts become ambiguous. Payload HTML is removed on finalization.
+Receipts, recipient addresses and quota appear in user export; internal mail
+payloads and leases do not. All three authorities participate in account erasure.
+
+The source projector stages the original request, normalization, sender-name and
+markdown rules. Only the email footer's hardcoded upstream brand is replaced by
+the validated brand identity and public share origin. Default model prompts are
+unchanged, and sending does not call a model.
+
+To qualify the remaining provider boundary, Jobs needs a native `send_email`
+binding named `SHARE_EMAIL` and `SHARE_EMAIL_FROM_ADDRESS` from an onboarded
+Eddy sending domain. These are deliberately not provisioned by this change: the
+Eddy sender identity is not yet selected. The release resource contract must
+include that verified binding/sender before the public route is admitted. The
+[Cloudflare binding API](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/)
+defines the structured message and error codes. Resend is not used in this CF path.
+
+[Transaction verification](../../dev/unified-main/implementation-2026-09-05/share-email-transactions-2026-09-06.md)
+records the native Auth/Edge/Jobs/Core/D1 run with controlled provider outcomes,
+zero outbound emails, local recovery/erasure tests and the exact remaining scope.
+
+## JIT rollout decision
+
+`GET /v1/jit/rollout-decision` uses the authenticated Edge-to-Core boundary and
+the same D1 policy owner as frame requests. The original upstream tri-state and
+allowlist decision rules are staged by `frame_request_sources.py`; no model or
+prompt is involved. `cf_jit_flags` stores deployment defaults under the empty UID
+and explicit per-owner overrides under the authenticated UID. A global enabled
+kill switch cannot be cleared by an owner override. Each read takes one current
+flags/account-generation snapshot and returns `no-store`, with no decision cache.
+Missing rollout state is disabled; provider failures preserve unknown status and
+emit sanitized shared telemetry. Account-deletion fences still deny access.
+
+This read does not grant a reservation or claim that trigger/ledger routes are
+available. The remaining five JIT route identities retain their own migration
+requirements. The shared Server/Cloudflare HTTP suite includes the authenticated
+tri-state wire contract; provider flag transitions and owner isolation also run
+against the actual D1 implementation. See the
+[client API guide](../../docs/doc/developer/ForkCloudflareJit.mdx).
+The [verification record](../../dev/unified-main/implementation-2026-09-05/jit-rollout-2026-09-06.md)
+distinguishes the hosted decision flow from the remaining trigger/ledger work.
+
+## Desktop knowledge-ledger snapshots
+
+Authenticated Edge/Core now expose the upstream `GET /v1/jit/knowledge-ledger/prompt-snapshot`
+and `GET /v1/jit/knowledge-ledger/mirror-snapshot` read contracts. Both require current
+rollout, account generation, canonical writer/head and migration/projection proof.
+Migration `0192_knowledge_ledger_snapshots.sql` stores the completion and projection
+pair; reads never create this proof or change writer mode. API Core requires the
+independent `MEMORY_V3_CURSOR_SECRET` secret-name mapping for the original signed
+mirror cursor. Missing or invalid authority cannot certify a complete mirror.
+
+The prompt preserves the original maximum of 64 selected rows and removes document
+bodies/evidence through the upstream projector. Its stored wire data is returned
+unchanged, while current source fields and privacy are checked before responding.
+The mirror retains 200 rows by default, a maximum page size of 500, owner-bound
+15-minute cursors, lineage aliases and the original cumulative revision chain.
+D1 limits each transferred source record to 1 MB and each page to 4 MB; a limit
+failure rejects the page instead of reporting a truncated complete result.
+Privacy retirement removes the stored projection in the same SQL transaction;
+account erasure includes the new table. Responses are `no-store`; no model or
+default prompt is changed.
+
+The migration publisher and remaining legacy writers must still converge on the
+canonical transaction owner before production can publish these proofs. Controlled
+receipts used to verify these consumers do not establish migration completion,
+native acceptance or full CF-4/CI-1 qualification. See the
+[snapshot implementation record](../../dev/unified-main/implementation-2026-09-05/jit-ledger-snapshots-2026-09-08.md).
+
+## Canonical memory apply rules
+
+`scripts/memory_kernel_sources.py` packages the original canonical memory models,
+apply engine, promotion/graph receipt rules, pure Short-term lifecycle and
+canonical lineage resolution into the normal Core build. It rewrites only the
+explicitly mapped modules' import names;
+unexpected upstream dependencies fail the build. Core tests consume the same
+projection, and release identity includes every source file. No generated Python
+copy is maintained in the repository. The original consolidation JSON Schema is
+a frozen data contract so runtime Pydantic versions cannot change the prompt;
+tests compare it to the upstream model. No default prompt is changed.
+
+`memory_consolidation_sources.py`, called by the same projector, selects the
+upstream L2 decision schemas, complete-batch validation, source-attribution
+conservation and normalization/promotion receipt rules. The D1 adapter in
+`memory_consolidation_apply.py` commits up to 20 decisions with normalization,
+supersession, graph assertions, deterministic review records and the complete
+journal/outbox chain in one guarded batch. Its patch builders are compared
+against the original upstream persistence requests. Source/head races or late
+storage failures leave no partial batch. The existing durable dispatcher now
+connects scheduled execution, whole-source message sizing and source leases.
+Migration 0188 also commits recurrence inbox receipts with memory results;
+Jobs/Cron consumes them with the unchanged upstream qualification and Candidate
+identity. Candidate workflow control now projects the original universal task
+capability and the actual D1 account generation. The mounted Core/Jobs entrypoints
+passed isolated hosted control, generation/erasure and Queue receipt validation;
+see [control evidence](../../dev/unified-main/implementation-2026-09-05/canonical-control-2026-09-08.md). Accepted Candidates now dispatch their durable integration outbox
+through Core leases and existing Jobs task/FCM adapters. Cloud export flags and
+delivery receipts are atomic; Apple device confirmation remains separate from
+push delivery. The original retry policy and existing Cron recover failures.
+See [integration evidence](../../dev/unified-main/implementation-2026-09-05/canonical-integrations-2026-09-08.md).
+These local integrations do not establish hosted model/product qualification. Other intake families and complete default-read alignment remain
+required. `memory_consolidation_llm.py` now connects the unchanged upstream
+messages to Workers AI and the validated apply owner. It records actual model
+usage and does not substitute a route after errors. The model override is
+`WORKERS_AI_MEMORY_CONSOLIDATION_MODEL`, defaulting to
+`@cf/qwen/qwen3.8-27b`. Overrides require its Chat Completions contract
+(ordinary messages and one completed assistant choice). JSON is validated after
+generation, as in upstream; no provider `response_format` is added. Input/output
+byte bounds and a 180-second timeout protect the bridge, while provider token-window failures remain pending.
+See the [model invocation verification](../../dev/unified-main/implementation-2026-09-05/memory-consolidation-llm-2026-09-07.md). Native POSTs
+now use the upstream required-processing metadata, preserve source attribution
+and remain pending until a real processor receipt; their initial vector work
+is delete-only. The 1 MB body cap and stable internal retry identity remain in
+force. See the [native intake verification](../../dev/unified-main/implementation-2026-09-05/native-memory-normalization-2026-09-07.md) and
+[consolidation verification record](../../dev/unified-main/implementation-2026-09-05/memory-consolidation-apply-2026-09-07.md).
+
+Native memory lists and ordinary product search now filter persisted lifecycle
+state before pagination and counts. Pending required input remains visible to
+its owner but is excluded from processed search. Archive/hidden/superseded,
+removed-source and user-rejected rows are excluded; processed sensitivity
+restrictions retain the upstream policy. Historical processed data needs no
+new control or receipt. This does not yet supply active-alias collapse or full
+device/cursor/archive parity. See the [default-read verification](../../dev/unified-main/implementation-2026-09-05/memory-default-read-2026-09-07.md).
+
+The same builder selects the three original privacy scrubber/event function
+bodies from `backend/database/memory_apply_store.py` into a separate pure module;
+no Firestore client or persistence adapter is staged. `memory_privacy_plan.py`
+uses those functions to prepare complete semantic/provenance tombstones and
+content-free deletion operations, privacy epoch heads and delete-only outboxes.
+The original lineage resolver includes incoming aliases, cycles and missing
+survivors, retaining tombstones in retry inventories. This is a proposed apply
+result, not a deletion acknowledgement: the caller still needs transaction
+admission, opaque anti-resurrection receipts, physical provider cleanup and
+history finalization. Public deletion handlers have not been migrated by this
+step. See the [privacy-rule verification record](../../dev/unified-main/implementation-2026-09-05/memory-privacy-rules-2026-09-07.md).
+
+Migration 0174 preserves existing memory rows, indexes, views and triggers while
+allowing the upstream `content=None` shape only for a deleted tombstone. Every
+current Core creator and the Jobs X extractor computes the same uid/item HMAC
+using `MEMORY_PRIVACY_SECRET`. A live, opaque 30-day deletion receipt vetoes
+reinsertions and updates inside D1, including external deterministic-ID intake and
+old writers that omit the key. Existing unrelated legacy rows remain editable;
+new writes always carry their key. Neither the key nor receipt inventory is
+included in user export. The existing Jobs schedule expires receipts, and
+account erasure includes their table. The public deletion coordinator now
+atomically scrubs and seals its authoritative lineage before provider cleanup
+(0175), then finalizes under the provider/hold/gate checks in migration 0176.
+Native single/batch/all/default, MCP and Developer deletion acknowledge 200 only
+after physical erasure; pending cleanup returns 503 `memory_cleanup_pending`
+with `Retry-After: 2`. Existing Jobs Queue/cron uses signed Core continuations to
+complete durable work. All/default requests retain their parent scope across
+100-item batches; default retains Archive. Referencing history and memory
+usage-source rows are removed, while original source conversations remain.
+The [deletion verification record](../../dev/unified-main/implementation-2026-09-05/memory-privacy-delete-2026-09-07.md)
+distinguishes actual local orchestration, hosted transaction proof and the
+remaining production qualification.
+
+The pure engine computes one complete apply result: memory items, graph
+assertions, operation receipt, next control head and projection/vector outbox.
+Its committed result is a proposed database bundle, not proof of persistence.
+It preserves generation/head conflicts, deterministic retry identities,
+content-mismatched replay rejection, deleted-source denial, restricted-content
+delete-only projection and receipt-gated Short-term promotion. Hosted Python
+Worker scenarios execute these exact rules with synthetic inputs; they do not
+exercise a new public API or a D1 transaction.
+
+D1 native single/batch memory intake now persists the upstream apply result,
+operation receipt, commit/head, pending kernel outbox and usage work in
+one guarded batch (migration 0172). Existing item columns remain authoritative;
+the added JSON column contains only model fields without physical columns.
+Whole internal replay is idempotent, and stale account/control state aborts the
+batch. Receipts and commits follow owner-scoped export and account erasure.
+Cloudflare native batches accept at most 100 items and 1,000,000 UTF-8 request
+bytes, including JSON and metadata; the per-item content limit remains 50,000
+characters. Edge bounds the body before Python and Core checks it again.
+Oversize returns 413 with `memory_batch_too_large`, `max_bytes` and
+`max_memories`, with no writes. The macOS fork import consumer now plans requests
+by encoded bytes and count before writing; Electron's item-count-only importer
+still needs that adaptation. Each accepted request remains one independent
+atomic transaction.
+
+MCP and Developer explicit memory creation now use that same canonical intake
+owner, with the original `document_id_from_seed` implementation staged from
+upstream. Identical active submissions return the existing record without a new
+commit, usage charge or tier change. Mixed Developer batches recheck duplicate
+records in the same transaction as new records; a retired privacy identity gets
+a fresh ID and evidence on an explicit new submission. All new records require
+processing before vector admission. MCP content edits and Developer combined
+content/visibility/category/tag edits also commit through canonical mutation;
+one combined request produces one commit. Integration, conversation-derived and
+Jobs X writers still require convergence. See the
+[external intake verification](../../dev/unified-main/implementation-2026-09-05/external-memory-authority-2026-09-08.md).
+
+Native content PATCH now uses that same journal/control writer. Migration 0173
+adds target revision/metadata/ownership admission to its transaction guard.
+The unchanged apply engine returns corrected content to pending Short-term,
+clears graph admission and emits delete-only projection work until processing
+readmits it. The current paid-plan lock, account/source generation and closed
+record checks remain enforced before commit. Pre-journal rows are projected
+read-only and adopted at their existing IDs in the correction transaction;
+no synthetic historical commit is persisted. An explicit correction records
+its real commit, operation and outbox atomically without charging new intake.
+The patch policy is behaviorally compared against the original upstream
+`update_canonical_memory_content` implementation. See the
+[content-edit verification record](../../dev/unified-main/implementation-2026-09-05/memory-apply-edit-2026-09-07.md).
+
+The same ordinary mutation owner now handles native visibility, review votes,
+read/dismiss and baseline changes. Product fields, journal/head, review feedback
+and projection work commit together. Existing graph-backed Long-term updates
+also refresh their upstream graph assertion in the guarded batch (0177); only
+the admitted uid/item/revision may publish that assertion. Owner export and
+privacy/account erasure include this graph store. Concurrent target deletion
+rejects a review with 503 and no feedback/history write. See the
+[product-field verification record](../../dev/unified-main/implementation-2026-09-05/memory-product-mutation-2026-09-07.md).
+
+Canonical review resolution now joins the same apply/privacy owners (0178).
+Accept/correct return the reviewed candidate to pending Short-term without
+invalidating its conflict peers. Reject and timeout/drop complete canonical
+privacy erasure; pending provider cleanup returns 503 and resumes through the
+existing durable inventory. Reads and transactions require the exact canonical
+commit, revision, hash and consolidation review route. Historical timestamp
+rows are stale projections; native intake no longer manufactures review
+candidates from structural conflicts. Producing real canonical review decisions
+still depends on the unfinished consolidation owner. See the
+[review-resolution verification record](../../dev/unified-main/implementation-2026-09-05/memory-review-canonical-2026-09-07.md).
+
+The other intake and mutation families, consolidation,
+source-deletion and projection writers still
+need to converge on this transaction owner. History/revert and JIT require that
+complete authority; their inventory states are unchanged. See the
+[kernel verification](../../dev/unified-main/implementation-2026-09-05/memory-kernel-2026-09-06.md)
+and [native intake transaction record](../../dev/unified-main/implementation-2026-09-05/memory-apply-intake-2026-09-06.md).
+
+## Local external LLM development
+
+The disposable Wrangler target binds `env.AI.run()` to MiMo China Token Plan
+for `mimo-v2.5`, `mimo-v2.5-asr`, `mimo-v2.5-tts`, and to local Ollama BGE-M3
+for 1024-dimensional embedding. Its live WebSocket ASR bridge also uses MiMo.
+Use `npm run dev:product -- --output /tmp/new-owned-target --llm-dev-vars
+/secure/mimo.dev.vars`, or `npm run test:product -- --llm-dev-vars
+/secure/mimo.dev.vars` for common HTTP and live chat/audio/embedding regression. Production AI
+bindings and default prompts are unchanged. Configuration, protocol scope and
+evidence boundaries: [product contracts](contracts/README.md).

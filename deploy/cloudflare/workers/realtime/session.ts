@@ -5,10 +5,21 @@ import {
   type FairUseUsage,
 } from "../shared/fair-use-meter";
 import { readFairUseRestriction } from "../shared/fair-use-enforcement";
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import { defaultStreamingPolicy } from "../shared/provider-policy";
-import { verifyRealtimeTicket } from "../shared/realtime-ticket";
+import { verifyBearer } from "../shared/session-authority";
+import { enforceSessionAdmission } from "../shared/realtime-admission";
+import { cloudflareProductTrafficDenial } from "../edge/cutover";
 import type { RealtimeEnv } from "./env";
+import {
+  recordingStore,
+  recordingId,
+  recordingSessionEvent,
+  mergeRecordingSegments,
+  type RecordingStore,
+  type RecordingBinding,
+  type RecordingSegment,
+} from "./recording-store";
 
 const AUTH_TIMEOUT_MS = 15_000;
 const MAX_AUTH_MESSAGE_BYTES = 16_384;
@@ -34,7 +45,7 @@ function pendingMeterKey(sourceId: string): string {
 
 type FirstMessageAuth = {
   type: "auth";
-  ticket: string;
+  token: string;
   deviceIdHash?: string;
 };
 
@@ -68,14 +79,14 @@ function parseFirstMessageAuth(data: string): FirstMessageAuth | null {
   try {
     const value = JSON.parse(data) as {
       type?: unknown;
-      ticket?: unknown;
+      token?: unknown;
       device_id_hash?: unknown;
     };
     if (
       value.type !== "auth" ||
-      typeof value.ticket !== "string" ||
-      value.ticket.length < 1 ||
-      value.ticket.length > 32_768 ||
+      typeof value.token !== "string" ||
+      !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value.token) ||
+      value.token.length > 32_768 ||
       (value.device_id_hash !== undefined &&
         (typeof value.device_id_hash !== "string" ||
           value.device_id_hash.length > 256))
@@ -84,7 +95,7 @@ function parseFirstMessageAuth(data: string): FirstMessageAuth | null {
     }
     return {
       type: "auth",
-      ticket: value.ticket,
+      token: value.token,
       deviceIdHash: value.device_id_hash,
     };
   } catch {
@@ -154,10 +165,10 @@ function providerSegments(data: unknown): MeterSegment[] {
       typeof segment.text === "string"
         ? segment.text
         : typeof segment.punctuated_word === "string"
-          ? segment.punctuated_word
-          : typeof segment.word === "string"
-            ? segment.word
-            : "";
+        ? segment.punctuated_word
+        : typeof segment.word === "string"
+        ? segment.word
+        : "";
     return typeof segment.start === "number" &&
       typeof segment.end === "number" &&
       Number.isFinite(segment.start) &&
@@ -323,8 +334,8 @@ function nativeClientMessage(data: unknown): string | null {
       typeof word.punctuated_word === "string"
         ? word.punctuated_word
         : typeof word.word === "string"
-          ? word.word
-          : "";
+        ? word.word
+        : "";
     if (!text.trim()) continue;
     const speaker =
       typeof word.speaker === "number" && Number.isInteger(word.speaker)
@@ -374,6 +385,7 @@ export class RealtimeSession {
   private upstreamAudioTransform: AudioTransform = "none";
   private authContext?: AuthContext;
   private requestUrl?: string;
+  private upgradeRequest?: Request;
   private firstMessageAuth = false;
   private authInFlight = false;
   private authTimeout?: ReturnType<typeof setTimeout>;
@@ -387,8 +399,21 @@ export class RealtimeSession {
   private meterWriteChain: Promise<void> = Promise.resolve();
   private clientMessageChain: Promise<void> = Promise.resolve();
   private nextPolicyCheckAt = 0;
+  private recording?: RecordingBinding;
+  private recordingSegments: RecordingSegment[] = [];
+  private providerMessageChain: Promise<void> = Promise.resolve();
+  private store: RecordingStore;
+  private providerAdmission: Promise<void> = Promise.resolve();
+  private recordingAdmissionChain: Promise<void> = Promise.resolve();
+  private providerReady = false;
+  private recordingOffset = 0;
 
-  constructor(state: DurableObjectState, env: RealtimeEnv) {
+  constructor(
+    state: DurableObjectState,
+    env: RealtimeEnv,
+    store: RecordingStore = recordingStore,
+  ) {
+    this.store = store;
     this.state = state;
     this.env = env;
   }
@@ -416,7 +441,10 @@ export class RealtimeSession {
     server.accept();
     this.client = server;
     this.clientMessageChain = Promise.resolve();
+    this.providerMessageChain = Promise.resolve();
+    this.providerReady = false;
     this.requestUrl = request.url;
+    this.upgradeRequest = request;
     this.firstMessageAuth = firstMessageAuth;
     if (firstMessageAuth) this.webBootstrapClaimed = true;
     this.authContext = this.firstMessageAuth
@@ -457,7 +485,7 @@ export class RealtimeSession {
     socket: WebSocket,
     data: ClientMessage,
   ): Promise<void> {
-    if (this.client !== socket) return;
+    if (this.client !== socket || socket.readyState !== WebSocket.OPEN) return;
     if (!this.authContext) {
       if (!this.firstMessageAuth || typeof data !== "string") {
         this.failAuthentication(socket, "invalid_auth_message");
@@ -473,49 +501,83 @@ export class RealtimeSession {
         return;
       }
       this.authInFlight = true;
-      const context = await verifyRealtimeTicket(
-        auth.ticket,
-        this.env.INTERNAL_ASSERTION_SECRET,
+      const requestId =
+        this.upgradeRequest?.headers.get("x-request-id") || crypto.randomUUID();
+      const context = await verifyBearer(
+        new Request(this.requestUrl!, {
+          headers: { authorization: `Bearer ${auth.token}` },
+        }),
+        this.env,
+        requestId,
       );
       this.authInFlight = false;
-      if (this.client !== socket) return;
+      if (this.client !== socket || socket.readyState !== WebSocket.OPEN)
+        return;
       if (!context) {
         this.failAuthentication(socket, "unauthorized");
+        return;
+      }
+      // JWT signature and live session ownership come from AUTH-1. Browser
+      // sessions then pass the same admission and migration fence as native WS.
+      const limited = await enforceSessionAdmission(
+        this.env,
+        context.uid,
+        requestId,
+      );
+      const denial =
+        limited ||
+        (await cloudflareProductTrafficDenial(
+          this.upgradeRequest!,
+          this.env,
+          context,
+          requestId,
+        ));
+      if (this.client !== socket || socket.readyState !== WebSocket.OPEN)
+        return;
+      if (denial) {
+        this.failAuthentication(
+          socket,
+          limited ? "rate_limited" : "account_not_active",
+        );
         return;
       }
       this.authContext = context;
       if (this.authTimeout) clearTimeout(this.authTimeout);
       this.authTimeout = undefined;
-      if (!(await this.enforceFairUse(socket, true))) return;
-      const provider = await this.connectUpstream(auth.deviceIdHash);
-      if (this.client !== socket) return;
-      if (!provider) {
-        this.sendJson(socket, {
-          type: "auth_response",
-          success: false,
-          error: "provider_unavailable",
-        });
-        socket.close(1013, "provider unavailable");
-        return;
-      }
-      this.sendJson(socket, { type: "auth_response", success: true });
-      this.sendJson(socket, { type: "ready", provider });
-      this.flushPending();
+      await this.startProvider(socket, true, auth.deviceIdHash);
       return;
     }
 
+    // Credentials have a single consumer. Re-authentication cannot leak a JWT
+    // into an ASR provider's control stream or switch an established identity.
+    if (this.firstMessageAuth && typeof data === "string") {
+      try {
+        if (JSON.parse(data)?.type === "auth") {
+          this.failAuthentication(socket, "duplicate_auth_message");
+          return;
+        }
+      } catch {
+        /* Other provider control frames retain their existing handling. */
+      }
+    }
     if (!(await this.enforceFairUse(socket, false))) return;
+    if (this.client !== socket || socket.readyState !== WebSocket.OPEN) return;
     const size = messageBytes(data);
     if (size > MAX_PENDING_AUDIO_BYTES) {
       socket.close(1009, "message too large");
       return;
     }
     const normalized = await normalizeClientMessage(data);
+    if (this.client !== socket || socket.readyState !== WebSocket.OPEN) return;
     if (normalized === null) {
       socket.close(1003, "unsupported message data");
       return;
     }
-    if (!this.upstream || this.upstream.readyState !== WebSocket.OPEN) {
+    if (
+      !this.providerReady ||
+      !this.upstream ||
+      this.upstream.readyState !== WebSocket.OPEN
+    ) {
       this.bufferMessage(socket, normalized);
       return;
     }
@@ -525,10 +587,28 @@ export class RealtimeSession {
   private async startProvider(
     socket: WebSocket,
     sendAuthResponse: boolean,
+    deviceIdHash?: string,
+  ): Promise<void> {
+    let release!: () => void;
+    this.providerAdmission = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      await this.admitProvider(socket, sendAuthResponse, deviceIdHash);
+    } finally {
+      release();
+    }
+  }
+
+  private async admitProvider(
+    socket: WebSocket,
+    sendAuthResponse: boolean,
+    deviceIdHash?: string,
   ): Promise<void> {
     if (!(await this.enforceFairUse(socket, sendAuthResponse))) return;
-    const provider = await this.connectUpstream();
-    if (this.client !== socket) return;
+    if (this.client !== socket || socket.readyState !== WebSocket.OPEN) return;
+    const provider = await this.connectUpstream(socket, deviceIdHash);
+    if (this.client !== socket || socket.readyState !== WebSocket.OPEN) return;
     if (!provider) {
       if (sendAuthResponse) {
         this.sendJson(socket, {
@@ -542,10 +622,67 @@ export class RealtimeSession {
       socket.close(1013, "provider unavailable");
       return;
     }
+    try {
+      const url = new URL(this.requestUrl!);
+      if (["/v4/listen", "/v4/web/listen"].includes(url.pathname)) {
+        const input = {
+          uid: this.authContext!.uid,
+          sessionId: recordingId(
+            url.searchParams.get("client_conversation_id"),
+          ),
+          source:
+            url.searchParams.get("source") ||
+            (this.firstMessageAuth ? "desktop" : "omi"),
+          language: url.searchParams.get("language") || "en",
+        };
+        // Keep D1 ownership transitions ordered even when an old connection's
+        // open is still awaiting completion. Close never resets this lane.
+        const opening = this.recordingAdmissionChain.then(() => {
+          if (this.client !== socket || socket.readyState !== WebSocket.OPEN)
+            return null;
+          return this.store.open(this.env.APP_DB, input);
+        });
+        this.recordingAdmissionChain = opening.then(
+          () => undefined,
+          () => undefined,
+        );
+        const binding = await opening;
+        if (
+          !binding ||
+          this.client !== socket ||
+          socket.readyState !== WebSocket.OPEN
+        )
+          return;
+        this.recording = binding;
+        this.recordingSegments = JSON.parse(binding.transcript_segments_json);
+        this.recordingOffset = this.recordingSegments.reduce(
+          (end, segment) => Math.max(end, segment.end),
+          0,
+        );
+      }
+    } catch {
+      if (this.client !== socket) return;
+      this.sendJson(
+        socket,
+        sendAuthResponse
+          ? {
+              type: "auth_response",
+              success: false,
+              error: "recording_unavailable",
+            }
+          : { type: "recording_unavailable" },
+      );
+      socket.close(1013, "recording unavailable");
+      this.upstream?.close(1013, "recording unavailable");
+      return;
+    }
     if (sendAuthResponse) {
       this.sendJson(socket, { type: "auth_response", success: true });
     }
     this.sendJson(socket, { type: "ready", provider });
+    if (this.recording)
+      this.sendJson(socket, recordingSessionEvent(this.recording));
+    this.providerReady = true;
     this.flushPending();
   }
 
@@ -578,6 +715,7 @@ export class RealtimeSession {
   }
 
   private async connectUpstream(
+    socket: WebSocket,
     deviceIdHash?: string,
   ): Promise<UpstreamProvider | null> {
     if (!this.client || !this.authContext || !this.requestUrl) return null;
@@ -589,6 +727,10 @@ export class RealtimeSession {
           nativeConfig.inputs,
           { websocket: true, tags: ["omi-realtime"] },
         );
+        if (this.client !== socket || socket.readyState !== WebSocket.OPEN) {
+          response.webSocket?.close(1000, "connection superseded");
+          return null;
+        }
         if (response.webSocket) {
           this.attachUpstream(
             response.webSocket,
@@ -606,7 +748,12 @@ export class RealtimeSession {
       }
     }
 
-    const externalReady = await this.connectExternalUpstream(deviceIdHash);
+    if (this.client !== socket || socket.readyState !== WebSocket.OPEN)
+      return null;
+    const externalReady = await this.connectExternalUpstream(
+      socket,
+      deviceIdHash,
+    );
     if (nativeConfig) {
       recordFallback({
         component: "stt",
@@ -620,6 +767,7 @@ export class RealtimeSession {
   }
 
   private async connectExternalUpstream(
+    socket: WebSocket,
     deviceIdHash?: string,
   ): Promise<boolean> {
     if (!this.env.ASR_WS_URL || !this.authContext || !this.requestUrl) {
@@ -654,6 +802,10 @@ export class RealtimeSession {
         },
       });
       if (!response.webSocket) return false;
+      if (this.client !== socket || socket.readyState !== WebSocket.OPEN) {
+        response.webSocket.close(1000, "connection superseded");
+        return false;
+      }
       this.attachUpstream(response.webSocket, "external", "none");
       return true;
     } catch {
@@ -669,21 +821,111 @@ export class RealtimeSession {
     this.upstream = upstream;
     this.upstreamAudioTransform = audioTransform;
     upstream.accept();
+    const admission = this.providerAdmission;
     upstream.addEventListener("message", (event) => {
-      if (this.upstream === upstream && this.client) {
-        if (provider === "workers-ai" && providerReportedError(event.data)) {
-          this.sendJson(this.client, { type: "provider_unavailable" });
-          this.client.close(1011, "provider error");
-          upstream.close(1011, "provider error");
-          return;
-        }
-        this.captureProviderSpeech(event.data);
-        const clientMessage =
-          provider === "workers-ai"
-            ? nativeClientMessage(event.data)
-            : event.data;
-        if (clientMessage !== null) this.client.send(clientMessage);
-      }
+      const ownerSocket = this.client;
+      this.providerMessageChain = this.providerMessageChain
+        .then(async () => {
+          await admission;
+          if (
+            !this.providerReady ||
+            this.upstream !== upstream ||
+            !this.client ||
+            this.client !== ownerSocket
+          )
+            return;
+          const socket = this.client;
+          if (provider === "workers-ai" && providerReportedError(event.data)) {
+            this.sendJson(socket, { type: "provider_unavailable" });
+            socket.close(1011, "provider error");
+            upstream.close(1011, "provider error");
+            return;
+          }
+          let clientMessage =
+            provider === "workers-ai"
+              ? nativeClientMessage(event.data)
+              : event.data;
+          if (this.recording) {
+            // An ASR provider owns transcript content, never application lifecycle
+            // events. Direct Deepgram results and the external adapter's segment
+            // arrays converge before persistence and delivery to either client.
+            const text = providerText(clientMessage);
+            let parsed: unknown;
+            try {
+              parsed = text === null ? null : JSON.parse(text);
+            } catch {
+              parsed = null;
+            }
+            if (
+              parsed &&
+              typeof parsed === "object" &&
+              !Array.isArray(parsed) &&
+              !(parsed as Record<string, unknown>).type &&
+              Array.isArray((parsed as Record<string, unknown>).segments)
+            )
+              parsed = (parsed as Record<string, unknown>).segments;
+            if (!Array.isArray(parsed)) {
+              const normalized = nativeClientMessage(event.data);
+              if (normalized === null) return;
+              parsed = JSON.parse(normalized);
+            }
+            const incoming = mergeRecordingSegments(
+              [],
+              (parsed as unknown[]).flatMap((value) => {
+                if (!value || typeof value !== "object") return [];
+                const item = value as Record<string, unknown>;
+                if (
+                  typeof item.text !== "string" ||
+                  typeof item.start !== "number" ||
+                  typeof item.end !== "number"
+                )
+                  return [];
+                return [
+                  {
+                    text: item.text,
+                    start: item.start + this.recordingOffset,
+                    end: item.end + this.recordingOffset,
+                    speaker:
+                      typeof item.speaker === "string"
+                        ? item.speaker
+                        : "SPEAKER_00",
+                    is_user: item.is_user === true,
+                    person_id:
+                      typeof item.person_id === "string"
+                        ? item.person_id
+                        : null,
+                  },
+                ];
+              }),
+            );
+            if (!incoming.length) return;
+            const merged = mergeRecordingSegments(
+              this.recordingSegments,
+              incoming,
+            );
+            await this.store.write(this.env.APP_DB, this.recording, merged);
+            if (this.client === socket && this.upstream === upstream)
+              this.recordingSegments = merged;
+            clientMessage = JSON.stringify(incoming);
+          }
+          if (this.client !== socket || this.upstream !== upstream) return;
+          this.captureProviderSpeech(event.data);
+          if (clientMessage !== null && this.client === socket)
+            socket.send(clientMessage);
+        })
+        .catch(() => {
+          if (
+            this.client &&
+            this.client === ownerSocket &&
+            this.upstream === upstream
+          ) {
+            this.sendJson(this.client, { type: "recording_unavailable" });
+            this.client.close(1013, "recording unavailable");
+          }
+          upstream.close(1013, "recording unavailable");
+        });
+      this.state.waitUntil(this.providerMessageChain);
+      return this.providerMessageChain;
     });
     upstream.addEventListener("close", () => {
       if (this.upstream === upstream && this.client) {
@@ -838,5 +1080,9 @@ export class RealtimeSession {
     this.pendingBytes = 0;
     this.clientMessageChain = Promise.resolve();
     this.nextPolicyCheckAt = 0;
+    this.recording = undefined;
+    this.recordingSegments = [];
+    this.recordingOffset = 0;
+    this.providerReady = false;
   }
 }

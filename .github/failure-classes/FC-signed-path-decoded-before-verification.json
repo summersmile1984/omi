@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "FC-signed-path-decoded-before-verification",
+  "violated_contract": "A request-bound signature must be verified against the same encoded path representation that its issuer authenticated. Comparing a Worker URL.pathname signature with an ASGI percent-decoded routing path rejects legitimate requests containing encoded identifiers and conflates routing representation with authentication identity.",
+  "canonical_prevention": "Use one shared raw-path extractor for all Python assertion consumers. Verify exact encoded pathname bytes; reject absent or malformed raw paths. Exercise production middleware with encoded IDs, Unicode, double encoding, representation changes and existing plain-path clients.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/python/shared/assertion_path.py",
+    "deploy/cloudflare/python/api-core/tests/test_entry.py",
+    "deploy/cloudflare/python/api-ai/tests/test_entry.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/python/**",
+    "deploy/cloudflare/workers/shared/auth-context.ts"
+  ],
+  "status": "open"
+}

@@ -66,6 +66,7 @@ class FakeDb:
         for migration in (
             "0042_chat_messages.sql",
             "0053_user_feedback.sql",
+            "0169_feedback_events.sql",
             "0054_chat_sessions.sql",
             "0101_chat_files.sql",
             "0111_chat_session_files.sql",
@@ -228,9 +229,7 @@ def test_session_file_projection_is_ready_and_uid_scoped():
     assert attached[0]["openai_file_id"] == "provider-file-1"
     assert attached[0]["thumbnail"] is None
 
-    listed = asyncio.run(
-        list_session_chat_files(FakeRequest(env, signed_headers(secret)), "session-1")
-    )
+    listed = asyncio.run(list_session_chat_files(FakeRequest(env, signed_headers(secret)), "session-1"))
     assert [row["id"] for row in listed] == ["file-1"]
 
     missing = asyncio.run(
@@ -241,9 +240,7 @@ def test_session_file_projection_is_ready_and_uid_scoped():
     )
     assert missing.status_code == 404
 
-    detached = asyncio.run(
-        detach_session_chat_file(FakeRequest(env, signed_headers(secret)), "session-1", "file-1")
-    )
+    detached = asyncio.run(detach_session_chat_file(FakeRequest(env, signed_headers(secret)), "session-1", "file-1"))
     assert detached == {"status": "ok", "id": "file-1"}
     assert asyncio.run(list_session_chat_files(FakeRequest(env, signed_headers(secret)), "session-1")) == []
 

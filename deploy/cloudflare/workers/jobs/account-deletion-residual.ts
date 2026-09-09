@@ -1,4 +1,5 @@
 import type { JobsEnv } from "./env";
+import { screenFrameStorageState } from "./screen-frame-storage";
 
 type IdentityColumn =
   | "uid"
@@ -26,6 +27,9 @@ type D1IdentitySurface = Readonly<{
  */
 export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_account_cutover", column: "uid" },
+  { table: "cf_jit_flags", column: "uid" },
+  { table: "cf_frame_requests", column: "uid" },
+  { table: "cf_frame_objects", column: "uid" },
   { table: "cf_action_items", column: "uid" },
   { table: "cf_advice", column: "uid" },
   { table: "cf_announcement_dismissals", column: "uid" },
@@ -60,11 +64,15 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_chat_assistant_message_projections", column: "uid" },
   { table: "cf_chat_shares", column: "sender_uid" },
   { table: "cf_conversations", column: "uid" },
+  { table: "cf_live_recording_sessions", column: "uid" },
   { table: "cf_conversation_finalization_jobs", column: "uid" },
   { table: "cf_conversation_merge_jobs", column: "uid" },
   { table: "cf_conversations_fts", column: "uid" },
   { table: "cf_shared_conversation_index", column: "uid" },
   { table: "cf_daily_summaries", column: "uid" },
+  { table: "cf_daily_summary_generation", column: "uid" },
+  { table: "cf_desktop_daily_usage", column: "uid" },
+  { table: "cf_csat_ratings", column: "uid" },
   { table: "cf_developer_api_keys", column: "uid" },
   { table: "cf_developer_webhook_outbox", column: "uid" },
   { table: "cf_fair_use_events", column: "uid" },
@@ -107,7 +115,22 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_wrapped_history_applies", column: "uid" },
   { table: "cf_gemini_quota_windows", column: "uid" },
   { table: "cf_gemini_usage_receipts", column: "uid" },
+  { table: "cf_candidates", column: "uid" },
+  { table: "cf_candidate_aliases", column: "uid" },
+  { table: "cf_candidate_claims", column: "uid" },
+  { table: "cf_candidate_integration_outbox", column: "uid" },
+  { table: "cf_candidate_write_guard", column: "uid" },
   { table: "cf_task_candidates", column: "uid" },
+  { table: "cf_task_attention_overrides", column: "uid" },
+  { table: "cf_task_recommendation_heads", column: "uid" },
+  { table: "cf_task_snapshot_receipts", column: "uid" },
+  { table: "cf_task_recurrence_inbox", column: "uid" },
+  { table: "cf_jit_proactivity_events", column: "uid" },
+  { table: "cf_jit_trigger_feedback", column: "uid" },
+  { table: "cf_jit_proactivity_budget_controls", column: "uid" },
+  { table: "cf_jit_proactivity_daily_budgets", column: "uid" },
+  { table: "cf_jit_proactivity_candidate_turns", column: "uid" },
+  { table: "cf_jit_reservation_guard", column: "uid" },
   { table: "cf_task_interventions", column: "uid" },
   { table: "cf_task_feedback", column: "uid" },
   { table: "cf_task_outcomes", column: "uid" },
@@ -118,6 +141,25 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_task_evaluations", column: "uid" },
   { table: "cf_llm_usage_daily", column: "uid" },
   { table: "cf_memories", column: "uid" },
+  { table: "cf_memory_graph_assertions", column: "uid" },
+  { table: "cf_memory_apply_guard", column: "uid" },
+  { table: "cf_memory_ledger_read_guard", column: "uid" },
+  { table: "cf_memory_ledger_reopens", column: "uid" },
+  { table: "cf_knowledge_ledger_snapshots", column: "uid" },
+  { table: "cf_memory_review_apply_guard", column: "uid" },
+  { table: "cf_memory_outbox", column: "uid" },
+  { table: "cf_memory_operations", column: "uid" },
+  { table: "cf_memory_commits", column: "uid" },
+  { table: "cf_memory_consolidation_attempts", column: "uid" },
+  { table: "cf_memory_consolidation_dispatch", column: "uid" },
+  { table: "cf_memory_apply_control", column: "uid" },
+  { table: "cf_memory_privacy_receipts", column: "uid" },
+  { table: "cf_memory_privacy_apply_guard", column: "uid" },
+  { table: "cf_memory_privacy_finalize_guard", column: "uid" },
+  { table: "cf_memory_privacy_scopes", column: "uid" },
+  { table: "cf_memory_privacy_deletions", column: "uid" },
+  { table: "cf_destructive_operation_gates", column: "uid" },
+  { table: "cf_legal_holds", column: "uid" },
   { table: "cf_memory_import_artifacts", column: "uid" },
   { table: "cf_memory_import_runs", column: "uid" },
   { table: "cf_memory_archive_items", column: "uid" },
@@ -141,9 +183,17 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_notification_outbox", column: "uid" },
   { table: "cf_people", column: "uid" },
   { table: "cf_realtime_sessions", column: "uid" },
+  { table: "cf_realtime_usage_events", column: "uid" },
+  { table: "cf_referral_attributions", column: "uid" },
+  { table: "cf_referral_attributions", column: "sender_uid" },
+  { table: "cf_referral_claims", column: "uid" },
   { table: "cf_realtime_usage", column: "uid" },
   { table: "cf_recording_deletion_intents", column: "uid" },
   { table: "cf_screen_activity", column: "uid" },
+  { table: "cf_screen_frame_settings", column: "uid" },
+  { table: "cf_screen_frame_sets", column: "uid" },
+  { table: "cf_screen_frame_attempts", column: "uid" },
+  { table: "cf_screen_frame_writes", column: "uid" },
   { table: "cf_creator_payment_profiles", column: "uid" },
   { table: "cf_stripe_connect_events", column: "uid_hint" },
   { table: "cf_stripe_customers", column: "uid" },
@@ -169,10 +219,16 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_user_enabled_apps", column: "uid" },
   { table: "cf_user_fcm_tokens", column: "uid" },
   { table: "cf_user_feedback", column: "uid" },
+  { table: "cf_share_email_recipients", column: "uid" },
+  { table: "cf_share_email_dispatches", column: "uid" },
+  { table: "cf_share_email_quota", column: "uid" },
+  { table: "cf_feedback_events", column: "uid" },
+  { table: "cf_feedback_report_entries", column: "uid" },
   { table: "cf_user_geolocation", column: "uid" },
   { table: "cf_user_location_context_consent", column: "uid" },
   { table: "cf_user_notification_preferences", column: "uid" },
   { table: "cf_user_notification_settings", column: "uid" },
+  { table: "cf_user_email_preferences", column: "uid" },
   { table: "cf_user_onboarding", column: "uid" },
   { table: "cf_user_privacy_settings", column: "uid" },
   { table: "cf_user_subscriptions", column: "uid" },
@@ -180,6 +236,7 @@ export const ACCOUNT_DELETION_D1_SURFACES = Object.freeze([
   { table: "cf_user_transcription_preferences", column: "uid" },
   { table: "cf_vector_projection_outbox", column: "uid" },
   { table: "cf_vector_projection_state", column: "uid" },
+  { table: "cf_memory_vector_artifacts", column: "uid" },
   { table: "cf_worker_probe", column: "uid" },
   { table: "cf_workstream_artifacts", column: "uid" },
   { table: "cf_workstream_checkpoints", column: "uid" },
@@ -278,10 +335,25 @@ const PURGE_PRIORITY = Object.freeze([
   "cf_wrapped_history_applies.uid",
   "cf_gemini_usage_receipts.uid",
   "cf_gemini_quota_windows.uid",
+  "cf_candidates.uid",
+  "cf_candidate_aliases.uid",
+  "cf_candidate_claims.uid",
+  "cf_candidate_integration_outbox.uid",
+  "cf_candidate_write_guard.uid",
   "cf_task_candidates.uid",
+  "cf_task_attention_overrides.uid",
+  "cf_task_recommendation_heads.uid",
   "cf_task_interventions.uid",
   "cf_task_feedback.uid",
   "cf_task_outcomes.uid",
+  "cf_task_snapshot_receipts.uid",
+  "cf_task_recurrence_inbox.uid",
+  "cf_jit_proactivity_events.uid",
+  "cf_jit_trigger_feedback.uid",
+  "cf_jit_proactivity_budget_controls.uid",
+  "cf_jit_proactivity_daily_budgets.uid",
+  "cf_jit_proactivity_candidate_turns.uid",
+  "cf_jit_reservation_guard.uid",
   "cf_task_context_snapshots.uid",
   "cf_task_open_loop_snapshots.uid",
   "cf_task_intelligence_jobs.uid",
@@ -300,21 +372,33 @@ const PURGE_PRIORITY = Object.freeze([
 
 const PURGE_PRIORITY_SET = new Set<string>(PURGE_PRIORITY);
 
+// The independent writer must acknowledge R2 erasure before removing receipts.
+export const ACCOUNT_DELETION_WRITER_D1_SURFACES = Object.freeze([
+  { table: "cf_frame_objects", column: "uid" },
+  { table: "cf_screen_frame_writes", column: "uid" },
+] satisfies readonly D1IdentitySurface[]);
+
 const PURGE_ORDER = Object.freeze([
   ...PURGE_PRIORITY,
   ...ACCOUNT_DELETION_D1_SURFACES.map(
-    ({ table, column }) => `${table}.${column}`,
-  ).filter((key) => !PURGE_PRIORITY_SET.has(key)),
+    ({ table, column }) => `${table}.${column}`
+  ).filter(
+    (key) =>
+      !PURGE_PRIORITY_SET.has(key) &&
+      !ACCOUNT_DELETION_WRITER_D1_SURFACES.some(
+        (surface) => `${surface.table}.${surface.column}` === key
+      )
+  ),
 ]);
 
 export const ACCOUNT_DELETION_D1_PURGE_SURFACES = Object.freeze(
   PURGE_ORDER.map((key) => {
     const surface = ACCOUNT_DELETION_D1_SURFACES.find(
-      ({ table, column }) => `${table}.${column}` === key,
+      ({ table, column }) => `${table}.${column}` === key
     );
     if (!surface) throw new Error(`unknown account deletion surface ${key}`);
     return surface;
-  }),
+  })
 );
 
 /** User-scoped object families currently stored in the shared ASSETS bucket. */
@@ -377,8 +461,12 @@ export async function readAccountProductResidual(
     | "CHAT_FILES"
     | "CONVERSATION_RECORDINGS"
     | "SPEECH_PROFILES"
+    | "FRAME_REQUESTS"
+    | "FRAME_REQUESTS_TEMPORARY"
+    | "SCREEN_FRAME_WRITER"
+    | "INTERNAL_ASSERTION_SECRET"
   >,
-  uid: string,
+  uid: string
 ): Promise<AccountProductResidual> {
   if (!validAccountDeletionUid(uid)) {
     throw new Error("invalid account deletion uid");
@@ -386,12 +474,39 @@ export async function readAccountProductResidual(
 
   const statements = ACCOUNT_DELETION_D1_SURFACES.map((surface) =>
     env.APP_DB.prepare(
-      `SELECT COUNT(*) AS count FROM ${surface.table} WHERE ${surface.column} = ?`,
-    ).bind(uid),
+      `SELECT COUNT(*) AS count FROM ${surface.table} WHERE ${surface.column} = ?`
+    ).bind(uid)
   );
   const [d1Results, r2Results] = await Promise.all([
     env.APP_DB.batch<{ count?: unknown }>(statements),
     Promise.all([
+      ...(
+        [
+          ["frame-requests-temporary", env.FRAME_REQUESTS_TEMPORARY],
+          ["frame-requests", env.FRAME_REQUESTS],
+        ] as const
+      ).flatMap(([name, bucket]) =>
+        bucket
+          ? [
+              bucket
+                .list({ prefix: `frame-requests/${uid}/`, limit: 1 })
+                .then(
+                  (value) =>
+                    [
+                      `${name}:frame-requests/${uid}/`,
+                      value.objects.length ? 1 : 0,
+                    ] as const
+                ),
+            ]
+          : []
+      ),
+      screenFrameStorageState(env, uid, "residual").then(
+        (value) =>
+          [
+            `screen-frames:${encodeURIComponent(uid)}/`,
+            value.empty ? 0 : 1,
+          ] as const
+      ),
       ...ACCOUNT_DELETION_R2_PREFIX_PATTERNS.map(async (pattern) => {
         const prefix = r2Prefix(pattern, uid);
         const listed = await env.ASSETS.list({ prefix, limit: 1 });
@@ -418,7 +533,7 @@ export async function readAccountProductResidual(
             `conversation-recordings:${prefix}`,
             listed.objects.length > 0 ? 1 : 0,
           ] as const;
-        },
+        }
       ),
       ...ACCOUNT_DELETION_SPEECH_PROFILE_PREFIX_PATTERNS.map(
         async (pattern) => {
@@ -431,7 +546,7 @@ export async function readAccountProductResidual(
             `speech-profiles:${prefix}`,
             listed.objects.length > 0 ? 1 : 0,
           ] as const;
-        },
+        }
       ),
     ]),
   ]);
@@ -448,7 +563,7 @@ export async function readAccountProductResidual(
       throw new Error("product residual query returned invalid rows");
     }
     d1[residualKey(ACCOUNT_DELETION_D1_SURFACES[index])] = databaseCount(
-      result.results[0]?.count,
+      result.results[0]?.count
     );
   }
   const r2 = Object.fromEntries(r2Results);

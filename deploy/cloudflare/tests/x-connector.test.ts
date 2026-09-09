@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SignedAuthContext } from "../workers/shared/auth-context";
 import type { JobsEnv } from "../workers/jobs/env";
+import { memoryPrivacyReceiptId } from "../workers/shared/memory-privacy-receipts";
 import {
   reconcileXConnections,
   registerXConnectorRoutes,
@@ -194,6 +195,7 @@ function environment(
     })),
   };
   const env = {
+    MEMORY_PRIVACY_SECRET: "memory-privacy-tests-secret-32-bytes",
     APP_DB: database as unknown as D1Database,
     AI: ai,
     ...(configured
@@ -363,6 +365,18 @@ describe("Cloudflare X connector", () => {
         )
         .get(),
     ).toEqual({ count: 1 });
+    const memory = state.database.database
+      .prepare(
+        "SELECT id, privacy_receipt_id FROM cf_memories WHERE uid = 'x-user' AND app_id = 'x'",
+      )
+      .get() as { id: string; privacy_receipt_id: string };
+    expect(memory.privacy_receipt_id).toBe(
+      await memoryPrivacyReceiptId(
+        state.env.MEMORY_PRIVACY_SECRET,
+        "x-user",
+        memory.id,
+      ),
+    );
     expect(
       state.database.database
         .prepare(

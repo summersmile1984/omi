@@ -6,13 +6,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/dev/docker-compose.dev.yml"
-CHECKER="$REPO_ROOT/.github/scripts/check_self_host_deployment.py"
+CHECKER="$REPO_ROOT/deploy/self-host/check-config.py"
 INTEGRATION_TESTS=(
   "$REPO_ROOT/backend/firestore_pg/tests/test_migration_import.py"
   "$REPO_ROOT/backend/firestore_pg/tests/test_transaction_semantics.py"
   "$REPO_ROOT/backend/firestore_pg/tests/test_composite_indexes.py"
 )
-FIRESTORE_PG_MIGRATOR="$REPO_ROOT/backend/scripts/firestore_pg_migrate.py"
+FIRESTORE_PG_MIGRATOR="$REPO_ROOT/backend/fork/migrate.py"
 TARGET_SAFETY_CHECK="$REPO_ROOT/backend/scripts/validate_migration_test_targets.py"
 SOURCE_WRITE_FREEZE_TOOL="$REPO_ROOT/backend/scripts/source_write_freeze.py"
 AGENT_VM_RECONCILE_TOOL="$REPO_ROOT/backend/scripts/agent_vm_reconcile.py"
@@ -168,7 +168,7 @@ fi
 AUTH_GATE_IMAGE="${PROJECT}-auth-server"
 docker build --file "$REPO_ROOT/auth-server/Dockerfile" --tag "$AUTH_GATE_IMAGE" "$REPO_ROOT"
 AUTH_GATE_ENV=(
-  --env NODE_ENV=production
+  --env SELF_HOST_STAGE=production
   --env DATABASE_URL="$AUTH_MIGRATION_DATABASE_URL"
   --env BETTER_AUTH_SECRET=gate-only-better-auth-secret-32-characters-minimum
   --env BETTER_AUTH_URL=https://auth.gate.invalid
@@ -178,19 +178,19 @@ AUTH_GATE_ENV=(
   --env AUTH_JWT_ISSUER=https://auth.gate.invalid
   --env AUTH_JWT_AUDIENCE=https://auth.gate.invalid
 )
-docker run --rm "${AUTH_GATE_RUN_ARGS[@]}" "${AUTH_GATE_ENV[@]}" "$AUTH_GATE_IMAGE" node src/migrate.js
+docker run --rm "${AUTH_GATE_RUN_ARGS[@]}" "${AUTH_GATE_ENV[@]}" "$AUTH_GATE_IMAGE" node self-host-runtime.mjs migrate
 AUTH_JWKS_REGRESSION_DIR="$(mktemp -d)"
 docker run --rm "${AUTH_GATE_RUN_ARGS[@]}" "${AUTH_GATE_ENV[@]}" \
   --volume "$AUTH_JWKS_REGRESSION_DIR:/evidence" \
   "$AUTH_GATE_IMAGE" node src/seed-legacy-jwk.js --output /evidence/legacy-jwk.json
-docker run --rm "${AUTH_GATE_RUN_ARGS[@]}" "${AUTH_GATE_ENV[@]}" "$AUTH_GATE_IMAGE" node src/migrate.js
-docker run --rm "${AUTH_GATE_RUN_ARGS[@]}" "${AUTH_GATE_ENV[@]}" "$AUTH_GATE_IMAGE" node src/migrate.js
-docker run --rm "${AUTH_GATE_RUN_ARGS[@]}" "${AUTH_GATE_ENV[@]}" "$AUTH_GATE_IMAGE" node src/migrate.js --check
+docker run --rm "${AUTH_GATE_RUN_ARGS[@]}" "${AUTH_GATE_ENV[@]}" "$AUTH_GATE_IMAGE" node self-host-runtime.mjs migrate
+docker run --rm "${AUTH_GATE_RUN_ARGS[@]}" "${AUTH_GATE_ENV[@]}" "$AUTH_GATE_IMAGE" node self-host-runtime.mjs migrate
+docker run --rm "${AUTH_GATE_RUN_ARGS[@]}" "${AUTH_GATE_ENV[@]}" "$AUTH_GATE_IMAGE" node self-host-runtime.mjs migrate --check
 
 AUTH_GATE_CONTAINER="${PROJECT}-auth-server"
 docker run --detach --name "$AUTH_GATE_CONTAINER" \
   --publish "127.0.0.1:${GATE_BETTER_AUTH_PORT}:3000" \
-  "${AUTH_GATE_RUN_ARGS[@]}" "${AUTH_GATE_ENV[@]}" "$AUTH_GATE_IMAGE" node src/index.js >/dev/null
+  "${AUTH_GATE_RUN_ARGS[@]}" "${AUTH_GATE_ENV[@]}" "$AUTH_GATE_IMAGE" node self-host-runtime.mjs serve >/dev/null
 for _attempt in {1..30}; do
   if curl --fail --silent "http://127.0.0.1:${GATE_BETTER_AUTH_PORT}/ready" >/dev/null; then
     break

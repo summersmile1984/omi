@@ -1,0 +1,13 @@
+{
+  "source": "https://github.com/firebase/scrypt#password-hashing",
+  "config": {
+    "algorithm": "SCRYPT",
+    "base64_signer_key": "jxspr8Ki0RYycVU8zykbdLGjFQ3McFUH0uiiTvC8pVMXAn210wjLNmdZJzxUECKbm0QsEmYUSDzZvpjeJ9WmXA==",
+    "base64_salt_separator": "Bw==",
+    "rounds": 8,
+    "mem_cost": 14
+  },
+  "passwordSalt": "42xEC+ixf3L2lw==",
+  "passwordHash": "lSrfV15cpx95/sZS2W9c9Kp6i/LVgQNDNC/qzrCnh1SAyZvqmZqAjTdn3aoItz+VHjoZilo78198JAdRuid5lQ==",
+  "password": "user1password"
+}

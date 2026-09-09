@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, BaseModel, Field, ValidationError, field_validator, model_validator
 
 from account_routes import usage_source_statement
+from memory_privacy_receipts import privacy_receipt_id
 from conversation_routes import CONVERSATION_SOURCES, _first_conversation as first_conversation
 from developer_routes import _authenticate, _bool
 from integration_routes import _json_schema, _public_webhook_url, _webhook_targets, _workers_ai_json
@@ -695,12 +696,13 @@ def _memory_insert(env: object, rows: list[dict[str, object]]):
     return env.APP_DB.prepare(
         "INSERT INTO cf_memories "
         "(uid, id, content, category, visibility, tags_json, subject_attribution, conversation_id, reviewed, "
-        "manually_added, memory_tier, valid_at, created_at, updated_at) "
+        "manually_added, memory_tier, valid_at, created_at, updated_at, privacy_receipt_id) "
         "SELECT json_extract(value, '$.uid'), json_extract(value, '$.id'), json_extract(value, '$.content'), "
         "'interesting', 'private', '[]', 'unknown', json_extract(value, '$.conversation_id'), 0, 0, 'short_term', "
         "CAST(json_extract(value, '$.valid_at') AS INTEGER), CAST(json_extract(value, '$.created_at') AS INTEGER), "
-        "CAST(json_extract(value, '$.updated_at') AS INTEGER) FROM json_each(?)"
-    ).bind(_json(rows))
+        "CAST(json_extract(value, '$.updated_at') AS INTEGER), json_extract(value, '$.privacy_receipt_id') "
+        "FROM json_each(?)"
+    ).bind(_json([{**row, 'privacy_receipt_id': privacy_receipt_id(env, row['uid'], row['id'])} for row in rows]))
 
 
 def _memory_usage_insert(env: object, uid: str, rows: list[dict[str, object]]):

@@ -30,15 +30,19 @@ class FakeDb:
         self.connection = sqlite3.connect(":memory:")
         self.connection.row_factory = sqlite3.Row
         migration_dir = Path(__file__).parents[3] / "migrations/app"
-        for name in ("0032_conversations.sql", "0037_memories.sql", "0046_account_usage.sql"):
-            self.connection.executescript((migration_dir / name).read_text())
+        for path in sorted(migration_dir.glob('*.sql')):
+            self.connection.executescript(path.read_text())
         self.batch_statement_counts = []
+        self.bind_sizes = []
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
 
     async def batch(self, statements):
         self.batch_statement_counts.append(len(statements))
+        self.bind_sizes.extend(
+            len(value.encode()) for statement in statements for value in statement.args if isinstance(value, str)
+        )
         try:
             for statement in statements:
                 self.connection.execute(statement.sql, statement.args)
@@ -73,6 +77,9 @@ class FakeStatement:
 
 
 class FakeRequest:
+    async def stream(self):
+        yield await self.body()
+
     def __init__(self, env, headers, query=None, body=None):
         self.scope = {"env": env}
         self.headers = headers
@@ -97,7 +104,15 @@ def signed_headers(secret: str, uid: str = "memory-user"):
 
 
 def make_env(secret: str):
-    return type("Env", (), {"APP_DB": FakeDb(), "INTERNAL_ASSERTION_SECRET": secret})()
+    return type(
+        "Env",
+        (),
+        {
+            "APP_DB": FakeDb(),
+            "INTERNAL_ASSERTION_SECRET": secret,
+            "MEMORY_PRIVACY_SECRET": "memory-privacy-tests-secret-32-bytes",
+        },
+    )()
 
 
 class FakeVectorIndex:
@@ -148,6 +163,11 @@ def test_product_memory_search_uses_d1_default_visibility_and_contract():
     reviewed = create(env, secret, content="Coffee rejected record", category="manual")
     locked = create(env, secret, content="Coffee locked record", category="manual")
     create(env, secret, uid="other-user", content="Coffee belongs to another user")
+    # This search fixture represents existing processed rows. Current native
+    # POSTs are raw pending inputs and are covered by test_memory_default_read.
+    env.APP_DB.connection.execute(
+        "UPDATE cf_memories SET processing_state = 'processed', canonical_metadata_json = '{}'"
+    )
     env.APP_DB.connection.execute(
         "UPDATE cf_memories SET memory_tier = 'archive' WHERE uid = ? AND id = ?",
         ("memory-user", archive["id"]),
@@ -228,21 +248,24 @@ def test_vector_memory_search_uses_vectorize_candidates_and_d1_hydration():
     vector_id = "a" * 64
     env.MEMORY_VECTORS = FakeVectorIndex([{"id": vector_id, "score": 0.91}])
     env.WORKERS_AI_VECTOR_MODEL = "test-vector-model"
-    env.APP_DB.connection.execute(
-        "CREATE TABLE cf_vector_projection_state ("
-        "uid TEXT NOT NULL, projection_kind TEXT NOT NULL, source_id TEXT NOT NULL, sub_id TEXT NOT NULL, "
-        "vector_id TEXT NOT NULL, source_version INTEGER NOT NULL, model TEXT NOT NULL, updated_at INTEGER NOT NULL)"
-    )
-    env.APP_DB.connection.commit()
+    from test_memory_mutation_lock import Database
 
+    env.APP_DB = Database()
     memory = create(env, secret, content="Coffee before vector search", category="manual")
+    env.APP_DB.seed_pre_normalization_snapshot(memory["id"])
     env.APP_DB.connection.execute(
         "INSERT INTO cf_vector_projection_state "
         "(uid, projection_kind, source_id, sub_id, vector_id, source_version, model, updated_at) "
-        "VALUES (?, 'memory', ?, '', ?, 7, 'test-vector-model', 1)",
-        ("memory-user", memory["id"], vector_id),
+        "VALUES (?, 'memory', ?, '', ?, ?, 'test-vector-model', 1)",
+        ("memory-user", memory["id"], vector_id, env.APP_DB.row(memory["id"])["item_revision"]),
     )
     env.APP_DB.connection.commit()
+
+    # INV-MEM-2 requires the canonical revision and its owned publication,
+    # rather than the former unrelated constant 7.
+    from test_memory_vector_hydration import adopt_state
+
+    adopt_state(env.APP_DB)
 
     response = asyncio.run(
         search_vector_memory(FakeRequest(env, signed_headers(secret), {"query": "coffee", "limit": "1"}))
@@ -252,7 +275,9 @@ def test_vector_memory_search_uses_vectorize_candidates_and_d1_hydration():
     assert response["returned_count"] == 1
     assert response["items"][0]["id"] == memory["id"]
     assert response["scores_by_memory_id"] == {memory["id"]: 0.91}
-    assert response["projection_commit_ids_by_memory_id"] == {memory["id"]: "7"}
+    assert response["projection_commit_ids_by_memory_id"] == {
+        memory["id"]: str(env.APP_DB.row(memory["id"])["item_revision"])
+    }
     assert response["legacy_fallback_used"] is False
     assert response["rollout"]["surface"] == "product_vector_search"
     assert env.MEMORY_VECTORS.calls[0][1]["namespace"]
@@ -292,8 +317,8 @@ def test_memory_create_list_filters_and_preserves_canonical_shape_with_uid_isola
     assert manual["memory_id"] == manual["id"]
     assert manual["uid"] == "memory-user"
     assert manual["content"] == "Lives in Shanghai"
-    assert manual["memory_tier"] == "long_term"
-    assert manual["layer"] == "long_term"
+    assert manual["memory_tier"] == "short_term"
+    assert manual["layer"] == "short_term"
     assert manual["manually_added"] is True
     assert manual["arguments"] == {"place": "Shanghai"}
     assert manual["created_at"].endswith("+00:00")
@@ -337,15 +362,16 @@ def test_memory_batch_create_is_atomic_bounded_and_drops_per_file_imports():
         "Manual batch memory",
         "Automatic batch memory",
     ]
-    assert response["memories"][0]["memory_tier"] == "long_term"
+    assert response["memories"][0]["memory_tier"] == "short_term"
     assert response["memories"][1]["memory_tier"] == "short_term"
-    assert env.APP_DB.batch_statement_counts == [2]
+    assert len(env.APP_DB.batch_statement_counts) == 1
+    small_batch_statements = list(env.APP_DB.batch_statement_counts)
     assert env.APP_DB.connection.execute("SELECT COUNT(*) FROM cf_memories").fetchone()[0] == 2
     assert env.APP_DB.connection.execute("SELECT COUNT(*) FROM cf_usage_sources").fetchone()[0] == 2
 
     empty = asyncio.run(create_memories_batch(FakeRequest(env, signed_headers(secret), body={"memories": []})))
     assert empty == {"memories": [], "created_count": 0}
-    assert env.APP_DB.batch_statement_counts == [2]
+    assert env.APP_DB.batch_statement_counts == small_batch_statements
 
     full_env = make_env(secret)
     full = asyncio.run(
@@ -358,7 +384,7 @@ def test_memory_batch_create_is_atomic_bounded_and_drops_per_file_imports():
         )
     )
     assert full["created_count"] == 100
-    assert full_env.APP_DB.batch_statement_counts == [2]
+    assert full_env.APP_DB.batch_statement_counts == small_batch_statements
 
     chunked_env = make_env(secret)
     chunked = asyncio.run(
@@ -366,12 +392,16 @@ def test_memory_batch_create_is_atomic_bounded_and_drops_per_file_imports():
             FakeRequest(
                 chunked_env,
                 signed_headers(secret),
-                body={"memories": [{"content": "x" * 50_000} for _ in range(40)]},
+                body={"memories": [{"content": "x" * 50_000} for _ in range(19)]},
             )
         )
     )
-    assert chunked["created_count"] == 40
-    assert chunked_env.APP_DB.batch_statement_counts == [4]
+    assert chunked["created_count"] == 19
+    # D1 batch is one atomic transaction even when multiple string bindings
+    # are needed. Its documented maximum string/BLOB value is 2 MB:
+    # https://developers.cloudflare.com/d1/platform/limits/
+    assert len(chunked_env.APP_DB.batch_statement_counts) == 1
+    assert max(chunked_env.APP_DB.bind_sizes) <= 2_000_000
 
     oversized = asyncio.run(
         create_memories_batch(
@@ -414,16 +444,21 @@ def test_memory_edit_visibility_review_and_delete_are_uid_scoped():
     assert asyncio.run(
         update_memory_visibility(FakeRequest(env, signed_headers(secret), {"value": "public"}), memory_id)
     ) == {"status": "ok"}
-    assert asyncio.run(review_memory(FakeRequest(env, signed_headers(secret), {"value": "false"}), memory_id)) == {
-        "status": "ok"
-    }
-
     listed = asyncio.run(list_memories(FakeRequest(env, signed_headers(secret))))
     assert listed[0]["content"] == "Edited memory"
     assert listed[0]["edited"] is True
     assert listed[0]["visibility"] == "public"
-    assert listed[0]["reviewed"] is True
-    assert listed[0]["user_review"] is False
+    assert asyncio.run(review_memory(FakeRequest(env, signed_headers(secret), {"value": "false"}), memory_id)) == {
+        "status": "ok"
+    }
+
+    # Upstream default visibility excludes explicitly rejected memory.
+    assert asyncio.run(list_memories(FakeRequest(env, signed_headers(secret)))) == []
+    review_state = env.APP_DB.connection.execute(
+        "SELECT reviewed, user_review FROM cf_memories WHERE uid = ? AND id = ?",
+        ("memory-user", memory_id),
+    ).fetchone()
+    assert tuple(review_state) == (1, 0)
 
     other_delete = asyncio.run(delete_memory(FakeRequest(env, signed_headers(secret, "other-user")), memory_id))
     assert other_delete.status_code == 404
@@ -434,7 +469,7 @@ def test_memory_edit_visibility_review_and_delete_are_uid_scoped():
         "SELECT deleted_at FROM cf_memories WHERE uid = ? AND id = ?",
         ("memory-user", memory_id),
     ).fetchone()
-    assert tombstone["deleted_at"] is not None
+    assert tombstone is None  # Canonical finalization removes deterministic IDs after provider absence.
 
 
 def test_memory_read_and_baseline_status_are_uid_scoped_and_locked():
@@ -512,7 +547,7 @@ def test_memory_read_and_baseline_status_are_uid_scoped_and_locked():
     assert locked.status_code == 402
 
 
-def test_batch_delete_is_all_or_nothing_and_keeps_tombstones():
+def test_batch_delete_is_all_or_nothing_and_finalizes_tombstones():
     secret = "memory-secret"
     env = make_env(secret)
     first = create(env, secret, content="First")
@@ -542,7 +577,8 @@ def test_batch_delete_is_all_or_nothing_and_keeps_tombstones():
     assert deleted == {"status": "ok"}
     assert asyncio.run(list_memories(FakeRequest(env, signed_headers(secret)))) == []
     count = env.APP_DB.connection.execute(
-        "SELECT COUNT(*) AS count FROM cf_memories WHERE uid = ? AND deleted_at IS NOT NULL",
+        "SELECT COUNT(*) AS count FROM cf_memories WHERE uid = ?",
         ("memory-user",),
     ).fetchone()
-    assert count["count"] == 2
+    assert count["count"] == 0
+    assert env.APP_DB.connection.execute("SELECT count(*) FROM cf_memory_privacy_receipts").fetchone()[0] == 2

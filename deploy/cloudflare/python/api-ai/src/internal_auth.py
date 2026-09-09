@@ -61,11 +61,11 @@ def verify_request_context(
     *,
     audience: str,
     method: str,
-    path: str,
+    path: str | None,
     now: int | None = None,
 ) -> dict[str, Any] | None:
     context = decode_context(encoded, signature, secret)
-    if context is None:
+    if context is None or not isinstance(path, str) or not path.startswith("/"):
         return None
     issued_at = context.get("issuedAt")
     expires_at = context.get("expiresAt")

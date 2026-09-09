@@ -2,24 +2,58 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from brand_runtime import load_brand_runtime
 from fallback import record_fallback
 from internal_auth import create_request_context, decode_context
 
 router = APIRouter()
 
 _EXPORT_QUERIES = (
+    ("share_email_dispatches", "cf_share_email_receipts", "created_at DESC, id"),
+    ("share_email_recipients", "cf_share_email_recipients", "conversation_id, email"),
+    ("share_email_quota", "cf_share_email_quota", "day DESC"),
+    ("feedback_events", "cf_feedback_events", "created_at DESC, id DESC"),
+    ("frame_requests", "cf_frame_requests", "created_at DESC, request_id"),
     ("conversations", "cf_conversations", "created_at DESC, id DESC"),
+    ("conversation_screenshots", "cf_screen_frame_sets", "conversation_id"),
+    ("screenshot_settings", "cf_screen_frame_settings", "uid"),
+    ("desktop_daily_usage", "cf_desktop_daily_usage", "date DESC, client_device_id DESC"),
+    ("realtime_usage", "cf_realtime_usage", "usage_date DESC"),
+    ("referral_claims", "cf_referral_claims", "claimed_at DESC"),
+    ("referral_attributions", "cf_referral_attributions", "uid"),
+    ("realtime_turns", "cf_realtime_usage_events", "occurred_at DESC, idempotency_key DESC"),
+    ("csat_ratings", "cf_csat_ratings", "created_at DESC, id DESC"),
+    ("email_preferences", "cf_user_email_preferences", "uid"),
+    ("daily_summaries", "cf_daily_summaries", "date DESC, id DESC"),
+    ("jit_proactivity_events", "cf_jit_proactivity_events", "event_id"),
+    ("jit_trigger_feedback", "cf_jit_trigger_feedback", "feedback_id"),
+    ("jit_proactivity_budget_controls", "cf_jit_proactivity_budget_controls", "control_id"),
+    ("jit_proactivity_daily_budgets", "cf_jit_proactivity_daily_budgets", "budget_day"),
+    ("jit_proactivity_candidate_turns", "cf_jit_proactivity_candidate_turns", "candidate_id"),
     ("memories", "cf_memories", "created_at DESC, id DESC"),
+    ("memory_operations", "cf_memory_operations", "created_at DESC, operation_id"),
+    ("memory_commits", "cf_memory_commits", "commit_sequence DESC, commit_id"),
+    ("memory_ledger_reopens", "cf_memory_ledger_reopens", "source_memory_id"),
+    ("memory_graph_assertions", "cf_memory_graph_assertions", "memory_id"),
     ("memory_import_runs", "cf_memory_import_runs", "updated_at DESC, run_id DESC"),
     ("memory_import_artifacts", "cf_memory_import_artifacts", "created_at DESC, artifact_id DESC"),
     ("people", "cf_people", "created_at DESC, id DESC"),
     ("action_items", "cf_action_items", "created_at DESC, id DESC"),
+    ("candidates", "cf_candidates", "created_at DESC, candidate_id"),
+    ("task_interventions", "cf_task_interventions", "created_at DESC, intervention_id"),
+    ("task_feedback", "cf_task_feedback", "created_at DESC, feedback_id"),
+    ("task_outcomes", "cf_task_outcomes", "occurred_at DESC, outcome_id"),
+    ("task_recurrence_inbox", "cf_task_recurrence_inbox", "updated_at DESC, receipt_id"),
+    ("task_attention_overrides", "cf_task_attention_overrides", "expires_at DESC, override_id"),
+    ("task_context_snapshots", "cf_task_context_snapshots", "generated_at DESC, scope_key"),
+    ("task_open_loop_snapshots", "cf_task_open_loop_snapshots", "generated_at DESC, scope_key"),
     ("goals", "cf_goals", "created_at DESC, id DESC"),
     ("goal_history", "cf_goal_progress_history", "recorded_at DESC, goal_id DESC, date DESC"),
     ("goal_events", "cf_goal_progress_events", "created_at DESC, event_id DESC"),
@@ -82,6 +116,51 @@ def _decode_json_columns(row: dict[str, object]) -> dict[str, object]:
 async def _rows(env: object, table: str, order_by: str, uid: str) -> list[dict[str, object]]:
     result = await env.APP_DB.prepare(f"SELECT * FROM {table} WHERE uid = ? ORDER BY {order_by}").bind(uid).all()
     values = result.get("results", []) if isinstance(result, dict) else []
+    if table in {"cf_task_context_snapshots", "cf_task_open_loop_snapshots"}:
+        return [json.loads(row["payload_json"]) for row in values if isinstance(row, dict)]
+    if table in {
+        "cf_candidates",
+        "cf_task_attention_overrides",
+        "cf_task_recurrence_inbox",
+        'cf_jit_proactivity_events',
+        'cf_jit_trigger_feedback',
+        'cf_jit_proactivity_budget_controls',
+        'cf_jit_proactivity_daily_budgets',
+        'cf_jit_proactivity_candidate_turns',
+    }:
+        return [json.loads(row["record_json"]) for row in values if isinstance(row, dict)]
+    if table == "cf_task_outcomes":
+        from recommendation_outcomes import outcome_record
+
+        return [outcome_record(row).model_dump(mode="json") for row in values if isinstance(row, dict)]
+    if table in {"cf_task_interventions", "cf_task_feedback"}:
+        # Preserve historical request-only payloads as well as current records.
+        # Physical identity owns the record; internal retry/index metadata does
+        # not belong in the portable user data document.
+        exported = []
+        for row in values:
+            if not isinstance(row, dict):
+                continue
+            data = json.loads(row["payload_json"])
+            data = {key: value for key, value in data.items() if key not in {"_request_hash", "_override_expires_at"}}
+            for key in ("intervention_id", "feedback_id", "attribution_chain_id", "account_generation"):
+                if key in row:
+                    data[key] = row[key]
+            data.setdefault("created_at", datetime.fromtimestamp(row["created_at"], timezone.utc).isoformat())
+            exported.append(data)
+        return exported
+    if table == "cf_daily_summaries":
+        values = [
+            {key: value for key, value in row.items() if key != "generation_token"}
+            for row in values
+            if isinstance(row, dict)
+        ]
+    if table == "cf_memories":
+        values = [
+            {key: value for key, value in row.items() if key != "privacy_receipt_id"}
+            for row in values
+            if isinstance(row, dict)
+        ]
     return [_decode_json_columns(row) for row in values if isinstance(row, dict)]
 
 
@@ -161,16 +240,51 @@ async def export_user_data(request: Request):
     payload = {
         "profile": profile,
         "conversations": sections.pop("conversations", []),
+        "conversation_screenshots": sections.pop("conversation_screenshots", []),
+        "screenshot_settings": sections.pop("screenshot_settings", []),
         "memories": sections.pop("memories", []),
+        "memory_ledger_data": {
+            "memory_operations": sections.pop("memory_operations", []),
+            "memory_commits": sections.pop("memory_commits", []),
+            "memory_ledger_reopens": sections.pop("memory_ledger_reopens", []),
+            "memory_graph_assertions": sections.pop("memory_graph_assertions", []),
+        },
         "people": sections.pop("people", []),
         "action_items": sections.pop("action_items", []),
         "task_data": task_data,
+        "jit_data": {
+            name: sections.pop(name, [])
+            for name in (
+                'jit_proactivity_events',
+                'jit_trigger_feedback',
+                'jit_proactivity_budget_controls',
+                'jit_proactivity_daily_budgets',
+                'jit_proactivity_candidate_turns',
+            )
+        },
         "chat_messages": sections.pop("chat_messages", []),
+        "desktop_daily_usage": sections.pop("desktop_daily_usage", []),
+        "realtime_usage": sections.pop("realtime_usage", []),
+        "referral_claims": sections.pop("referral_claims", []),
+        "referral_attributions": sections.pop("referral_attributions", []),
+        "realtime_turns": sections.pop("realtime_turns", []),
+        "csat_ratings": sections.pop("csat_ratings", []),
+        "email_preferences": sections.pop("email_preferences", []),
+        "share_email_dispatches": sections.pop("share_email_dispatches", []),
+        "share_email_recipients": sections.pop("share_email_recipients", []),
+        "share_email_quota": sections.pop("share_email_quota", []),
+        "daily_summaries": sections.pop("daily_summaries", []),
     }
     payload["exported_at"] = int(time.time())
+    try:
+        filename = f"{load_brand_runtime(env).brand_id}-export.json"
+    except ValueError:
+        # A missing presentation config must not block an owner's data export.
+        record_fallback(from_mode="none", to_mode="system_default", reason="malformed_doc", outcome="degraded")
+        filename = "user-data-export.json"
     return JSONResponse(
         payload,
-        headers={"Content-Disposition": 'attachment; filename="omi-export.json"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

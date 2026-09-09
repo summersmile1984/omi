@@ -28,9 +28,6 @@ google-api-python-client==2.139.0
 # Cache & rate limiting
 redis==5.0.8
 
-# PostgreSQL Firestore compatibility
-psycopg[binary]==3.3.4
-
 # HTTP
 requests~=2.33.0
 
@@ -91,9 +88,6 @@ pytz==2024.1
 # Payment & communication
 stripe==11.3.0
 twilio==9.5.0
-
-# Search
-typesense==0.21.0
 
 # Locale
 pycountry==24.6.1

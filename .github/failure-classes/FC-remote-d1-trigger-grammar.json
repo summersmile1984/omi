@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "FC-remote-d1-trigger-grammar",
+  "violated_contract": "A D1 migration must be accepted by the remote migration transport as well as SQLite. Unparenthesized CASE expressions inside a trigger can be mistaken for the trigger terminator by the remote query parser, even when local migration and business tests pass.",
+  "canonical_prevention": "Keep CASE expressions parenthesized in the affected frame triggers, retain a clearly labeled static portability tripwire in the existing route lane, and exercise fresh remote migrations with the actual Wrangler migration command. SQLite publication and erasure tests establish unchanged business semantics; they do not certify the remote parser.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/tests/frame-request-storage.test.ts"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/migrations/**/*.sql",
+    "deploy/cloudflare/tests/frame-request-storage.test.ts"
+  ],
+  "status": "open"
+}

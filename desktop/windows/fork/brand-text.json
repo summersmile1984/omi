@@ -1,0 +1,404 @@
+{
+  "src/renderer/src/components/onboarding/AskDemoStep.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "Omi's answer: a comparison of Mac models",
+      "template": "{persona}'s answer: a comparison of Mac models",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/onboarding/AutomationPermissionStep.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "Let Omi act when asked",
+      "template": "Let {product} act when asked",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Automation lets Omi take actions for you",
+      "template": "Automation lets {product} take actions for you",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/onboarding/BackgroundPrivacyStep.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "How Omi runs on your PC",
+      "template": "How {product} runs on your PC",
+      "count": 1
+    },
+    {
+      "kind": "JsxText",
+      "source": "\n        Omi works best as a quiet companion running in the background. You’re in control — change\n        any of this now or later in Settings.\n      ",
+      "template": "\n        {product} works best as a quiet companion running in the background. You’re in control — change\n        any of this now or later in Settings.\n      ",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/onboarding/BuildProfileStep.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "Omi scans projects and recent files",
+      "template": "{product} scans projects and recent files",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/onboarding/GoalStep.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "Selecting a correct and detailed goal is very important - Omi will optimize all advice to achieve that goal. Make sure your goal contains a number to measure progress.",
+      "template": "Selecting a correct and detailed goal is very important - {persona} will optimize all advice to achieve that goal. Make sure your goal contains a number to measure progress.",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/onboarding/HowDidYouHearStep.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "How did you hear about Omi?",
+      "template": "How did you hear about {product}?",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/onboarding/MicPermissionStep.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "Windows blocked microphone access. Open Settings → Privacy & security → Microphone, allow this app, then come back — Omi will pick it up automatically.",
+      "template": "Windows blocked microphone access. Open Settings → Privacy & security → Microphone, allow this app, then come back — {product} will pick it up automatically.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Let Omi use your mic",
+      "template": "Let {product} use your mic",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "This lets Omi transcribe meetings and voice notes",
+      "template": "This lets {product} transcribe meetings and voice notes",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/onboarding/ScreenPermissionStep.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "Let Omi read your screen",
+      "template": "Let {product} read your screen",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Omi keeps a private, local timeline of what's on your screen. It stays on this device, and you can turn it off any time in Settings.",
+      "template": "{product} keeps a private, local timeline of what's on your screen. It stays on this device, and you can turn it off any time in Settings.",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/onboarding/TrustStep.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "https://github.com/BasedHardware/omi",
+      "template": "{docs}",
+      "count": 1
+    },
+    {
+      "kind": "JsxText",
+      "source": "\n          Omi is open source and private by design. During setup, we’ll ask you for these\n          permissions to understand your work and help in the right places.\n        ",
+      "template": "During setup, {product} will ask for permissions to understand your work and help in the right places.",
+      "count": 1
+    },
+    {
+      "kind": "JsxText",
+      "source": "\n            Read the source code\n          ",
+      "template": "Read documentation",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/onboarding/VoiceIntroStep.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "Windows is blocking Omi’s microphone, so voice can’t work yet. You can fix this later in Settings → Privacy.",
+      "template": "Windows is blocking {product}’s microphone, so voice can’t work yet. You can fix this later in Settings → Privacy.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "That’s it — Omi heard you.",
+      "template": "That’s it — {persona} heard you.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Talk to Omi",
+      "template": "Talk to {persona}",
+      "count": 1
+    },
+    {
+      "kind": "JsxText",
+      "source": "\n          Keep the keys held down while you speak — a quick press just opens Omi. Let go when you’re\n          done.\n        ",
+      "template": "\n          Keep the keys held down while you speak — a quick press just opens {product}. Let go when you’re\n          done.\n        ",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/consent/BackgroundConsentControls.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "Omi listens through your microphone and turns what you hear into conversations automatically. Turn this off to listen only when you ask.",
+      "template": "{product} listens through your microphone and turns what you hear into conversations automatically. Turn this off to listen only when you ask.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Omi stays in your system tray after you close the window, so it's ready the moment you need it. Quit any time from the tray.",
+      "template": "{product} stays in your system tray after you close the window, so it's ready the moment you need it. Quit any time from the tray.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Start Omi automatically when you sign in to Windows.",
+      "template": "Start {product} automatically when you sign in to Windows.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Start Omi automatically when you sign in to Windows. Available in installed builds only.",
+      "template": "Start {product} automatically when you sign in to Windows. Available in installed builds only.",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/consent/BackgroundConsentInterstitial.tsx": [
+    {
+      "kind": "JsxText",
+      "source": "\n          Omi now runs in the background\n        ",
+      "template": "\n          {product} now runs in the background\n        ",
+      "count": 1
+    },
+    {
+      "kind": "JsxText",
+      "source": "\n          Omi keeps working from your system tray so it’s always ready. Take a moment to confirm how\n          it should behave — you can change any of this later in Settings.\n        ",
+      "template": "\n          {product} keeps working from your system tray so it’s always ready. Take a moment to confirm how\n          it should behave — you can change any of this later in Settings.\n        ",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/settings/tabs/GeneralTab.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "Let Omi take actions",
+      "template": "Let {product} take actions",
+      "count": 2
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Omi can click and type in your apps when you ask.",
+      "template": "{product} can click and type in your apps when you ask.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Turn on to let Omi act in your apps when you ask.",
+      "template": "Turn on to let {product} act in your apps when you ask.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Master switch for Omi's proactive screen features — Focus, memory and task extraction, and insights. When off, Omi never analyzes your screen. Separate from Screen Capture above, which only records your local Rewind timeline.",
+      "template": "Master switch for {product}'s proactive screen features — Focus, memory and task extraction, and insights. When off, {product} never analyzes your screen. Separate from Screen Capture above, which only records your local Rewind timeline.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "When a meeting app is holding the microphone (Zoom, Teams, Meet, and more), Omi can capture and transcribe it — always with a visible notice, never silently.",
+      "template": "When a meeting app is holding the microphone (Zoom, Teams, Meet, and more), {product} can capture and transcribe it — always with a visible notice, never silently.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Start Omi automatically when you sign in to Windows.",
+      "template": "Start {product} automatically when you sign in to Windows.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Start Omi automatically when you sign in to Windows. Available in installed builds only.",
+      "template": "Start {product} automatically when you sign in to Windows. Available in installed builds only.",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/settings/tabs/PrivacyTab.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "Hide the Omi bar from screen sharing",
+      "template": "Hide the {product} bar from screen sharing",
+      "count": 2
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Let Omi capture your screen when you ask about what's on it. Omi only captures when you ask — turning this on doesn't share anything on its own.",
+      "template": "Let {product} capture your screen when you ask about what's on it. {product} only captures when you ask — turning this on doesn't share anything on its own.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "screen sharing chat capture screenshot ask omi see my screen vision",
+      "template": "screen sharing chat capture screenshot ask {product} see my screen vision",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Your screen timeline, file index, and app usage stay on this PC. Only synthesized facts (memories) are sent to your Omi account, and only for features you turn on.",
+      "template": "Your screen timeline, file index, and app usage stay on this PC. Only synthesized facts (memories) are sent to your {product} account, and only for features you turn on.",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/home/hub/HomeHub.tsx": [
+    {
+      "kind": "JsxText",
+      "source": "\n                omi.\n              ",
+      "template": "\n                {product}.\n              ",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/home/hub/HubAskBar.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "Ask omi anything",
+      "template": "Ask {persona} anything",
+      "count": 2
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Omi is replying",
+      "template": "{persona} is replying",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/home/hub/HubChatPanel.tsx": [
+    {
+      "kind": "JsxText",
+      "source": "Ask omi anything",
+      "template": "Ask {persona} anything",
+      "count": 1
+    }
+  ],
+  "src/main/trayState.ts": [
+    {
+      "kind": "StringLiteral",
+      "source": "Omi",
+      "template": "{product}",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Omi — listening",
+      "template": "{product} — listening",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Omi — paused",
+      "template": "{product} — paused",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Open Omi",
+      "template": "Open {product}",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Quit Omi",
+      "template": "Quit {product}",
+      "count": 1
+    }
+  ],
+  "src/main/index.ts": [
+    {
+      "kind": "StringLiteral",
+      "source": "Omi is still running",
+      "template": "{product} is still running",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Omi keeps listening in the tray. Right-click the tray icon to pause or quit.",
+      "template": "{product} keeps listening in the tray. Right-click the tray icon to pause or quit.",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "omi",
+      "preserve": "Non-presentation protocol/storage input; existing identity stage owns title/API migration",
+      "count": 1
+    },
+    {
+      "kind": "FirstTemplateToken",
+      "source": "[main] omi.db was corrupt and has been recovered: ",
+      "preserve": "Non-presentation protocol/storage input; existing identity stage owns title/API migration",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "https://api.omi.me/*",
+      "preserve": "Non-presentation protocol/storage input; existing identity stage owns title/API migration",
+      "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "omi-capture:cmd",
+      "preserve": "Non-presentation protocol/storage input; existing identity stage owns title/API migration",
+      "count": 2
+    },
+    {
+      "kind": "TemplateHead",
+      "source": "--omi-mica=",
+      "preserve": "Existing preload CLI contract controlling Mica, not visible branding",
+      "count": 1
+    }
+  ],
+  "src/renderer/src/components/layout/Sidebar.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "omi.sidebar.collapsed",
+      "count": 1,
+      "preserve": "Already-shipped sidebar preference key; presentation does not migrate storage"
+    },
+    {
+      "kind": "JsxText",
+      "source": "\n            omi\n          ",
+      "count": 1,
+      "template": "\n            {product}\n          "
+    }
+  ],
+  "src/renderer/src/pages/LegacyHome.tsx": [
+    {
+      "kind": "StringLiteral",
+      "source": "../assets/omi-mark.png",
+      "count": 1,
+      "preserve": "Retained during text pass solely for the exact assets-stage replacement; import/markup is retired in that same prepare call"
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Ask Omi…",
+      "count": 1,
+      "template": "Ask {persona}…"
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Talk with Omi",
+      "count": 1,
+      "template": "Talk with {persona}"
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Omi",
+      "count": 1,
+      "preserve": "Retained during text pass solely for the exact assets-stage replacement; import/markup is retired in that same prepare call"
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Omi is replying",
+      "count": 1,
+      "template": "{persona} is replying"
+    }
+  ]
+}

@@ -9,6 +9,7 @@ scripts/fork/test_check_upstream_touch.py uses for the zero-touch guard.
 from __future__ import annotations
 
 import json
+import importlib.util
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,12 @@ REPO_ROOT = BRAND_SCRIPTS.parents[1]
 sys.path.insert(0, str(BRAND_SCRIPTS))
 from schema_validate import validate  # noqa: E402
 from yaml_lite import YamlError, load_yaml  # noqa: E402
-from generators import mobile  # noqa: E402
+from generators import firmware, mobile  # noqa: E402
+
+_stage_spec = importlib.util.spec_from_file_location("firmware_stage", REPO_ROOT / "omi/firmware/fork/stage.py")
+assert _stage_spec and _stage_spec.loader
+firmware_stage = importlib.util.module_from_spec(_stage_spec)
+_stage_spec.loader.exec_module(firmware_stage)
 
 MINIMAL_SCHEMA = {
     "type": "object",
@@ -130,17 +136,17 @@ class MobileGeneratorTests(unittest.TestCase):
     def test_render_writes_the_brand_display_name_as_a_dart_const(self):
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme"}}
-        written = mobile.render(manifest, root)
-        self.assertEqual(written, [root / "app/lib/flavors.brand.dart"])
-        content = (root / "app/lib/flavors.brand.dart").read_text()
+        written = mobile.render(manifest)
+        self.assertEqual(list(written), ["app/lib/flavors.brand.dart"])
+        content = written["app/lib/flavors.brand.dart"]
+        self.assertEqual(list(root.iterdir()), [])
         self.assertIn("const String kBrandDisplayName = 'Acme';", content)
         self.assertIn("brand/acme/manifest.yaml", content)
 
     def test_render_escapes_an_apostrophe_in_the_display_name(self):
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme's App"}}
-        mobile.render(manifest, root)
-        content = (root / "app/lib/flavors.brand.dart").read_text()
+        content = mobile.render(manifest)["app/lib/flavors.brand.dart"]
         self.assertIn("const String kBrandDisplayName = 'Acme\\'s App';", content)
 
     def test_render_escapes_a_dollar_sign_so_dart_does_not_interpolate_it(self):
@@ -148,8 +154,7 @@ class MobileGeneratorTests(unittest.TestCase):
         # compile with "Undefined name 'me'." rather than producing a leak.
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Ac$me"}}
-        mobile.render(manifest, root)
-        content = (root / "app/lib/flavors.brand.dart").read_text()
+        content = mobile.render(manifest)["app/lib/flavors.brand.dart"]
         self.assertIn("const String kBrandDisplayName = 'Ac\\$me';", content)
 
     def test_render_escapes_an_embedded_newline(self):
@@ -157,18 +162,83 @@ class MobileGeneratorTests(unittest.TestCase):
         # string entirely ("String starting with ' must end with '.").
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme\nCorp"}}
-        mobile.render(manifest, root)
-        content = (root / "app/lib/flavors.brand.dart").read_text()
+        content = mobile.render(manifest)["app/lib/flavors.brand.dart"]
         self.assertIn("const String kBrandDisplayName = 'Acme\\nCorp';", content)
 
     def test_render_is_idempotent(self):
         root = self.tmp_repo_root()
         manifest = {"brand": {"id": "acme", "display_name": "Acme"}}
-        mobile.render(manifest, root)
-        first = (root / "app/lib/flavors.brand.dart").read_text()
-        mobile.render(manifest, root)
-        second = (root / "app/lib/flavors.brand.dart").read_text()
+        first = mobile.render(manifest)
+        second = mobile.render(manifest)
         self.assertEqual(first, second)
+
+
+class FirmwareGeneratorTests(unittest.TestCase):
+    def manifest(self) -> dict:
+        manifest = load_yaml(REPO_ROOT / "brand/omi-upstream/manifest.yaml")
+        manifest["brand"]["id"] = "weft-fixture"
+        manifest["device"].update(
+            ble_name="Weft",
+            ble_name_devkit="Weft DevKit",
+            dis_manufacturer="Weft Hardware",
+            dis_model_cv1="Weft CV1",
+            firmware_release_prefix="Weft_CV1_v",
+            nfc_pair_url="https://pair.weft.invalid/p?id=%s",
+            mcuboot_signing_key="env:WEFT_MCUBOOT_KEY",
+        )
+        manifest["distribution"]["github_releases_repo"] = "weft/firmware"
+        return manifest
+
+    def test_generated_policy_has_one_public_release_identity(self):
+        config = firmware.generated_config(self.manifest())
+        self.assertEqual(config["brand_id"], "weft-fixture")
+        self.assertEqual(config["release"], firmware.public_policy(self.manifest()))
+        self.assertEqual(config["release"]["release_tag_prefix"], "Weft_CV1_v")
+        self.assertEqual(config["release"]["release_asset_prefix"], "Weft_CV1_OTA_v")
+        self.assertEqual(
+            config["release"]["github_releases_url"], "https://api.github.com/repos/weft/firmware/releases"
+        )
+        self.assertNotIn("mcuboot_signing_key", config["release"])
+
+    def test_rejects_nfc_url_that_cannot_fit_the_actual_cv1_buffer(self):
+        manifest = self.manifest()
+        manifest["device"]["nfc_pair_url"] = "https://pair.weft.invalid/" + "x" * 60 + "?id=%s"
+        with self.assertRaisesRegex(firmware.FirmwareRenderError, "NFC URI buffer"):
+            firmware.generated_config(manifest)
+
+    def test_staging_rebrands_a_copy_without_touching_upstream_firmware(self):
+        config = firmware.generated_config(self.manifest())
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "firmware-stage"
+            source_conf = (REPO_ROOT / "omi/firmware/omi/omi.conf").read_bytes()
+            source_nfc = (REPO_ROOT / "omi/firmware/omi/src/lib/core/nfc.c").read_bytes()
+            metadata = firmware_stage.stage(config, output)
+            conf = (output / "firmware/omi.conf").read_text()
+            nfc = (output / "firmware/src/lib/core/nfc.c").read_text()
+            self.assertIn('CONFIG_BT_DEVICE_NAME="Weft"', conf)
+            self.assertIn('CONFIG_BT_DIS_MODEL="Weft CV1"', conf)
+            self.assertIn('CONFIG_BT_DIS_MANUF="Weft Hardware"', conf)
+            self.assertIn('"https://pair.weft.invalid/p?id=%s"', nfc)
+            self.assertNotIn("friend.based.com", nfc)
+            self.assertEqual((REPO_ROOT / "omi/firmware/omi/omi.conf").read_bytes(), source_conf)
+            self.assertEqual((REPO_ROOT / "omi/firmware/omi/src/lib/core/nfc.c").read_bytes(), source_nfc)
+            self.assertEqual(metadata["release_policy"], config["release"])
+            self.assertEqual(
+                metadata["signing"],
+                {
+                    "key_reference": "env:WEFT_MCUBOOT_KEY",
+                    "key_resolved": False,
+                    "release_qualified": False,
+                },
+            )
+
+    def test_stage_rejects_preexisting_output_instead_of_overwriting_it(self):
+        config = firmware.generated_config(self.manifest())
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "firmware-stage"
+            output.mkdir()
+            with self.assertRaisesRegex(firmware_stage.StageError, "already exists"):
+                firmware_stage.stage(config, output)
 
 
 class RepoFixture:
@@ -195,8 +265,12 @@ class RepoFixture:
 
         manifest_src = (BRAND_SCRIPTS.parent.parent / "brand/omi-upstream/manifest.yaml").read_text()
         (root / "brand/omi-upstream/manifest.yaml").write_text(manifest_src)
+        fork_manifest = load_yaml(root / "brand/omi-upstream/manifest.yaml")
+        fork_manifest["brand"].update(id="a-real-fork-brand", display_name="Acme")
+        (root / "brand/a-real-fork-brand").mkdir()
+        (root / "brand/a-real-fork-brand/manifest.yaml").write_text(json.dumps(fork_manifest))
 
-        for name in ("apply.py", "check.py", "schema_validate.py", "yaml_lite.py", "lexicon.yaml"):
+        for name in ("apply.py", "check.py", "manifest.py", "schema_validate.py", "yaml_lite.py", "lexicon.yaml"):
             (root / "scripts/brand" / name).write_text((BRAND_SCRIPTS / name).read_text())
         shutil.copytree(BRAND_SCRIPTS / "generators", root / "scripts/brand/generators")
 
@@ -260,6 +334,7 @@ class BrandToolingTests(unittest.TestCase):
 
     def test_check_finds_the_leak_and_respects_the_exemption(self):
         fx = self.fixture()
+        self.assertEqual(fx.run_apply("a-real-fork-brand").returncode, 0)
         proc = fx.run_check("a-real-fork-brand")
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
@@ -269,6 +344,7 @@ class BrandToolingTests(unittest.TestCase):
 
     def test_check_on_omi_upstream_reports_a_self_check_count_not_a_failure(self):
         fx = self.fixture()
+        self.assertEqual(fx.run_apply("omi-upstream").returncode, 0)
         proc = fx.run_check("omi-upstream")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
@@ -280,6 +356,7 @@ class BrandToolingTests(unittest.TestCase):
         # it and the same fixture must report one more leak.
         fx = self.fixture()
         (fx.root / "brand/_allow.yaml").write_text("schema_version: 1\nexemptions:\n")
+        self.assertEqual(fx.run_apply("a-real-fork-brand").returncode, 0)
         proc = fx.run_check("a-real-fork-brand")
         payload = json.loads(proc.stdout)
         self.assertEqual(payload["lexicon_matches"], 3)
@@ -287,6 +364,7 @@ class BrandToolingTests(unittest.TestCase):
     def test_baseline_ratchet_rejects_an_increase(self):
         fx = self.fixture()
         baseline = fx.root / "baseline.txt"
+        self.assertEqual(fx.run_apply("a-real-fork-brand").returncode, 0)
         first = fx.run_check("a-real-fork-brand", "--baseline", str(baseline))
         self.assertEqual(first.returncode, 0)
         self.assertEqual(baseline.read_text().strip(), "2")
@@ -301,4 +379,5 @@ class BrandToolingTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    suite = unittest.defaultTestLoader.discover(str(BRAND_SCRIPTS), pattern="test_*.py")
+    sys.exit(0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1)

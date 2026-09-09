@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "FC-dynamic-document-path-missing-schema-inventory",
+  "violated_contract": "Every collection reached by a serving document-path owner must be provisioned by the versioned PostgreSQL schema before that owner serves requests, including collections composed through dynamic document paths.",
+  "canonical_prevention": "Keep prior migration inventories immutable and add a forward migration. Execute actual dynamic-path business owners against a shared schema-admitted transaction fixture in the existing startup lane, then verify fresh and prior-schema upgrades against real PostgreSQL. The 2026-09-04 local Android self-host onboarding incident returned 500 because users/<uid>/onboarding_admission/current was absent from the v4 inventory; the earlier legal-hold integration required the same dynamic-path correction.",
+  "canonical_prevention_artifact": [
+    "backend/fork/tests/schema_firestore.py",
+    "backend/fork/tests/test_pg_owner_inventory.py",
+    "backend/firestore_pg/tests/test_transaction_semantics.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "backend/firestore_pg/migrations.py",
+    "backend/firestore_pg/engine.py",
+    "backend/fork/tests/test_pg_owner_inventory.py"
+  ],
+  "status": "open"
+}

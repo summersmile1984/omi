@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "FC-consolidation-generation-mode-drift",
+  "violated_contract": "The Cloudflare consolidation adapter must preserve the original ordinary message invocation followed by schema validation. Adding provider response_format changed the generation contract despite identical prompt text; the hosted Qwen run and paired replay returned missing required promote fields, while the same replay without the extra parameter returned complete decisions.",
+  "canonical_prevention": "Keep the original prompt/schema text and post-generation Pydantic plus business validation. Do not add constrained generation at the transport adapter. Assert the actual AI payload and retain paired live evidence, including semantic failures rather than treating valid JSON as business qualification.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/python/api-core/src/memory_consolidation_llm.py",
+    "deploy/cloudflare/python/api-core/tests/test_memory_consolidation_llm.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/python/api-core/src/memory_consolidation_llm.py"
+  ],
+  "status": "open"
+}

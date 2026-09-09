@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import edge from "../workers/edge/index";
 import { decodeAuthContext } from "../workers/shared/auth-context";
-import { verifyRealtimeTicket } from "../workers/shared/realtime-ticket";
 
 const rawService = (
   handler: (request: Request) => Promise<Response> | Response,
@@ -1813,6 +1812,51 @@ describe("edge gateway", () => {
     expect(unauthenticated.status).toBe(401);
   });
 
+  it.each(["new", "migrating", "unavailable"])(
+    "reads native ownership before privacy deletion in %s state",
+    async (state) => {
+      const calls: string[] = [];
+      const env = {
+        INTERNAL_ASSERTION_SECRET: "test-secret",
+        ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED: "true",
+        ACCOUNT_ACTIVATION_FENCE_ENABLED: "false",
+        AUTH: rawService(() =>
+          Response.json({ uid: "native-user", authority: "better-auth" }),
+        ),
+        API_CORE: rawService((request) => {
+          calls.push("core");
+          expect(new URL(request.url).pathname).toBe(
+            "/v1/account/cutover/control",
+          );
+          expect(
+            decodeAuthContext(request.headers.get("x-omi-auth-context")),
+          ).toMatchObject({ uid: "native-user", authority: "better-auth" });
+          return state === "unavailable"
+            ? new Response(null, { status: 503 })
+            : Response.json({
+                state,
+                product_traffic_allowed: state === "new",
+              });
+        }),
+        JOBS: rawService(() => {
+          calls.push("jobs");
+          return Response.json({ status: "ok" });
+        }),
+      };
+      const response = await edge.fetch(
+        new Request("https://edge.test/v1/users/delete-account", {
+          method: "DELETE",
+          headers: { authorization: "Bearer native-session" },
+        }),
+        env as never,
+      );
+      expect(response.status).toBe(state === "unavailable" ? 503 : 200);
+      expect(calls).toEqual(
+        state === "unavailable" ? ["core"] : ["core", "jobs"],
+      );
+    },
+  );
+
   it("routes the sync job run boundary to Jobs with only signed Better Auth context", async () => {
     let forwarded: Request | undefined;
     const env = {
@@ -3565,40 +3609,20 @@ describe("edge gateway", () => {
     expect(forwardedPath).toBe("/v2/apps/search");
   });
 
-  it("exchanges an httpOnly session cookie for a short-lived realtime ticket", async () => {
-    let verifyRequest: Request | undefined;
-    const env = {
-      INTERNAL_ASSERTION_SECRET: "test-secret",
-      AUTH: service((request) => {
-        verifyRequest = request;
-        return Response.json({ uid: "cookie-user", authority: "better-auth" });
-      }),
-      API_CORE: service(() =>
-        Response.json({ error: "wrong owner" }, { status: 500 }),
-      ),
-    };
+  it("does not retain the retired fork-only web-ticket endpoint", async () => {
     const response = await edge.fetch(
       new Request("https://edge.test/v1/realtime/web-ticket", {
         method: "POST",
-        headers: {
-          cookie: "__Secure-better-auth.session_token=cookie-session",
-        },
+        headers: { cookie: "retired-session" },
       }),
-      env as never,
+      {
+        INTERNAL_ASSERTION_SECRET: "test-secret",
+        AUTH: service(() =>
+          Response.json({ uid: "user-1", authority: "better-auth" }),
+        ),
+      } as never,
     );
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(verifyRequest?.headers.get("cookie")).toBe(
-      "__Secure-better-auth.session_token=cookie-session",
-    );
-    const body = (await response.json()) as { ticket: string };
-    expect(
-      await verifyRealtimeTicket(body.ticket, "test-secret"),
-    ).toMatchObject({
-      uid: "cookie-user",
-      authority: "better-auth",
-    });
+    expect(response.status).toBe(404);
   });
 
   it("strips caller auth headers before forwarding verified context", async () => {
@@ -5943,7 +5967,7 @@ describe("edge gateway", () => {
     expect(aiPath).toBe("/v1/translate");
   });
 
-  it("mints a native realtime ticket and keeps external provider usage optional", async () => {
+  it("preserves the live-model route with an explicit disabled capability instead of minting an STT ticket", async () => {
     const aiPaths: string[] = [];
     const env = {
       INTERNAL_ASSERTION_SECRET: "test-secret",
@@ -5975,6 +5999,12 @@ describe("edge gateway", () => {
         env,
       );
       expect(response.status).toBe(path.endsWith("/session") ? 409 : 200);
+      if (path.endsWith("/session")) {
+        const body = await response.json();
+        expect(body).toMatchObject({ reason: "external_realtime_disabled", provider: "openai",
+          backend_route: "/v2/realtime/session", retryable: false });
+        expect(body).not.toHaveProperty("token");
+      }
     }
     expect(aiPaths).toEqual(["/v2/realtime/usage"]);
 
@@ -5989,23 +6019,11 @@ describe("edge gateway", () => {
       }),
       env,
     );
-    expect(nativeResponse.status).toBe(200);
-    const nativePayload = (await nativeResponse.json()) as {
-      provider: string;
-      token: string;
-      expires_in: number;
-      websocket_url: string;
-      transport: string;
-    };
-    expect(nativePayload).toMatchObject({
-      provider: "workers-ai",
-      expires_in: 30,
-      websocket_url: "wss://edge.test/v4/web/listen",
-      transport: "cloudflare-realtime",
+    expect(nativeResponse.status).toBe(400);
+    expect(await nativeResponse.json()).toMatchObject({
+      reason: "bad_provider",
+      backend_route: "/v2/realtime/session",
     });
-    await expect(
-      verifyRealtimeTicket(nativePayload.token, "test-secret"),
-    ).resolves.toMatchObject({ uid: "user-1", authority: "better-auth" });
 
     const oversizedResponse = await edge.fetch(
       new Request("https://edge.test/v2/realtime/session", {

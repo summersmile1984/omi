@@ -7,6 +7,63 @@
   "required": ["schema_version", "brand", "domains", "identifiers", "theme", "assets", "device", "distribution", "analytics", "plans", "marketplace", "mcp", "api"],
   "additionalProperties": false,
   "$defs": {
+    "deployment_endpoints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "api_base": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://",
+          "minLength": 8
+        },
+        "auth_base": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://",
+          "minLength": 8
+        },
+        "web_app": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://",
+          "minLength": 8
+        },
+        "mcp_base": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://",
+          "minLength": 8
+        },
+        "share_base": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://",
+          "minLength": 8
+        },
+        "objects_base": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://",
+          "minLength": 8
+        }
+      }
+    },
+    "deployment_stages": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "production": {
+          "$ref": "#/$defs/deployment_endpoints"
+        },
+        "beta": {
+          "$ref": "#/$defs/deployment_endpoints"
+        },
+        "local": {
+          "$ref": "#/$defs/deployment_endpoints"
+        }
+      }
+    },
     "https_url": {
       "type": "string",
       "format": "uri",
@@ -35,6 +92,29 @@
     }
   },
   "properties": {
+    "self_hosted_inference": {
+      "type": "object",
+      "description": "Public Server inference selection frozen into every client and backend profile. Credentials remain runtime secrets.",
+      "additionalProperties": false,
+      "properties": {
+        "local": { "enum": ["native", "mimo-cn"] },
+        "beta": { "enum": ["native", "mimo-cn"] },
+        "production": { "enum": ["native", "mimo-cn"] }
+      }
+    },
+    "deployments": {
+      "type": "object",
+      "description": "Explicit endpoint overrides by deployment target and stage. No auth/MCP/object URL is inferred from api_base. Local defaults come from target profiles; production/beta require complete resolved endpoints.",
+      "additionalProperties": false,
+      "properties": {
+        "self_hosted": {
+          "$ref": "#/$defs/deployment_stages"
+        },
+        "cloudflare": {
+          "$ref": "#/$defs/deployment_stages"
+        }
+      }
+    },
     "schema_version": { "const": 1 },
     "brand": {
       "type": "object",
@@ -43,6 +123,7 @@
       "properties": {
         "id": { "$ref": "#/$defs/brand_id", "description": "Directory name and generated-file suffix. Never changes after first apply -- it is baked into generated identifiers." },
         "display_name": { "type": "string", "minLength": 1 },
+        "tagline": { "type": "string", "maxLength": 120, "description": "Optional public product promise shown beside the brand name." },
         "short_name": { "type": "string", "minLength": 1, "description": "Used where space is constrained: watchOS complication, widget, PWA short_name." },
         "legal_entity": { "type": "string", "minLength": 1 },
         "support_email": { "type": "string", "format": "email" },
@@ -56,6 +137,9 @@
       "additionalProperties": false,
       "properties": {
         "api_base": { "$ref": "#/$defs/https_url" },
+        "auth_base": { "$ref": "#/$defs/https_url" },
+        "mcp_base": { "$ref": "#/$defs/https_url" },
+        "objects_base": { "$ref": "#/$defs/https_url" },
         "web_app": { "$ref": "#/$defs/https_url" },
         "share_base": { "$ref": "#/$defs/https_url" },
         "docs": { "$ref": "#/$defs/https_url" },

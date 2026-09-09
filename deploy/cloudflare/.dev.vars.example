@@ -3,6 +3,8 @@ BETTER_AUTH_SECRET=replace-with-at-least-32-random-bytes
 BETTER_AUTH_URL=http://localhost:3000
 ALLOWED_ORIGINS=http://localhost:3000
 INTERNAL_ASSERTION_SECRET=replace-with-a-different-random-secret
+# API Core referral issuer: independent of session and lifecycle email keys.
+REFERRAL_SIGNING_SECRET=replace-with-at-least-32-independent-random-bytes
 # Optional Better Auth social providers. A provider is hidden unless both
 # client ID and secret are configured.
 GOOGLE_CLIENT_ID=

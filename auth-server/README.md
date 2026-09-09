@@ -6,13 +6,17 @@ Self-hosted auth for the 4C8G Omi deployment, replacing Firebase Auth.
 
 - email+password signup / signin (Better Auth), plus explicitly configured
   operator Google/Apple OAuth
-- JWT plugin signs **ES256** JWTs carrying the Better Auth user id in `sub`, with public keys at `/api/auth/jwks`
+- JWT plugin signs **ES256**, 3,600-second JWTs with matching `uid`/`sub` and a real session `sid`; public keys are at `/api/auth/jwks`
 - signed bearer session tokens let native clients exchange a persisted session for a short-lived JWT
 - internal, secret-protected user lookup/deletion keeps account lifecycle provider-neutral
 - User data stored in PostgreSQL (same server as the shim DB)
 
 The Python backend verifies these JWTs via `utils/auth_shim.py` — the single
-identity boundary before business routers run.
+identity boundary before business routers run. It requires issuer/audience and
+checks the current user/session through the trusted `/internal/verify` endpoint;
+logout and deletion invalidate previously issued JWTs. See the shared
+[access contract](../contracts/auth/README.md) for required environment variables,
+legacy-token refresh, rotation and two-target validation.
 
 The Express 4 bridge catches every Better Auth handler rejection explicitly.
 Database, schema, or signing-key outages return `503
@@ -40,6 +44,18 @@ npm run migrate
 # Start only after migrate exits successfully.
 npm start
 ```
+
+The self-host Docker image routes both serving and migration through
+`self-host-runtime.mjs`: `SELF_HOST_STAGE=local` selects development; `beta` and
+`production` select production before Auth modules import. The default is
+production, unknown stages/commands fail, and ambient `NODE_ENV` cannot relax
+production or beta. Use `node self-host-runtime.mjs migrate [--check]` and
+`node self-host-runtime.mjs serve` inside this image. The source helper lives at
+`deploy/self-host/auth-runtime.mjs` and is copied beside `src` during the build.
+Direct `npm start` remains the component development command shown above.
+
+Source commit/tree labels are applied after dependency and source layers;
+changing attribution alone must reuse the locked `npm ci` layer.
 
 Production Compose owns this ordering with the one-shot `auth-migrate` service
 and `condition: service_completed_successfully`. `npm run migrate` is idempotent
@@ -70,7 +86,13 @@ the auth boundary and is never copied into PostgreSQL or an import receipt.
 Imported password accounts store an envelope containing the per-user salt and
 hash plus a non-secret configuration fingerprint. Better Auth verifies those
 passwords locally with Firebase's modified-scrypt algorithm; new passwords
-continue to use Better Auth's native scrypt format.
+continue to use Better Auth's native scrypt format. A successful email sign-in
+upgrades an imported credential to that native format. The PostgreSQL owner
+re-verifies the current envelope and conditionally updates that exact hash,
+so a concurrent password reset/import or account deletion keeps its newer state.
+Upgrade persistence failure preserves the already verified session and legacy
+credential for retry on the next login; shared `recordFallback` emits a bounded
+`postgres` event without user, password, hash, or SQL details.
 
 Run the normal schema migrator first, then validate, apply, and verify the exact
 immutable export:
@@ -108,6 +130,12 @@ silently discarded; reconcile those identities explicitly before importing.
 Google and Apple accounts are imported only when their operator OAuth pairs are configured.
 Sessions are intentionally not migrated; clients must establish a new signed
 Better Auth session after cutover.
+
+The import digest orders opaque IDs by UTF-8 bytes, matching PostgreSQL's
+[`COLLATE "C"` ordering](https://www.postgresql.org/docs/16/collation.html).
+Do not replace this with locale-sensitive sorting: mixed-case, punctuation and
+Unicode IDs must reconcile identically on every migration host. Successful
+existing receipts retain the same digest; failed transactions leave no receipt.
 
 ## Enable in the backend
 

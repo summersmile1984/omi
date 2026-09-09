@@ -15,9 +15,9 @@ import {
   FirebaseIdentityMigrationError,
   planFirebaseIdentityImport,
 } from "../src/import-firebase-users.js";
-import { parseFirebaseScryptConfig } from "../src/firebase-migration-password.js";
+import { serverFirebaseScrypt } from "../../auth/shared/firebase-scrypt.mjs";
 
-const config = parseFirebaseScryptConfig({
+const config = serverFirebaseScrypt.parseConfig({
   algorithm: "SCRYPT",
   base64_signer_key:
     "jxspr8Ki0RYycVU8zykbdLGjFQ3McFUH0uiiTvC8pVMXAn210wjLNmdZJzxUECKbm0QsEmYUSDzZvpjeJ9WmXA==",
@@ -77,16 +77,40 @@ test("plans password, Google, and Apple identities while preserving Firebase uid
   assert.equal(first.canonicalSha256, second.canonicalSha256);
   assert.equal(first.users[0].id, "firebase-uid-1");
   assert.equal(first.users[0].email, "owner@example.com");
-  assert.deepEqual(
-    first.accounts.map((account) => account.providerId).sort(),
-    ["apple", "credential", "google"],
-  );
+  assert.deepEqual(first.accounts.map((account) => account.providerId).sort(), [
+    "apple",
+    "credential",
+    "google",
+  ]);
   assert.deepEqual(first.requiredSocialProviders, ["apple", "google"]);
   assert.equal(
     first.accounts.find((account) => account.providerId === "credential")
       .accountId,
     "firebase-uid-1",
   );
+});
+
+test("canonical import order matches PostgreSQL C collation for opaque UIDs", () => {
+  // PostgreSQL C orders UTF-8 character bytes, independently of host locale.
+  // The real importer rolled back this mixed UID fixture under localeCompare.
+  const expected = ["%2E%2E", ".", "..", "Z", "a", "ä", "中", "😀"];
+  const users = [...expected].reverse().map((localId, index) => ({
+    localId,
+    email: `ordering-${index}@example.invalid`,
+    createdAt: "1700000000000",
+    passwordHash,
+    salt: "42xEC+ixf3L2lw==",
+  }));
+  const first = planFirebaseIdentityImport({ users }, config);
+  assert.deepEqual(
+    first.users.map((user) => user.id),
+    expected,
+  );
+  const second = planFirebaseIdentityImport(
+    { users: [...users].reverse() },
+    config,
+  );
+  assert.equal(first.canonicalSha256, second.canonicalSha256);
 });
 
 test("CLI rejects symlinked or group/world-readable Firebase import artifacts", async () => {

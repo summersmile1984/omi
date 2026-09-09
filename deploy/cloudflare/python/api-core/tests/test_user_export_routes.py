@@ -80,6 +80,7 @@ def make_env(secret: str):
             "APP_DB": FakeDb(),
             "INTERNAL_ASSERTION_SECRET": secret,
             "AUTH": FakeAuth(),
+            "BRAND_RUNTIME_JSON": json.dumps({"brand_id": "eddy", "display_name": "Eddy", "ai_persona_name": "Eddy"}),
         },
     )()
 
@@ -172,6 +173,44 @@ def _body(response):
     return json.loads(response.body.decode())
 
 
+def test_export_includes_only_owned_realtime_turns_and_totals():
+    secret = 'export-secret'
+    env = make_env(secret)
+    for uid, tokens in [('export-user', 10), ('other-user', 20)]:
+        env.APP_DB.connection.execute(
+            "INSERT INTO cf_realtime_usage_events "
+            "(uid, idempotency_key, provider, model, input_text_tokens, input_audio_tokens, input_cached_tokens, "
+            "output_text_tokens, output_audio_tokens, total_tokens, cost_micros, occurred_at) "
+            "VALUES (?, 'hashed-turn', 'workers-ai', '', ?, 0, 0, 0, 0, ?, 0, 1)",
+            (uid, tokens, tokens),
+        )
+    env.APP_DB.connection.commit()
+    response = asyncio.run(export_user_data(FakeRequest(env, signed_headers(secret))))
+    assert response.status_code == 200
+    payload = _body(response)
+    assert len(payload['realtime_turns']) == 1 and len(payload['realtime_usage']) == 1
+    assert payload['realtime_turns'][0]['total_tokens'] == payload['realtime_usage'][0]['total_tokens'] == 10
+    assert 'uid' not in payload['realtime_turns'][0]
+
+
+def test_export_includes_owned_screenshot_settings_and_sets_without_upload_receipts():
+    env = make_env('export-secret')
+    _insert_fixtures(env)
+    for uid, conversation_id in [('export-user', 'conversation-1'), ('other-user', 'other-conversation')]:
+        env.APP_DB.connection.execute(
+            "INSERT INTO cf_screen_frame_sets(uid, conversation_id) VALUES (?, ?)", (uid, conversation_id)
+        )
+        env.APP_DB.connection.execute("INSERT INTO cf_screen_frame_settings(uid, enabled) VALUES (?, 0)", (uid,))
+    response = asyncio.run(export_user_data(FakeRequest(env, signed_headers('export-secret'))))
+    assert response.status_code == 200
+    payload = _body(response)
+    assert len(payload['conversation_screenshots']) == 1
+    assert payload['conversation_screenshots'][0]['conversation_id'] == 'conversation-1'
+    assert payload['conversation_screenshots'][0]['frames'] == []
+    assert payload['screenshot_settings'] == [{'enabled': 0}]
+    assert 'screen_frame_writes' not in payload and 'screen_frame_attempts' not in payload
+
+
 def test_export_is_authenticated_uid_scoped_and_preserves_user_visible_shape():
     secret = "export-secret"
     env = make_env(secret)
@@ -180,7 +219,7 @@ def test_export_is_authenticated_uid_scoped_and_preserves_user_visible_shape():
     response = asyncio.run(export_user_data(FakeRequest(env, signed_headers(secret))))
 
     assert response.status_code == 200
-    assert response.headers["content-disposition"] == 'attachment; filename="omi-export.json"'
+    assert response.headers["content-disposition"] == 'attachment; filename="eddy-export.json"'
     payload = _body(response)
     assert payload["profile"] == {"uid": "export-user", "name": "Export User", "email": "export@example.com"}
     assert len(payload["conversations"]) == 1
@@ -208,3 +247,12 @@ def test_export_rejects_missing_auth_and_converts_d1_failures_to_503():
     response = asyncio.run(export_user_data(FakeRequest(broken, signed_headers(secret))))
     assert response.status_code == 503
     assert _body(response) == {"error": "user export unavailable"}
+
+
+def test_export_stays_available_with_missing_legacy_brand_config(capsys):
+    env = make_env('export-secret')
+    env.BRAND_RUNTIME_JSON = None
+    response = asyncio.run(export_user_data(FakeRequest(env, signed_headers('export-secret'))))
+    assert response.status_code == 200
+    assert response.headers['content-disposition'] == 'attachment; filename="user-data-export.json"'
+    assert 'malformed_doc' in capsys.readouterr().out

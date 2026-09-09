@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from account_routes import usage_source_statement
+from memory_privacy_receipts import privacy_receipt_id
 from conversation_routes import (
     _CONVERSATION_SEARCH_SELECT,
     _CONVERSATION_SELECT,
@@ -118,6 +119,7 @@ async def _daily_notification_limit(env: object, uid: str, now: int) -> JSONResp
             "Retry-After": str(seconds_until_next_day),
         },
     )
+
 
 TASK_INTEGRATION_KEYS = frozenset({"apple_reminders", "todoist", "asana", "google_tasks", "clickup"})
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -947,8 +949,8 @@ async def create_memories(request: Request, app_id: str):
                 env.APP_DB.prepare(
                     "INSERT INTO cf_memories "
                     "(uid, id, content, category, visibility, tags_json, qualifiers_json, manually_added, app_id, "
-                    "memory_tier, valid_at, created_at, updated_at) "
-                    "VALUES (?, ?, ?, 'system', 'private', ?, ?, 0, ?, 'short_term', ?, ?, ?)"
+                    "memory_tier, valid_at, created_at, updated_at, privacy_receipt_id) "
+                    "VALUES (?, ?, ?, 'system', 'private', ?, ?, 0, ?, 'short_term', ?, ?, ?, ?)"
                 ).bind(
                     uid,
                     memory_id,
@@ -959,6 +961,7 @@ async def create_memories(request: Request, app_id: str):
                     now,
                     now,
                     now,
+                    privacy_receipt_id(env, uid, memory_id),
                 ),
                 usage_source_statement(
                     env,

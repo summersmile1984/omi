@@ -21,7 +21,7 @@ describe("chat file account-deletion residual", () => {
           success: true,
           results: [{ count: 0 }],
           meta: {},
-        })),
+        }))
       ),
     } as unknown as D1Database;
     const result = await readAccountProductResidual(
@@ -31,8 +31,18 @@ describe("chat file account-deletion residual", () => {
         CHAT_FILES: bucket({ "user-1/": true }),
         CONVERSATION_RECORDINGS: bucket({}),
         SPEECH_PROFILES: bucket({}),
+        INTERNAL_ASSERTION_SECRET: "chat-file-residual-secret",
+        SCREEN_FRAME_WRITER: {
+          fetch: async () =>
+            Response.json({
+              uid: "user-1",
+              empty: true,
+              writes: 0,
+              objects_present: false,
+            }),
+        } as unknown as Fetcher,
       },
-      "user-1",
+      "user-1"
     );
     expect(result.empty).toBe(false);
     expect(result.r2["chat-files:user-1/"]).toBe(1);

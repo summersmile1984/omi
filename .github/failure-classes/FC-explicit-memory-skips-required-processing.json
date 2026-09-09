@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "FC-explicit-memory-skips-required-processing",
+  "violated_contract": "An explicit native memory submission is raw input until the canonical required processor records normalization. A platform intake adapter must preserve that admission metadata instead of relying on the kernel's processed fallback, which otherwise allows raw input to look eligible for vector publication and unreceipted promotion.",
+  "canonical_prevention": "Build every native single and batch submission with the unchanged required-processing payload and source-attribution rules inside the authoritative intake funnel. Derive pending state from that server-owned metadata, retain a stable source surface and acceptance timestamp in operation identity, and let only a validated processor receipt settle normalization.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/python/api-core/src/memory_apply_intake.py",
+    "deploy/cloudflare/python/api-core/tests/test_memory_apply_intake.py",
+    "deploy/cloudflare/python/api-core/tests/test_memory_consolidation_apply.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/python/api-core/src/memory_apply_intake.py",
+    "deploy/cloudflare/python/api-core/src/memory_routes.py"
+  ],
+  "status": "open"
+}

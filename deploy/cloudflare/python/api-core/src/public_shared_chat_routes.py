@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from fallback import record_fallback
+from assertion_path import raw_request_path
 from public_chat_assertion import verify_public_chat_assertion
 
 router = APIRouter()
@@ -60,7 +61,7 @@ def _public_subject(request: Request) -> str | None:
         request.headers.get("x-omi-public-chat-assertion"),
         getattr(env, "INTERNAL_ASSERTION_SECRET", None),
         method=request.method,
-        path=request.url.path,
+        path=raw_request_path(request.scope) or "",
     )
     subject = assertion.get("subject") if assertion else None
     return subject if isinstance(subject, str) and PUBLIC_SUBJECT_PATTERN.fullmatch(subject) else None
@@ -245,13 +246,17 @@ async def public_shared_conversation_chat(request: Request):
 
     env = request.scope["env"]
     try:
-        row = await env.APP_DB.prepare(
-            "SELECT c.uid, c.visibility, c.is_locked, c.transcript_segments_json "
-            "FROM cf_shared_conversation_index i "
-            "JOIN cf_conversations c ON c.uid = i.uid AND c.id = i.conversation_id "
-            "WHERE i.conversation_id = ? AND i.visibility IN ('shared', 'public') "
-            "AND c.visibility IN ('shared', 'public') LIMIT 1"
-        ).bind(data.conversation_id).first()
+        row = (
+            await env.APP_DB.prepare(
+                "SELECT c.uid, c.visibility, c.is_locked, c.transcript_segments_json "
+                "FROM cf_shared_conversation_index i "
+                "JOIN cf_conversations c ON c.uid = i.uid AND c.id = i.conversation_id "
+                "WHERE i.conversation_id = ? AND i.visibility IN ('shared', 'public') "
+                "AND c.visibility IN ('shared', 'public') LIMIT 1"
+            )
+            .bind(data.conversation_id)
+            .first()
+        )
     except Exception:
         return _error("public shared conversation chat unavailable", 503)
     if not isinstance(row, Mapping):

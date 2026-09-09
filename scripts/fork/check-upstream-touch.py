@@ -37,14 +37,26 @@ POLICY_DOC = "dev/unified-main/00-upstream-touch-policy.md"
 # How to avoid touching an upstream file, per area. Printed with each violation
 # so the failure tells the author what to do instead of only what went wrong.
 REMEDIES: list[tuple[str, str]] = [
-    ("backend/", "put the code in backend/fork/ and attach it with an import-time patch "
-                 "(backend/fork/patches/); upstream modules stay byte-identical"),
-    ("app/lib/", "use app/pubspec_overrides.yaml to point a package at a fork shim, or a "
-                 "generated table under app/lib/env/fork/; do not edit call sites"),
-    ("desktop/windows/", "extend the upstream config from desktop/windows/vite.fork.config.ts "
-                         "with resolve.alias; do not edit call sites"),
-    ("desktop/macos/", "emit desktop/macos/Desktop/Sources/Generated/*.swift and write Info.plist "
-                       "keys at build time; only the allowlisted seams may change"),
+    (
+        "backend/",
+        "put the code in backend/fork/ and attach it with an import-time patch "
+        "(backend/fork/patches/); upstream modules stay byte-identical",
+    ),
+    (
+        "app/lib/",
+        "use app/pubspec_overrides.yaml to point a package at a fork shim, or a "
+        "generated table under app/lib/env/fork/; do not edit call sites",
+    ),
+    (
+        "desktop/windows/",
+        "extend the upstream config from desktop/windows/vite.fork.config.ts "
+        "with resolve.alias; do not edit call sites",
+    ),
+    (
+        "desktop/macos/",
+        "emit desktop/macos/Desktop/Sources/Generated/*.swift and write Info.plist "
+        "keys at build time; only the allowlisted seams may change",
+    ),
     ("web/", "add a fork module under src/lib/fork/ and read it from an allowlisted seam"),
     ("omi/firmware/", "layer a Zephyr EXTRA_CONF_FILE/overlay instead of editing sources"),
     (".github/", "fork checks go in .github/checks-manifest.fork.yaml and .github/workflows/fork-*.yml"),
@@ -59,7 +71,10 @@ FORBIDDEN: list[tuple[str, str]] = [
     ("**/*.test.ts", "upstream tests run unmodified in upstream mode"),
     ("**/*.test.tsx", "upstream tests run unmodified in upstream mode"),
     ("**/*.test.mjs", "upstream tests run unmodified in upstream mode"),
-    ("backend/pylock*.toml", "fork dependencies go in backend/requirements-fork.txt, installed by the fork image layer"),
+    (
+        "backend/pylock*.toml",
+        "fork dependencies go in backend/requirements-fork.txt, installed by the fork image layer",
+    ),
     ("backend/requirements.txt", "fork dependencies go in backend/requirements-fork.txt"),
     ("backend/*/requirements.txt", "fork dependencies go in backend/requirements-fork.txt"),
     ("app/pubspec.lock", "use app/pubspec_overrides.yaml instead"),
@@ -67,18 +82,25 @@ FORBIDDEN: list[tuple[str, str]] = [
     ("**/*.g.dart", "generated output is regenerated, never hand-edited or committed as a fork diff"),
     ("**/*.gen.dart", "generated output is regenerated, never hand-edited"),
     ("app/lib/l10n/app_localizations*.dart", "generated output; change the ARB or use a runtime delegate"),
-    (".github/guardrail-pulse-history.jsonl", "bot-written; the fork's pulse workflow is disabled and this file takes upstream"),
+    (
+        ".github/guardrail-pulse-history.jsonl",
+        "bot-written; the fork's pulse workflow is disabled and this file takes upstream",
+    ),
     ("desktop/macos/CHANGELOG.json", "bot-written by the release train; add a changelog fragment instead"),
     ("community-plugin-stats.json", "bot-written upstream snapshot"),
-    (".github/workflows/*.yml", "fork workflows use new .github/workflows/fork-*.yml files; upstream ones are disabled in the fork, not edited"),
+    (
+        ".github/workflows/*.yml",
+        "fork workflows use new .github/workflows/fork-*.yml files; upstream ones are disabled in the fork, not edited",
+    ),
     (".github/checks-manifest.yaml", "fork checks go in .github/checks-manifest.fork.yaml"),
-    ("config/deployment-setting-classification.json", "fork settings go in config/deployment-setting-classification.fork.json"),
+    (
+        "config/deployment-setting-classification.json",
+        "fork settings go in config/deployment-setting-classification.fork.json",
+    ),
 ]
 
 # Fork-owned workflow files are exempt from the workflow rule above.
-FORBIDDEN_EXEMPT: tuple[str, ...] = (
-    ".github/workflows/fork-",
-)
+FORBIDDEN_EXEMPT: tuple[str, ...] = (".github/workflows/fork-",)
 
 
 @dataclass
@@ -202,8 +224,11 @@ def remedy_for(path: str) -> str:
     return "keep the change in a fork-owned path; see " + POLICY_DOC
 
 
-def added_lines(base: str, head: str, path: str) -> int:
-    out = run_git(["diff", "--numstat", f"{base}...{head}", "--", path]).strip()
+def added_lines(upstream_ref: str, head: str, path: str) -> int:
+    # The budget belongs to the complete fork seam, not the PR increment.
+    # A sync may bring upstream-authored growth into the PR diff, while an
+    # ordinary follow-up may add to a seam already present on the PR base.
+    out = run_git(["diff", "--numstat", upstream_ref, head, "--", path]).strip()
     if not out:
         return 0
     total = 0
@@ -214,20 +239,56 @@ def added_lines(base: str, head: str, path: str) -> int:
     return total
 
 
+def object_id(ref: str, path: str) -> str | None:
+    """Return a path's object ID, or None when the path is absent at ``ref``.
+
+    A file imported unchanged from the merged upstream tree is not a fork
+    modification.  This matters for a normal merge commit: its diff contains
+    all upstream changes since the fork's previous main, while the resulting
+    blob has exactly upstream's bytes.  Compare object IDs rather than text so
+    the check stays inexpensive on a large weekly sync and works for binary
+    files too.
+    """
+
+    proc = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}:{path}"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode == 0:
+        return proc.stdout.strip()
+    return None
+
+
 def evaluate(base: str, head: str, upstream_ref: str, allowlist_path: Path) -> Result:
     entries, extra_forbidden, exceptions = parse_allowlist(allowlist_path)
     allowed_by_path = {e.path: e for e in entries}
     excepted = set(exceptions)
 
+    # The live upstream tip advances independently after a sync. Compare with
+    # the upstream ancestor incorporated into this head: later upstream work
+    # must neither count as fork edits nor hide an existing fork modification.
+    upstream_ref = run_git(["merge-base", head, upstream_ref]).strip()
+
     changed = [p for p in run_git(["diff", "--name-only", f"{base}...{head}"]).splitlines() if p]
     upstream_files = set(run_git(["ls-tree", "-r", "--name-only", upstream_ref]).splitlines())
 
     result = Result()
-    forbidden_rules = list(FORBIDDEN) + [(p, "listed under forbidden_patterns in the allowlist") for p in extra_forbidden]
+    forbidden_rules = list(FORBIDDEN) + [
+        (p, "listed under forbidden_patterns in the allowlist") for p in extra_forbidden
+    ]
 
     for path in changed:
         if path not in upstream_files:
             continue  # fork-owned path: always fine
+
+        # `base...head` necessarily includes files that upstream changed before
+        # a clean sync merge.  Their head blobs are upstream blobs, so treating
+        # them as fork divergence would make the required weekly sync workflow
+        # impossible to validate. Only a byte difference from merged upstream
+        # is a fork-owned edit that needs the allowlist review below.
+        if object_id(head, path) == object_id(upstream_ref, path):
+            continue
         result.checked += 1
 
         # An exception waives the never-modify rule for this one exact path and
@@ -248,7 +309,7 @@ def evaluate(base: str, head: str, upstream_ref: str, allowlist_path: Path) -> R
             )
             continue
 
-        n = added_lines(base, head, path)
+        n = added_lines(upstream_ref, head, path)
         if n > entry.max_added_lines:
             result.violations.append(
                 Violation(
@@ -271,8 +332,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", default="origin/main", help="merge base side of the diff (default: origin/main)")
     parser.add_argument("--head", default="HEAD", help="head side of the diff (default: HEAD)")
-    parser.add_argument("--upstream-ref", default=DEFAULT_UPSTREAM_REF,
-                        help=f"ref whose tree defines 'upstream file' (default: {DEFAULT_UPSTREAM_REF})")
+    parser.add_argument(
+        "--upstream-ref",
+        default=DEFAULT_UPSTREAM_REF,
+        help=f"upstream history whose shared ancestor defines the baseline (default: {DEFAULT_UPSTREAM_REF})",
+    )
     parser.add_argument("--allowlist", default=str(DEFAULT_ALLOWLIST))
     parser.add_argument("--json", action="store_true", help="emit machine-readable output")
     args = parser.parse_args()
@@ -296,12 +360,17 @@ def main() -> int:
         return 2
 
     if args.json:
-        print(json.dumps({
-            "ok": not result.violations,
-            "upstream_files_changed": result.checked,
-            "allowed": result.allowed,
-            "violations": [v.__dict__ for v in result.violations],
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "ok": not result.violations,
+                    "upstream_files_changed": result.checked,
+                    "allowed": result.allowed,
+                    "violations": [v.__dict__ for v in result.violations],
+                },
+                indent=2,
+            )
+        )
         return 1 if result.violations else 0
 
     if not result.violations:

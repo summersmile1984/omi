@@ -1,5 +1,5 @@
 import type { AuthContext } from "../shared/auth-context";
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import type { EdgeEnv } from "./env";
 
 export type RateLimitResult = {
@@ -17,6 +17,31 @@ export type EdgeRateLimitPolicy = {
 };
 
 export const EDGE_RATE_LIMIT_POLICIES = {
+  "screenshots:adjudicate": {
+    name: "screenshots:adjudicate",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
+  "frame_requests:read": {
+    name: "frame_requests:read",
+    maxRequests: 120,
+    windowSeconds: 3600,
+  },
+  "frame_requests:write": {
+    name: "frame_requests:write",
+    maxRequests: 120,
+    windowSeconds: 3600,
+  },
+  "frame_requests:upload": {
+    name: "frame_requests:upload",
+    maxRequests: 30,
+    windowSeconds: 3600,
+  },
+  "users:desktop_usage_daily": {
+    name: "users:desktop_usage_daily",
+    maxRequests: 600,
+    windowSeconds: 3600,
+  },
   "agent:execute_tool": {
     name: "agent:execute_tool",
     maxRequests: 120,
@@ -115,6 +140,11 @@ export const EDGE_RATE_LIMIT_POLICIES = {
   "conversations:merge": {
     name: "conversations:merge",
     maxRequests: 5,
+    windowSeconds: 3600,
+  },
+  "dev:ask": {
+    name: "dev:ask",
+    maxRequests: 25,
     windowSeconds: 3600,
   },
   "dev:conversations": {
@@ -259,6 +289,7 @@ export const PUBLIC_SHARED_CHAT_GLOBAL_RATE_LIMIT =
   EDGE_RATE_LIMIT_POLICIES["public_shared_chat:global"];
 
 const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
+  ["POST /v1/screen-frame-egress/adjudications", EDGE_RATE_LIMIT_POLICIES["screenshots:adjudicate"]],
   ["POST /v1/tts/synthesize", TTS_SYNTHESIZE_RATE_LIMIT],
   ["POST /v1/tts/synthesize-workers-ai", TTS_SYNTHESIZE_RATE_LIMIT],
   ["POST /v2/tts/synthesize", TTS_SYNTHESIZE_RATE_LIMIT],
@@ -345,6 +376,7 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ],
   ["POST /v1/mcp/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
   ["POST /v1/mcp/action-items", EDGE_RATE_LIMIT_POLICIES["action_items:write"]],
+  ["POST /v1/dev/user/ask", EDGE_RATE_LIMIT_POLICIES["dev:ask"]],
   ["POST /v1/dev/user/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
   [
     "POST /v1/dev/user/memories/batch",
@@ -380,6 +412,7 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     EDGE_RATE_LIMIT_POLICIES["knowledge_graph:rebuild"],
   ],
   ["POST /v1/memories/extract", EDGE_RATE_LIMIT_POLICIES["memories:extract"]],
+  ["POST /v1/jit/trigger-feedback", EDGE_RATE_LIMIT_POLICIES["memories:modify"]],
   [
     "POST /v1/connectors/synthesize",
     EDGE_RATE_LIMIT_POLICIES["connectors:synthesize"],
@@ -396,8 +429,16 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
     "POST /v1/agent/execute-tool",
     EDGE_RATE_LIMIT_POLICIES["agent:execute_tool"],
   ],
+  [
+    "POST /v1/jit/proactivity/reservations",
+    EDGE_RATE_LIMIT_POLICIES["agent:execute_tool"],
+  ],
   ["GET /v1/goals/suggest", EDGE_RATE_LIMIT_POLICIES["goals:suggest"]],
   ["GET /v1/goals/advice", EDGE_RATE_LIMIT_POLICIES["goals:advice"]],
+  [
+    "POST /v1/users/desktop-usage/daily",
+    EDGE_RATE_LIMIT_POLICIES["users:desktop_usage_daily"],
+  ],
   [
     "POST /v1/goals/extract-progress",
     EDGE_RATE_LIMIT_POLICIES["goals:extract"],
@@ -416,6 +457,22 @@ export function edgeRateLimitPolicyForRequest(
   const normalizedMethod = method.toUpperCase();
   const exact = EXACT_ROUTE_POLICIES.get(`${normalizedMethod} ${path}`);
   if (exact) return exact;
+
+  if (
+    normalizedMethod === "GET" &&
+    (/^\/v1\/frame-requests\/(?:pending|status\/[^/]+|temporary\/[^/]+\/image)$/.test(
+      path
+    ) ||
+      /^\/v1\/conversations\/[^/]+\/photos\/[^/]+\/image$/.test(path))
+  ) {
+    return EDGE_RATE_LIMIT_POLICIES["frame_requests:read"];
+  }
+  if (normalizedMethod === "POST") {
+    if (/^\/v1\/frame-requests\/[^/]+\/upload$/.test(path))
+      return EDGE_RATE_LIMIT_POLICIES["frame_requests:upload"];
+    if (/^\/v1\/frame-requests(?:\/[^/]+\/(?:state|promote))?$/.test(path))
+      return EDGE_RATE_LIMIT_POLICIES["frame_requests:write"];
+  }
 
   if (
     normalizedMethod === "POST" &&
@@ -460,7 +517,7 @@ export function edgeRateLimitPolicyForRequest(
         path,
       )) ||
     (normalizedMethod === "POST" &&
-      /^\/v3\/memories\/[^/]+\/review$/.test(path))
+      /^\/v3\/memories\/[^/]+\/(?:review|revert)$/.test(path))
   ) {
     return EDGE_RATE_LIMIT_POLICIES["memories:modify"];
   }
@@ -559,6 +616,20 @@ export async function enforceEdgeRateLimit(
     }
     const result = parseResult(await response.json());
     if (!result) {
+      if (options.failClosed) {
+        recordFallback({
+          component: "rate_limit",
+          from: "durable_object",
+          to: "none",
+          reason: "invalid_response",
+          outcome: "exhausted",
+          requestId,
+        });
+        return Response.json(
+          { detail: "Rate limit service unavailable. Try again shortly." },
+          { status: 503, headers: { "cache-control": "no-store" } },
+        );
+      }
       recordFallback({
         component: "rate_limit",
         from: "durable_object",

@@ -70,11 +70,14 @@ class FakeDb:
             "0056_llm_usage_daily.sql",
         ):
             self.connection.executescript((migration_dir / name).read_text())
+        for name in ("0057_stripe_billing.sql", "0058_subscription_mutations.sql", "0165_referrals.sql"):
+            self.connection.executescript((migration_dir / name).read_text())
         self.connection.executescript(
             "ALTER TABLE cf_app_catalog ADD COLUMN owner_uid TEXT;"
             "CREATE TABLE cf_app_testers (uid TEXT PRIMARY KEY, added_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);"
         )
         self.connection.executescript((migration_dir / "0112_mcp_app_authority.sql").read_text())
+        self.connection.executescript((migration_dir / "0155_chat_clear_epoch.sql").read_text())
         self.fail_batch = fail_batch
         self.fail_quota_run = fail_quota_run
 
@@ -86,13 +89,16 @@ class FakeDb:
             raise RuntimeError("unavailable")
         try:
             self.connection.execute("BEGIN")
+            results = []
             for statement in statements:
-                self.connection.execute(statement.sql, statement.args)
+                cursor = self.connection.execute(statement.sql, statement.args)
+                rows = cursor.fetchall() if cursor.description else []
+                results.append({"results": [dict(row) for row in rows]})
             self.connection.commit()
         except Exception:
             self.connection.rollback()
             raise
-        return []
+        return results
 
 
 class FakeAi:
@@ -117,6 +123,10 @@ class FakeAi:
 
 class FakeRequest:
     def __init__(self, env, headers=None, body=None, query=None):
+        if not hasattr(env, "BRAND_RUNTIME_JSON"):
+            env.BRAND_RUNTIME_JSON = json.dumps(
+                {"brand_id": "omi-upstream", "display_name": "Omi", "ai_persona_name": "Omi"}
+            )
         self.scope = {"env": env}
         self.headers = headers or {}
         self.body = body if body is not None else {"text": "Current question", "file_ids": [], "context": None}
@@ -380,7 +390,7 @@ def test_initial_message_alias_creates_app_session_and_honors_owned_persona_prom
     assert dict(session) == {"app_id": "persona-1", "message_count": 1}
 
 
-def test_initial_message_validation_missing_session_and_provider_failure_do_not_write():
+def test_initial_message_validation_rejects_before_admission_and_provider_failure_leaves_no_messages():
     secret = "chat-secret"
     db = FakeDb()
     ai = FakeAi(error=RuntimeError("provider details"))
@@ -389,6 +399,7 @@ def test_initial_message_validation_missing_session_and_provider_failure_do_not_
 
     invalid = asyncio.run(create_session_initial_message(FakeRequest(env, headers, body={"session_id": ""})))
     missing = asyncio.run(create_session_initial_message(FakeRequest(env, headers, body={"session_id": "missing"})))
+    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions").fetchone()[0] == 0
     provider = asyncio.run(create_initial_message(FakeRequest(env, headers)))
 
     assert invalid.status_code == 422
@@ -397,22 +408,30 @@ def test_initial_message_validation_missing_session_and_provider_failure_do_not_
     assert provider.status_code == 502
     assert b"provider details" not in provider.body
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
-    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions").fetchone()[0] == 0
+    assert db.connection.execute("SELECT message_count FROM cf_chat_sessions").fetchall()[0][0] == 0
 
 
 def test_initial_message_d1_batch_failure_returns_retry_without_partial_write():
-    secret = "chat-secret"
-    db = FakeDb(fail_batch=True)
-    ai = FakeAi(result={"response": "Ready"})
-    env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
+    for existing in [False, True]:
+        secret = "chat-secret"
+        db = FakeDb(fail_batch=True)
+        if existing:
+            db.connection.execute(
+                "INSERT INTO cf_chat_sessions(uid,id,title,created_at,updated_at) VALUES('chat-user','existing','Existing',1,1)"
+            )
+            db.connection.commit()
+        ai = FakeAi(result={"response": "Ready"})
+        env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
 
-    response = asyncio.run(create_initial_message(FakeRequest(env, signed_headers(secret))))
+        response = asyncio.run(create_initial_message(FakeRequest(env, signed_headers(secret))))
 
-    assert response.status_code == 503
-    assert json.loads(response.body) == {"error": "chat history unavailable"}
-    assert len(ai.calls) == 1
-    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
-    assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions").fetchone()[0] == 0
+        assert response.status_code == 503
+        assert json.loads(response.body) == {"error": "chat history unavailable"}
+        # A first call fails before provider admission; the legacy existing owner
+        # still exercises post-provider commit failure without partial messages.
+        assert len(ai.calls) == int(existing)
+        assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages").fetchone()[0] == 0
+        assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions").fetchone()[0] == int(existing)
 
 
 def test_generate_title_updates_only_the_callers_session_and_uses_empty_fallback():
@@ -593,9 +612,7 @@ def test_chat_returns_not_found_for_unavailable_app_without_provider_or_quota_mu
     ai = FakeAi()
     env = type("Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": secret})()
 
-    response = asyncio.run(
-        chat_messages(FakeRequest(env, signed_headers(secret), query={"app_id": "missing-app"}))
-    )
+    response = asyncio.run(chat_messages(FakeRequest(env, signed_headers(secret), query={"app_id": "missing-app"})))
 
     assert response.status_code == 404
     assert json.loads(response.body)["reason"] == "app_not_found"
@@ -1006,11 +1023,15 @@ def test_cloudflare_completion_uses_d1_session_quota_and_is_idempotent():
     second_payload = json.loads(second.body)
     assert first_payload["choices"][0]["message"] == {"role": "assistant", "content": "Workers answer"}
     assert second_payload["choices"][0]["message"] == first_payload["choices"][0]["message"]
-    assert second_payload["usage"] == first_payload["usage"] == {
-        "prompt_tokens": 9,
-        "completion_tokens": 3,
-        "total_tokens": 12,
-    }
+    assert (
+        second_payload["usage"]
+        == first_payload["usage"]
+        == {
+            "prompt_tokens": 9,
+            "completion_tokens": 3,
+            "total_tokens": 12,
+        }
+    )
     assert len(ai.calls) == 1
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_sessions WHERE uid = 'chat-user'").fetchone()[0] == 1
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_messages WHERE uid = 'chat-user'").fetchone()[0] == 2
@@ -1152,3 +1173,377 @@ def test_cloudflare_completion_rejects_missing_mcp_projection_without_provider_c
     assert json.loads(response.body)["reason"] == "mcp_tool_projection_unavailable"
     assert ai.calls == []
     assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_quota_events").fetchone()[0] == 0
+
+
+def test_explicit_chat_target_selects_history_and_session_app_before_query_app():
+    db, ai = FakeDb(), FakeAi()
+    for session in ['A', 'B']:
+        db.connection.execute(
+            "INSERT INTO cf_chat_sessions(uid,id,title,created_at,updated_at) VALUES('chat-user',?,?,1,1)",
+            (session, session),
+        )
+        db.connection.execute(
+            'INSERT INTO cf_chat_messages(uid,id,created_at,message_json) VALUES(?,?,?,?)',
+            stored('chat-user', 'old-' + session, 1, 'human', 'History ' + session, session),
+        )
+    db.connection.execute("UPDATE cf_chat_sessions SET app_id = 'null' WHERE id = 'A'")
+    db.connection.commit()
+    env = type('Env', (), {'APP_DB': db, 'AI': ai, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+    response = asyncio.run(
+        chat_messages(
+            FakeRequest(
+                env, signed_headers('secret'), query={'chat_session_id': 'A', 'app_id': 'unavailable-query-app'}
+            )
+        )
+    )
+    assert response.status_code == 200
+    wire = asyncio.run(response_body(response)).decode()
+    done = json.loads(base64.b64decode(wire.split('done: ')[1].strip()))
+    assert done['chat_session_id'] == 'A' and done['app_id'] is None
+    prompt = ai.calls[0][1]['messages']
+    assert any(row['content'] == 'History A' for row in prompt)
+    assert not any(row['content'] == 'History B' for row in prompt)
+    assert db.connection.execute("SELECT message_count FROM cf_chat_sessions WHERE id='A'").fetchone()[0] == 2
+    assert db.connection.execute("SELECT message_count FROM cf_chat_sessions WHERE id='B'").fetchone()[0] == 0
+
+
+def test_explicit_missing_or_foreign_chat_target_rejects_before_model_and_quota():
+    db, ai = FakeDb(), FakeAi()
+    db.connection.execute(
+        "INSERT INTO cf_chat_sessions(uid,id,title,created_at,updated_at) VALUES('other','foreign','F',1,1)"
+    )
+    db.connection.commit()
+    env = type('Env', (), {'APP_DB': db, 'AI': ai, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+    for session in ['missing', 'foreign']:
+        response = asyncio.run(
+            chat_messages(FakeRequest(env, signed_headers('secret'), query={'chat_session_id': session}))
+        )
+        assert response.status_code == 404
+        assert json.loads(response.body) == {'detail': 'Chat session not found'}
+    assert ai.calls == []
+    assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_quota_events').fetchone()[0] == 0
+    assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_messages').fetchone()[0] == 0
+
+
+def test_model_completion_cannot_repopulate_cleared_or_deleted_selected_session():
+    import importlib.util
+
+    core_source = Path(__file__).parents[2] / 'api-core' / 'src'
+    sys.path.insert(0, str(core_source))
+    try:
+        spec = importlib.util.spec_from_file_location('cf_core_chat_clear', core_source / 'chat_routes.py')
+        core = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(core)
+    finally:
+        sys.path.remove(str(core_source))
+    for mutation in ['clear', 'delete']:
+        db = FakeDb()
+        db.connection.execute(
+            "INSERT INTO cf_chat_sessions(uid,id,title,created_at,updated_at) VALUES('chat-user','A','A',1,1)"
+        )
+        db.connection.commit()
+        env = type('Env', (), {'APP_DB': db, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+
+        class CompletingAi(FakeAi):
+            async def run(self, model, payload):
+                request = FakeRequest(
+                    env, signed_headers('secret'), query={'chat_session_id': 'A'} if mutation == 'clear' else {}
+                )
+                # Execute the actual public clear owner while model IO is pending.
+                result = await core.clear_messages(request)
+                assert isinstance(result, dict)
+                return await super().run(model, payload)
+
+        env.AI = CompletingAi()
+        response = asyncio.run(
+            chat_messages(FakeRequest(env, signed_headers('secret'), query={'chat_session_id': 'A'}))
+        )
+        assert response.status_code == 503
+        assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_messages').fetchone()[0] == 0
+        assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_sessions').fetchone()[0] == (
+            1 if mutation == 'clear' else 0
+        )
+        # Paid model work remains accounted even though its answer was fenced.
+        assert db.connection.execute("SELECT COUNT(*) FROM cf_llm_usage_daily").fetchone()[0] == 1
+
+
+def test_completion_retry_is_scoped_to_resolved_session_and_app_before_cached_response():
+    db, ai = FakeDb(), FakeAi()
+    for uid, session in [('chat-user', 'A'), ('chat-user', 'B'), ('other', 'C')]:
+        db.connection.execute(
+            'INSERT INTO cf_chat_sessions(uid,id,title,created_at,updated_at) VALUES(?,?,?,1,1)',
+            (uid, session, session),
+        )
+    db.connection.commit()
+    env = type('Env', (), {'APP_DB': db, 'AI': ai, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+    headers = {**signed_headers('secret'), 'idempotency-key': 'scoped-retry'}
+
+    def request(session):
+        return FakeRequest(
+            env, headers, body={'messages': [{'role': 'user', 'content': 'Scoped question'}], 'session_id': session}
+        )
+
+    assert asyncio.run(cloudflare_chat_completions(request('A'))).status_code == 200
+    assert asyncio.run(cloudflare_chat_completions(request('A'))).status_code == 200
+    for session in ['missing', 'C']:
+        response = asyncio.run(cloudflare_chat_completions(request(session)))
+        assert response.status_code == 404
+        assert json.loads(response.body) == {'detail': 'Chat session not found'}
+    assert asyncio.run(cloudflare_chat_completions(request('B'))).status_code == 409
+    db.connection.execute("UPDATE cf_chat_sessions SET app_id='changed-app' WHERE id='A'")
+    db.connection.commit()
+    assert asyncio.run(cloudflare_chat_completions(request('A'))).status_code == 409
+    db.connection.execute("UPDATE cf_chat_sessions SET app_id=NULL WHERE id='A'")
+    db.connection.commit()
+    # An old cached payload without provable session metadata is not replayable.
+    db.connection.execute(
+        "UPDATE cf_chat_messages SET message_json=json_remove(message_json,'$.chat_session_id','$.session_id') WHERE json_extract(message_json,'$.sender')='ai'"
+    )
+    db.connection.commit()
+    assert asyncio.run(cloudflare_chat_completions(request('A'))).status_code == 409
+    assert len(ai.calls) == 1
+    assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_messages').fetchone()[0] == 2
+    assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_quota_events').fetchone()[0] == 1
+
+
+def test_completion_explicit_app_session_reads_its_own_prior_turns():
+    db, ai = FakeDb(), FakeAi()
+    db.connection.execute(
+        "INSERT INTO cf_chat_sessions(uid,id,title,created_at,updated_at,app_id) VALUES('chat-user','A','A',1,1,'coach')"
+    )
+    uid, mid, created, raw = stored('chat-user', 'old-coach', 1, 'human', 'The selected coach context', 'A')
+    db.connection.execute(
+        'INSERT INTO cf_chat_messages(uid,id,app_id,created_at,message_json) VALUES(?,?,?,?,?)',
+        (uid, mid, 'coach', created, raw),
+    )
+    db.connection.commit()
+    env = type('Env', (), {'APP_DB': db, 'AI': ai, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+    response = asyncio.run(
+        cloudflare_chat_completions(
+            FakeRequest(
+                env,
+                signed_headers('secret'),
+                body={'messages': [{'role': 'user', 'content': 'Follow up'}], 'session_id': 'A'},
+            )
+        )
+    )
+    assert response.status_code == 200
+    assert {'role': 'user', 'content': 'The selected coach context'} in ai.calls[0][1]['messages']
+
+
+def test_first_model_call_exposes_one_session_that_clear_or_delete_can_fence():
+    import importlib.util
+
+    core_source = Path(__file__).parents[2] / 'api-core' / 'src'
+    sys.path.insert(0, str(core_source))
+    try:
+        spec = importlib.util.spec_from_file_location('cf_core_first_chat_clear', core_source / 'chat_routes.py')
+        core = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(core)
+    finally:
+        sys.path.remove(str(core_source))
+    for caller in ['messages', 'completion', 'initial']:
+        for mutation in ['clear', 'delete']:
+            db = FakeDb()
+            env = type('Env', (), {'APP_DB': db, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+
+            class CompletingAi(FakeAi):
+                async def run(self, model, payload):
+                    rows = db.connection.execute(
+                        "SELECT id, message_count FROM cf_chat_sessions WHERE uid='chat-user'"
+                    ).fetchall()
+                    assert len(rows) == 1, 'first model IO must have a visible session owner'
+                    session = rows[0]['id']
+                    assert rows[0]['message_count'] == 0
+                    result = await core.clear_messages(
+                        FakeRequest(
+                            env,
+                            signed_headers('secret'),
+                            query={'chat_session_id': session} if mutation == 'clear' else {},
+                        )
+                    )
+                    assert isinstance(result, dict)
+                    return await super().run(model, payload)
+
+            env.AI = CompletingAi()
+            if caller == 'completion':
+                operation = cloudflare_chat_completions(
+                    FakeRequest(
+                        env,
+                        signed_headers('secret'),
+                        body={'messages': [{'role': 'user', 'content': 'First question'}]},
+                    )
+                )
+            elif caller == 'initial':
+                operation = create_initial_message(FakeRequest(env, signed_headers('secret')))
+            else:
+                operation = chat_messages(FakeRequest(env, signed_headers('secret')))
+            response = asyncio.run(operation)
+            assert response.status_code == 503
+            assert len(env.AI.calls) == 1
+            assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_messages').fetchone()[0] == 0
+            assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_sessions').fetchone()[0] == (
+                1 if mutation == 'clear' else 0
+            )
+            if caller != 'initial':
+                row = db.connection.execute(
+                    'SELECT prompt_tokens, completion_tokens, settled_at FROM cf_chat_quota_events'
+                ).fetchone()
+                assert row['prompt_tokens'] == 100 and row['completion_tokens'] == 20 and row['settled_at'] is not None
+
+
+def test_first_chat_quota_rejection_does_not_admit_a_session_or_invent_its_identity():
+    for caller in ['messages', 'completion']:
+        db, ai = FakeDb(), FakeAi()
+        env = type(
+            'Env', (), {'APP_DB': db, 'AI': ai, 'INTERNAL_ASSERTION_SECRET': 'secret', 'TRIAL_PAYWALL_ENABLED': 'true'}
+        )()
+        headers = {**signed_headers('secret', account_created_at=1), 'x-app-platform': 'macos'}
+        if caller == 'completion':
+            response = asyncio.run(
+                cloudflare_chat_completions(
+                    FakeRequest(env, headers, body={'messages': [{'role': 'user', 'content': 'First question'}]})
+                )
+            )
+            assert response.status_code == 402
+        else:
+            response = asyncio.run(chat_messages(FakeRequest(env, headers)))
+            assert response.status_code == 200
+            wire = asyncio.run(response_body(response)).decode()
+            done = json.loads(base64.b64decode(wire.split('done: ')[1].strip()))
+            assert done['chat_session_id'] is None and done['session_id'] is None
+        assert ai.calls == []
+        for table in ['cf_chat_sessions', 'cf_chat_messages', 'cf_chat_quota_events']:
+            assert db.connection.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0] == 0
+
+
+def test_concurrent_first_admissions_share_one_visible_session_and_rebind_each_quota():
+    from chat_target import admit_chat_target, resolve_chat_target
+
+    db = FakeDb()
+    env = type('Env', (), {'APP_DB': db})()
+
+    async def run():
+        # Two real D1 lookups can both finish before either request is admitted.
+        targets = await asyncio.gather(
+            *(resolve_chat_target(env, 'chat-user', None, None, create=True) for _ in range(2))
+        )
+        assert targets[0].session_id != targets[1].session_id
+        for index, target in enumerate(targets):
+            assert await reserve_chat_question(
+                env,
+                uid=target.uid,
+                idempotency_key=str(index),
+                message_id='m' + str(index),
+                chat_session_id=target.session_id,
+                platform=None,
+            )
+        admitted = await asyncio.gather(
+            *(admit_chat_target(env, target, str(index)) for index, target in enumerate(targets))
+        )
+        assert admitted[0] == admitted[1]
+        assert not admitted[0].new
+        rows = db.connection.execute('SELECT chat_session_id FROM cf_chat_quota_events').fetchall()
+        assert [row[0] for row in rows] == [admitted[0].session_id] * 2
+        assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_sessions').fetchone()[0] == 1
+
+    asyncio.run(run())
+
+
+def test_unavailable_app_cannot_create_an_initial_or_question_session():
+    db, ai = FakeDb(), FakeAi()
+    env = type('Env', (), {'APP_DB': db, 'AI': ai, 'INTERNAL_ASSERTION_SECRET': 'secret'})()
+    for caller in [chat_messages, create_initial_message]:
+        response = asyncio.run(caller(FakeRequest(env, signed_headers('secret'), query={'app_id': 'unavailable-app'})))
+        assert response.status_code == 404
+    assert ai.calls == []
+    for table in ['cf_chat_sessions', 'cf_chat_messages', 'cf_chat_quota_events']:
+        assert db.connection.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0] == 0
+
+
+def test_first_admission_rejects_absent_settled_or_foreign_quota_authority():
+    import pytest
+    from chat_target import admit_chat_target, resolve_chat_target
+
+    for state in ['absent', 'settled', 'foreign', 'wrong-target']:
+        db = FakeDb()
+        env = type('Env', (), {'APP_DB': db})()
+        target = asyncio.run(resolve_chat_target(env, 'chat-user', None, None, create=True))
+        if state != 'absent':
+            db.connection.execute(
+                "INSERT INTO cf_chat_quota_events(uid,idempotency_key,source,occurred_at,chat_session_id,settled_at) VALUES(?,'key','v2_messages',1,?,?)",
+                (
+                    'other' if state == 'foreign' else 'chat-user',
+                    'different' if state == 'wrong-target' else target.session_id,
+                    1 if state == 'settled' else None,
+                ),
+            )
+            db.connection.commit()
+        with pytest.raises(LookupError):
+            asyncio.run(admit_chat_target(env, target, 'key'))
+        assert db.connection.execute('SELECT COUNT(*) FROM cf_chat_sessions').fetchone()[0] == 0
+
+
+def test_manifest_brand_drives_default_prompts_without_rewriting_user_or_app_content():
+    brand = {"brand_id": "atlas", "display_name": "Atlas 中文", "ai_persona_name": "Mira"}
+    operations = [
+        (chat_messages, {"text": "Omi stays literal", "file_ids": []}),
+        (
+            cloudflare_chat_completions,
+            {"model": "workers-ai", "messages": [{"role": "user", "content": "Omi stays literal"}]},
+        ),
+        (generate_reply, {"text": "Omi stays literal", "history": []}),
+        (create_initial_message, {}),
+    ]
+    for operation, body in operations:
+        db, ai = FakeDb(), FakeAi()
+        env = type(
+            "Env",
+            (),
+            {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": "secret", "BRAND_RUNTIME_JSON": json.dumps(brand)},
+        )()
+        result = asyncio.run(operation(FakeRequest(env, signed_headers("secret"), body=body)))
+        assert isinstance(result, dict) or result.status_code == 200
+        prompt = ai.calls[0][1]["messages"]
+        assert prompt[0]["content"].startswith("You are Mira,")
+        if operation != create_initial_message:
+            assert prompt[-1]["content"] == "Omi stays literal"
+    from brand_runtime import load_brand_runtime
+
+    identity = load_brand_runtime(env)
+    plugin = {"name": "Omi Research", "capabilities": ["persona"], "persona_prompt": "Discuss Omi unchanged."}
+    assert "You are Omi Research." in chat_generation_routes._chat_system_prompt(identity, plugin)
+    assert "Discuss Omi unchanged." in chat_generation_routes._initial_system_prompt(identity, plugin)[0]
+    assert "Atlas 中文 free" in chat_generation_routes._quota_exceeded_text(identity, {})
+
+
+def test_missing_or_invalid_brand_rejects_before_model_quota_and_session_mutation():
+    valid = {"brand_id": "atlas", "display_name": "Atlas", "ai_persona_name": "Mira"}
+    invalid = [
+        None,
+        "not-json",
+        "[]",
+        "{}",
+        json.dumps({**valid, "extra": "unowned"}),
+        json.dumps({**valid, "ai_persona_name": True}),
+        json.dumps({**valid, "display_name": " \t"}),
+        json.dumps({**valid, "ai_persona_name": "Mira\nInjected"}),
+    ]
+    operations = [
+        (chat_messages, {"text": "hello"}),
+        (cloudflare_chat_completions, {"model": "workers-ai", "messages": [{"role": "user", "content": "hello"}]}),
+        (generate_reply, {"text": "hello", "history": []}),
+        (create_initial_message, {}),
+    ]
+    for raw in invalid:
+        for operation, body in operations:
+            db, ai = FakeDb(), FakeAi()
+            env = type(
+                "Env", (), {"APP_DB": db, "AI": ai, "INTERNAL_ASSERTION_SECRET": "secret", "BRAND_RUNTIME_JSON": raw}
+            )()
+            response = asyncio.run(operation(FakeRequest(env, signed_headers("secret"), body=body)))
+            assert response.status_code == 503
+            assert json.loads(response.body) == {"error": "brand runtime is not configured"}
+            assert ai.calls == []
+            for table in ["cf_chat_sessions", "cf_chat_messages", "cf_chat_quota_events"]:
+                assert db.connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0

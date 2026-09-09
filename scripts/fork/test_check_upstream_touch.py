@@ -84,10 +84,23 @@ class GuardHarness:
 
     def run(self, *extra: str) -> tuple[int, dict]:
         proc = subprocess.run(
-            [sys.executable, str(GUARD), "--base", "base", "--head", "HEAD",
-             "--upstream-ref", "refs/remotes/upstream/main",
-             "--allowlist", "dev/unified-main/upstream-touch-allowlist.yaml", "--json", *extra],
-            cwd=self.root, capture_output=True, text=True,
+            [
+                sys.executable,
+                str(GUARD),
+                "--base",
+                "base",
+                "--head",
+                "HEAD",
+                "--upstream-ref",
+                "refs/remotes/upstream/main",
+                "--allowlist",
+                "dev/unified-main/upstream-touch-allowlist.yaml",
+                "--json",
+                *extra,
+            ],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
         )
         try:
             return proc.returncode, json.loads(proc.stdout)
@@ -118,6 +131,22 @@ class UpstreamTouchGuardTests(unittest.TestCase):
         # The failure must say what to do instead, not only that it failed.
         self.assertIn("backend/fork/", v["remedy"])
 
+    def test_clean_upstream_merge_is_not_classified_as_a_fork_edit(self):
+        h = self.harness()
+        # Advance the upstream tracking ref, then merge that commit into a
+        # branch whose only local change is the fork-owned allowlist.  The
+        # actual guard must distinguish this normal sync from a local edit to
+        # backend/service.py.
+        git(h.root, "switch", "-q", "-c", "upstream-update", "refs/remotes/upstream/main")
+        h.commit("backend/service.py", "VALUE = 2\n", "upstream update")
+        git(h.root, "update-ref", "refs/remotes/upstream/main", "HEAD")
+        git(h.root, "switch", "-q", "-c", "sync", "base")
+        git(h.root, "merge", "--no-ff", "--no-edit", "upstream-update")
+
+        rc, out = h.run()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["upstream_files_changed"], 0)
+
     def test_allowlisted_seam_within_budget_passes(self):
         h = self.harness()
         h.commit("seam.swift", "let productionIdentifiers = readFromPlist()\n")
@@ -125,6 +154,32 @@ class UpstreamTouchGuardTests(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(out["violations"], [])
         self.assertTrue(any("seam.swift" in a for a in out["allowed"]))
+
+    def test_unmerged_upstream_growth_does_not_change_clean_sync_verdict(self):
+        h = self.harness()
+        git(h.root, "switch", "-q", "-c", "upstream-update", "refs/remotes/upstream/main")
+        h.commit("backend/service.py", "VALUE = 2\n", "upstream update")
+        git(h.root, "update-ref", "refs/remotes/upstream/main", "HEAD")
+        git(h.root, "switch", "-q", "main")
+        git(h.root, "merge", "--no-ff", "--no-edit", "upstream-update")
+        git(h.root, "switch", "-q", "upstream-update")
+        h.commit("backend/service.py", "VALUE = 3\n", "later upstream update")
+        git(h.root, "update-ref", "refs/remotes/upstream/main", "HEAD")
+        git(h.root, "switch", "-q", "main")
+        rc, out = h.run()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["upstream_files_changed"], 0)
+
+    def test_unmerged_upstream_adoption_does_not_hide_a_forbidden_fork_edit(self):
+        h = self.harness()
+        h.commit("backend/service.py", "VALUE = 2\n", "fork edit")
+        git(h.root, "switch", "-q", "-c", "upstream-update", "refs/remotes/upstream/main")
+        h.commit("backend/service.py", "VALUE = 2\n", "upstream independently adopts edit")
+        git(h.root, "update-ref", "refs/remotes/upstream/main", "HEAD")
+        git(h.root, "switch", "-q", "main")
+        rc, out = h.run()
+        self.assertEqual(rc, 1, out)
+        self.assertEqual([v["path"] for v in out["violations"]], ["backend/service.py"])
 
     def test_allowlisted_seam_over_budget_fails(self):
         h = self.harness()
@@ -134,6 +189,39 @@ class UpstreamTouchGuardTests(unittest.TestCase):
         [v] = out["violations"]
         self.assertEqual(v["kind"], "over-budget")
         self.assertIn("budget is 3", v["detail"])
+
+    def test_upstream_sync_preserves_the_existing_seam_budget(self):
+        h = self.harness()
+        original = (h.root / "seam.swift").read_text() + "\n\n// unchanged section\n\n\n"
+        h.commit("seam.swift", original, "upstream separated sections")
+        git(h.root, "update-ref", "refs/remotes/upstream/main", "HEAD")
+        fork = original.replace('["com.omi.app"]', 'readFromPlist()')
+        h.commit("seam.swift", fork, "existing allowed fork seam")
+        git(h.root, "branch", "-f", "base", "HEAD")
+
+        git(h.root, "switch", "-q", "-c", "upstream-update", "refs/remotes/upstream/main")
+        additions = "".join(f"// upstream paragraph {i}\n" for i in range(4))
+        h.commit("seam.swift", original + additions, "upstream document growth")
+        git(h.root, "update-ref", "refs/remotes/upstream/main", "HEAD")
+        git(h.root, "switch", "-q", "main")
+        git(h.root, "merge", "--no-ff", "--no-edit", "upstream-update")
+
+        rc, out = h.run()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out["allowed"], ["seam.swift (+1/3)"])
+        self.assertEqual((h.root / "seam.swift").read_text(), fork + additions)
+
+    def test_seam_budget_counts_existing_fork_changes_with_the_new_increment(self):
+        h = self.harness()
+        fork = "".join(f"let extra{i} = {i}\n" for i in range(3))
+        h.commit("seam.swift", fork, "existing three-line seam")
+        git(h.root, "branch", "-f", "base", "HEAD")
+        h.commit("seam.swift", fork + "let extra3 = 3\n", "one more fork line")
+        rc, out = h.run()
+        self.assertEqual(rc, 1, out)
+        [v] = out["violations"]
+        self.assertEqual(v["kind"], "over-budget")
+        self.assertEqual(v["detail"], "added 4 lines, allowlist budget is 3")
 
     def test_upstream_test_is_forbidden_even_if_allowlisted(self):
         h = self.harness()
@@ -208,10 +296,22 @@ class UpstreamTouchGuardTests(unittest.TestCase):
         allow.write_text(ALLOWLIST + '\nforbidden_exceptions:\n  - "backend/**"\n', encoding="utf-8")
         h.commit("backend/pylock.toml", "[lock]\nfork = true\n")
         proc = subprocess.run(
-            [sys.executable, str(GUARD), "--base", "base", "--head", "HEAD",
-             "--upstream-ref", "refs/remotes/upstream/main",
-             "--allowlist", "dev/unified-main/upstream-touch-allowlist.yaml", "--json"],
-            cwd=h.root, capture_output=True, text=True,
+            [
+                sys.executable,
+                str(GUARD),
+                "--base",
+                "base",
+                "--head",
+                "HEAD",
+                "--upstream-ref",
+                "refs/remotes/upstream/main",
+                "--allowlist",
+                "dev/unified-main/upstream-touch-allowlist.yaml",
+                "--json",
+            ],
+            cwd=h.root,
+            capture_output=True,
+            text=True,
         )
         self.assertEqual(proc.returncode, 2)
         self.assertIn("exact paths", proc.stderr)
@@ -220,10 +320,22 @@ class UpstreamTouchGuardTests(unittest.TestCase):
         h = self.harness()
         h.commit("backend/service.py", "VALUE = 2\n")
         proc = subprocess.run(
-            [sys.executable, str(GUARD), "--base", "base", "--head", "HEAD",
-             "--upstream-ref", "refs/remotes/upstream/does-not-exist",
-             "--allowlist", "dev/unified-main/upstream-touch-allowlist.yaml", "--json"],
-            cwd=h.root, capture_output=True, text=True,
+            [
+                sys.executable,
+                str(GUARD),
+                "--base",
+                "base",
+                "--head",
+                "HEAD",
+                "--upstream-ref",
+                "refs/remotes/upstream/does-not-exist",
+                "--allowlist",
+                "dev/unified-main/upstream-touch-allowlist.yaml",
+                "--json",
+            ],
+            cwd=h.root,
+            capture_output=True,
+            text=True,
         )
         payload = json.loads(proc.stdout)
         self.assertEqual(proc.returncode, 0)

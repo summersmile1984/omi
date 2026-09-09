@@ -404,6 +404,9 @@ families:
     target_owner: rate-limit
     migration_state: staging-partial
     migrated_policies:
+      - frame_requests:read
+      - frame_requests:write
+      - frame_requests:upload
       - action_items:write
       - apps:generate_app
       - apps:generate_description
@@ -419,6 +422,7 @@ families:
       - conversations:merge
       - conversations:search
       - daily_summary:regenerate
+      - dev:ask
       - dev:conversations
       - dev:goals_write
       - knowledge_graph:canonical
@@ -428,6 +432,7 @@ families:
       - connectors:synthesize
       - conversations:topic
       - users:ai_profile_synthesize
+      - users:desktop_usage_daily
       - goals:suggest
       - goals:advice
       - goals:extract
@@ -448,6 +453,14 @@ families:
       - tts:synthesize
       - gemini:proxy
     migrated_routes:
+      - GET /v1/conversations/:conversationId/photos/:photoId/image
+      - GET /v1/frame-requests/pending
+      - GET /v1/frame-requests/status/:requestId
+      - GET /v1/frame-requests/temporary/:requestId/image
+      - POST /v1/frame-requests
+      - POST /v1/frame-requests/:requestId/promote
+      - POST /v1/frame-requests/:requestId/state
+      - POST /v1/frame-requests/:requestId/upload
       - DELETE /v1/dev/user/action-items/{action_item_id}
       - DELETE /v1/dev/user/conversations/{conversation_id}
       - DELETE /v1/dev/user/goals/{goal_id}
@@ -461,6 +474,7 @@ families:
       - POST /v1/conversations/search
       - POST /v3/memory-imports/batch
       - POST /v1/users/daily-summaries/:summaryId/regenerate
+      - POST /v1/users/desktop-usage/daily
       - GET /v3/memories/review-queue
       - GET /v3/memories/review-queue/:reviewId
       - POST /v3/memories/review-queue/:reviewId/resolve
@@ -474,6 +488,7 @@ families:
       - PATCH /v1/dev/user/goals/{goal_id}
       - PATCH /v1/dev/user/goals/{goal_id}/progress
       - PATCH /v1/dev/user/memories/{memory_id}
+      - POST /v1/dev/user/ask
       - POST /v1/dev/user/action-items
       - POST /v1/dev/user/action-items/batch
       - POST /v1/dev/user/conversations
@@ -617,15 +632,16 @@ families:
       - POST /v2/messages/share
       - GET /v2/messages/shared/:token
   - id: daily-summary-lock
-    source_symbols: [try_acquire_daily_summary_lock]
+    source_symbols: [try_acquire_daily_summary_lock, release_daily_summary_lock]
     key_patterns: ["users:{uid}:daily_summary_lock:{date}"]
-    legacy_features: [set-if-absent, ttl]
+    legacy_features: [set-if-absent, ttl, delete]
     consistency: strongly-consistent
-    # UNIQUE (uid, date) on cf_daily_summaries (0041) makes generation
-    # idempotent per user-day; there is no scheduled fan-out to contend.
+    # UNIQUE (uid, date) only protects persisted rows. It does not acquire
+    # generation ownership before LLM spend or release an unspent day lock.
+    # See dev/unified-main/09-cloudflare-route-migrations.md#cf4-desktop-daily-writes.
     target: d1
     target_owner: api-core
-    migration_state: staging-owned
+    migration_state: blocked
   - id: credit-invalidation-signal
     source_symbols:
       [set_credits_invalidation_signal, check_credits_invalidation]
@@ -722,6 +738,30 @@ families:
     target_owner: api-core
     migration_state: blocked
 direct_legacy_callers:
+  # Cloudflare reads D1 task rows directly; there is no Redis response cache
+  # or write-bumped cache version to invalidate in that target.
+  - {
+      path: backend/database/action_items_cache.py,
+      target: none,
+      target_owner: api-core,
+      migration_state: retired,
+    }
+  # The existing general task-list DO bucket does not implement the second
+  # stale-Windows-client ceiling. Keep that missing contract explicit.
+  - {
+      path: backend/utils/action_items_list_guard.py,
+      target: durable-object,
+      target_owner: rate-limit,
+      migration_state: blocked,
+    }
+  # The on-demand/scheduled summary ownership and bounded resumable job
+  # contract is tracked in CF-4 desktop daily writes.
+  - {
+      path: backend/utils/other/daily_summary_budget.py,
+      target: d1,
+      target_owner: jobs,
+      migration_state: blocked,
+    }
   # Process-local cache + pubsub invalidation for a multi-instance FastAPI
   # fleet; Workers read D1 per request, so the tier is obsolete.
   - {
@@ -872,14 +912,12 @@ direct_legacy_callers:
       target_owner: jobs,
       migration_state: staging-owned,
     }
-  # share_email_quota:{uid}:{yyyymmdd} daily outbound-share-email counter
-  # (backend/utils/conversations/share_email.py), added to upstream after this
-  # branch's fork point. The route it guards has no CF owner yet. It fails
-  # open on a Redis outage already (see the call site's record_fallback),
-  # which is the KV-shaped tolerance profile, not a DO-shaped one.
+  # share_email_quota:{uid}:{yyyymmdd} now participates in Core's atomic D1
+  # recipient/publication transaction. Provider configuration and outbound
+  # delivery still block the public route's qualification.
   - {
       path: backend/utils/conversations/share_email.py,
-      target: kv,
+      target: d1,
       target_owner: api-core,
       migration_state: blocked,
     }

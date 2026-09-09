@@ -1,0 +1,130 @@
+# Eddy's public identity. Credentials never belong in this manifest.
+# smartipproxy.com is the operator-owned zone; targets have independent origins.
+# Selecting production is configuration, not proof of a deployed release.
+schema_version: 1
+brand:
+  id: eddy
+  display_name: Eddy
+  short_name: Eddy
+  tagline: "懂你的随身AI伴侣"
+  legal_entity: "dong huang"
+  support_email: summersmile1984@gmail.com
+  ai_persona_name: Eddy
+  copyright_holder: "dong huang"
+domains:
+  api_base: https://eddy-cf-api.smartipproxy.com
+  auth_base: https://eddy-cf-auth.smartipproxy.com
+  mcp_base: https://eddy-cf-api.smartipproxy.com
+  objects_base: https://eddy-cf-api.smartipproxy.com
+  web_app: https://eddy-cf.smartipproxy.com
+  share_base: https://eddy-cf.smartipproxy.com
+  docs: https://github.com/summersmile1984/omi
+  help: https://github.com/summersmile1984/omi/issues
+  feedback: https://github.com/summersmile1984/omi/issues
+  privacy: https://eddy-cf.smartipproxy.com/privacy
+  terms: https://eddy-cf.smartipproxy.com/terms
+  status: https://eddy-cf-api.smartipproxy.com/ready
+  community: ""
+self_hosted_inference:
+  beta: mimo-cn
+  production: mimo-cn
+deployments:
+  cloudflare:
+    production:
+      api_base: https://eddy-cf-api.smartipproxy.com
+      auth_base: https://eddy-cf-auth.smartipproxy.com
+      mcp_base: https://eddy-cf-api.smartipproxy.com
+      objects_base: https://eddy-cf-api.smartipproxy.com
+      web_app: https://eddy-cf.smartipproxy.com
+      share_base: https://eddy-cf.smartipproxy.com
+    beta:
+      api_base: https://eddy-cf-beta-api.smartipproxy.com
+      auth_base: https://eddy-cf-beta-auth.smartipproxy.com
+      mcp_base: https://eddy-cf-beta-api.smartipproxy.com
+      objects_base: https://eddy-cf-beta-api.smartipproxy.com
+      web_app: https://eddy-cf-beta.smartipproxy.com
+      share_base: https://eddy-cf-beta.smartipproxy.com
+  self_hosted:
+    production:
+      api_base: https://eddy-server-api.smartipproxy.com
+      auth_base: https://eddy-server-auth.smartipproxy.com
+      mcp_base: https://eddy-server-api.smartipproxy.com
+      objects_base: https://eddy-server-objects.smartipproxy.com
+      web_app: https://eddy-server.smartipproxy.com
+      share_base: https://eddy-server.smartipproxy.com
+    beta:
+      api_base: https://eddy-server-beta-api.smartipproxy.com
+      auth_base: https://eddy-server-beta-auth.smartipproxy.com
+      mcp_base: https://eddy-server-beta-api.smartipproxy.com
+      objects_base: https://eddy-server-beta-objects.smartipproxy.com
+      web_app: https://eddy-server-beta.smartipproxy.com
+      share_base: https://eddy-server-beta.smartipproxy.com
+identifiers:
+  ios_bundle_id: dev.summersmile1984.eddy.ios
+  ios_bundle_id_dev: dev.summersmile1984.eddy.ios.dev
+  android_application_id: dev.summersmile1984.eddy.android
+  android_application_id_dev: dev.summersmile1984.eddy.android.dev
+  app_group: group.dev.summersmile1984.eddy
+  associated_domains: ["applinks:eddy-cf.smartipproxy.com", "applinks:eddy-server.smartipproxy.com", "applinks:eddy-cf-beta.smartipproxy.com", "applinks:eddy-server-beta.smartipproxy.com"]
+  url_scheme: eddy
+  macos_bundle_id: dev.summersmile1984.eddy.macos
+  macos_bundle_id_beta: dev.summersmile1984.eddy.macos.beta
+  macos_bundle_id_dev: dev.summersmile1984.eddy.macos.dev
+  macos_named_bundle_prefix: "dev.summersmile1984.eddy."
+  macos_binary_name: Eddy
+  windows_app_id: dev.summersmile1984.eddy.windows
+  windows_product_name: Eddy
+  apple_team_id: YTY9KEWQC5
+  app_store_id: ""
+  keychain_service_prefix: "dev.summersmile1984.eddy."
+theme:
+  accent: "#202422"
+  forbidden_hue_families: ["purple"]
+  fonts:
+    sans: Inter
+    mono: "JetBrains Mono"
+    license: OFL-1.1
+assets:
+  icon_master: assets/icon-master.png
+  logo_light: assets/logo-light.png
+  logo_dark: assets/logo-dark.png
+  splash: assets/icon-master.png
+device:
+  ble_name: Eddy
+  ble_name_devkit: "Eddy DevKit"
+  dis_manufacturer: "dong huang"
+  dis_model_cv1: "Eddy CV1"
+  firmware_release_prefix: Eddy_CV1_v
+  service_uuid_base: ""
+  nfc_pair_url: "https://eddy-cf.smartipproxy.com/pair?id=%s"
+  mcuboot_signing_key: env:EDDY_MCUBOOT_SIGNING_KEY
+distribution:
+  sparkle_feed_url: https://eddy-cf-api.smartipproxy.com/v2/desktop/appcast.xml
+  # Sparkle is disabled by the native fork package; no update key is provisioned.
+  sparkle_public_ed_key: DISABLED
+  github_releases_repo: summersmile1984/omi
+  macos_artifacts:
+    zip: Eddy.zip
+    dmg: Eddy.dmg
+    beta_zip: Eddy.Beta.zip
+    beta_dmg: Eddy-Beta.dmg
+  windows_artifact: "Eddy-Setup-${version}.exe"
+analytics:
+  posthog: null
+  sentry_dsn: ""
+plans:
+  display_names:
+    basic: Basic
+    plus: Plus
+    unlimited: Unlimited
+    operator: Operator
+    architect: Architect
+marketplace:
+  enabled: false
+mcp:
+  package_name: mcp-server-eddy
+  server_name: mcp-eddy
+# Preserve current transport keys until every producer and consumer migrates.
+api:
+  key_prefix: omi_
+  header_prefix: X-Omi-

@@ -1,12 +1,11 @@
 import { betterAuth } from "better-auth";
+import { jwtOptions, jwtPolicy } from "../../auth/shared/jwt-policy.mjs";
 import { bearer, jwt } from "better-auth/plugins";
 import crypto from "node:crypto";
 import pg from "pg";
-import {
-  hashPassword,
-  verifyPassword,
-} from "./firebase-migration-password.js";
+import { hashPassword, verifyPassword } from "./firebase-migration-password.js";
 import { buildSocialProviders } from "./social-providers.js";
+import { firebasePasswordUpgradeHook } from "./firebase-password-upgrade.js";
 
 export const PORT = process.env.PORT || 3000;
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
@@ -21,7 +20,7 @@ export const BASE_URL =
 export const DEV_ISSUER_SECRET = process.env.AUTH_DEV_ISSUER_SECRET || "";
 export const INTERNAL_ADMIN_SECRET =
   process.env.AUTH_INTERNAL_ADMIN_SECRET || "";
-const TRUSTED_ORIGINS = (process.env.BETTER_AUTH_TRUSTED_ORIGINS || "")
+export const TRUSTED_ORIGINS = (process.env.BETTER_AUTH_TRUSTED_ORIGINS || "")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
@@ -31,8 +30,7 @@ const IP_ADDRESS_HEADERS = (
   .split(",")
   .map((header) => header.trim().toLowerCase())
   .filter(Boolean);
-const JWT_ISSUER = process.env.AUTH_JWT_ISSUER || new URL(BASE_URL).origin;
-const JWT_AUDIENCE = process.env.AUTH_JWT_AUDIENCE || JWT_ISSUER;
+export const accessPolicy = jwtPolicy(process.env, BASE_URL);
 const DEV_SECRET = "dev-only-better-auth-secret-change-me-32bytes-min";
 
 if (IS_PRODUCTION) {
@@ -115,6 +113,7 @@ export const authOptions = {
     },
   },
   socialProviders: buildSocialProviders(),
+  hooks: { after: firebasePasswordUpgradeHook(pool) },
   user: {
     deleteUser: { enabled: true },
   },
@@ -127,19 +126,8 @@ export const authOptions = {
   plugins: [
     bearer({ requireSignature: true }),
     jwt({
+      ...jwtOptions(process.env, BASE_URL),
       adapter: jwksAdapter,
-      jwks: {
-        keyPairConfig: { alg: "ES256" },
-        rotationInterval: Number(
-          process.env.AUTH_JWKS_ROTATION_SECONDS || 2592000,
-        ),
-        gracePeriod: Number(process.env.AUTH_JWKS_GRACE_SECONDS || 2592000),
-      },
-      jwt: {
-        issuer: JWT_ISSUER,
-        audience: JWT_AUDIENCE,
-        expirationTime: process.env.AUTH_JWT_EXPIRATION || "15m",
-      },
     }),
   ],
 };

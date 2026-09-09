@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "FC-consolidation-retry-owner-incomplete",
+  "violated_contract": "A failed canonical consolidation must retain exact-source attempt ownership and complete the upstream bounded retry/terminal-review lifecycle; an expired task cannot apply or refund a newer task's work.",
+  "canonical_prevention": "Reuse the original retry state, limits and terminal decisions, persist attempts with compare-and-set, fence canonical apply and settlement in one D1 transaction, and exercise repeated invalid outputs through real intake and review routes. Index dependency waits refund attempts and exhausted sources never invoke a fourth model call.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/python/api-core/tests/test_memory_consolidation_retry.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/python/api-core/src/memory_consolidation*.py",
+    "deploy/cloudflare/migrations/app/*memory_consolidation*.sql"
+  ],
+  "status": "open"
+}

@@ -1,0 +1,1 @@
+{"changes":["Fixed local desktop setup getting stuck on language selection while the profile map's fonts are loading. Setup progress now continues independently of the map."]}

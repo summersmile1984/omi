@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "FC-exact-duplicate-consolidation-create",
+  "violated_contract": "A model must not create another long-term memory for a hydrated same-owner, known same-subject candidate with identical full content. The fixed 2026-09-07 real Qwen replay promoted one of three identical duplicates; schema and original business validation admitted the wrong create.",
+  "canonical_prevention": "Share exact duplicate/create admission across both targets before the first business mutation. Retain authoritative full candidate identities, never infer identity from similarity scores or paraphrases, and leave rejected input to the existing retry owner without fabricating another route.",
+  "canonical_prevention_artifact": [
+    "backend/fork/consolidation_admission.py",
+    "backend/fork/tests/test_consolidation_admission.py",
+    "deploy/cloudflare/python/api-core/tests/test_memory_consolidation_apply.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "backend/fork/consolidation*.py",
+    "deploy/cloudflare/python/api-core/src/memory_consolidation_apply.py"
+  ],
+  "status": "open"
+}

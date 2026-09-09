@@ -1,0 +1,127 @@
+name: Fork Upstream Sync
+
+on:
+  schedule:
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: fork-upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-sync-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch upstream main
+        run: |
+          git remote add upstream https://github.com/BasedHardware/omi.git 2>/dev/null || true
+          git config remote.upstream.tagOpt --no-tags
+          git fetch --no-tags upstream main
+          git update-ref refs/remotes/upstream/main FETCH_HEAD
+
+      - name: Measure the merge without modifying the checkout
+        id: plan
+        run: |
+          python3 scripts/fork/upstream_sync_plan.py --base origin/main --upstream upstream/main > "$RUNNER_TEMP/sync-plan.json"
+          python3 - "$RUNNER_TEMP/sync-plan.json" >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          plan = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(f"upstream_sha={plan['upstream_commit']}")
+          print(f"has_conflicts={str(bool(plan['conflicts'])).lower()}")
+          print(f"conflict_count={len(plan['conflicts'])}")
+          PY
+          python3 - "$RUNNER_TEMP/sync-plan.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+
+          plan = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("### Fork upstream sync\n")
+          print(f"Upstream: `{plan['upstream_commit']}`")
+          print(f"Conflicts: **{len(plan['conflicts'])}**")
+          if plan["conflicts"]:
+              print("\n```text")
+              print("\n".join(plan["conflicts"]))
+              print("```")
+          PY
+
+      - name: Stop when a maintainer must resolve conflicts
+        if: steps.plan.outputs.has_conflicts == 'true'
+        run: |
+          echo "upstream/main has ${{ steps.plan.outputs.conflict_count }} merge conflict(s); no branch or pull request was created." >&2
+          exit 1
+
+      - name: Refuse to duplicate an open sync branch
+        id: existing
+        env:
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+        run: |
+          branch="sync/upstream-${UPSTREAM_SHA:0:12}"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "A sync branch for $UPSTREAM_SHA already exists; leaving it unchanged." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create a regular merge commit
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          BRANCH: ${{ steps.existing.outputs.branch }}
+        run: |
+          git switch --create "$BRANCH" origin/main
+          git -c rerere.enabled=false merge --no-ff --no-edit upstream/main
+
+      - name: Validate generated brand bytes and fork boundary
+        if: steps.existing.outputs.exists == 'false'
+        run: |
+          python3 scripts/brand/apply.py --brand omi-upstream --check-clean
+          python3 scripts/brand/check.py --brand omi-upstream
+          python3 scripts/fork/check-upstream-touch.py --base origin/main --head HEAD
+          git diff --check origin/main...HEAD
+
+      - name: Push branch and open pull request
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          BRANCH: ${{ steps.existing.outputs.branch }}
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short_sha="${UPSTREAM_SHA:0:12}"
+          cat > "$RUNNER_TEMP/sync-pr-body.md" <<EOF
+          ## Upstream sync
+
+          - Upstream: \`$UPSTREAM_SHA\`
+          - Measured merge conflicts: 0
+          - Merge disposition: regular merge commit; no rerere replay
+
+          ### Pre-push verification
+
+          - \`scripts/brand/apply.py --brand omi-upstream --check-clean\`
+          - \`scripts/brand/check.py --brand omi-upstream\`
+          - \`scripts/fork/check-upstream-touch.py --base origin/main --head HEAD\`
+          - \`git diff --check origin/main...HEAD\`
+
+          The Fork Checks workflow runs the full diff-selected contract suite before review.
+          EOF
+          git push -u origin "$BRANCH"
+          gh workflow run fork-checks.yml --ref "$BRANCH"
+          gh pr create --base main --head "$BRANCH" --title "sync: upstream/main $short_sha" --body-file "$RUNNER_TEMP/sync-pr-body.md"

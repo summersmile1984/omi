@@ -651,9 +651,10 @@ describe("jobs scheduled cleanup", () => {
       APP_DB: {
         batch: async () => [],
         prepare: (sql: string) => ({
+          all: async () => ({ results: [] }), // No pending memory privacy requests in this asset fixture.
           bind: (...args: unknown[]) => ({
             all: async () =>
-              sql.includes("cf_vector_projection")
+              !sql.includes("FROM cf_asset_cleanup_tasks")
                 ? { results: [] }
                 : {
                     results: [...tasks].map(([storage_key, task]) => ({
@@ -662,7 +663,9 @@ describe("jobs scheduled cleanup", () => {
                     })),
                   },
             first: async () =>
-              active.has(String(args[1])) ? { active: 1 } : null,
+              sql.includes("cf_feedback_reports")
+                ? { ready: 1 } // The independent daily report has already completed.
+                : active.has(String(args[1])) ? { active: 1 } : null,
             run: async () => {
               const storageKey = String(args[sql.startsWith("DELETE") ? 0 : 2]);
               if (sql.startsWith("DELETE")) tasks.delete(storageKey);

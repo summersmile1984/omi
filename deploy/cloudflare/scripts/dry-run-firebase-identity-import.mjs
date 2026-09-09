@@ -6,18 +6,15 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
+import { workersFirebaseScrypt } from "../../../auth/shared/firebase-scrypt.mjs";
 import {
   FirebaseIdentityMigrationError,
-  parseFirebaseImportScryptConfig,
   planFirebaseIdentityImport,
   runIdentityImport,
 } from "./import-firebase-identities.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
-const migrationsDirectory = path.resolve(
-  scriptDirectory,
-  "../migrations/auth",
-);
+const migrationsDirectory = path.resolve(scriptDirectory, "../migrations/auth");
 
 const SYNTHETIC_HASH_CONFIG = Object.freeze({
   algorithm: "SCRYPT",
@@ -46,9 +43,7 @@ function syntheticSource(email = "identity-dry-run@example.test") {
 }
 
 function stableSourceSha256(source) {
-  return createHash("sha256")
-    .update(JSON.stringify(source))
-    .digest("hex");
+  return createHash("sha256").update(JSON.stringify(source)).digest("hex");
 }
 
 function sqliteClient(database) {
@@ -115,7 +110,7 @@ export async function runFirebaseIdentityDryRun() {
   const database = migratedDatabase();
   const client = sqliteClient(database);
   try {
-    const config = parseFirebaseImportScryptConfig(SYNTHETIC_HASH_CONFIG);
+    const config = workersFirebaseScrypt.parseConfig(SYNTHETIC_HASH_CONFIG);
     const source = syntheticSource();
     const plan = planFirebaseIdentityImport(source, config);
     const sourceSha256 = stableSourceSha256(source);
@@ -166,8 +161,7 @@ export async function runFirebaseIdentityDryRun() {
       )
       .run("firebase-identity-dry-run");
     const revokedProjectionRejected = await expectMigrationFailure(
-      () =>
-        runIdentityImport("verify", plan, sourceSha256, client, {}),
+      () => runIdentityImport("verify", plan, sourceSha256, client, {}),
       /identity projection conflicts/,
     );
     database
@@ -182,8 +176,7 @@ export async function runFirebaseIdentityDryRun() {
       )
       .run("firebase-identity-dry-run");
     const deletionFenceRejected = await expectMigrationFailure(
-      () =>
-        runIdentityImport("verify", plan, sourceSha256, client, {}),
+      () => runIdentityImport("verify", plan, sourceSha256, client, {}),
       /deletion fence is not clear/,
     );
 
@@ -206,7 +199,9 @@ export async function runFirebaseIdentityDryRun() {
 
 async function main() {
   try {
-    process.stdout.write(`${JSON.stringify(await runFirebaseIdentityDryRun())}\n`);
+    process.stdout.write(
+      `${JSON.stringify(await runFirebaseIdentityDryRun())}\n`,
+    );
   } catch (error) {
     const message =
       error instanceof FirebaseIdentityMigrationError

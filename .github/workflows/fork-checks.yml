@@ -1,13 +1,15 @@
 name: Fork Checks
 
-# Fork-owned CI lane. Upstream workflows are left byte-identical and disabled in
-# this fork's Actions settings; anything this fork needs lives in fork-*.yml.
+# Fork-owned CI for summersmile1984/omi. Trusted branch pushes and manual runs
+# use Mac Studio; pull requests use disposable GitHub-hosted runners.
+# Upstream workflow files remain unchanged and keep their own repository settings.
 on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: [main, "codex/**", "sync/**"]
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: fork-checks-${{ github.ref }}
@@ -18,17 +20,34 @@ permissions:
 
 jobs:
   fork-gate:
-    name: Fork gate
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: Fork gate (Server OS + Cloudflare)
+    if: github.repository == 'summersmile1984/omi'
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
+    timeout-minutes: 120
+    env:
+      FORK_FULL_CHECKS: ${{ github.event_name == 'workflow_dispatch' }}
+    outputs:
+      base: ${{ steps.base.outputs.ref }}
+      macos: ${{ steps.platforms.outputs.macos }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
         with:
-          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/pylock*.toml
+
+      # Managed Python is relocatable and installs under the runner account.
+      # setup-python's macOS archives require /Users/runner/hostedtoolcache.
+      - name: Provision CI Python
+        run: |
+          uv python install 3.12
+          fork_python=$(uv python find --managed-python 3.12)
+          dirname "$fork_python" >> "$GITHUB_PATH"
 
       # The guard classifies a file as "upstream" by its presence in
       # upstream/main, so without this ref it can only skip. Fetch it explicitly
@@ -37,40 +56,145 @@ jobs:
         run: |
           git remote add upstream https://github.com/BasedHardware/omi.git 2>/dev/null || true
           git config remote.upstream.tagOpt --no-tags
-          git fetch --no-tags --depth=1 upstream main
+          git fetch --no-tags upstream main
           git update-ref refs/remotes/upstream/main FETCH_HEAD
           echo "upstream/main = $(git rev-parse --short refs/remotes/upstream/main)"
 
       - name: Resolve diff base
         id: base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            echo "ref=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags origin "$BASE_REF"
+            ref=FETCH_HEAD
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            ref="$BEFORE_SHA"
           else
-            echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+            # New branch pushes and manual runs qualify the whole fork branch.
+            git fetch --no-tags origin main
+            ref=$(git merge-base HEAD FETCH_HEAD)
+            # On main itself, retain a non-empty current-commit review range.
+            if [ "$ref" = "$(git rev-parse HEAD)" ]; then
+              ref=HEAD^
+            fi
           fi
+          resolved=$(git rev-parse --verify --end-of-options "$ref^{commit}")
+          echo "ref=$resolved" >> "$GITHUB_OUTPUT"
 
-      # fork-backend-seams runs the real backend suite through test.sh, which
-      # needs the pinned interpreter. Without it the check silently degrades to
-      # "no module named pytest" -- a dead check is worse than no check, since
-      # the whole point is catching an upstream rename.
-      # Same pinned action and cache key shape upstream's backend-unit-tests
-      # workflow uses, so the fork gate provisions the identical interpreter.
-      - name: Install uv
-        uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
-        with:
-          enable-cache: true
-          cache-dependency-glob: backend/pylock*.toml
-
-      - name: Provision backend environment
-        run: make setup-backend
-
-      - name: Fork manifest (ci lane)
+      - name: Validate fork ownership before dependency provisioning
+        env:
+          DIFF_BASE: ${{ steps.base.outputs.ref }}
         run: |
           python3 .github/scripts/run_checks.py \
-            --manifest .github/checks-manifest.fork.yaml \
-            --lane ci --base "${{ steps.base.outputs.ref }}"
+            --manifest .github/checks-manifest.fork.yaml --lane ci \
+            --base "$DIFF_BASE" --platform linux --check-id fork-upstream-touch
+
+      - name: Provision backend environment
+        run: |
+          make setup-backend
+          uv pip install --python backend/.venv/bin/python --no-deps --require-hashes -r backend/requirements-fork.txt
+          echo "$GITHUB_WORKSPACE/backend/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Select platform checks
+        id: platforms
+        env:
+          DIFF_BASE: ${{ steps.base.outputs.ref }}
+        run: |
+          python3 scripts/fork/run_checks.py \
+            --lane ci --base "$DIFF_BASE" --platform macos \
+            --exclusive-platform --output json > "$RUNNER_TEMP/fork-macos-checks.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          selection = json.loads((Path(os.environ['RUNNER_TEMP']) / 'fork-macos-checks.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"macos={str(bool(selection['checks'])).lower()}\n")
+          PY
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache: false
+
+      - name: Provision workflow lint
+        run: |
+          GOBIN="$RUNNER_TEMP/fork-tools" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$RUNNER_TEMP/fork-tools" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            auth-server/package-lock.json
+            deploy/cloudflare/package-lock.json
+            scripts/brand/raster/package-lock.json
+
+      - name: Provision authentication contract dependencies
+        run: |
+          npm ci --prefix auth-server --ignore-scripts --no-audit --no-fund
+          npm ci --prefix deploy/cloudflare --ignore-scripts --no-audit --no-fund
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Provision Web contract dependencies
+        working-directory: web/app
+        run: bun install --frozen-lockfile
+
+      - name: Select native terminal contract dependencies
+        id: flutter
+        run: |
+          python3 scripts/fork/run_checks.py \
+            --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux --output json > /tmp/fork-check-selection.json
+          python3 - <<'PY'
+          import json, os
+          selected = json.load(open('/tmp/fork-check-selection.json'))['checks']
+          enabled = any(check['id'] == 'fork-flutter-native-identity' for check in selected)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'enabled={str(enabled).lower()}\n')
+              output.write(f"electron={str(any(check['id'] == 'fork-electron-native-identity' for check in selected)).lower()}\n")
+              output.write(f"raster={str(any(check['id'] in {'fork-brand-raster', 'fork-flutter-native-identity', 'fork-electron-native-identity'} for check in selected)).lower()}\n")
+          PY
+
+      - name: Provision shared brand raster dependencies
+        if: steps.flutter.outputs.raster == 'true'
+        run: npm ci --prefix scripts/brand/raster --ignore-scripts --no-audit --no-fund
+
+      - name: Provision pinned Flutter
+        if: steps.flutter.outputs.enabled == 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.5"
+          channel: stable
+          cache: true
+
+      - name: Provision frozen Flutter dependencies
+        if: steps.flutter.outputs.enabled == 'true'
+        working-directory: app
+        run: flutter pub get --enforce-lockfile
+
+      - name: Provision Electron package manager
+        if: steps.flutter.outputs.electron == 'true'
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Provision Electron build dependencies
+        if: steps.flutter.outputs.electron == 'true'
+        working-directory: desktop/windows
+        run: pnpm install --frozen-lockfile
+
+      # Portable contracts run on either host; macOS-only checks run below.
+      # Server OS still executes in Linux Docker containers on Mac Studio.
+      - name: Fork manifest (ci lane)
+        run: |
+          python3 scripts/fork/run_checks.py \
+            --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux
 
       - name: Report upstream divergence
         if: always()
@@ -78,9 +202,71 @@ jobs:
           git diff --name-only refs/remotes/upstream/main HEAD | sort -u > /tmp/changed.txt
           git ls-tree -r --name-only refs/remotes/upstream/main | sort -u > /tmp/upstream.txt
           n=$(comm -12 /tmp/changed.txt /tmp/upstream.txt | wc -l | tr -d ' ')
-          echo "### Fork divergence" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Upstream files this branch differs from upstream on: **$n**" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "This number should only fall. It counts everything, including" >> "$GITHUB_STEP_SUMMARY"
-          echo "upstream commits not yet merged here, so read it as a trend." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Fork divergence"
+            echo ""
+            echo "Upstream files this branch differs from upstream on: **$n**"
+            echo ""
+            echo "This number should only fall. It counts everything, including"
+            echo "upstream commits not yet merged here, so read it as a trend."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  fork-macos:
+    name: Fork macOS native contracts
+    needs: fork-gate
+    if: needs.fork-gate.outputs.macos == 'true'
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '["macos-26"]' || '["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
+    timeout-minutes: 60
+    env:
+      FORK_FULL_CHECKS: ${{ github.event_name == 'workflow_dispatch' }}
+      DEVELOPER_DIR: ${{ github.event_name == 'pull_request' && '/Applications/Xcode_26.6.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/pylock*.toml
+
+      # Managed Python is relocatable and installs under the runner account.
+      # setup-python's macOS archives require /Users/runner/hostedtoolcache.
+      - name: Provision CI Python
+        run: |
+          uv python install 3.12
+          fork_python=$(uv python find --managed-python 3.12)
+          dirname "$fork_python" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: scripts/brand/raster/package-lock.json
+
+      - name: Provision shared brand raster dependencies
+        run: npm ci --prefix scripts/brand/raster --ignore-scripts --no-audit --no-fund
+
+      - name: Verify native compiler
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+
+      - name: Install native build dependencies
+        timeout-minutes: 10
+        run: brew install pkg-config webp
+
+      # Cache downloaded dependencies only; compiled .build paths are stage-specific.
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: fork-native-${{ runner.os }}-${{ runner.arch }}-xcode26.6-${{ hashFiles('desktop/macos/Desktop/Package.resolved') }}
+
+      - name: Run selected native manifest checks
+        env:
+          DIFF_BASE: ${{ needs.fork-gate.outputs.base }}
+        run: |
+          python3 scripts/fork/run_checks.py \
+            --lane ci --base "$DIFF_BASE" --platform macos --exclusive-platform

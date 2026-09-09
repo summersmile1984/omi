@@ -62,6 +62,8 @@ INTERNAL_SERVICE_HOSTS = frozenset(
         '::1',
         'auth-server',
         'backend',
+        'embedding',
+        'llm',
         'firestore-pg-migrate',
         'host.docker.internal',
         'minio',
@@ -96,7 +98,12 @@ class EgressPolicyUnavailable(httpx.RequestError):
 
 
 def _is_neutral_profile() -> bool:
-    return os.environ.get('OMI_DEPLOYMENT_PROFILE', '').strip().lower() in NEUTRAL_DEPLOYMENT_PROFILES
+    selected = os.environ.get('OMI_DEPLOYMENT_PROFILE', '').strip().lower()
+    return (
+        selected in NEUTRAL_DEPLOYMENT_PROFILES
+        or selected in {'self_hosted.local', 'self_hosted.beta', 'self_hosted.production'}
+        or os.environ.get('OMI_DEPLOYMENT_TARGET') == 'self_hosted'
+    )
 
 
 def _is_official_host(host: str) -> bool:
@@ -165,6 +172,10 @@ def assert_http_endpoint_allowed(url: str) -> str:
     if not host:
         raise EgressPolicyUnavailable('invalid_egress_endpoint')
     if _is_official_host(host):
+        from .operator_ai import allows
+
+        if allows(url):
+            return host
         raise EgressPolicyUnavailable('official_endpoint_forbidden', host=host)
     if _is_internal_host(host):
         return host

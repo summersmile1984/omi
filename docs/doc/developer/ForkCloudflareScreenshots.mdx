@@ -1,0 +1,84 @@
+---
+title: "Cloudflare meeting screenshots"
+description: "Screenshot display, settings and revocation for clients using the Cloudflare target"
+---
+
+The Cloudflare target implements screenshot adjudication, display and revocation
+through its public Edge API. The full supported input size and complete native
+client workflow remain under qualification. These implementation results do not
+establish that a particular production deployment is ready.
+
+An authenticated `GET /v1/screen-frame-egress/settings` returns
+`meeting_note_screenshots_enabled`, which defaults to true for existing accounts
+without a settings record. PATCH the same route with that boolean to change it.
+Disabling screenshots hides retained images on owner and shared views and makes
+existing image URLs unavailable. Enabling it restores retained images.
+
+`GET /v1/conversations/{conversation_id}/screenshots` returns the owner's frame
+set: `revision`, nullable `banner`, up to six `strip` frames and nullable
+`adjudicated_at`. Use `adjudicated_at` to determine whether candidate evaluation
+already ran; a zero revision alone does not mean it has never run.
+
+Each frame includes `content_url`, `thumbnail_url`, `url_expires_at`, caption,
+labels, dimensions and server-derived background colors. Image URLs last at most
+one hour and are rechecked against current privacy state on every read. Treat
+them as opaque capabilities and obtain fresh URLs by reloading the frame set.
+Responses are not cacheable.
+
+PATCH `/v1/conversations/{conversation_id}/screenshot-sharing` with
+`{"enabled": false}` to withdraw screenshot sharing. This leaves the conversation's
+other sharing state and the screenshot revision unchanged. Shared screenshot URLs
+then become unavailable; owner URLs remain usable when screenshots are enabled.
+
+The unauthenticated
+`GET /v1/conversations/{conversation_id}/shared/screenshots` returns an empty set
+when the conversation is missing, private, no longer shared or screenshots are
+disabled. Those cases all return 200. Public lookup uses the existing unique
+conversation share owner.
+
+DELETE `/v1/conversations/{conversation_id}/screenshots/{frame_id}` removes one
+frame and may promote another already-approved survivor to banner. Deleting a
+missing frame returns 404. DELETE `/v1/conversations/{conversation_id}/screenshots`
+removes the whole set, including when it is already empty. Both return the
+updated set and increment its revision. Removed image URLs become unavailable
+immediately after the committed mutation; physical object cleanup is retried by
+the storage service. Deletion preserves `adjudicated_at`.
+
+Candidate submission uses `POST /v1/screen-frame-egress/adjudications` with
+`schema_version: 1`, a UUID `attempt_id`, `purpose: "meeting_note_v1"`,
+`subject: {"kind": "conversation", "id": "conversation-id"}` and one to eight
+`candidates`. Each candidate provides `client_frame_id`, `captured_at`,
+`mime_type`, `declared_width`, `declared_height`, `sha256_base64` and `bytes_base64`.
+The conversation must be owned and completed; captures must fall within its
+time window with the existing two-minute slack.
+The public API enforces the upstream limit of 30 adjudication requests per
+account per hour, including replays. A request above the limit returns 429
+before any image bytes reach the adjudicator or model.
+
+Every transport digest is checked before model processing. Core standardizes
+the image and judges those exact bytes with `@cf/qwen/qwen3.8-27b`, the upstream
+privacy prompt and strict output schema. The prompt is unchanged. A client
+verdict cannot approve an image. Rejected or
+unreadable candidates are omitted; a failed approved-image write returns 503.
+JPEG/PNG processing uses Cloudflare Images to decode and resize the source;
+the final JPEG and thumbnail use the upstream encoder. EXIF orientation is
+applied and private metadata is removed. Transparency is discarded while keeping
+the RGB colors. Image retrieval reads the stored result and does not run another
+image transformation or model call.
+The successful result contains `attempt_id`, `outcome` (`committed` or
+`no_approved_frames`) and `frame_set`.
+
+Adjudication processes candidates sequentially and returns its JSON only when
+the attempt finishes. Clients must allow for the complete batch rather than
+use a short CRUD request timeout. The fork macOS build sets this request's
+inactivity timeout to 60 seconds plus 180 seconds per candidate, capped at eight
+candidates (25 minutes). This is an upper allowance for slow image/model/storage
+calls, not expected latency or a server completion guarantee. The request stays
+one attempt with the same candidate bytes; other API requests retain their
+ordinary timeout. The full supported batch-body size remains under qualification.
+
+Repeating an attempt with the same request replays its stored response for
+24 hours; a different fingerprint returns 409 and an unfinished attempt returns 503. An all-rejected pass updates `adjudicated_at` while leaving revision
+unchanged. At most seven approved frames survive, with up to one banner and six
+visible strip entries. Turning screenshots off or deleting the subject during
+processing prevents pending images from being published.

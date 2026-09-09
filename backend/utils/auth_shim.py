@@ -17,6 +17,7 @@ import os
 import threading
 import time
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 import httpx
 import jwt as pyjwt
@@ -75,13 +76,9 @@ def _fetch_jwks() -> Dict[str, Any]:
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            # Stale cache is better than failing closed on a transient fetch error
-            if _jwks is not None and _jwks_source_url == url:
-                logger.warning("JWKS refresh failed, using stale cache: %s", exc)
-                return _jwks
-            raise CertificateFetchError(f"JWKS fetch failed: {exc}") from exc
-        if "keys" not in data:
-            raise CertificateFetchError(f"JWKS response missing keys: {data}")
+            raise CertificateFetchError("JWKS refresh unavailable") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("keys"), list):
+            raise CertificateFetchError("JWKS response missing keys")
         _jwks = data
         _jwks_fetched_at = now
         _jwks_source_url = url
@@ -92,11 +89,16 @@ def _fetch_jwks() -> Dict[str, Any]:
 def verify_id_token(token: str, **_: Any) -> Dict[str, Any]:
     """Verify a Better Auth JWT; return claims shaped like Firebase.
 
-    Returns ``{'uid': <sub-or-uid>, 'sub': ...}`` matching the shape
+    Requires matching uid/sub, a session, issuer/audience and bounded expiry.
+    Returns the verified claims matching the shape
     ``verify_token`` consumes (``decoded_token['uid']``).
     """
     if not token:
         raise InvalidIdTokenError("empty token")
+    issuer = os.getenv("AUTH_JWT_ISSUER", "").strip()
+    audience = os.getenv("AUTH_JWT_AUDIENCE", "").strip()
+    if not issuer or not audience:
+        raise CertificateFetchError("AUTH_JWT_ISSUER and AUTH_JWT_AUDIENCE are required")
     try:
         header = pyjwt.get_unverified_header(token)
         algorithm = header.get("alg")
@@ -104,6 +106,8 @@ def verify_id_token(token: str, **_: Any) -> Dict[str, Any]:
             raise InvalidIdTokenError(f"unsupported JWT algorithm={algorithm}")
         jwks = _fetch_jwks()
         kid = header.get("kid")
+        if not isinstance(kid, str) or not kid:
+            raise InvalidIdTokenError("JWT missing kid")
         key = next((k for k in jwks["keys"] if k.get("kid") == kid), None)
         if key is None:
             # kid not in cache — force refresh once (rotation)
@@ -127,16 +131,67 @@ def verify_id_token(token: str, **_: Any) -> Dict[str, Any]:
             token,
             verify_key,
             algorithms=[algorithm],
-            options={"verify_aud": False},  # Better Auth JWT carries no aud
+            issuer=issuer,
+            audience=audience,
+            options={"require": ["sub", "uid", "sid", "iss", "aud", "iat", "exp"], "strict_aud": True},
         )
     except pyjwt.PyJWTError as exc:
         raise InvalidIdTokenError(str(exc)) from exc
     except CertificateFetchError:
         raise
-    uid = claims.get("uid") or claims.get("sub")
-    if not uid:
-        raise InvalidIdTokenError("Better Auth JWT missing uid/sub claim")
-    return {**claims, "uid": str(uid), "sub": str(claims.get("sub") or uid)}
+    uid = claims["uid"]
+    sid = claims["sid"]
+    if not isinstance(uid, str) or not uid or claims["sub"] != uid:
+        raise InvalidIdTokenError("JWT uid and sub must name the same user")
+    if not isinstance(sid, str) or not sid:
+        raise InvalidIdTokenError("JWT must name its session")
+    issued = claims["iat"]
+    expires = claims["exp"]
+    if type(issued) is not int or type(expires) is not int or expires <= issued or expires - issued > 3600:
+        raise InvalidIdTokenError("JWT lifetime must be at most 3600 seconds")
+    _verify_active_session(token, uid, sid)
+    return claims
+
+
+def internal_authority() -> tuple[str, str]:
+    """One trusted internal origin/credential for session and identity operations."""
+    base_url = os.getenv("AUTH_SERVER_INTERNAL_URL", "").rstrip("/")
+    secret = os.getenv("AUTH_INTERNAL_ADMIN_SECRET", "")
+    parsed = urlsplit(base_url)
+    allow_http = os.getenv("AUTH_INTERNAL_ALLOW_HTTP") == "true"
+    if (
+        not secret
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path
+        or (parsed.scheme != "https" and not (parsed.scheme == "http" and allow_http))
+    ):
+        raise CertificateFetchError("A trusted internal auth URL and secret are required")
+    return base_url, secret
+
+
+def _verify_active_session(token: str, uid: str, sid: str) -> None:
+    """A valid signature does not survive logout or account deletion."""
+    base_url, secret = internal_authority()
+    try:
+        response = httpx.post(
+            f"{base_url}/internal/verify",
+            headers={"authorization": f"Bearer {token}", "x-internal-assertion-secret": secret},
+            timeout=_jwks_timeout(),
+        )
+        if response.status_code == 401:
+            raise InvalidIdTokenError("JWT session is no longer active")
+        response.raise_for_status()
+        identity = response.json()
+        if not isinstance(identity, dict) or identity.get("uid") != uid or identity.get("sessionGeneration") != sid:
+            raise InvalidIdTokenError("JWT session owner mismatch")
+    except InvalidIdTokenError:
+        raise
+    except (httpx.HTTPError, ValueError) as exc:
+        raise CertificateFetchError("Auth session verification unavailable") from exc
 
 
 def _jwk_to_key(jwk: Dict[str, Any]) -> Any:

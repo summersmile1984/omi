@@ -401,7 +401,7 @@ async function accessSnapshot(env: JobsEnv, uid: string, generation: number): Pr
   monthlyUsed: number;
   resetAt: number;
 }> {
-  const subscription = await env.APP_DB.prepare("SELECT plan, status FROM cf_user_subscriptions WHERE uid = ?").bind(uid).first<{ plan?: unknown; status?: unknown }>();
+  const subscription = await env.APP_DB.prepare("SELECT plan, status FROM cf_effective_user_subscriptions WHERE uid = ?").bind(uid).first<{ plan?: unknown; status?: unknown }>();
   const paid = subscription?.status === "active" && typeof subscription.plan === "string" && PAID_PLANS.has(subscription.plan);
   const config = await policy(env);
   const monthlyLimit = paid ? config.paid_monthly_limit : config.free_monthly_limit;

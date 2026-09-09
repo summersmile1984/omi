@@ -1506,11 +1506,14 @@ async def delete_conversation(request: Request, conversation_id: str):
                 ).bind(now, now, uid, conversation_id)
             )
             statements.append(
-                env.APP_DB.prepare(
-                    "DELETE FROM cf_action_items WHERE uid = ? AND conversation_id = ?"
-                ).bind(uid, conversation_id)
+                env.APP_DB.prepare("DELETE FROM cf_action_items WHERE uid = ? AND conversation_id = ?").bind(
+                    uid, conversation_id
+                )
             )
             for source_kind, source_id in derived:
+                if source_kind == "memory":
+                    # The preceding canonical tombstone emits its own revisioned outbox row.
+                    continue
                 statements.append(
                     vector_outbox_statement(
                         env,
@@ -2198,9 +2201,7 @@ async def download_conversation_audio(
             status_code = 206
         elif size:
             headers["content-length"] = str(size)
-        stored = (
-            await source_bucket.get(storage_key, options) if options else await source_bucket.get(storage_key)
-        )
+        stored = await source_bucket.get(storage_key, options) if options else await source_bucket.get(storage_key)
         if stored is None:
             return JSONResponse({"error": "audio file not found"}, status_code=404)
     except Exception:

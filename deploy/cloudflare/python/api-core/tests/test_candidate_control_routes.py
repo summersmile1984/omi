@@ -33,7 +33,7 @@ def test_candidate_control_requires_authentication():
     assert response.status_code == 401
 
 
-def test_candidate_control_defaults_to_the_legacy_safe_shell():
+def test_candidate_control_unavailable_database_retains_the_legacy_safe_shell():
     secret = "candidate-secret"
     env = type("Env", (), {"INTERNAL_ASSERTION_SECRET": secret})()
     assert asyncio.run(get_candidate_workflow_control(FakeRequest(env, signed_headers(secret)))) == {

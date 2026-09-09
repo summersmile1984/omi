@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "FC-cloudflare-image-runtime-envelope",
+  "violated_contract": "Every image accepted by a Cloudflare route's declared byte and pixel limits must be processed within the hosted runtime envelope while preserving orientation, metadata removal, and exact persisted/provider bytes. Passing CPython or local workerd tests does not establish hosted memory or temporary-file behavior.",
+  "canonical_prevention": "Keep bounded multipart parsing in memory, delegate full-resolution decoding to Cloudflare Images, and enforce container orientation/metadata rules without allocating source-sized pixel canvases. Exercise the actual hosted code at supported byte/pixel boundaries and test privacy, orientation, provider failure, and no-temporary-file behavior in the existing route lane.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/python/api-core/tests/test_frame_image_transform.py",
+    "deploy/cloudflare/python/api-core/tests/test_frame_request_pixels.py",
+    "deploy/cloudflare/python/api-core/tests/test_screen_frame_image.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/python/api-core/src/frame_image*.py",
+    "deploy/cloudflare/python/api-core/src/frame_upload_form.py",
+    "deploy/cloudflare/python/api-core/src/frame_request_routes.py"
+  ],
+  "status": "open"
+}

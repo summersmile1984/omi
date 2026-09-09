@@ -1,0 +1,42 @@
+---
+title: 'Cloudflare realtime usage reports'
+description: 'Stable turn identities, quota accounting and retry behavior for desktop integrations'
+---
+
+Send authenticated usage reports to `POST /v2/realtime/usage`. Give each
+managed voice turn a stable `turn_id` and reuse it when retrying the report:
+
+```json
+{
+  "provider": "openai",
+  "turn_id": "your-stable-turn-id",
+  "input_text_tokens": 100,
+  "input_audio_tokens": 50,
+  "input_cached_tokens": 40,
+  "output_text_tokens": 20,
+  "output_audio_tokens": 10
+}
+```
+
+The first accepted report determines the counters and cost. A repeat from the
+same account does not add another question or charge, including after the UTC
+date changes. Reusing an ID with different counters retains the first report.
+Do not reuse an ID for a new turn. Older clients that omit `turn_id` retain
+the existing one-report-per-request behavior.
+
+Successful reports return 204. Invalid reports return 400; managed quota or
+trial denial returns 402. A persistence failure returns 502 and can be retried
+with the same turn ID. Managed OpenAI/Gemini reports use the desktop quota
+without a BYOK exemption. The caller's `model` field does not select pricing.
+
+Cached tokens are a subset of the reported input. Pricing attributes that
+subset to text first and then audio, using the server-selected model's rates
+and integer micro-USD rounding. Native `workers-ai` and
+`cloudflare-workers-ai` reports are aliases for speech metadata; they add no
+external-model cost or chat question. Native ASR duration remains separately
+metered by the recording service.
+
+`GET /v1/users/export` includes account-owned `realtime_usage` totals and
+`realtime_turns` receipts, with hashed turn identities. Account deletion removes
+both. This reporting endpoint does not open a realtime model session; native
+interactive session support remains a separate Cloudflare delivery requirement.

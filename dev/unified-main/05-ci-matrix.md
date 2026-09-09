@@ -36,6 +36,30 @@ done
 
 ## 3. fork 检查清单与本地入口
 
+**2026-09-08 fork CI 调整**：当前实现见
+[fork 脚本说明](../../scripts/fork/README.md)。`summersmile1984/omi` 的
+`main`、`codex/**`、`sync/**` push 和手动运行选择 Mac Studio runner；
+面向 `main` 的 PR 仍使用托管 runner。Server OS 运行 Linux Docker 契约，
+Cloudflare 运行本地 Wrangler 契约，原生 macOS 检查单独调度。
+新分支首次 push / 手动运行检查相对 main 的完整分支差异；上游零改动规则
+使用实际已合入的上游祖先，不受远端 tip 前移影响。失效的 storage/queue
+测试引用已迁到 `backend/fork/tests/test_storage_queue_adapters.py`。
+`scripts/fork/preflight --fork-only` 对应 Fork Checks；默认命令仍保留上游加
+fork 的完整门禁。下文保留原有规划语境，不代表部署 workflow 已经实现。
+
+2026-09-04 的实际工作流以 `.github/workflows/fork-checks.yml` 和
+`.github/checks-manifest.fork.yaml` 为准；下表仍包含规划项。PR 使用目标分支的
+已获取提交作 diff base，push 使用事件的 `before`；手动运行没有 `before`，
+使用当前提交的父提交，因此检查当前提交的变更。无法解析提交时立即失败。
+`fork-ci-diff-base` 在真实临时 Git 仓库中执行工作流原始 shell，覆盖上述事件，
+避免手动入口再次传入空 ref。
+
+原生 macOS 的现有 fork CI 入口使用共用 manifest selector 按 diff 选出
+macOS-only 检查；Linux gate 通过后，有原生检查才启动标准 `macos-26` runner。
+固定 Xcode 26.6 和 Python 3.12，执行 native identity 测试及完整 staged debug
+编译。两项都同时注册 local/ci，Linux 的平台跳过不计为原生验证通过。
+SwiftPM 只缓存下载依赖，不复用带绝对路径的 `.build`，也不签名、发布或启动应用。
+
 `.github/checks-manifest.fork.yaml`（与上游同 schema：`id/command/triggers/lanes/reason`，每条都声明 `["local","ci"]`）：
 
 | id | command | triggers | 目的 |
@@ -45,7 +69,7 @@ done
 | `fork-upstream-touch` | `python3 scripts/fork/check-upstream-touch.py --base upstream/main --allowlist dev/unified-main/upstream-touch-allowlist.yaml` | `all` | **默认零个上游文件被修改**；例外只能来自 T1 白名单（逐条限行数、附上游 PR 链接）；命中 T2 类别（上游测试/锁文件/生成文件/机器人文件/CI/格式化）直接失败。见 `00-upstream-touch-policy.md` |
 | `fork-profile-consistency` | `python3 scripts/profiles/check_tables.py` | `deploy/profiles/**`, 各端生成的 profile 表 | Flutter/Swift/TS/Python 四份 profile 表由同一源生成且一致（见 `02-deployment-profile.md`） |
 | `fork-selfhost-compose-valid` | `docker compose -f deploy/self-host/compose.production.yml config -q` | `deploy/self-host/**` | compose 可解析、无缺失变量 |
-| `fork-cloudflare-config-valid` | `bash -c 'cd deploy/cloudflare && npm run validate:manifest && npm run verify:migrations && npm run validate:backend-routes'` | `deploy/cloudflare/**`, `backend/routers/**` | 沿用 CF 分支已有脚本：`validate-manifests.mjs`（路由/原语清单字段与枚举）、`d1-migrations.mjs`（迁移全部已应用）、`export_openapi.py --surface cloudflare-route-inventory --check`（新上游路由必须分类）；wrangler `--dry-run` 由 `scripts/deploy.mjs` 的资格流程覆盖 |
+| `fork-cloudflare-routes` | `bash deploy/cloudflare/ci/routes.sh` | `deploy/cloudflare/**` 与上游路由/导出器依赖 | 已在两 lane 注册：真实注册路由漂移、manifest、TS/全Vitest（含发布事务/HTTP/进程/冻结工件回归）、Core tests；同源码双 Web + 16次 Worker工件 dry-run 在 `release.mjs prepare` 发布资格入口执行，当前远端资格仍 pending。 |
 | `fork-agents-doc-refs` | `python3 .github/scripts/check_agent_doc_references.py --extra AGENTS.fork.md backend/AGENTS.fork.md app/AGENTS.fork.md desktop/macos/AGENTS.fork.md` | `**/AGENTS*.md` | fork 规则文档引用可解析（上游脚本按文件名精确匹配 `AGENTS.md`，`AGENTS.fork.md` 默认不可见，需显式传入） |
 | `fork-matrix-valid` | `python3 scripts/fork/check-matrix.py deploy/matrix.json` | `deploy/matrix.json`, `brand/*/manifest.yaml` | 矩阵引用的品牌/目标/组件存在 |
 

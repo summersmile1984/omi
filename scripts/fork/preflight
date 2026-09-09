@@ -3,21 +3,26 @@
 #
 # `make preflight` runs only the upstream manifest (its runner hardcodes that
 # path). This wrapper runs both, so a fork PR is checked by the same two lanes
-# CI uses. Usage: scripts/fork/preflight [--base REF]
+# CI uses. --fork-only selects just the dedicated Fork Checks workflow lane;
+# the default continues to require the upstream and fork checks together.
+# Usage: scripts/fork/preflight [--base REF] [--fork-only]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 BASE="origin/main"
+FORK_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE="$2"; shift 2 ;;
-    *) echo "usage: scripts/fork/preflight [--base REF]" >&2; exit 2 ;;
+    --fork-only) FORK_ONLY=1; shift ;;
+    *) echo "usage: scripts/fork/preflight [--base REF] [--fork-only]" >&2; exit 2 ;;
   esac
 done
 
-PYTHON_BIN="${PYTHON:-python3}"
+source scripts/dev-harness/_resolve_python.sh
+PYTHON_BIN="$(dev_harness_python)"
 # .github/scripts/git_bash.py uses PEP 604 unions, so the runner needs >= 3.10.
 if ! "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
   for candidate in python3.13 python3.12 python3.11; do
@@ -37,14 +42,19 @@ fi
 if [ "$(command -v python3)" != "$(command -v "$PYTHON_BIN")" ]; then
   SHIM_DIR="$(mktemp -d)"
   trap 'rm -rf "$SHIM_DIR"' EXIT
-  ln -sf "$(command -v "$PYTHON_BIN")" "$SHIM_DIR/python3"
+  # A symlink outside .venv loses pyvenv.cfg discovery and its locked packages.
+  # Exec the selected path so child checks retain the interpreter's environment.
+  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$(command -v "$PYTHON_BIN")" > "$SHIM_DIR/python3"
+  chmod +x "$SHIM_DIR/python3"
   PATH="$SHIM_DIR:$PATH"
   export PATH
   echo "note: using $("$PYTHON_BIN" --version 2>&1) as python3 for this run"
 fi
 
-echo "==> upstream contract gate (.github/checks-manifest.yaml)"
-"$PYTHON_BIN" .github/scripts/pr_preflight.py --lane local --base "$BASE"
+if [ "$FORK_ONLY" = 0 ]; then
+  echo "==> upstream contract gate (.github/checks-manifest.yaml)"
+  "$PYTHON_BIN" .github/scripts/pr_preflight.py --lane local --base "$BASE"
+fi
 
 echo
 echo "==> fork gate (.github/checks-manifest.fork.yaml)"

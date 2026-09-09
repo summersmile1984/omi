@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "FC-public-route-shadows-authenticated-owner",
+  "violated_contract": "A first-match gateway must dispatch each authenticated endpoint through its identity owner before any overlapping public parameter route; a valid identity must reach the downstream service as a verified internal assertion.",
+  "canonical_prevention": "Register related literal and parameter routes together with authenticated static routes first. Exercise the actual gateway fetch entry with valid, missing and rejected identity, signed downstream verification, and public/admin siblings. The 2026-09-04 local Android Cloudflare restoration incident hit public /v1/announcements/:announcementId before authenticated /pending and received 401 after successful JWT restoration.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/workers/edge/index.ts",
+    "deploy/cloudflare/tests/announcement-edge.test.ts"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/workers/edge/**",
+    "deploy/cloudflare/tests/*edge.test.ts"
+  ],
+  "status": "open"
+}

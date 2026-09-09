@@ -6,14 +6,13 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createCloudflareD1Client,
   FirebaseIdentityMigrationError,
-  parseFirebaseImportScryptConfig,
   planFirebaseIdentityImport,
   runIdentityImport,
 } from "../scripts/import-firebase-identities.mjs";
 import {
   encodeFirebasePasswordHash,
-  parseFirebaseScryptConfig,
-} from "../workers/auth/firebase-migration-password";
+  workersFirebaseScrypt,
+} from "../../../auth/shared/firebase-scrypt.mjs";
 
 const FIREBASE_SAMPLE = Object.freeze({
   config: {
@@ -234,14 +233,14 @@ function memoryD1(options = {}) {
 
 describe("Firebase identity import", () => {
   it("plans stable password, Google, and Apple identities with Worker-compatible envelopes", () => {
-    const importConfig = parseFirebaseImportScryptConfig(
+    const importConfig = workersFirebaseScrypt.parseConfig(
       FIREBASE_SAMPLE.config,
     );
     const first = planFirebaseIdentityImport(source(), importConfig);
     const second = planFirebaseIdentityImport(source(), importConfig);
     const workerEnvelope = encodeFirebasePasswordHash(
       FIREBASE_SAMPLE,
-      parseFirebaseScryptConfig(FIREBASE_SAMPLE.config),
+      workersFirebaseScrypt.parseConfig(FIREBASE_SAMPLE.config),
     );
 
     expect(first.canonicalSha256).toBe(second.canonicalSha256);
@@ -272,7 +271,7 @@ describe("Firebase identity import", () => {
   });
 
   it("accepts the official lastSignedInAt field and rejects ambiguous or malformed export metadata", () => {
-    const config = parseFirebaseImportScryptConfig(FIREBASE_SAMPLE.config);
+    const config = workersFirebaseScrypt.parseConfig(FIREBASE_SAMPLE.config);
     const base = source().users[0];
 
     expect(() =>
@@ -317,7 +316,7 @@ describe("Firebase identity import", () => {
 
   it("rejects Firebase scrypt settings that cannot fit the Workers verifier budget", () => {
     expect(() =>
-      parseFirebaseImportScryptConfig({
+      workersFirebaseScrypt.parseConfig({
         ...FIREBASE_SAMPLE.config,
         mem_cost: 18,
       }),
@@ -327,7 +326,7 @@ describe("Firebase identity import", () => {
   it("applies, verifies, and replays one completed D1 import", async () => {
     const plan = planFirebaseIdentityImport(
       source(),
-      parseFirebaseImportScryptConfig(FIREBASE_SAMPLE.config),
+      workersFirebaseScrypt.parseConfig(FIREBASE_SAMPLE.config),
     );
     const database = memoryD1();
     const sourceSha256 = "a".repeat(64);
@@ -382,7 +381,7 @@ describe("Firebase identity import", () => {
   it("resumes the same source after an interrupted committed batch", async () => {
     const plan = planFirebaseIdentityImport(
       source(),
-      parseFirebaseImportScryptConfig(FIREBASE_SAMPLE.config),
+      workersFirebaseScrypt.parseConfig(FIREBASE_SAMPLE.config),
     );
     const database = memoryD1({ failAfterUsers: true });
     const sourceSha256 = "b".repeat(64);
@@ -418,7 +417,7 @@ describe("Firebase identity import", () => {
   it("fails closed for target conflicts and missing provider credentials", async () => {
     const plan = planFirebaseIdentityImport(
       source(),
-      parseFirebaseImportScryptConfig(FIREBASE_SAMPLE.config),
+      workersFirebaseScrypt.parseConfig(FIREBASE_SAMPLE.config),
     );
     const database = memoryD1({
       extraUser: {
@@ -449,7 +448,7 @@ describe("Firebase identity import", () => {
   });
 
   it("does not relink a provider account when a replay changes its source identity", async () => {
-    const config = parseFirebaseImportScryptConfig(FIREBASE_SAMPLE.config);
+    const config = workersFirebaseScrypt.parseConfig(FIREBASE_SAMPLE.config);
     const originalPlan = planFirebaseIdentityImport(source(), config);
     const changed = source();
     changed.users[0].providerUserInfo[0].rawId = "google-sub-replaced";
@@ -485,7 +484,7 @@ describe("Firebase identity import", () => {
   it("fails closed when a previously imported projection has a conflicting provenance digest", async () => {
     const plan = planFirebaseIdentityImport(
       source(),
-      parseFirebaseImportScryptConfig(FIREBASE_SAMPLE.config),
+      workersFirebaseScrypt.parseConfig(FIREBASE_SAMPLE.config),
     );
     const database = memoryD1();
     await runIdentityImport(

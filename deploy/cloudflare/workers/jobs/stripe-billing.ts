@@ -351,7 +351,7 @@ async function subscriptionRow(env: JobsEnv, uid: string) {
     "SELECT plan, status, current_period_start, current_period_end, stripe_subscription_id, current_price_id, " +
       "features_json, cancel_at_period_end, stripe_schedule_id, scheduled_price_id, stripe_schedule_status, " +
       "schedule_effective_at " +
-      "FROM cf_user_subscriptions WHERE uid = ?",
+      "FROM cf_effective_user_subscriptions WHERE uid = ?",
   )
     .bind(uid)
     .first<SubscriptionRow>();
@@ -2166,7 +2166,7 @@ async function processScheduleWebhook(env: JobsEnv, event: StripeWebhookRow) {
     "subscription id",
   );
   const currentOwner = await env.APP_DB.prepare(
-    "SELECT uid FROM cf_user_subscriptions WHERE stripe_subscription_id = ?",
+    "SELECT uid FROM cf_effective_user_subscriptions WHERE stripe_subscription_id = ?",
   )
     .bind(subscriptionId)
     .first<{ uid?: unknown }>();

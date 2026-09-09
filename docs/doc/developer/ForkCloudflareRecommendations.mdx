@@ -1,0 +1,100 @@
+---
+title: 'Cloudflare Candidates and recommendations'
+description: 'Canonical proposals, recommendation feedback and D1 transactions in the fork target'
+---
+
+The Candidate/control path has been exercised in isolated hosted Core/Jobs
+Workers with the complete App migration chain. `/v1/candidates/control` now uses
+the unchanged upstream universal capability rule and D1's authoritative account
+generation. Unmigrated authenticated users receive generation zero with canonical
+read/Chat-first capability; client headers cannot select another generation.
+Unavailable storage or erasure fences retain the original off response. No new
+rollout flag, duplicate control store or read-time backfill is introduced.
+The unchanged Qwen provider has also passed a hosted recommendation, cache,
+feedback and accepted-task flow. This is not production publication, broad
+model qualification or Eddy macOS acceptance; full release qualification remains
+unfinished.
+
+`/v1/candidates` and `/v1/staged-tasks` share the original Candidate lifecycle.
+Acceptance stores its task or workstream, workflow event, decision and pending
+integration/index work in one D1 batch. Historical staged proposals remain
+readable without being copied on reads; canonical terminal decisions prevent
+duplicate acceptance.
+
+`GET /v1/what-matters-now` and `POST /v1/what-matters-now/evaluate` now run the
+original upstream evaluation over canonical product state. The source projector
+preserves eligibility, tier balancing, evidence, material identity and default
+message text, adapting storage/provider calls to async Cloudflare bindings.
+Published interventions feed `/v1/task-intelligence/feedback`; Later suppresses
+both Suggested and What Matters Now until expiry. Retries of one evaluation
+retain a bounded three-attempt budget.
+
+The Workers AI adapter defaults to `@cf/qwen/qwen3.8-27b`.
+`WORKERS_AI_TASK_INTELLIGENCE_MODEL`, if set, must support the same Chat
+Completions and JSON Schema output contract. Empty shortlists make no model call.
+Provider failures retain durable work instead of inventing a successful empty
+result. Local tests control AI responses. A separate hosted run used real Qwen
+with unmodified Core/Jobs: one evaluation stored real usage and an intervention,
+cached reads made no extra call, Later suppressed it, and acceptance completed
+through the actual Queue. The [execution record](../../../dev/unified-main/implementation-2026-09-05/canonical-qwen-live-2026-09-08.md)
+records exact source, scope and owned-resource cleanup.
+
+D1 `batch()` commits projection, decisions, interventions, job completion and
+successful-publication usage together. A failed statement rolls back the batch.
+Inference happens before this transaction. The [D1 transaction contract](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)
+does not make Queue delivery, R2 or Vectorize operations transactional.
+
+The context/open-loop PUT endpoints now use original bounded request schemas,
+Idempotency-Key, X-Account-Generation and the request's platform/device headers.
+Context is scoped by generation/device; open loops additionally use runtime and
+workstream. Open-loop bodies have no snapshot_id field. Admission requires an
+owned open workstream, a future expiry, at most one hour of TTL and no more than
+five minutes of future clock skew. Older snapshots and changed same-timestamp
+payloads return 409. An identical request retry returns its first receipt even
+after a newer snapshot is stored. Snapshot and receipt writes roll back together.
+Expired reads remove state without deleting a concurrent replacement. User
+export includes the snapshot payloads; account deletion includes their receipts.
+
+`POST /v1/task-intelligence/outcomes` requires the original OutcomeCreate body,
+Idempotency-Key and X-Account-Generation. The result subject must belong to the
+referenced intervention/feedback chain, and its code must match its subject kind.
+Accepted Candidate results and related workstream artifacts follow the original
+upstream relationship policy. This endpoint records attribution; it does not
+complete a task or approve an artifact. The server supplies occurred_at.
+
+Missing chains return 404; relationship, key reuse or generation conflicts return
+409. Retries return the first outcome record. Distinct keys represent distinct
+events even for identical bodies. Source snapshots and the receipt share a D1
+batch, so a concurrent relationship change triggers revalidation. Existing
+request-only receipts remain readable. Export includes owned outcomes without
+internal metadata; account deletion removes them. These paths are locally tested,
+not yet accepted through hosted Python Workers or Eddy macOS.
+
+Memory recurrence signals now persist with the corresponding memory results in
+one D1 transaction. The first signal stays fixed through retries. The unchanged
+upstream policy requires an unresolved loop, two occurrences on two days and
+confidence of at least 0.7. It creates a pending workstream Candidate with
+ownership confidence 0.5; acceptance remains a separate user action.
+
+The existing Jobs queue and Cron consume durable receipts through an internal
+signed Core endpoint. A failed queue hint cannot lose the signal, and a failed
+receipt acknowledgement after Candidate creation cannot create a duplicate.
+Completed receipts never reopen. Export and account deletion include the inbox.
+These paths are locally verified with controlled model output; hosted recurrence
+processing and macOS acceptance remain unverified.
+
+Accepted task/workstream Candidates now schedule their existing integration
+outbox. Jobs reuses the Todoist, Asana, Google Tasks and ClickUp provider adapters;
+Apple Reminders receives the original silent-push payload and confirms export
+through the existing device sync-batch endpoint. Cloud task export flags and
+delivery receipts commit together. The public integration drain reports tasks
+actually queued, not tasks already exported. Current-generation checks, 300-second
+leases, one dispatch start per lease, original five-attempt/backoff policy and the
+existing Cron/DLQ provide recovery. A remote success before a crash can still be
+ambiguous until local settlement; D1 cannot transact with a third-party API.
+
+These paths are locally exercised through actual HTTP/SQL and controlled provider
+transports. Hosted Core/Jobs delivery additionally passed the no-default-service
+branch with real Queue dispatch and one-attempt receipts. Public login,
+third-party providers, native devices and full production release qualification
+remain unfinished.

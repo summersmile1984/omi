@@ -143,6 +143,8 @@ function fakeVectorize() {
   return {
     upsert: vi.fn(async () => undefined),
     deleteByIds: vi.fn(async () => undefined),
+    getByIds: vi.fn(async () => []),
+    describe: vi.fn(async () => ({ processedUpToMutation: "fixture" })),
   };
 }
 
@@ -158,6 +160,7 @@ function environment(options: { queueFail?: boolean } = {}) {
       APP_DB: database as unknown as D1Database,
       JOBS: queue.binding,
       INTERNAL_ASSERTION_SECRET: "app-deletion-assertion-secret",
+      MEMORY_PRIVACY_SECRET: "memory-privacy-tests-secret-32-bytes",
       STRIPE_SECRET_KEY: "sk_test_app_deletion",
       AUTH: { fetch: vi.fn() } as unknown as Fetcher,
       ASSETS: { delete: assetDeletes } as unknown as R2Bucket,

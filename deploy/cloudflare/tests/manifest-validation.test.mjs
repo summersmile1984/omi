@@ -48,6 +48,9 @@ describe("Cloudflare migration manifests", () => {
       legacyBackendRoutes: backendRoutes.routes.filter(
         (route) => route.migration_state === "legacy-owned",
       ).length,
+      blockedBackendRoutes: backendRoutes.routes.filter(
+        (route) => route.migration_state === "blocked",
+      ).length,
       resources: resources.resources.length,
       redisFamilies: redis.families.length,
       vectorNamespaces: vector.namespaces.length,
@@ -98,6 +101,46 @@ describe("Cloudflare migration manifests", () => {
     owned.target_runtime = "legacy";
     expect(() => validateBackendRouteInventory(stale, routes)).toThrow(
       "already owned in routes.yaml",
+    );
+  });
+
+  it("keeps blocked migration claims explicit and rejects active-owner contradictions", async () => {
+    const routes = await loadYaml("routes.yaml");
+    const inventory = JSON.parse(
+      await readFile(
+        resolve(cloudflareRoot, "manifests/backend-routes.json"),
+        "utf8"
+      )
+    );
+    const blocked = inventory.routes.find(
+      (route) => route.migration_state === "blocked"
+    );
+    expect(blocked).toBeDefined();
+    const onlyBlocked = { ...inventory, routes: [structuredClone(blocked)] };
+    expect(validateBackendRouteInventory(onlyBlocked, routes).blocked).toBe(1);
+    for (const [field, message] of [
+      ["migration_note", "missing contract"],
+      ["follow_up", "tracked migration"],
+    ]) {
+      const invalid = structuredClone(onlyBlocked);
+      delete invalid.routes[0][field];
+      expect(() => validateBackendRouteInventory(invalid, routes)).toThrow(
+        message
+      );
+    }
+    const falselyAvailable = structuredClone(onlyBlocked);
+    falselyAvailable.routes[0].target_runtime = "python-worker";
+    expect(() =>
+      validateBackendRouteInventory(falselyAvailable, routes)
+    ).toThrow("must use blocked target_runtime");
+    const claimed = {
+      routes: [
+        ...routes.routes,
+        { ...blocked, target_runtime: "python-worker" },
+      ],
+    };
+    expect(() => validateBackendRouteInventory(onlyBlocked, claimed)).toThrow(
+      "claimed by an active owner"
     );
   });
 
@@ -432,10 +475,11 @@ describe("Cloudflare migration manifests", () => {
 
   it("requires every R2 target bucket to be isolated by environment", async () => {
     const manifest = await loadYaml("r2-namespaces.yaml");
-    const storageSource = await readFile(
-      resolve(repoRoot, manifest.source),
-      "utf8",
-    );
+    const storageSource = (
+      await Promise.all(
+        manifest.sources.map((path) => readFile(resolve(repoRoot, path), "utf8")),
+      )
+    ).join("\n");
     const invalid = structuredClone(manifest);
     invalid.namespaces[0].target_bucket_pattern = "shared-speech-profiles";
 
@@ -446,10 +490,11 @@ describe("Cloudflare migration manifests", () => {
 
   it("requires shared-binding R2 namespaces to declare disjoint key prefixes", async () => {
     const manifest = await loadYaml("r2-namespaces.yaml");
-    const storageSource = await readFile(
-      resolve(repoRoot, manifest.source),
-      "utf8",
-    );
+    const storageSource = (
+      await Promise.all(
+        manifest.sources.map((path) => readFile(resolve(repoRoot, path), "utf8")),
+      )
+    ).join("\n");
 
     const missingPrefixes = structuredClone(manifest);
     const temporalSync = missingPrefixes.namespaces.find(
@@ -486,10 +531,11 @@ describe("Cloudflare migration manifests", () => {
       loadYaml("r2-namespaces.yaml"),
       loadYaml("resources.yaml"),
     ]);
-    const storageSource = await readFile(
-      resolve(repoRoot, manifest.source),
-      "utf8",
-    );
+    const storageSource = (
+      await Promise.all(
+        manifest.sources.map((path) => readFile(resolve(repoRoot, path), "utf8")),
+      )
+    ).join("\n");
 
     const unprovisioned = structuredClone(resources);
     unprovisioned.resources = unprovisioned.resources.filter(

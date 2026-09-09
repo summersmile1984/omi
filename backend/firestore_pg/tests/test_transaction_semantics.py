@@ -16,8 +16,10 @@ they skip (CI stays hermetic; run locally with the dev stack up).
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("FIRESTORE_PG_DSN"), reason="needs live PostgreSQL (set FIRESTORE_PG_DSN)"
@@ -62,6 +64,10 @@ def db():
         }
     )
 
+    from fork.patches.account_deletion import patches
+    from fork.registry import build_registry
+
+    build_registry(patches()).apply({'target': 'self_hosted'})
     client = firestore.Client(project="demo-omi-local")
     yield client
     # best-effort cleanup of this suite's namespace
@@ -74,6 +80,65 @@ def db():
 
 def _reset(db, doc_id):
     db.collection("txn_semantics").document(doc_id).delete()
+
+
+def test_csat_create_only_owner_and_erasure_use_real_postgres(db, monkeypatch):
+    from types import SimpleNamespace
+    from database import csat
+    from firestore_pg.erasure import delete_user_owned_rows
+
+    uid = 'pg-csat-' + uuid4().hex
+    monkeypatch.setattr(csat, 'get_firestore_client', lambda: db)
+    monkeypatch.setattr(
+        csat, 'get_memory_cache', lambda: SimpleNamespace(get_or_fetch=lambda key, fetch, **kw: fetch())
+    )
+    assert csat.get_product_config() == csat.DEFAULT_CONFIG
+
+    def submit(score):
+        return csat.submit_rating(
+            uid=uid, platform='macos', app_version='1', score=score, comment='private', revision=0
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        receipts = list(pool.map(submit, (2, 3)))
+    assert sorted(created for _, created in receipts) == [False, True]
+    ref = db.collection('csat_ratings').document('macos_' + uid)
+    stored = ref.get().to_dict()
+    assert stored['uid'] == uid and stored['score'] in (2, 3) and stored['comment'] == 'private'
+    assert submit(5) == ('macos_' + uid, False)
+    assert ref.get().to_dict() == stored
+    delete_user_owned_rows(uid)
+    assert not ref.get().exists
+
+
+def test_v7_upgrade_adds_receipt_reads_and_preserves_existing_user_data(db):
+    from firestore_pg import migrations
+
+    uid = f'pg-v7-upgrade-{uuid4().hex}'
+    user = db.collection('users').document(uid)
+    user.set({'state': 'retained-from-v7'})
+    engine = migrations.get_engine()
+    table = migrations.collection_table_name('frame_vision_receipts')
+    with engine.begin() as conn:
+        conn.execute(text(f'DROP TABLE {table}'))
+        conn.execute(
+            text(f'DELETE FROM {migrations.COLLECTION_TABLE} WHERE collection_id = :name'),
+            {'name': 'frame_vision_receipts'},
+        )
+        conn.execute(text(f'DELETE FROM {migrations.MIGRATION_TABLE} WHERE version = 8'))
+    with pytest.raises(migrations.SchemaNotCurrent, match='1..9'):
+        migrations.check_schema(engine)
+    assert migrations.migrate(engine).current_version == 9
+    assert migrations.migrate(engine).current_version == 9
+    assert user.get().to_dict() == {'state': 'retained-from-v7'}
+    receipts = user.collection('frame_vision_receipts')
+    assert list(receipts.stream()) == []
+    receipts.document('receipt').set({'description': 'retained vision evidence'})
+    rows = list(receipts.stream())
+    assert len(rows) == 1 and rows[0].to_dict() == {'description': 'retained vision evidence'}
+    assert list(db.collection('users').document(f'other-{uid}').collection('frame_vision_receipts').stream()) == []
+    receipts.document('receipt').delete()
+    user.delete()
 
 
 def test_read_write_commit_visibility(db):
@@ -217,6 +282,7 @@ def test_client_collections_only_enumerates_live_top_level_namespaces(db):
 
 def test_account_deletion_reconciles_user_tree_and_top_level_owned_rows(db):
     from database import users as users_db
+    from firestore_pg.erasure import count_user_owned_rows
 
     uid = 'pg-account-delete-user'
     other_uid = f'{uid}-other'
@@ -227,24 +293,200 @@ def test_account_deletion_reconciles_user_tree_and_top_level_owned_rows(db):
     db.collection('pg_global_jobs').document('other').set({'uid': other_uid, 'state': 'pending'})
     db.collection('account_deletions').document(uid).set({'wipe_status': 'running'})
 
-    assert users_db.count_user_owned_rows(uid) == 4
+    assert count_user_owned_rows(uid) == 4
     assert users_db.delete_user_data(uid)['status'] == 'ok'
-    assert users_db.count_user_owned_rows(uid) == 0
+    assert count_user_owned_rows(uid) == 0
     assert db.collection('pg_global_jobs').document('other').get().exists
     assert db.collection('account_deletions').document(uid).get().exists
+
+
+def test_existing_user_onboarding_admission_persists_and_stops_after_completion(db):
+    from database import users
+
+    uid = 'pg-onboarding-owner'
+    root = db.collection('users').document(uid)
+    admission = db.document(f'users/{uid}/{users.ONBOARDING_ADMISSION_PATH}')
+    admission.delete()
+    root.set({'onboarding': {}, 'preserved': 'legacy-principal'})
+    assert users.ensure_backend_onboarding_admission(uid, firestore_client=db)
+    token = users.get_backend_onboarding_admission(uid, firestore_client=db)
+    assert isinstance(token, str) and len(token) >= 16
+    assert users.ensure_backend_onboarding_admission(uid, firestore_client=db)
+    assert users.get_backend_onboarding_admission(uid, firestore_client=db) == token
+    root.set({'onboarding': {'completed': True}}, merge=True)
+    assert users.ensure_backend_onboarding_admission(uid, firestore_client=db) is False
+    assert users.get_backend_onboarding_admission(uid, firestore_client=db) is None
+    assert root.get().to_dict()['preserved'] == 'legacy-principal'
+    admission.delete()
+    root.delete()
+
+
+def test_v5_upgrade_registers_memory_collections_without_rewriting_existing_rows(db):
+    """The forward v6 admission must preserve data that was valid under v5."""
+    from firestore_pg.migrations import (
+        COLLECTION_TABLE,
+        MIGRATION_TABLE,
+        STATIC_HASHED_COLLECTION_IDS_V6,
+        SchemaNotCurrent,
+        check_schema,
+        collection_table_name,
+        get_engine,
+        migrate,
+    )
+
+    uid = f'pg-v5-upgrade-{uuid4().hex}'
+    legacy = db.collection('users').document(uid)
+    legacy.set({'state': 'created-under-v5'})
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(f'DELETE FROM {COLLECTION_TABLE} WHERE collection_id = ANY(:collection_ids)'),
+            {'collection_ids': list(STATIC_HASHED_COLLECTION_IDS_V6)},
+        )
+        conn.execute(text(f'DELETE FROM {MIGRATION_TABLE} WHERE version = 6'))
+
+    with pytest.raises(SchemaNotCurrent, match='1..9'):
+        check_schema(engine)
+
+    status = migrate(engine)
+
+    assert status.current_version == status.latest_version == 9
+    assert legacy.get().to_dict() == {'state': 'created-under-v5'}
+    with engine.connect() as conn:
+        registered = dict(
+            conn.execute(
+                text(
+                    f'SELECT collection_id, table_name FROM {COLLECTION_TABLE} '
+                    'WHERE collection_id = ANY(:collection_ids)'
+                ),
+                {'collection_ids': list(STATIC_HASHED_COLLECTION_IDS_V6)},
+            ).fetchall()
+        )
+    assert registered == {
+        collection_id: collection_table_name(collection_id) for collection_id in STATIC_HASHED_COLLECTION_IDS_V6
+    }
+    legacy.delete()
+
+
+def test_v6_upgrade_registers_feedback_collections_without_rewriting_existing_rows(db):
+    """The v7 ledger admission preserves rows already valid under v6."""
+    from firestore_pg.migrations import (
+        COLLECTION_TABLE,
+        MIGRATION_TABLE,
+        STATIC_HASHED_COLLECTION_IDS_V7,
+        SchemaNotCurrent,
+        check_schema,
+        collection_table_name,
+        get_engine,
+        migrate,
+    )
+
+    event_id = f'pg-v6-upgrade-{uuid4().hex}'
+    event = db.collection('feedback_events').document(event_id)
+    event.set({'uid': 'pg-v6-owner', 'state': 'created-under-v6'})
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(f'DELETE FROM {COLLECTION_TABLE} WHERE collection_id = ANY(:collection_ids)'),
+            {'collection_ids': list(STATIC_HASHED_COLLECTION_IDS_V7)},
+        )
+        conn.execute(text(f'DELETE FROM {MIGRATION_TABLE} WHERE version = 7'))
+
+    with pytest.raises(SchemaNotCurrent, match='1..9'):
+        check_schema(engine)
+
+    status = migrate(engine)
+
+    assert status.current_version == status.latest_version == 9
+    assert event.get().to_dict() == {'uid': 'pg-v6-owner', 'state': 'created-under-v6'}
+    with engine.connect() as conn:
+        registered = dict(
+            conn.execute(
+                text(
+                    f'SELECT collection_id, table_name FROM {COLLECTION_TABLE} '
+                    'WHERE collection_id = ANY(:collection_ids)'
+                ),
+                {'collection_ids': list(STATIC_HASHED_COLLECTION_IDS_V7)},
+            ).fetchall()
+        )
+    assert registered == {
+        collection_id: collection_table_name(collection_id) for collection_id in STATIC_HASHED_COLLECTION_IDS_V7
+    }
+
+
+def test_canonical_source_replacement_reads_the_admitted_privacy_receipt_collection(db, monkeypatch):
+    """A v5 database could persist a recording but failed when replacement read its receipt.
+
+    This runs the production replacement transaction against PostgreSQL after the
+    migration fixture has admitted the v6 inventory.  It proves that a normal new
+    candidate may read the anti-resurrection receipt and commit atomically; it is
+    deliberately not a synthetic table-read assertion.
+    """
+    from database import memory_apply_store as store
+    from models.memory_apply import MemoryControlState
+    from tests.unit import test_memory_apply_store as memory_test
+
+    monkeypatch.setenv('MEMORY_MODE', 'write')
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'test-memory-inventory-receipt-secret-32-bytes')
+    suffix = uuid4().hex
+    uid = 'u1'
+    control = MemoryControlState(uid=uid, head_commit_id=f'head-{suffix}', account_generation=1, source_generation=2)
+    old_evidence = memory_test._evidence(evidence_id=f'old-evidence-{suffix}')
+    old = memory_test._short_term_target(memory_id=f'old-memory-{suffix}', evidence=[old_evidence])
+    replacement_id, replacement_digest, replacement_operation, write = memory_test._replacement_operation_and_write(
+        store,
+        control,
+        memory_id=f'new-memory-{suffix}',
+        replacement_id=f'replace-{suffix}',
+        replacement_digest=f'digest-{suffix}',
+        evidence_id=f'new-evidence-{suffix}',
+    )
+    collection = 'memory_deletion_receipts'
+    receipt_ref = db.collection('users').document(uid).collection(collection).document(f'probe-{suffix}')
+    for ref in (
+        db.document(f'users/{uid}/memory_state/apply_control'),
+        db.document(f'users/{uid}/memory_items/{old.memory_id}'),
+        db.document(f'users/{uid}/memory_evidence/{old_evidence.evidence_id}'),
+        db.document(f'users/{uid}/memory_items/{write.patch_payload["new_memory_id"]}'),
+        db.document(f'users/{uid}/memory_evidence/{write.evidence[0].evidence_id}'),
+        db.document(f'users/{uid}/memory_operations/{replacement_operation.operation_id}'),
+        db.document(f'users/{uid}/memory_operations/{write.operation.operation_id}'),
+        db.document(f'users/{uid}/memory_source_replacements/{replacement_id}'),
+        receipt_ref,
+    ):
+        ref.delete()
+    db.document(f'users/{uid}/memory_state/apply_control').set(control.model_dump(mode='json'))
+    db.document(f'users/{uid}/memory_items/{old.memory_id}').set(old.model_dump(mode='json'))
+    db.document(f'users/{uid}/memory_evidence/{old_evidence.evidence_id}').set(old_evidence.model_dump(mode='json'))
+
+    result = store.replace_conversation_source_firestore(
+        uid=uid,
+        conversation_id='conv1',
+        replacement_id=replacement_id,
+        replacement_digest=replacement_digest,
+        replacement_operation=replacement_operation,
+        observed_control=control,
+        expected_source_items=[old],
+        expected_reactivation_items=[],
+        writes=[write],
+        db_client=db,
+    )
+
+    assert result.committed_memory_ids == [write.patch_payload['new_memory_id']]
+    assert db.document(f'users/{uid}/memory_items/{old.memory_id}').get().to_dict()['status'] == 'tombstoned'
+    assert db.document(f'users/{uid}/memory_items/{write.patch_payload["new_memory_id"]}').get().exists
 
 
 def test_account_deletion_completion_replaces_private_marker_atomically(db, monkeypatch):
     from google.cloud import firestore
 
     from database import users as users_db
-    from database.account_deletion_policy import account_deletion_receipt_id
-    from database.account_deletion_transitions import mark_wipe_completed, record_late_agent_vm_cleanup
+    from fork.account_deletion import receipt_id
 
     monkeypatch.setenv('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
     uid = 'pg-account-delete-receipt-user'
     active = db.collection('account_deletions').document(uid)
-    receipt = db.collection('account_deletion_receipts').document(account_deletion_receipt_id(uid))
+    receipt = db.collection('account_deletion_receipts').document(receipt_id(uid))
     active.delete()
     receipt.delete()
     active.set(
@@ -257,7 +499,7 @@ def test_account_deletion_completion_replaces_private_marker_atomically(db, monk
         }
     )
 
-    assert mark_wipe_completed(db.transaction(), active, receipt, 'unused-generated-id') is True
+    assert users_db.mark_user_deletion_wipe_completed(uid) is True
     assert not active.get().exists
     receipt_data = receipt.get().to_dict()
     assert set(receipt_data) == {'schema_version', 'wipe_status', 'wipe_job_id', 'wipe_completed_at'}
@@ -271,13 +513,13 @@ def test_account_deletion_completion_replaces_private_marker_atomically(db, monk
     # A provider resource arriving after completion reopens only the active
     # cleanup authority. Once that work is cleared, redelivery returns to the
     # same minimal receipt and removes the UID-keyed row again.
-    assert record_late_agent_vm_cleanup(db.transaction(), active, receipt, 'omi-agent-late', 'us-central1-a', '707')
+    assert users_db.record_late_agent_vm_cleanup(uid, 'omi-agent-late', 'us-central1-a', '707')
     reopened = active.get().to_dict()
     assert reopened['wipe_status'] == 'failed'
     assert reopened['wipe_job_id'] == 'opaque-job-id'
     assert {'uid', 'reason', 'reason_details'}.isdisjoint(reopened)
     active.update({'late_agent_vm_cleanup': firestore.DELETE_FIELD})
-    assert mark_wipe_completed(db.transaction(), active, receipt, 'unused-generated-id') is True
+    assert users_db.mark_user_deletion_wipe_completed(uid) is True
     assert not active.get().exists
     assert set(receipt.get().to_dict()) == {'schema_version', 'wipe_status', 'wipe_job_id', 'wipe_completed_at'}
 
@@ -468,3 +710,109 @@ def test_explicit_provision_rejects_populated_unknown_legacy_collection(db):
         provision_collections(['pg_legacy_future'])
     with get_engine().begin() as conn:
         conn.execute(text("DROP TABLE pg_legacy_future"))
+
+
+def test_account_deletion_preserves_legal_hold_lease_and_rejects_stale_reopening(db, monkeypatch):
+    from database import legal_holds, users
+    from firestore_pg.erasure import count_user_owned_rows
+    from fork.account_deletion import receipt_id
+
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
+    uid = 'pg-legal-gated-delete'
+    active = db.collection('account_deletions').document(uid)
+    receipt = db.collection('account_deletion_receipts').document(receipt_id(uid))
+    gate = db.collection('legal_hold_deletion_gates').document(uid)
+    for ref in (active, receipt, gate):
+        ref.delete()
+    active.set({'wipe_status': 'running', 'wipe_job_id': 'pg-legal-job'})
+    # A missing intermediate document must not hide its descendants from erasure.
+    db.document(f'users/{uid}/future_nested/missing/future_nested_data/orphan').set({'private': True})
+    legal_holds.acquire_destructive_operation(
+        uid, kind='account_deletion', token='opaque-worker-lease', firestore_client=db
+    )
+    assert count_user_owned_rows(uid) == 1
+    assert users.delete_user_data(uid)['status'] == 'ok'
+    assert gate.get().to_dict()['state'] == 'running'
+    assert users.mark_user_deletion_wipe_completed(uid)
+    legal_holds.finish_destructive_operation(
+        uid, kind='account_deletion', token='opaque-worker-lease', outcome='completed', firestore_client=db
+    )
+    assert gate.get().to_dict()['state'] == 'completed'
+    users.mark_user_deletion_wipe_running(uid)
+    users.mark_user_deletion_wipe_failed(uid)
+    users.set_user_deletion_feedback(uid, 'stale private feedback')
+    users.cancel_user_deletion_wipe(uid)
+    assert users.mark_user_deletion_billing_failed(uid, 'subscription', 'stale failure') is False
+    assert users.mark_user_deletion_wipe_intent(uid) == {'wipe_job_id': 'pg-legal-job', 'dispatch_claimed': False}
+    assert users.get_user_deletion_wipe_status(uid) == 'completed'
+    assert not active.get().exists
+    for ref in (receipt, gate):
+        ref.delete()
+
+
+def test_account_deletion_pg_fault_rolls_back_receipt_and_keeps_private_authority(db, monkeypatch):
+    from database import users
+    from firestore_pg.engine import get_engine
+    from firestore_pg.migrations import collection_table_name
+    from fork.account_deletion import receipt_id
+    from sqlalchemy import event
+
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
+    uid = 'pg-delete-receipt-fault'
+    active = db.collection('account_deletions').document(uid)
+    receipt = db.collection('account_deletion_receipts').document(receipt_id(uid))
+    receipt.delete()
+    original = {'wipe_status': 'running', 'wipe_job_id': 'fault-job', 'reason': 'synthetic private feedback'}
+    active.set(original)
+
+    def fail(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().startswith(f'DELETE FROM {collection_table_name("account_deletions")}'):
+            raise RuntimeError('synthetic marker deletion failure')
+
+    engine = get_engine()
+    event.listen(engine, 'before_cursor_execute', fail)
+    try:
+        with pytest.raises(RuntimeError, match='synthetic marker'):
+            users.mark_user_deletion_wipe_completed(uid)
+    finally:
+        event.remove(engine, 'before_cursor_execute', fail)
+    assert active.get().to_dict() == original
+    assert not receipt.get().exists
+    active.delete()
+
+
+def test_real_wipe_worker_uses_pg_authority_with_isolated_provider_seams(db, monkeypatch):
+    from database import users
+    from fork.account_deletion import receipt_id
+    from services.users import account_deletion as worker
+
+    monkeypatch.setenv('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
+    uid = 'pg-worker-delete-fixture'
+    active = db.collection('account_deletions').document(uid)
+    receipt = db.collection('account_deletion_receipts').document(receipt_id(uid))
+    gate = db.collection('legal_hold_deletion_gates').document(uid)
+    for ref in (active, receipt, gate):
+        ref.delete()
+    active.set({'wipe_status': 'pending', 'wipe_job_id': 'pg-worker-job', 'reason': 'synthetic feedback'})
+    db.collection('users').document(uid).set({'email': 'synthetic@example.invalid'})
+    called = []
+    for name in (
+        '_cancel_subscription_for_account_deletion',
+        'delete_agent_vm_for_account',
+        'delete_account_credentials',
+        'delete_user_caller_ids',
+        '_delete_memory_maintenance_registry',
+    ):
+        monkeypatch.setattr(worker, name, lambda current_uid, name=name: called.append(name))
+    monkeypatch.setattr(worker.auth, 'delete_account', lambda current_uid: called.append('identity'))
+    monkeypatch.setattr(
+        worker, 'purge_derived_user_data', lambda current_uid: {'required_failures': [], 'best_effort_failures': []}
+    )
+    monkeypatch.setattr(worker, '_emit_deletion_telemetry', lambda *args, **kwargs: None)
+    assert worker.background_wipe_user_data(uid) is True
+    assert len(called) == 6
+    assert users.get_user_deletion_wipe_status(uid) == 'completed'
+    assert not active.get().exists and not db.collection('users').document(uid).get().exists
+    assert gate.get().to_dict()['state'] == 'completed'
+    for ref in (receipt, gate):
+        ref.delete()

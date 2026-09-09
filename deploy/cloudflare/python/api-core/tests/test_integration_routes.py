@@ -124,6 +124,7 @@ def environment():
             "APP_DB": db,
             "AI": ai,
             "WORKERS_AI_INTEGRATION_MODEL": "test-model",
+            "MEMORY_PRIVACY_SECRET": "memory-privacy-tests-secret-32-bytes",
         },
     )()
     payload = {
@@ -306,10 +307,11 @@ def test_integration_writes_use_workers_ai_and_persist_canonical_d1_projections(
     )
     assert memories == {}
     stored = db.connection.execute(
-        "SELECT content, app_id, qualifiers_json FROM cf_memories ORDER BY content"
+        "SELECT content, app_id, qualifiers_json, privacy_receipt_id FROM cf_memories ORDER BY content"
     ).fetchall()
     assert [row["content"] for row in stored] == ["The user owns a teapot.", "The user prefers tea."]
     assert all(row["app_id"] == "integration-app" for row in stored)
+    assert all(row['privacy_receipt_id'].startswith('receipt_') for row in stored)
     assert all("integration" in json.loads(row["qualifiers_json"]) for row in stored)
     assert len(ai.calls) == 2
     assert (

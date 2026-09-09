@@ -10,6 +10,7 @@ import {
 } from "../workers/jobs/account-deletion";
 import type { JobMessage, JobsEnv } from "../workers/jobs/env";
 import jobs from "../workers/jobs/index";
+import { app as screenFrameWriter } from "../workers/screen-frame-writer/index";
 import {
   AUTH_CONTEXT_HEADER,
   AUTH_SIGNATURE_HEADER,
@@ -46,7 +47,7 @@ class SqliteD1 {
     this.database.exec("PRAGMA foreign_keys = ON");
     const directory = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
-      "../migrations/app",
+      "../migrations/app"
     );
     for (const filename of readdirSync(directory)
       .filter((value) => value.endsWith(".sql"))
@@ -62,7 +63,8 @@ class SqliteD1 {
       bind: (...values: unknown[]) => build(values),
       first: async <T>() => {
         const row = this.database.prepare(sql).get(...args.map(sqliteValue)) as
-          T | undefined;
+          | T
+          | undefined;
         return row ?? null;
       },
       all: async <T>() => ({
@@ -108,7 +110,8 @@ class SqliteD1 {
   row<T>(sql: string, ...args: unknown[]): T | null {
     return (
       (this.database.prepare(sql).get(...args.map(sqliteValue)) as
-        T | undefined) ?? null
+        | T
+        | undefined) ?? null
     );
   }
 
@@ -141,7 +144,7 @@ function fakeBucket(initial: Record<string, Uint8Array> = {}) {
             truncated: false,
             delimitedPrefixes: [],
           };
-        },
+        }
       ),
       delete: vi.fn(async (keys: string | string[]) => {
         for (const key of Array.isArray(keys) ? keys : [keys])
@@ -160,14 +163,14 @@ function fakeQueue(options: { fail?: boolean } = {}) {
         async (body: JobMessage, sendOptions?: { delaySeconds?: number }) => {
           if (options.fail) throw new Error("queue unavailable");
           sent.push({ body, delaySeconds: sendOptions?.delaySeconds || 0 });
-        },
+        }
       ),
     } as unknown as Queue<JobMessage>,
   };
 }
 
 function fakeAuth(
-  options: { failDelete?: boolean; hangDelete?: boolean } = {},
+  options: { failDelete?: boolean; hangDelete?: boolean } = {}
 ) {
   const requests: Array<{ method: string; path: string }> = [];
   return {
@@ -183,7 +186,7 @@ function fakeAuth(
               request.signal.addEventListener(
                 "abort",
                 () => reject(request.signal.reason),
-                { once: true },
+                { once: true }
               );
             });
           }
@@ -205,13 +208,51 @@ function fakeAuth(
   };
 }
 
+function seedMemoryApplyJournal(database: SqliteD1, uid: string) {
+  const control = {
+    uid,
+    head_commit_id: "commit-1",
+    account_generation: 1,
+    source_generation: 0,
+    commit_sequence: 1,
+  };
+  database.database
+    .prepare(
+      "INSERT INTO cf_memory_apply_control (uid, head_commit_id, account_generation, source_generation, commit_sequence, control_json) VALUES (?, 'commit-1', 1, 0, 1, ?)"
+    )
+    .run(uid, JSON.stringify(control));
+  database.database
+    .prepare(
+      "INSERT INTO cf_memory_operations VALUES (?, 'operation-1', 'digest-1', ?, 1)"
+    )
+    .run(
+      uid,
+      JSON.stringify({
+        uid,
+        operation_id: "operation-1",
+        logical_payload_digest: "digest-1",
+        status: "committed",
+      })
+    );
+  database.database
+    .prepare(
+      "INSERT INTO cf_memory_commits VALUES (?, 'commit-1', 'genesis', 1, 1, 0, 'operation-1', '[\"memory-1\"]', '[\"event-1\"]', 1)"
+    )
+    .run(uid);
+  database.database
+    .prepare(
+      "INSERT INTO cf_memory_outbox VALUES (?, 'event-1', 'vector_sync', 'pending', 'memory-1', 'commit-1', 1, 1, ?, 1)"
+    )
+    .run(uid, JSON.stringify({ uid, event_id: "event-1" }));
+}
+
 function seedCloudflareAccount(database: SqliteD1, uid = "deletion-user") {
   database.database
     .prepare(
       `INSERT INTO cf_account_cutover
          (uid, state, account_generation, ui_generation, api_generation,
           checkpoint_phase, manifest_id, destination_backend_bound, updated_at)
-       VALUES (?, 'new', 1, 1, 1, 'completed', 'isolated-staging-v1', 1, ?)`,
+       VALUES (?, 'new', 1, 1, 1, 'completed', 'isolated-staging-v1', 1, ?)`
     )
     .run(uid, 1);
   database.database
@@ -219,34 +260,48 @@ function seedCloudflareAccount(database: SqliteD1, uid = "deletion-user") {
     .run(uid, 1);
   database.database
     .prepare(
-      "INSERT INTO cf_conversations (uid, id, created_at) VALUES (?, ?, ?)",
+      "INSERT INTO cf_conversations (uid, id, created_at) VALUES (?, ?, ?)"
     )
     .run(uid, "deletion-conversation", 1);
+  database.database
+    .prepare("INSERT INTO cf_share_email_quota VALUES (?,'20260906',1)")
+    .run(uid);
+  database.database
+    .prepare(
+      "INSERT INTO cf_share_email_dispatches(id,uid,conversation_id,phase,quota_day,recipient_count,was_private,created_at,expires_at,payload_json) " +
+        "VALUES (?,?,'deletion-conversation','dispatching','20260906',1,1,1,10000,'{}')"
+    )
+    .run("deletion-share-" + uid, uid);
+  database.database
+    .prepare(
+      "INSERT INTO cf_share_email_recipients VALUES (?,'deletion-conversation','guest@example.invalid',?)"
+    )
+    .run(uid, "deletion-share-" + uid);
   database.database
     .prepare(
       `INSERT INTO cf_task_shares
          (token, sender_uid, sender_name, expires_at, created_at)
-       VALUES (?, ?, 'Deletion User', ?, ?)`,
+       VALUES (?, ?, 'Deletion User', ?, ?)`
     )
     .run("deletion-owned-share", uid, 10_000, 1);
   database.database
     .prepare(
       `INSERT INTO cf_task_share_items
-         (token, ordinal, action_item_id) VALUES (?, 0, ?)`,
+         (token, ordinal, action_item_id) VALUES (?, 0, ?)`
     )
     .run("deletion-owned-share", "deletion-action-item");
   database.database
     .prepare(
       `INSERT INTO cf_task_shares
          (token, sender_uid, sender_name, expires_at, created_at)
-       VALUES (?, 'other-user', 'Other User', ?, ?)`,
+       VALUES (?, 'other-user', 'Other User', ?, ?)`
     )
     .run("other-owned-share", 10_000, 1);
   database.database
     .prepare(
       `INSERT INTO cf_task_share_acceptances
          (token, recipient_uid, acceptance_nonce, accepted_at)
-       VALUES (?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?)`
     )
     .run("other-owned-share", uid, "deletion-acceptance", 1);
 }
@@ -260,12 +315,13 @@ function environment(
     conversationR2?: Record<string, Uint8Array>;
     speechProfileR2?: Record<string, Uint8Array>;
     stripeSecretKey?: string;
-  } = {},
+  } = {}
 ) {
   const database = new SqliteD1();
   const bucket = fakeBucket(options.r2);
   const conversationBucket = fakeBucket(options.conversationR2);
   const speechProfileBucket = fakeBucket(options.speechProfileR2);
+  const screenFrameBucket = fakeBucket();
   const queue = fakeQueue({ fail: options.queueFail });
   const auth = fakeAuth({
     failDelete: options.authFailDelete,
@@ -280,6 +336,14 @@ function environment(
     JOBS: queue.binding,
     AUTH: auth.binding,
     INTERNAL_ASSERTION_SECRET: "account-deletion-test-secret",
+    SCREEN_FRAME_WRITER: {
+      fetch: (request: Request) =>
+        screenFrameWriter.fetch(request, {
+          APP_DB: database as unknown as D1Database,
+          SCREEN_FRAMES: screenFrameBucket.binding,
+          INTERNAL_ASSERTION_SECRET: "account-deletion-test-secret",
+        }),
+    } as unknown as Fetcher,
     STRIPE_SECRET_KEY: options.stripeSecretKey,
   } as JobsEnv;
   return {
@@ -299,7 +363,7 @@ async function deletionHeaders(uid: string, path: string) {
     "jobs",
     "DELETE",
     path,
-    "account-deletion-test-secret",
+    "account-deletion-test-secret"
   );
   if (!signed) throw new Error("account deletion test assertion unavailable");
   return {
@@ -315,7 +379,7 @@ async function deletionRunHeaders(uid: string, path: string) {
     "jobs",
     "POST",
     path,
-    "account-deletion-test-secret",
+    "account-deletion-test-secret"
   );
   if (!signed) throw new Error("account deletion run assertion unavailable");
   return {
@@ -357,7 +421,7 @@ describe("Cloudflare account deletion workflow", () => {
           headers: await deletionHeaders("deletion-user", path),
           body: JSON.stringify({ reason: "privacy_concerns" }),
         }),
-        state.env,
+        state.env
       );
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual({
@@ -370,7 +434,7 @@ describe("Cloudflare account deletion workflow", () => {
         phase: string;
       }>(
         "SELECT job_id, status, phase FROM cf_account_deletion_intents WHERE uid = ?",
-        "deletion-user",
+        "deletion-user"
       );
       expect(intent).toMatchObject({ status: "pending", phase: "quiescing" });
       expect(state.queue.sent).toEqual([
@@ -392,31 +456,31 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       expect(repeated.status).toBe(200);
       expect(state.queue.sent).toHaveLength(1);
       expect(() =>
         state.database.database
           .prepare(
-            "INSERT INTO cf_worker_probe (uid, last_seen_at) VALUES (?, ?)",
+            "INSERT INTO cf_worker_probe (uid, last_seen_at) VALUES (?, ?)"
           )
-          .run("deletion-user", 2),
+          .run("deletion-user", 2)
       ).toThrow(/account deletion fence/);
       expect(() =>
         state.database.database
           .prepare("UPDATE cf_worker_probe SET last_seen_at = ? WHERE uid = ?")
-          .run(2, "deletion-user"),
+          .run(2, "deletion-user")
       ).toThrow(/account deletion fence/);
       expect(() =>
         state.database.database
           .prepare("UPDATE cf_worker_probe SET uid = ? WHERE uid = ?")
-          .run("other-user", "deletion-user"),
+          .run("other-user", "deletion-user")
       ).toThrow(/account deletion fence/);
       expect(() =>
         state.database.database
           .prepare("UPDATE cf_task_share_items SET ordinal = 1 WHERE token = ?")
-          .run("deletion-owned-share"),
+          .run("deletion-owned-share")
       ).toThrow(/account deletion fence/);
     } finally {
       state.database.close();
@@ -433,11 +497,11 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", deletePath),
         }),
-        state.env,
+        state.env
       );
       const jobId = state.database.row<{ job_id: string }>(
         "SELECT job_id FROM cf_account_deletion_intents WHERE uid = ?",
-        "deletion-user",
+        "deletion-user"
       )?.job_id;
       expect(jobId).toMatch(/^[0-9a-f-]{32,128}$/);
 
@@ -448,7 +512,7 @@ describe("Cloudflare account deletion workflow", () => {
           headers: await deletionRunHeaders("other-user", runPath),
           body: JSON.stringify({ job_id: jobId }),
         }),
-        state.env,
+        state.env
       );
       expect(crossAccount.status).toBe(200);
       await expect(crossAccount.json()).resolves.toEqual({
@@ -458,8 +522,8 @@ describe("Cloudflare account deletion workflow", () => {
       expect(
         state.database.row<{ attempts: number }>(
           "SELECT attempts FROM cf_account_deletion_intents WHERE job_id = ?",
-          jobId,
-        )?.attempts,
+          jobId
+        )?.attempts
       ).toBe(0);
 
       vi.advanceTimersByTime(60_000);
@@ -469,16 +533,52 @@ describe("Cloudflare account deletion workflow", () => {
           headers: await deletionRunHeaders("deletion-user", runPath),
           body: JSON.stringify({ job_id: jobId }),
         }),
-        state.env,
+        state.env
       );
       expect(ownAccount.status).toBe(200);
       await expect(ownAccount.json()).resolves.toEqual({ status: "queued" });
       expect(
         state.database.row<{ attempts: number }>(
           "SELECT attempts FROM cf_account_deletion_intents WHERE job_id = ?",
-          jobId,
-        )?.attempts,
+          jobId
+        )?.attempts
       ).toBe(1);
+    } finally {
+      state.database.close();
+    }
+  });
+
+  it("retains the account fence and identity when the screenshot writer cannot confirm erasure", async () => {
+    const state = environment();
+    try {
+      seedCloudflareAccount(state.database);
+      const path = "/v1/users/delete-account";
+      await jobs.fetch(
+        new Request(`https://jobs.test${path}`, {
+          method: "DELETE",
+          headers: await deletionHeaders("deletion-user", path),
+        }),
+        state.env
+      );
+      state.env.SCREEN_FRAME_WRITER = {
+        fetch: async () => new Response(null, { status: 503 }),
+      } as unknown as Fetcher;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const dispatch = state.queue.sent.shift();
+        if (!dispatch) throw new Error("missing account deletion dispatch");
+        vi.advanceTimersByTime(dispatch.delaySeconds * 1000);
+        await processAccountDeletionMessage(
+          queueMessage(dispatch.body).message,
+          state.env
+        );
+      }
+      expect(state.auth.requests).toHaveLength(0);
+      expect(
+        state.database.row(
+          "SELECT uid FROM cf_account_deletion_intents WHERE uid = 'deletion-user'"
+        )
+      ).not.toBeNull();
+      expect(state.queue.sent.length).toBeGreaterThan(0);
     } finally {
       state.database.close();
     }
@@ -501,13 +601,64 @@ describe("Cloudflare account deletion workflow", () => {
     });
     try {
       seedCloudflareAccount(state.database);
+      seedMemoryApplyJournal(state.database, "deletion-user");
+      seedMemoryApplyJournal(state.database, "other-user");
+      // Candidate payloads exercise the real deletion owner after schema admission.
+      for (const uid of ["deletion-user", "other-user"]) {
+        const generation = state.database.row<{ generation: number }>(
+          "SELECT COALESCE((SELECT account_generation FROM cf_account_cutover WHERE uid=?),0) AS generation", uid,
+        )!.generation;
+        const expected = JSON.stringify([{ id: "candidate-fixture", before: null }]);
+        state.database.database.prepare(
+          "INSERT INTO cf_candidate_write_guard(uid,account_generation,candidates_json,aliases_json,claims_json,integrations_json,attention_json,recommendations_json,snapshot_receipts_json,outcomes_json,recurrences_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        ).run(uid, generation, expected, expected, expected, expected, expected, expected, expected, expected, expected);
+        const candidate = {
+          candidate_id: "candidate-fixture", subject_kind: "task", proposed_action: "create",
+          task_change: { description: "Owned suggestion", owner: "unknown" },
+          capture_confidence: 0.8, ownership_confidence: 0.8,
+          evidence_refs: [{ kind: "memory_item", id: "owned-source", scope: "canonical" }],
+          source_surface: "chat", account_generation: generation, idempotency_key: "candidate-fixture",
+          status: "accepted", result_task_id: "owned-task", resolution_reason: "accepted",
+          created_at: "2026-08-28T00:00:00Z", resolved_at: "2026-08-28T00:00:01Z",
+        };
+        state.database.database.prepare("INSERT INTO cf_candidates(uid,candidate_id,record_json) VALUES (?,?,?)")
+          .run(uid, "candidate-fixture", JSON.stringify(candidate));
+        for (const [table, key] of [["cf_candidate_aliases", "key_hash"], ["cf_candidate_claims", "semantic_id"]]) {
+          state.database.database.prepare(`INSERT INTO ${table}(uid,${key},record_json) VALUES (?,?,?)`)
+            .run(uid, "candidate-fixture", JSON.stringify({ account_generation: generation, candidate_id: "candidate-fixture" }));
+        }
+        state.database.database.prepare("INSERT INTO cf_candidate_integration_outbox(uid,outbox_id,record_json) VALUES (?,?,?)")
+          .run(uid, "candidate-fixture", JSON.stringify({
+            outbox_id: "candidate-fixture", candidate_id: "candidate-fixture", task_id: "owned-task",
+            account_generation: generation, status: "pending", attempt_count: 0,
+            created_at: "2026-08-28T00:00:01Z", updated_at: "2026-08-28T00:00:01Z",
+          }));
+        state.database.database.prepare("INSERT INTO cf_task_attention_overrides(uid,override_id,record_json) VALUES (?,?,?)")
+          .run(uid, "candidate-fixture", JSON.stringify({
+            override_id: "candidate-fixture", account_generation: generation, dedupe_key: "candidate-fixture",
+            feedback_id: "owned-feedback", action: "later", created_at: "2026-08-28T00:00:01Z",
+            expires_at: "2026-08-29T00:00:01Z",
+          }));
+        state.database.database.prepare("INSERT INTO cf_task_recommendation_heads(uid,head_id,record_json) VALUES (?,?,?)")
+          .run(uid, "candidate-fixture", JSON.stringify({account_generation: generation, projection: {recommendations: []}}));
+        state.database.database.prepare("INSERT INTO cf_task_snapshot_receipts(uid,receipt_id,record_json) VALUES (?,?,?)")
+          .run(uid, "candidate-fixture", JSON.stringify({account_generation: generation, expires_at: "2026-09-09T00:00:00Z", receipt: {snapshot_id: "owned-snapshot"}}));
+        state.database.database.prepare("INSERT INTO cf_task_outcomes(uid,outcome_id,account_generation,attribution_chain_id,request_fingerprint,payload_json,occurred_at) VALUES (?,?,?,?,?,?,?)")
+          .run(uid, "candidate-fixture", generation, "owned-chain", "owned-outcome", JSON.stringify({
+            attribution_chain_id: "owned-chain", subject_kind: "task", subject_id: "owned-task", outcome_code: "task_completed",
+          }), 1);
+        state.database.database.prepare("INSERT INTO cf_task_recurrence_inbox(uid,receipt_id,record_json) VALUES (?,?,?)")
+          .run(uid, "candidate-fixture", JSON.stringify({receipt_id: "candidate-fixture", account_generation: generation,
+            status: "pending", updated_at: "2026-09-08T00:00:00Z", signal: {title: "Owned repeated commitment"}}));
+        state.database.database.prepare("DELETE FROM cf_candidate_write_guard WHERE uid=?").run(uid);
+      }
       const path = "/v1/users/delete-account";
       await jobs.fetch(
         new Request(`https://jobs.test${path}`, {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       let processed = 0;
       while (state.auth.requests.length === 0 && processed < 10) {
@@ -523,43 +674,71 @@ describe("Cloudflare account deletion workflow", () => {
       expect(state.bucket.objects.size).toBe(0);
       expect(state.conversationBucket.objects.size).toBe(0);
       expect(state.speechProfileBucket.objects.size).toBe(0);
+      for (const table of [
+        "cf_candidates",
+        "cf_candidate_aliases",
+        "cf_candidate_claims",
+        "cf_candidate_integration_outbox",
+        "cf_task_attention_overrides",
+        "cf_task_recommendation_heads",
+        "cf_task_snapshot_receipts",
+        "cf_task_recurrence_inbox",
+        "cf_task_outcomes",
+        "cf_memory_apply_control",
+        "cf_memory_operations",
+        "cf_memory_commits",
+        "cf_memory_outbox",
+      ]) {
+        expect(
+          state.database.row<{ count: number }>(
+            `SELECT COUNT(*) AS count FROM ${table} WHERE uid = ?`,
+            "deletion-user"
+          )?.count
+        ).toBe(0);
+        expect(
+          state.database.row<{ count: number }>(
+            `SELECT COUNT(*) AS count FROM ${table} WHERE uid = ?`,
+            "other-user"
+          )?.count
+        ).toBe(1);
+      }
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_worker_probe WHERE uid = ?",
-          "deletion-user",
-        )?.count,
+          "deletion-user"
+        )?.count
       ).toBe(0);
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_conversations_fts WHERE uid = ?",
-          "deletion-user",
-        )?.count,
+          "deletion-user"
+        )?.count
       ).toBe(0);
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_task_share_items WHERE token = ?",
-          "deletion-owned-share",
-        )?.count,
+          "deletion-owned-share"
+        )?.count
       ).toBe(0);
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_task_shares WHERE token = ?",
-          "other-owned-share",
-        )?.count,
+          "other-owned-share"
+        )?.count
       ).toBe(1);
       expect(state.auth.requests.map(({ method }) => method)).toEqual([
         "DELETE",
       ]);
       expect(
         state.database.row<{ count: number }>(
-          "SELECT COUNT(*) AS count FROM cf_account_deletion_intents",
-        )?.count,
+          "SELECT COUNT(*) AS count FROM cf_account_deletion_intents"
+        )?.count
       ).toBe(0);
       expect(
         state.database.row<{ expires_at: number; completed_at: number }>(
           "SELECT expires_at, completed_at FROM cf_account_deletion_tombstones WHERE uid = ?",
-          "deletion-user",
-        ),
+          "deletion-user"
+        )
       ).toMatchObject({
         expires_at: Math.floor(Date.now() / 1_000) + 25 * 60 * 60,
         completed_at: Math.floor(Date.now() / 1_000),
@@ -567,22 +746,22 @@ describe("Cloudflare account deletion workflow", () => {
       expect(() =>
         state.database.database
           .prepare(
-            "INSERT INTO cf_worker_probe (uid, last_seen_at) VALUES (?, ?)",
+            "INSERT INTO cf_worker_probe (uid, last_seen_at) VALUES (?, ?)"
           )
-          .run("deletion-user", 3),
+          .run("deletion-user", 3)
       ).toThrow(/account deletion fence/);
 
       vi.advanceTimersByTime(25 * 60 * 60 * 1_000);
       await cleanupExpiredAccountDeletionTombstones(
         state.env,
-        Math.floor(Date.now() / 1_000),
+        Math.floor(Date.now() / 1_000)
       );
       expect(() =>
         state.database.database
           .prepare(
-            "INSERT INTO cf_worker_probe (uid, last_seen_at) VALUES (?, ?)",
+            "INSERT INTO cf_worker_probe (uid, last_seen_at) VALUES (?, ?)"
           )
-          .run("deletion-user", 4),
+          .run("deletion-user", 4)
       ).not.toThrow();
     } finally {
       state.database.close();
@@ -599,7 +778,7 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
 
       let processed = 0;
@@ -609,7 +788,7 @@ describe("Cloudflare account deletion workflow", () => {
         vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
         await processAccountDeletionMessage(
           queueMessage(dispatch.body).message,
-          state.env,
+          state.env
         );
         processed += 1;
       }
@@ -619,13 +798,13 @@ describe("Cloudflare account deletion workflow", () => {
       expect(
         state.database.row<{ status: string; phase: string }>(
           "SELECT status, phase FROM cf_account_deletion_intents WHERE uid = ?",
-          "deletion-user",
-        ),
+          "deletion-user"
+        )
       ).toEqual({ status: "failed", phase: "identity" });
       expect(
         state.database.row<{ count: number }>(
-          "SELECT COUNT(*) AS count FROM cf_account_deletion_tombstones",
-        )?.count,
+          "SELECT COUNT(*) AS count FROM cf_account_deletion_tombstones"
+        )?.count
       ).toBe(0);
 
       const recoveredAuth = fakeAuth();
@@ -635,20 +814,20 @@ describe("Cloudflare account deletion workflow", () => {
       vi.advanceTimersByTime(retry.delaySeconds * 1_000);
       await processAccountDeletionMessage(
         queueMessage(retry.body).message,
-        state.env,
+        state.env
       );
       expect(recoveredAuth.requests.map(({ method }) => method)).toEqual([
         "DELETE",
       ]);
       expect(
         state.database.row<{ count: number }>(
-          "SELECT COUNT(*) AS count FROM cf_account_deletion_intents",
-        )?.count,
+          "SELECT COUNT(*) AS count FROM cf_account_deletion_intents"
+        )?.count
       ).toBe(0);
       expect(
         state.database.row<{ count: number }>(
-          "SELECT COUNT(*) AS count FROM cf_account_deletion_tombstones",
-        )?.count,
+          "SELECT COUNT(*) AS count FROM cf_account_deletion_tombstones"
+        )?.count
       ).toBe(1);
     } finally {
       state.database.close();
@@ -664,7 +843,7 @@ describe("Cloudflare account deletion workflow", () => {
           `INSERT INTO cf_account_deletion_intents
              (uid, job_id, status, phase, attempts, lease_token, lease_until,
               next_attempt_at, settled_at, created_at, updated_at)
-           VALUES (?, ?, 'pending', 'identity', 0, NULL, NULL, ?, ?, ?, ?)`,
+           VALUES (?, ?, 'pending', 'identity', 0, NULL, NULL, ?, ?, ?, ?)`
         )
         .run("deletion-user", "stalled-identity-job", now, now, now, now);
       const queued = queueMessage({
@@ -675,7 +854,7 @@ describe("Cloudflare account deletion workflow", () => {
       });
       const processing = processAccountDeletionMessage(
         queued.message,
-        state.env,
+        state.env
       );
       await vi.waitFor(() => expect(state.auth.requests).toHaveLength(1));
       expect(state.auth.requests).toEqual([
@@ -694,8 +873,8 @@ describe("Cloudflare account deletion workflow", () => {
         }>(
           `SELECT status, phase, last_error, lease_token
            FROM cf_account_deletion_intents WHERE uid = ?`,
-          "deletion-user",
-        ),
+          "deletion-user"
+        )
       ).toEqual({
         status: "failed",
         phase: "identity",
@@ -728,21 +907,21 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       expect(response.status).toBe(200);
       expect(
         state.database.row<{ status: string }>(
           "SELECT status FROM cf_account_deletion_intents WHERE uid = ?",
-          "deletion-user",
-        )?.status,
+          "deletion-user"
+        )?.status
       ).toBe("pending");
 
       vi.advanceTimersByTime(60_000);
       const recoveryQueue = fakeQueue();
       state.env.JOBS = recoveryQueue.binding;
       await expect(
-        reconcileAccountDeletions(state.env, Math.floor(Date.now() / 1_000)),
+        reconcileAccountDeletions(state.env, Math.floor(Date.now() / 1_000))
       ).resolves.toBe(1);
       expect(recoveryQueue.sent[0]?.body).toMatchObject({
         uid: "",
@@ -761,13 +940,13 @@ describe("Cloudflare account deletion workflow", () => {
         .prepare(
           `INSERT INTO cf_user_subscriptions
              (uid, plan, status, stripe_subscription_id, updated_at)
-           VALUES (?, 'plus', 'active', ?, ?)`,
+           VALUES (?, 'plus', 'active', ?, ?)`
         )
         .run("deletion-user", "sub_liveSubscription123", 1);
       state.database.database
         .prepare(
           `INSERT INTO cf_creator_payment_profiles
-             (uid, stripe_account_id, updated_at) VALUES (?, ?, 1)`,
+             (uid, stripe_account_id, updated_at) VALUES (?, ?, 1)`
         )
         .run("deletion-user", "acct_liveCreator123");
       const path = "/v1/users/delete-account";
@@ -776,7 +955,7 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       expect(response.status).toBe(503);
       await expect(response.json()).resolves.toEqual({
@@ -784,8 +963,8 @@ describe("Cloudflare account deletion workflow", () => {
       });
       expect(
         state.database.row<{ count: number }>(
-          "SELECT COUNT(*) AS count FROM cf_account_deletion_intents",
-        )?.count,
+          "SELECT COUNT(*) AS count FROM cf_account_deletion_intents"
+        )?.count
       ).toBe(0);
     } finally {
       state.database.close();
@@ -831,7 +1010,7 @@ describe("Cloudflare account deletion workflow", () => {
           cancel_at_period_end: true,
           customer: "cus_liveDeletion123",
         });
-      }),
+      })
     );
     const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
     try {
@@ -840,13 +1019,13 @@ describe("Cloudflare account deletion workflow", () => {
         .prepare(
           `INSERT INTO cf_user_subscriptions
              (uid, plan, status, stripe_subscription_id, stripe_schedule_id, updated_at)
-           VALUES (?, 'plus', 'active', ?, ?, ?)`,
+           VALUES (?, 'plus', 'active', ?, ?, ?)`
         )
         .run(
           "deletion-user",
           "sub_liveSubscription123",
           "sub_sched_liveSchedule123",
-          1,
+          1
         );
       const path = "/v1/users/delete-account";
       const response = await jobs.fetch(
@@ -854,7 +1033,7 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       expect(response.status).toBe(200);
       expect(stripeRequests).toHaveLength(0);
@@ -864,7 +1043,7 @@ describe("Cloudflare account deletion workflow", () => {
       vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
       await processAccountDeletionMessage(
         queueMessage(dispatch.body).message,
-        state.env,
+        state.env
       );
 
       expect(stripeRequests.map(({ method }) => method)).toEqual([
@@ -874,31 +1053,31 @@ describe("Cloudflare account deletion workflow", () => {
         "POST",
       ]);
       expect(stripeRequests[0]?.url).toBe(
-        "https://api.stripe.com/v1/subscriptions/sub_liveSubscription123",
+        "https://api.stripe.com/v1/subscriptions/sub_liveSubscription123"
       );
       expect(stripeRequests[1]?.url).toBe(
-        "https://api.stripe.com/v1/subscription_schedules?customer=cus_liveDeletion123&limit=10",
+        "https://api.stripe.com/v1/subscription_schedules?customer=cus_liveDeletion123&limit=10"
       );
       expect(stripeRequests[2]?.url).toBe(
-        "https://api.stripe.com/v1/subscription_schedules/sub_sched_liveSchedule123/release",
+        "https://api.stripe.com/v1/subscription_schedules/sub_sched_liveSchedule123/release"
       );
       expect(stripeRequests[3]?.headers.get("authorization")).toBe(
-        `Basic ${btoa("sk_test_account_deletion:")}`,
+        `Basic ${btoa("sk_test_account_deletion:")}`
       );
       expect(stripeRequests[2]?.headers.get("idempotency-key")).toMatch(
-        /^account-delete-[0-9a-f-]{36}-release-sub_sched_liveSchedule123$/,
+        /^account-delete-[0-9a-f-]{36}-release-sub_sched_liveSchedule123$/
       );
       expect(stripeRequests[3]?.headers.get("idempotency-key")).toMatch(
-        /^account-delete-[0-9a-f-]{36}$/,
+        /^account-delete-[0-9a-f-]{36}$/
       );
       await expect(stripeRequests[3]?.text()).resolves.toBe(
-        "cancel_at_period_end=true",
+        "cancel_at_period_end=true"
       );
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_user_subscriptions WHERE uid = ?",
-          "deletion-user",
-        )?.count,
+          "deletion-user"
+        )?.count
       ).toBe(0);
     } finally {
       state.database.close();
@@ -917,7 +1096,7 @@ describe("Cloudflare account deletion workflow", () => {
           object: "account",
           deleted: true,
         });
-      }),
+      })
     );
     const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
     try {
@@ -925,7 +1104,7 @@ describe("Cloudflare account deletion workflow", () => {
       state.database.database
         .prepare(
           `INSERT INTO cf_creator_payment_profiles
-             (uid, stripe_account_id, updated_at) VALUES (?, ?, 1)`,
+             (uid, stripe_account_id, updated_at) VALUES (?, ?, 1)`
         )
         .run("deletion-user", "acct_liveCreator123");
       const path = "/v1/users/delete-account";
@@ -934,7 +1113,7 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       expect(response.status).toBe(200);
       expect(stripeRequests).toHaveLength(0);
@@ -944,22 +1123,22 @@ describe("Cloudflare account deletion workflow", () => {
       vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
       await processAccountDeletionMessage(
         queueMessage(dispatch.body).message,
-        state.env,
+        state.env
       );
 
       expect(stripeRequests).toHaveLength(1);
       expect(stripeRequests[0]?.method).toBe("DELETE");
       expect(stripeRequests[0]?.url).toBe(
-        "https://api.stripe.com/v1/accounts/acct_liveCreator123",
+        "https://api.stripe.com/v1/accounts/acct_liveCreator123"
       );
       expect(stripeRequests[0]?.headers.get("idempotency-key")).toMatch(
-        /^account-delete-[0-9a-f-]{36}-connect$/,
+        /^account-delete-[0-9a-f-]{36}-connect$/
       );
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_creator_payment_profiles WHERE uid = ?",
-          "deletion-user",
-        )?.count,
+          "deletion-user"
+        )?.count
       ).toBe(0);
     } finally {
       state.database.close();
@@ -999,7 +1178,7 @@ describe("Cloudflare account deletion workflow", () => {
           metadata: { app_id: "creator-paid-app" },
           transfer_data: { destination: "acct_creatorDelete123" },
         });
-      }),
+      })
     );
     const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
     try {
@@ -1009,7 +1188,7 @@ describe("Cloudflare account deletion workflow", () => {
           `INSERT INTO cf_app_catalog
              (id, approved, disabled, data_json, updated_at, owner_uid)
            VALUES ('creator-paid-app', 1, 0,
-                   '{"id":"creator-paid-app","is_paid":true}', 1, ?)`,
+                   '{"id":"creator-paid-app","is_paid":true}', 1, ?)`
         )
         .run("deletion-user");
       state.database.database
@@ -1021,7 +1200,7 @@ describe("Cloudflare account deletion workflow", () => {
            VALUES ('creator-paid-app', ?, 'acct_creatorDelete123',
                    'prod_creatorDelete123', 'price_creatorDelete123',
                    'plink_creatorDelete123',
-                   'https://buy.stripe.com/creator-delete', 900, 1, 1)`,
+                   'https://buy.stripe.com/creator-delete', 900, 1, 1)`
         )
         .run("deletion-user");
       const path = "/v1/users/delete-account";
@@ -1030,7 +1209,7 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       expect(response.status).toBe(200);
       expect(stripeRequests).toHaveLength(0);
@@ -1040,7 +1219,7 @@ describe("Cloudflare account deletion workflow", () => {
       vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
       await processAccountDeletionMessage(
         queueMessage(dispatch.body).message,
-        state.env,
+        state.env
       );
 
       expect(stripeRequests.map(({ method }) => method)).toEqual([
@@ -1050,26 +1229,26 @@ describe("Cloudflare account deletion workflow", () => {
         "POST",
       ]);
       expect(stripeRequests[0]?.url).toBe(
-        "https://api.stripe.com/v1/payment_links/plink_creatorDelete123",
+        "https://api.stripe.com/v1/payment_links/plink_creatorDelete123"
       );
       await expect(stripeRequests[1]?.text()).resolves.toBe("active=false");
       expect(stripeRequests[2]?.url).toContain(
-        "/v1/checkout/sessions?payment_link=plink_creatorDelete123&status=open&limit=100",
+        "/v1/checkout/sessions?payment_link=plink_creatorDelete123&status=open&limit=100"
       );
       expect(stripeRequests[3]?.headers.get("idempotency-key")).toMatch(
-        /^account-delete-[0-9a-f-]{36}-session-cs_test_creatorDelete123$/,
+        /^account-delete-[0-9a-f-]{36}-session-cs_test_creatorDelete123$/
       );
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_app_payment_links WHERE owner_uid = ?",
-          "deletion-user",
-        )?.count,
+          "deletion-user"
+        )?.count
       ).toBe(0);
       expect(
         state.database.row<{ stripe_payment_link_id: string }>(
           "SELECT stripe_payment_link_id FROM cf_retired_paid_apps WHERE app_id = ?",
-          "creator-paid-app",
-        )?.stripe_payment_link_id,
+          "creator-paid-app"
+        )?.stripe_payment_link_id
       ).toBe("plink_creatorDelete123");
     } finally {
       state.database.close();
@@ -1092,7 +1271,7 @@ describe("Cloudflare account deletion workflow", () => {
           cancel_at_period_end: request.method === "POST",
           customer: "cus_paidAppDeletion123",
         });
-      }),
+      })
     );
     const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
     try {
@@ -1101,7 +1280,7 @@ describe("Cloudflare account deletion workflow", () => {
         .prepare(
           `INSERT INTO cf_app_catalog
              (id, approved, disabled, data_json, updated_at)
-           VALUES ('paid-app', 1, 0, '{"id":"paid-app","is_paid":true}', 1)`,
+           VALUES ('paid-app', 1, 0, '{"id":"paid-app","is_paid":true}', 1)`
         )
         .run();
       state.database.database
@@ -1111,7 +1290,7 @@ describe("Cloudflare account deletion workflow", () => {
               current_period_end, price_id, created_at, updated_at)
            VALUES (?, 'paid-app', 'cus_paidAppDeletion123',
                    'sub_paidAppDeletion123', 'active', 4000000000,
-                   'price_paidAppDeletion123', 1, 1)`,
+                   'price_paidAppDeletion123', 1, 1)`
         )
         .run("deletion-user");
       const path = "/v1/users/delete-account";
@@ -1120,7 +1299,7 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       expect(response.status).toBe(200);
       expect(stripeRequests).toHaveLength(0);
@@ -1130,7 +1309,7 @@ describe("Cloudflare account deletion workflow", () => {
       vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
       await processAccountDeletionMessage(
         queueMessage(dispatch.body).message,
-        state.env,
+        state.env
       );
 
       expect(stripeRequests.map(({ method }) => method)).toEqual([
@@ -1139,16 +1318,16 @@ describe("Cloudflare account deletion workflow", () => {
         "POST",
       ]);
       expect(stripeRequests[0]?.url).toBe(
-        "https://api.stripe.com/v1/subscriptions/sub_paidAppDeletion123",
+        "https://api.stripe.com/v1/subscriptions/sub_paidAppDeletion123"
       );
       expect(stripeRequests[2]?.headers.get("idempotency-key")).toMatch(
-        /^account-delete-[0-9a-f-]{36}-app-sub_paidAppDeletion123$/,
+        /^account-delete-[0-9a-f-]{36}-app-sub_paidAppDeletion123$/
       );
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_app_subscriptions WHERE uid = ?",
-          "deletion-user",
-        )?.count,
+          "deletion-user"
+        )?.count
       ).toBe(0);
     } finally {
       state.database.close();
@@ -1171,7 +1350,7 @@ describe("Cloudflare account deletion workflow", () => {
           cancel_at_period_end: request.method === "POST",
           customer: "cus_creatorAppDeletion123",
         });
-      }),
+      })
     );
     const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
     try {
@@ -1181,7 +1360,7 @@ describe("Cloudflare account deletion workflow", () => {
           `INSERT INTO cf_app_catalog
              (id, approved, disabled, data_json, updated_at, owner_uid)
            VALUES ('creator-paid-app', 1, 0,
-                   '{"id":"creator-paid-app","is_paid":true}', 1, ?)`,
+                   '{"id":"creator-paid-app","is_paid":true}', 1, ?)`
         )
         .run("deletion-user");
       state.database.database
@@ -1191,7 +1370,7 @@ describe("Cloudflare account deletion workflow", () => {
               current_period_end, price_id, created_at, updated_at)
            VALUES ('subscriber-user', 'creator-paid-app',
                    'cus_creatorAppDeletion123', 'sub_creatorAppDeletion123',
-                   'active', 4000000000, 'price_creatorAppDeletion123', 1, 1)`,
+                   'active', 4000000000, 'price_creatorAppDeletion123', 1, 1)`
         )
         .run();
       const path = "/v1/users/delete-account";
@@ -1200,7 +1379,7 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       expect(response.status).toBe(200);
       expect(stripeRequests).toHaveLength(0);
@@ -1210,7 +1389,7 @@ describe("Cloudflare account deletion workflow", () => {
       vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
       await processAccountDeletionMessage(
         queueMessage(dispatch.body).message,
-        state.env,
+        state.env
       );
 
       expect(stripeRequests.map(({ method }) => method)).toEqual([
@@ -1219,22 +1398,22 @@ describe("Cloudflare account deletion workflow", () => {
         "POST",
       ]);
       expect(stripeRequests[0]?.url).toBe(
-        "https://api.stripe.com/v1/subscriptions/sub_creatorAppDeletion123",
+        "https://api.stripe.com/v1/subscriptions/sub_creatorAppDeletion123"
       );
       expect(stripeRequests[2]?.headers.get("idempotency-key")).toMatch(
-        /^account-delete-[0-9a-f-]{36}-creator-app-sub_creatorAppDeletion123$/,
+        /^account-delete-[0-9a-f-]{36}-creator-app-sub_creatorAppDeletion123$/
       );
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_app_catalog WHERE id = ?",
-          "creator-paid-app",
-        )?.count,
+          "creator-paid-app"
+        )?.count
       ).toBe(0);
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_app_subscriptions WHERE app_id = ?",
-          "creator-paid-app",
-        )?.count,
+          "creator-paid-app"
+        )?.count
       ).toBe(0);
     } finally {
       state.database.close();
@@ -1244,7 +1423,7 @@ describe("Cloudflare account deletion workflow", () => {
   it("retries provider cleanup without purging product data when Stripe fails", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Response.json({ error: {} }, { status: 503 })),
+      vi.fn(async () => Response.json({ error: {} }, { status: 503 }))
     );
     const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
     try {
@@ -1253,7 +1432,7 @@ describe("Cloudflare account deletion workflow", () => {
         .prepare(
           `INSERT INTO cf_user_subscriptions
              (uid, plan, status, stripe_subscription_id, updated_at)
-           VALUES (?, 'plus', 'active', ?, ?)`,
+           VALUES (?, 'plus', 'active', ?, ?)`
         )
         .run("deletion-user", "sub_liveSubscription123", 1);
       const path = "/v1/users/delete-account";
@@ -1262,14 +1441,14 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       const dispatch = state.queue.sent.shift();
       if (!dispatch) throw new Error("missing account deletion dispatch");
       vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
       await processAccountDeletionMessage(
         queueMessage(dispatch.body).message,
-        state.env,
+        state.env
       );
 
       expect(
@@ -1280,8 +1459,8 @@ describe("Cloudflare account deletion workflow", () => {
         }>(
           `SELECT status, phase, last_error
            FROM cf_account_deletion_intents WHERE uid = ?`,
-          "deletion-user",
-        ),
+          "deletion-user"
+        )
       ).toEqual({
         status: "failed",
         phase: "quiescing",
@@ -1290,14 +1469,14 @@ describe("Cloudflare account deletion workflow", () => {
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_worker_probe WHERE uid = ?",
-          "deletion-user",
-        )?.count,
+          "deletion-user"
+        )?.count
       ).toBe(1);
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_user_subscriptions WHERE uid = ?",
-          "deletion-user",
-        )?.count,
+          "deletion-user"
+        )?.count
       ).toBe(1);
     } finally {
       state.database.close();
@@ -1313,8 +1492,8 @@ describe("Cloudflare account deletion workflow", () => {
           active: true,
           metadata: { app_id: "another-app" },
           transfer_data: { destination: "acct_mismatchedApp123" },
-        }),
-      ),
+        })
+      )
     );
     const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
     try {
@@ -1323,7 +1502,7 @@ describe("Cloudflare account deletion workflow", () => {
         .prepare(
           `INSERT INTO cf_app_catalog
              (id, approved, disabled, data_json, updated_at, owner_uid)
-           VALUES ('owned-app', 1, 0, '{"id":"owned-app","is_paid":true}', 1, ?)`,
+           VALUES ('owned-app', 1, 0, '{"id":"owned-app","is_paid":true}', 1, ?)`
         )
         .run("deletion-user");
       state.database.database
@@ -1335,7 +1514,7 @@ describe("Cloudflare account deletion workflow", () => {
            VALUES ('owned-app', ?, 'acct_mismatchedApp123',
                    'prod_mismatchedApp123', 'price_mismatchedApp123',
                    'plink_mismatchedApp123',
-                   'https://buy.stripe.com/mismatched-app', 900, 1, 1)`,
+                   'https://buy.stripe.com/mismatched-app', 900, 1, 1)`
         )
         .run("deletion-user");
       const path = "/v1/users/delete-account";
@@ -1344,21 +1523,21 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       const dispatch = state.queue.sent.shift();
       if (!dispatch) throw new Error("missing account deletion dispatch");
       vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
       await processAccountDeletionMessage(
         queueMessage(dispatch.body).message,
-        state.env,
+        state.env
       );
 
       expect(
         state.database.row<{ status: string; last_error: string }>(
           "SELECT status, last_error FROM cf_account_deletion_intents WHERE uid = ?",
-          "deletion-user",
-        ),
+          "deletion-user"
+        )
       ).toEqual({
         status: "failed",
         last_error: "account deletion dependency unavailable",
@@ -1366,20 +1545,20 @@ describe("Cloudflare account deletion workflow", () => {
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_app_payment_links WHERE app_id = ?",
-          "owned-app",
-        )?.count,
+          "owned-app"
+        )?.count
       ).toBe(1);
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_app_catalog WHERE id = ?",
-          "owned-app",
-        )?.count,
+          "owned-app"
+        )?.count
       ).toBe(1);
       expect(
         state.database.row<{ count: number }>(
           "SELECT COUNT(*) AS count FROM cf_retired_paid_apps WHERE app_id = ?",
-          "owned-app",
-        )?.count,
+          "owned-app"
+        )?.count
       ).toBe(0);
     } finally {
       state.database.close();
@@ -1392,7 +1571,7 @@ describe("Cloudflare account deletion workflow", () => {
         id: "sub_liveSubscription123",
         status: "canceled",
         cancel_at_period_end: false,
-      }),
+      })
     );
     vi.stubGlobal("fetch", stripeFetch);
     const state = environment({ stripeSecretKey: "sk_test_account_deletion" });
@@ -1402,7 +1581,7 @@ describe("Cloudflare account deletion workflow", () => {
         .prepare(
           `INSERT INTO cf_user_subscriptions
              (uid, plan, status, stripe_subscription_id, updated_at)
-           VALUES (?, 'plus', 'active', ?, ?)`,
+           VALUES (?, 'plus', 'active', ?, ?)`
         )
         .run("deletion-user", "sub_liveSubscription123", 1);
       const path = "/v1/users/delete-account";
@@ -1411,14 +1590,14 @@ describe("Cloudflare account deletion workflow", () => {
           method: "DELETE",
           headers: await deletionHeaders("deletion-user", path),
         }),
-        state.env,
+        state.env
       );
       const dispatch = state.queue.sent.shift();
       if (!dispatch) throw new Error("missing account deletion dispatch");
       vi.advanceTimersByTime(dispatch.delaySeconds * 1_000);
       await processAccountDeletionMessage(
         queueMessage(dispatch.body).message,
-        state.env,
+        state.env
       );
       expect(stripeFetch).toHaveBeenCalledOnce();
     } finally {

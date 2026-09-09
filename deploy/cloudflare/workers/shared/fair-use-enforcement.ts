@@ -1,5 +1,5 @@
 import { DEFAULT_FAIR_USE_CAPS } from "./fair-use-policy";
-import { recordFallback } from "./fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 
 const MAX_DAILY_AUDIO_MS = 108_000_000;
 const DEFAULT_RETRY_AFTER_SECONDS = 60 * 60;

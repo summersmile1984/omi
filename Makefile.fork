@@ -3,7 +3,7 @@
 BASE ?= origin/main
 BRAND ?= omi-upstream
 
-.PHONY: help setup-fork preflight-fork upstream-touch sync-probe
+.PHONY: help setup-fork preflight-fork upstream-touch sync-probe dev-shadow-diff run-canonical-promotion
 
 help:
 	@echo "make -f Makefile.fork setup-fork       # fork-local git config (no upstream tags)"
@@ -25,3 +25,11 @@ sync-probe:
 	@git fetch upstream --prune -q || true
 	@printf 'real conflicts merging upstream/main into %s: ' "$$(git rev-parse --abbrev-ref HEAD)"
 	@git merge-tree --write-tree HEAD upstream/main | grep -c '^CONFLICT' || true
+
+# Fork-only developer lanes stay here so the upstream root Makefile remains
+# byte-identical and never becomes an upstream-sync conflict source.
+dev-shadow-diff:
+	@bash dev/shadow-diff.sh
+
+run-canonical-promotion:
+	@python3 scripts/dev-harness/run-canonical-promotion.py "$(PROMOTION_USER)"

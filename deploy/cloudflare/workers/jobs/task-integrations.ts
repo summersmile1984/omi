@@ -461,7 +461,10 @@ async function providerFetch(
   init: RequestInit,
 ) {
   try {
-    return await (dependencies?.fetchImpl ?? fetch)(input, init);
+    return await (dependencies?.fetchImpl ?? fetch)(input, {
+      ...init,
+      signal: init.signal ?? AbortSignal.timeout(10_000),
+    });
   } catch {
     throw new TaskIntegrationError(502, "Task provider is unavailable");
   }
@@ -1052,14 +1055,19 @@ function dateOnly(timestamp: number) {
   return new Date(timestamp).toISOString().slice(0, 10);
 }
 
-async function createProviderTask(
+type ProviderTask = {
+  title: string;
+  description: string | null;
+  dueTimestamp: number | null;
+};
+
+export async function createProviderTask(
   env: JobsEnv,
   uid: string,
   provider: Provider,
-  payload: Record<string, unknown>,
+  task: ProviderTask,
   dependencies?: TaskIntegrationDependencies,
 ) {
-  const task = taskPayload(payload);
   const row = await readIntegration(env, uid, provider);
   if (!row) throw new TaskIntegrationError(404, `Not connected to ${provider}`);
   const configuration = configurationFromRow(row);
@@ -1143,6 +1151,23 @@ async function createProviderTask(
     }
     return { success: false, error: "Task provider is unavailable" };
   }
+}
+
+export async function candidateIntegrationTarget(
+  env: JobsEnv,
+  uid: string,
+): Promise<Integration | null> {
+  const row = await env.APP_DB.prepare(
+    "SELECT default_app FROM cf_task_integration_defaults WHERE uid=?",
+  )
+    .bind(uid)
+    .first<{ default_app: string | null }>();
+  if (!row?.default_app) return null;
+  const platform = integrationValue(row.default_app);
+  if (!platform) throw new Error("invalid default task integration");
+  const integration = await readIntegration(env, uid, platform);
+  // These are the upstream terminal no-op cases, not provider delivery failures.
+  return integration?.connected ? platform : null;
 }
 
 function errorResponse(c: JobsContext, error: unknown) {
@@ -1389,7 +1414,10 @@ export function registerTaskIntegrationRoutes(
         ),
       ]);
       if (results[2]?.meta?.changes !== 1) {
-        throw new TaskIntegrationError(503, "Task integration state is unavailable");
+        throw new TaskIntegrationError(
+          503,
+          "Task integration state is unavailable",
+        );
       }
       return c.json({
         auth_url: oauthAuthorizationUrl(provider, configuration, state),
@@ -1412,7 +1440,7 @@ export function registerTaskIntegrationRoutes(
           c.env,
           context.uid,
           provider,
-          await jsonPayload(c),
+          taskPayload(await jsonPayload(c)),
           dependencies,
         ),
       );

@@ -12,23 +12,11 @@ from utils.mimo_pipeline.config import MimoConfigurationError, validate_mimo_bas
 from utils.mimo_pipeline.mimo_client import MimoAPIError, MimoClient, infer_audio_format
 from utils.mimo_pipeline.config import mimo_is_configured
 from utils.mimo_pipeline.socket import MimoSttSocket, pcm16_to_wav
-from fork.prerecorded_stt_config import ForkPrerecordedSTTService
-from config.stt_provider_policy import MIMO_PROVIDER, STTServingSurface, provider_is_enabled
 from fork.egress_policy import EgressPolicyUnavailable
 from utils.mimo_pipeline.prerecorded_provider import MimoPrerecordedProvider
-from utils.stt.pre_recorded import get_prerecorded_service
-from utils.stt.streaming import STTService, get_stt_service_for_language
 import utils.mimo_pipeline.prerecorded_provider as prerecorded_module
 
 OPERATOR_BASE = 'http://operator.example.test/mimo'
-
-
-@pytest.mark.skip(
-    reason="MiMo prerecorded/TTS policy registration is not wired yet: it must come from the S5 patch registry, not from editing config/stt_provider_policy.py or routers/tts.py. This test is the spec for that follow-up."
-)
-def test_mimo_is_batch_only():
-    assert provider_is_enabled(MIMO_PROVIDER, STTServingSurface.PRERECORDED)
-    assert not provider_is_enabled(MIMO_PROVIDER, STTServingSurface.STREAMING)
 
 
 def test_enabled_only_with_operator_endpoint_and_key(monkeypatch):
@@ -69,50 +57,6 @@ def test_client_resolves_explicit_tokenplan_endpoint(monkeypatch):
     monkeypatch.setenv('MIMO_TOKENPLAN_BASE', OPERATOR_BASE + '/tokenplan')
     client = MimoClient(api_key='key')
     assert client._endpoint() == OPERATOR_BASE + '/tokenplan/v1/chat/completions'
-
-
-@pytest.mark.skip(
-    reason="MiMo prerecorded/TTS policy registration is not wired yet: it must come from the S5 patch registry, not from editing config/stt_provider_policy.py or routers/tts.py. This test is the spec for that follow-up."
-)
-def test_prerecorded_select_routes_to_mimo_when_configured(monkeypatch):
-    monkeypatch.setenv('STT_PRERECORDED_MODEL', 'mimo')
-    service, language, model = get_prerecorded_service('zh-CN')
-    assert service == ForkPrerecordedSTTService.MIMO
-    assert language == 'zh'
-    assert model == 'mimo-v2.5-asr'
-
-
-@pytest.mark.skip(
-    reason="MiMo prerecorded/TTS policy registration is not wired yet: it must come from the S5 patch registry, not from editing config/stt_provider_policy.py or routers/tts.py. This test is the spec for that follow-up."
-)
-def test_streaming_selection_rejects_batch_only_mimo(monkeypatch):
-    import utils.stt.streaming as streaming
-
-    monkeypatch.setenv('MIMO_API_KEY', 'key')
-    monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
-    monkeypatch.delenv('SENSEVOICE_MODEL_DIR', raising=False)
-    # stt_service_models is read at import time; patch the module-level list.
-    monkeypatch.setattr(streaming, 'stt_service_models', ['mimo'])
-    result = get_stt_service_for_language('zh-CN')
-    assert result is not None
-    service, _lang, model = result
-    assert service in {STTService.modulate, STTService.parakeet, STTService.sensevoice}
-    assert model != 'mimo'
-
-
-@pytest.mark.skip(
-    reason="MiMo prerecorded/TTS policy registration is not wired yet: it must come from the S5 patch registry, not from editing config/stt_provider_policy.py or routers/tts.py. This test is the spec for that follow-up."
-)
-def test_select_ignores_mimo_without_key(monkeypatch):
-    import utils.stt.streaming as streaming
-
-    monkeypatch.delenv('MIMO_API_KEY', raising=False)
-    monkeypatch.setenv('MIMO_API_BASE', 'http://operator.example.test/mimo')
-    monkeypatch.delenv('SENSEVOICE_MODEL_DIR', raising=False)
-    monkeypatch.setattr(streaming, 'stt_service_models', ['mimo'])
-    result = get_stt_service_for_language('zh-CN')
-    # mimo without key must not be selected; falls to default policy
-    assert result is None or result[0] in {STTService.modulate, STTService.parakeet, STTService.sensevoice}
 
 
 def test_pcm16_to_wav_produces_valid_container():

@@ -1,6 +1,14 @@
 import type { Context, Hono } from "hono";
 import type { SignedAuthContext } from "../shared/auth-context";
 import type { JobsEnv } from "./env";
+import {
+  CAPTURE_GAP_MAX_EVENTS,
+  CAPTURE_GAP_MAX_CONVERSATIONS,
+  DAY_MS,
+  captureGapTimestamp,
+  selectCaptureGaps,
+  type CaptureConversation,
+} from "./calendar-capture-gaps";
 
 const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar";
 const GOOGLE_CALENDAR_OAUTH_ALIASES = new Set([
@@ -1005,6 +1013,39 @@ type ConversationCalendarRow = {
   is_locked: number;
 };
 
+async function captureGaps(
+  env: JobsEnv,
+  uid: string,
+  start: number,
+  end: number,
+  dependencies?: GoogleCalendarDependencies,
+) {
+  if (end <= start) throw new GoogleCalendarError(400, "end must be after start");
+  if (end - start > 31 * DAY_MS) throw new GoogleCalendarError(400, "window too large (max 31 days)");
+  const url = new URL("https://www.googleapis.com/calendar/v3/calendars/primary/events");
+  url.searchParams.set("timeMin", new Date(start).toISOString());
+  url.searchParams.set("timeMax", new Date(end).toISOString());
+  url.searchParams.set("singleEvents", "true");
+  url.searchParams.set("orderBy", "startTime");
+  url.searchParams.set("maxResults", String(CAPTURE_GAP_MAX_EVENTS));
+  url.searchParams.set("fields", "items(id,summary,status,start,end,attendees(self,responseStatus))");
+  const response = await requestCalendar(env, uid, url.toString(), {}, dependencies);
+  const payload = await providerJson(response);
+  if (!response.ok || !payload || (payload.items !== undefined && !Array.isArray(payload.items))) {
+    throw new GoogleCalendarError(502, "Failed to fetch calendar events");
+  }
+  // Match upstream's bounded descending range including discarded records;
+  // selection excludes them after the read. Never create/link conversations.
+  const stored = await env.APP_DB.prepare(
+    "SELECT started_at, finished_at, discarded FROM cf_conversations " +
+      "WHERE uid = ? AND started_at >= ? AND started_at <= ? " +
+      "ORDER BY started_at DESC, id DESC LIMIT ?",
+  ).bind(uid, (start - DAY_MS) / 1_000, end / 1_000, CAPTURE_GAP_MAX_CONVERSATIONS)
+    .all<CaptureConversation>();
+  if (!stored.success) throw new GoogleCalendarError(503, "Calendar capture history is unavailable");
+  return selectCaptureGaps(payload.items ?? [], stored.results);
+}
+
 async function readConversationCalendarRow(
   env: JobsEnv,
   uid: string,
@@ -1638,6 +1679,31 @@ export function registerGoogleCalendarRoutes(
     if (!context) return c.json({ error: "unauthorized" }, 401);
     try {
       return c.json(await listEvents(c.env, context.uid, c, dependencies));
+    } catch (error) {
+      return errorResponse(c, error);
+    }
+  });
+
+  app.get("/v1/calendar/capture-gaps", async (c) => {
+    const context = await requestContext(c);
+    if (!context) return c.json({ error: "unauthorized" }, 401);
+    const start = captureGapTimestamp(c.req.query("start"));
+    const end = captureGapTimestamp(c.req.query("end"));
+    if (start === null || end === null) {
+      const detail = (["start", "end"] as const).flatMap((name) => {
+        if ((name === "start" ? start : end) !== null) return [];
+        const input = c.req.query(name);
+        return [{
+          type: input === undefined ? "missing" : "datetime_from_date_parsing",
+          loc: ["query", name],
+          msg: input === undefined ? "Field required" : "Input should be a valid datetime or date",
+          input: input ?? null,
+        }];
+      });
+      return c.json({ detail }, 422);
+    }
+    try {
+      return c.json(await captureGaps(c.env, context.uid, start, end, dependencies));
     } catch (error) {
       return errorResponse(c, error);
     }

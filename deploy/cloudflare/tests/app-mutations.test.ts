@@ -187,6 +187,8 @@ function environment(
     MEMORY_VECTORS: {
       upsert: vi.fn(async () => undefined),
       deleteByIds: vi.fn(async () => undefined),
+      getByIds: vi.fn(async () => []),
+      describe: vi.fn(async () => ({ processedUpToMutation: "fixture" })),
     },
     ACTION_ITEM_VECTORS: {
       upsert: vi.fn(async () => undefined),
@@ -216,6 +218,7 @@ function environment(
     SYNC_FRESH: { send: vi.fn() } as unknown as Queue,
     SYNC_BACKFILL: { send: vi.fn() } as unknown as Queue,
     INTERNAL_ASSERTION_SECRET: "app-mutation-assertion-secret",
+    MEMORY_PRIVACY_SECRET: "memory-privacy-tests-secret-32-bytes",
     PUBLIC_API_BASE_URL: "https://edge.test",
     STRIPE_SECRET_KEY: options.stripeSecret,
     APPS_ADMIN_KEY: options.adminKey,

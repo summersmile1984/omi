@@ -21,7 +21,12 @@ UID = "merge-user"
 def environment():
     db = FakeDb()
     queue = FakeQueue()
-    env = SimpleNamespace(APP_DB=db, JOBS=queue, INTERNAL_ASSERTION_SECRET=SECRET)
+    env = SimpleNamespace(
+        APP_DB=db,
+        JOBS=queue,
+        INTERNAL_ASSERTION_SECRET=SECRET,
+        MEMORY_PRIVACY_SECRET='memory-privacy-tests-secret-32-bytes',
+    )
     rows = [
         ("conversation-a", 100, 110, [{"text": "first", "start": 0, "end": 2, "speaker": "A"}]),
         ("conversation-b", 120, 130, [{"text": "second", "start": 0, "end": 3, "speaker": "B"}]),

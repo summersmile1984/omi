@@ -12,5 +12,8 @@ export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts", "tests/**/*.test.mjs"],
     environment: "node",
+    // Tests also start Python interpreters. CPU count alone (32 on the shared
+    // Mac Studio runner) overstates the capacity available to this suite.
+    maxWorkers: 4,
   },
 });

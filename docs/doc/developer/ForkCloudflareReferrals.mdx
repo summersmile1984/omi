@@ -1,0 +1,45 @@
+---
+title: 'Cloudflare desktop referrals'
+description: 'Invite links and one-time Operator trials for branded desktop deployments'
+---
+
+An authenticated `GET /v1/users/me/referral` returns `referral_url` on the
+deployment's API origin. Opening that URL sets the secure HttpOnly
+`omi_desktop_referral` cookie and redirects to the branded Web login with a
+`referral` query parameter. The Web client uses its configured API for every
+claim; the URL cannot select another deployment's authentication authority.
+
+After signing in, send `POST /v1/users/me/referral/claim` with
+`{"code": "the-referral-code"}`. A qualifying account receives
+`{"claimed": true, "trial_days": 30}` and a thirty-day Operator subscription.
+The account must be at most fifteen minutes old, refer to a different account,
+have no prior claim and have no paid plan. Missing account age, existing
+accounts, self-referrals, paid accounts and repeated claims return
+`{"claimed": false, "trial_days": 30}`. Invalid codes return 404; unavailable
+storage returns 503 without a partial grant.
+
+Concurrent claims have one winner. Retrying cannot extend the subscription.
+The entitlement expires at its recorded end time even when no background job
+runs. A subsequent Stripe subscription is evaluated independently.
+
+`GET /v1/users/export` includes owned `referral_claims` and
+`referral_attributions`. Deleting either participant removes their invitation
+relationship. Deleting an inviter does not remove the recipient's one-time
+claim or cancel the already-granted trial.
+
+Provision an independent `REFERRAL_SIGNING_SECRET` (at least 32 characters) for
+API Core through the resource inventory. Public capture uses the admitted
+`PUBLIC_WEB_BASE_URL`; the issuer uses `PUBLIC_API_BASE_URL`. These settings
+are projected from the selected deployment origins, never from request input.
+
+The shared branded Web login claims after authentication and displays trial
+success before starting the configured desktop download. The download link and
+account navigation remain available when the browser stays on the page.
+
+Server OS uses `backend/fork/referral_transport.py` with the same upstream
+eligibility and transaction owners. It reads creation time from Better Auth,
+uses the generated API/Web destinations and preserves upstream mode. Missing
+creation metadata is ineligible; identity outages return retryable 503.
+Local HTTP and browser evidence is recorded in the
+[verification journal](../../../dev/unified-main/implementation-2026-09-05/eddy-referrals-2026-09-06.md).
+Hosted deployment and published desktop downloads require separate verification.

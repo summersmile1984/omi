@@ -1,4 +1,4 @@
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import type { JobsEnv } from "./env";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -177,6 +177,7 @@ export async function sendFirebaseNotification(
   token: string,
   notification: Pick<OutboxRow, "title" | "body" | "data_json">,
   fetcher: typeof fetch = fetch,
+  background?: { tag: string },
 ): Promise<"sent" | "invalid_token" | "retry"> {
   const response = await fetcher(
     `https://fcm.googleapis.com/v1/projects/${account.projectId}/messages:send`,
@@ -189,10 +190,29 @@ export async function sendFirebaseNotification(
       body: JSON.stringify({
         message: {
           token,
-          notification: { title: notification.title, body: notification.body },
+          ...(background
+            ? {}
+            : {
+                notification: {
+                  title: notification.title,
+                  body: notification.body,
+                },
+              }),
           data: notificationData(notification.data_json),
-          android: { priority: "high" },
-          apns: { headers: { "apns-priority": "10" } },
+          android: {
+            priority: "high",
+            ...(background ? { collapse_key: background.tag } : {}),
+          },
+          apns: background
+            ? {
+                headers: {
+                  "apns-priority": "5",
+                  "apns-push-type": "background",
+                  "apns-collapse-id": background.tag,
+                },
+                payload: { aps: { "content-available": 1 } },
+              }
+            : { headers: { "apns-priority": "10" } },
         },
       }),
     },
@@ -208,6 +228,57 @@ export async function sendFirebaseNotification(
     return "invalid_token";
   }
   return "retry";
+}
+
+export async function sendAppleRemindersSync(
+  env: JobsEnv,
+  uid: string,
+  push: { tag: string; data: Record<string, string> },
+  options: DeliveryOptions = {},
+): Promise<boolean> {
+  if (new TextEncoder().encode(JSON.stringify(push.data)).byteLength > 16_000)
+    return false;
+  const account = parseServiceAccount(env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  if (!account) return false;
+  const tokens = await env.APP_DB.prepare(
+    "SELECT token FROM cf_user_fcm_tokens WHERE uid = ? ORDER BY updated_at DESC LIMIT ?",
+  )
+    .bind(uid, MAX_TOKENS_PER_USER)
+    .all<{ token: string }>();
+  if (!tokens.results?.length) return false;
+  const signal = AbortSignal.timeout(10_000);
+  const fetcher = ((input, init) =>
+    (options.fetcher ?? fetch)(input, { ...init, signal })) as typeof fetch;
+  const accessToken = await (options.accessToken ?? firebaseAccessToken)(
+    account,
+    Math.floor(Date.now() / 1000),
+    fetcher,
+  );
+  const results = await Promise.all(
+    tokens.results.map(async ({ token }) => {
+      try {
+        const result = await sendFirebaseNotification(
+          account,
+          accessToken,
+          token,
+          { title: "", body: "", data_json: JSON.stringify(push.data) },
+          fetcher,
+          { tag: push.tag },
+        );
+        if (result === "invalid_token")
+          await env.APP_DB.prepare(
+            "DELETE FROM cf_user_fcm_tokens WHERE uid = ? AND token = ?",
+          )
+            .bind(uid, token)
+            .run();
+        return result === "sent";
+      } catch {
+        return false;
+      }
+    }),
+  );
+  // Match upstream success_count > 0; device acknowledgement owns exported=true.
+  return results.some(Boolean);
 }
 
 async function recordDeliveryFailure(

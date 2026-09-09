@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "FC-consolidation-before-index-visibility",
+  "violated_contract": "Consolidation may not treat an asynchronously accepted vector publication as searchable context. The 2026-09-07 hosted native-memory trial observed six empty queries and only found the existing preference about 28.2 seconds after Jobs acknowledged publication, allowing an inference without the existing candidate.",
+  "canonical_prevention": "The existing immutable artifact owner records complete publication size and per-vector ANN proof. Actual tenant-scoped queries filter by the immutable publication ID, avoiding top-K tie exclusion. A bounded admission step repairs missing/legacy projections through the existing outbox, retains proofs across continuations and rejects a changing projection sequence before inference without consuming model attempts.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/migrations/app/0179_memory_vector_query_admission.sql",
+    "deploy/cloudflare/python/api-core/src/memory_vector_readiness.py",
+    "deploy/cloudflare/python/api-core/tests/test_memory_vector_readiness.py",
+    "deploy/cloudflare/tests/vector-projection.test.ts",
+    "deploy/cloudflare/tests/release-adapter.test.mjs"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/python/api-core/src/memory_consolidation*.py",
+    "deploy/cloudflare/workers/jobs/memory-vector-publication.ts"
+  ],
+  "status": "open"
+}

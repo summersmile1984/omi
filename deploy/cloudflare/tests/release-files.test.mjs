@@ -1,0 +1,278 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { digest } from "../scripts/resource-input.mjs";
+import { qualificationContext } from "../contracts/qualification-context.mjs";
+import {
+  freezeWorkerConfig,
+  verifyFrozenPayload,
+} from "../scripts/release-build.mjs";
+import {
+  fileTree,
+  sourceIdentity,
+  verifyCandidate,
+  writeJson,
+} from "../scripts/release-files.mjs";
+const temporary = [];
+afterEach(() => {
+  for (const path of temporary.splice(0))
+    rmSync(path, { recursive: true, force: true });
+});
+function fixture() {
+  const root = mkdtempSync(resolve(tmpdir(), "cf-release-files-"));
+  temporary.push(root);
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: root, stdio: "ignore" });
+  git("init", "-q");
+  writeFileSync(resolve(root, ".gitignore"), "candidate/\n");
+  mkdirSync(resolve(root, "deploy/cloudflare"), { recursive: true });
+  writeFileSync(
+    resolve(root, "deploy/cloudflare/source.mjs"),
+    "export const value=1;\n"
+  );
+  mkdirSync(resolve(root, "backend/models"), { recursive: true });
+  mkdirSync(resolve(root, "backend/routers"), { recursive: true });
+  writeFileSync(
+    resolve(root, "backend/routers/screen_frames.py"),
+    "SLACK = 120\n"
+  );
+  mkdirSync(resolve(root, "backend/utils/screen_frames"), { recursive: true });
+  writeFileSync(
+    resolve(root, "backend/models/screen_frame.py"),
+    "SCHEMA = 1\n"
+  );
+  writeFileSync(
+    resolve(root, "backend/utils/screen_frames/judge.py"),
+    "PROMPT = 'original'\n"
+  );
+  mkdirSync(resolve(root, "backend/utils/retrieval"), { recursive: true });
+  mkdirSync(resolve(root, "backend/utils/memory"), { recursive: true });
+  mkdirSync(resolve(root, "backend/database"), { recursive: true });
+  mkdirSync(resolve(root, "backend/utils/other"), { recursive: true });
+  for (const path of [
+    "backend/routers/frame_requests.py",
+    "backend/models/frame_request.py",
+    "backend/utils/retrieval/frame_request_policy.py",
+    "backend/utils/retrieval/frame_request_storage.py",
+    "backend/utils/jit_rollout.py",
+    "backend/utils/memory/canonical_memory_adapter.py",
+    "backend/utils/memory/canonical_lineage.py",
+    "backend/utils/memory/memory_service.py",
+    "backend/utils/memory/knowledge_ledger.py",
+    "backend/routers/jit_ledger_snapshot.py",
+    "backend/utils/memory/jit_ledger_mirror_snapshot.py",
+    "backend/utils/memory/knowledge_ledger_migration.py",
+    "backend/utils/memory/universal_list_cursor.py",
+    "backend/models/knowledge_ledger_policy.py",
+    "backend/utils/memory/ledger_history_policy.py",
+    "backend/utils/memory/memory_api_contract.py",
+    "backend/utils/memory/belief_model.py",
+    "backend/utils/other/list_budget.py",
+    "backend/database/memory_apply_store.py",
+    "backend/database/document_ids.py",
+  ])
+    writeFileSync(resolve(root, path), "CONTRACT = 1\n");
+  git("add", ".");
+  git(
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@invalid",
+    "commit",
+    "-qm",
+    "fixture"
+  );
+  const directory = resolve(root, "candidate");
+  mkdirSync(resolve(directory, "workers"), { recursive: true });
+  writeFileSync(resolve(directory, "workers/index.js"), "export default {};\n");
+  const candidate = {
+    schema_version: 1,
+    source: sourceIdentity(root),
+    artifact_files: { workers: fileTree(resolve(directory, "workers")) },
+    release_ready: false,
+  };
+  writeJson(directory, "candidate.json", {
+    ...candidate,
+    candidate_digest: digest(candidate),
+  });
+  return { root, directory, candidate };
+}
+describe("immutable release inputs and output ownership", () => {
+  it("binds upstream screenshot, frame-request, JIT and memory correction/privacy and history policy bytes to the source digest", () => {
+    const f = fixture();
+    const paths = [
+      "backend/routers/frame_requests.py",
+      "backend/models/frame_request.py",
+      "backend/utils/retrieval/frame_request_policy.py",
+      "backend/utils/retrieval/frame_request_storage.py",
+      "backend/utils/jit_rollout.py",
+      "backend/utils/memory/canonical_memory_adapter.py",
+      "backend/utils/memory/canonical_lineage.py",
+      "backend/utils/memory/memory_service.py",
+      "backend/utils/memory/knowledge_ledger.py",
+      "backend/routers/jit_ledger_snapshot.py",
+      "backend/utils/memory/jit_ledger_mirror_snapshot.py",
+      "backend/utils/memory/knowledge_ledger_migration.py",
+      "backend/utils/memory/universal_list_cursor.py",
+      "backend/models/knowledge_ledger_policy.py",
+      "backend/utils/memory/ledger_history_policy.py",
+      "backend/utils/memory/memory_api_contract.py",
+      "backend/utils/memory/belief_model.py",
+      "backend/utils/other/list_budget.py",
+      "backend/database/memory_apply_store.py",
+      "backend/database/document_ids.py",
+      "backend/models/screen_frame.py",
+      "backend/routers/screen_frames.py",
+      "backend/utils/screen_frames/judge.py",
+    ];
+    const originals = new Map();
+    for (const path of paths) {
+      const original = readFileSync(resolve(f.root, path));
+      expect(f.candidate.source.files[path]).toBe(digest(original));
+      originals.set(path, original);
+      writeFileSync(resolve(f.root, path), "CHANGED = True\n");
+    }
+    // Check every dependency's recorded bytes, then exercise the common
+    // invalidation once without dozens of redundant Git process launches.
+    expect(sourceIdentity(f.root).digest).not.toBe(f.candidate.source.digest);
+    expect(() => verifyCandidate(f.directory, f.root)).toThrow(
+      "source changed"
+    );
+    for (const [path, original] of originals)
+      writeFileSync(resolve(f.root, path), original);
+    expect(verifyCandidate(f.directory, f.root).source.digest).toBe(
+      f.candidate.source.digest
+    );
+  });
+  it("passes a frozen directory to qualification and rejects substituted input or later artifact mutation", () => {
+    const f = fixture();
+    const candidate = JSON.parse(
+      readFileSync(resolve(f.directory, "candidate.json"), "utf8")
+    );
+    const input = {
+      candidate_directory: f.directory,
+      candidate,
+      observations: { release_phase: "candidate" },
+    };
+    const context = qualificationContext(f.root, input);
+    expect(context.directory).toBe(f.directory);
+    expect(() =>
+      qualificationContext(f.root, {
+        ...input,
+        candidate: { ...candidate, brand: "substituted" },
+      })
+    ).toThrow("differs from the frozen candidate");
+    expect(() =>
+      qualificationContext(f.root, {
+        ...input,
+        candidate_directory: "relative",
+      })
+    ).toThrow("absolute candidate directory");
+    writeFileSync(resolve(f.directory, "workers/index.js"), "changed module");
+    expect(() => context.verify()).toThrow("artifact changed");
+  });
+  it("checks exact source and artifacts, including additional source/artifact files", () => {
+    const f = fixture();
+    expect(verifyCandidate(f.directory, f.root).source.digest).toBe(
+      f.candidate.source.digest
+    );
+    writeFileSync(resolve(f.directory, "workers/extra.js"), "unreviewed");
+    expect(() => verifyCandidate(f.directory, f.root)).toThrow(
+      "artifact changed"
+    );
+    rmSync(resolve(f.directory, "workers/extra.js"));
+    writeFileSync(resolve(f.root, "deploy/cloudflare/extra.mjs"), "unreviewed");
+    expect(() => verifyCandidate(f.directory, f.root)).toThrow(
+      "source changed"
+    );
+  });
+  it("rejects edits to frozen SQL, profiles or readiness state rather than trusting an approval boolean", () => {
+    const f = fixture(),
+      candidate = JSON.parse(
+        readFileSync(resolve(f.directory, "candidate.json"), "utf8")
+      );
+    candidate.release_ready = true;
+    const { candidate_digest, ...body } = candidate;
+    writeJson(f.directory, "candidate.json", {
+      ...body,
+      candidate_digest: digest(body),
+    });
+    expect(() => verifyCandidate(f.directory, f.root)).toThrow(
+      "unqualified release state"
+    );
+  });
+  it("rejects broken and ancestor output links and never changes their targets", () => {
+    const f = fixture(),
+      elsewhere = resolve(f.root, "elsewhere");
+    mkdirSync(elsewhere);
+    writeFileSync(resolve(elsewhere, "protected.json"), "original");
+    symlinkSync(elsewhere, resolve(f.directory, "linked"));
+    expect(() => writeJson(f.directory, "linked/protected.json", {})).toThrow(
+      "symlinks"
+    );
+    symlinkSync(
+      resolve(elsewhere, "missing.json"),
+      resolve(f.directory, "broken.json")
+    );
+    expect(() => writeJson(f.directory, "broken.json", {})).toThrow("symlinks");
+    expect(readFileSync(resolve(elsewhere, "protected.json"), "utf8")).toBe(
+      "original"
+    );
+  });
+  it("does not follow module links when checking a supposedly frozen artifact", () => {
+    const f = fixture();
+    symlinkSync(
+      resolve(f.root, "deploy/cloudflare/source.mjs"),
+      resolve(f.directory, "workers/linked.js")
+    );
+    expect(() => verifyCandidate(f.directory, f.root)).toThrow(
+      "symbolic links"
+    );
+  });
+  it("owns Python dependencies at project root and verifies exact uploaded module bytes", () => {
+    const f = fixture(),
+      bundle = resolve(f.directory, "python"),
+      proof = resolve(f.directory, "proof");
+    mkdirSync(resolve(bundle, "modules/python_modules/pkg"), {
+      recursive: true,
+    });
+    writeFileSync(resolve(bundle, "modules/entry.py"), "import pkg\n");
+    writeFileSync(
+      resolve(bundle, "modules/python_modules/pkg/__init__.py"),
+      "value=1\n"
+    );
+    const config = freezeWorkerConfig(
+      { main: "src/entry.py", d1_databases: [{ migrations_dir: "elsewhere" }] },
+      "api-core",
+      bundle
+    );
+    expect(config.main).toBe("modules/entry.py");
+    expect(config.base_dir).toBe("modules");
+    expect(config.no_bundle).toBe(true);
+    expect(config.d1_databases[0].migrations_dir).toBeUndefined();
+    expect(
+      readFileSync(resolve(bundle, "python_modules/pkg/__init__.py"), "utf8")
+    ).toBe("value=1\n");
+    mkdirSync(resolve(proof, "python_modules/pkg"), { recursive: true });
+    writeFileSync(resolve(proof, "entry.py"), "import pkg\n");
+    writeFileSync(
+      resolve(proof, "python_modules/pkg/__init__.py"),
+      "value=1\n"
+    );
+    expect(verifyFrozenPayload(bundle, proof)).toBe(2);
+    writeFileSync(
+      resolve(proof, "python_modules/pkg/__init__.py"),
+      "value=2\n"
+    );
+    expect(() => verifyFrozenPayload(bundle, proof)).toThrow("module differs");
+  });
+});

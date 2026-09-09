@@ -225,7 +225,7 @@ export function validateBackendRouteInventory(inventory, routeManifest) {
         .sort((left, right) => right.prefix.length - left.prefix.length)[0]
         ?.route;
     if (route.migration_state === "staging-owned") {
-      if (!owner || owner.target_runtime === "legacy") {
+      if (!owner || ["legacy", "blocked"].includes(owner.target_runtime)) {
         throw new Error(
           `staging-owned backend route is absent from routes.yaml: ${route.method} ${route.path}`,
         );
@@ -256,6 +256,19 @@ export function validateBackendRouteInventory(inventory, routeManifest) {
       if (route.target_runtime !== "blocked") {
         throw new Error(
           `blocked backend route must use blocked target_runtime: ${route.method} ${route.path}`,
+        );
+      }
+      requiredString(
+        route.migration_note,
+        `blocked backend route requires its missing contract: ${route.method} ${route.path}`,
+      );
+      requiredString(
+        route.follow_up,
+        `blocked backend route requires a tracked migration: ${route.method} ${route.path}`,
+      );
+      if (owner && owner.target_runtime !== "blocked") {
+        throw new Error(
+          `blocked backend route is claimed by an active owner in routes.yaml: ${route.method} ${route.path}`,
         );
       }
       counts.blocked += 1;
@@ -613,11 +626,15 @@ export function validateVectorNamespaceManifest(
 }
 
 export function discoverR2LegacyEnvs(storageSource) {
+  // Storage owners include both literal getenv calls and a conditional
+  // env-name assignment for the temporary/permanent frame bucket split.
   return [
-    ...storageSource.matchAll(/os\.getenv\(\s*["'](BUCKET_[A-Z0-9_]+)["']/g),
-  ]
-    .map((match) => match[1])
-    .sort();
+    ...new Set(
+      [...storageSource.matchAll(/["'](BUCKET_[A-Z0-9_]+)["']/g)].map(
+        (match) => match[1],
+      ),
+    ),
+  ].sort();
 }
 
 const ACTIVE_R2_STATES = new Set([
@@ -879,7 +896,6 @@ export async function validateManifests() {
     backendRouteInventory,
     edgeSource,
     redisSource,
-    storageSource,
   ] = await Promise.all([
     loadYaml(resolve(root, "manifests/routes.yaml")),
     loadYaml(resolve(root, "manifests/resources.yaml")),
@@ -889,8 +905,12 @@ export async function validateManifests() {
     loadJson(resolve(root, "manifests/backend-routes.json")),
     readFile(resolve(root, "workers/edge/index.ts"), "utf8"),
     readFile(resolve(repoRoot, "backend/database/redis_db.py"), "utf8"),
-    readFile(resolve(repoRoot, "backend/utils/other/storage.py"), "utf8"),
   ]);
+  const storageSource = (
+    await Promise.all(
+      r2Manifest.sources.map((path) => readFile(resolve(repoRoot, path), "utf8")),
+    )
+  ).join("\n");
   const vectorSources = await Promise.all(
     vectorManifest.sources.map((path) =>
       readFile(resolve(repoRoot, path), "utf8"),
@@ -908,6 +928,7 @@ export async function validateManifests() {
     routes: validateRouteManifest(routeManifest, edgeSource),
     backendRoutes: backendRoutes.total,
     legacyBackendRoutes: backendRoutes.legacyOwned,
+    blockedBackendRoutes: backendRoutes.blocked,
     resources: validateResourceManifest(resourceManifest),
     redisFamilies: validateRedisPrimitiveManifest(redisManifest, {
       redisSource,
@@ -927,7 +948,7 @@ export async function validateManifests() {
   };
   console.log(
     `Manifest validation passed: ${counts.routes} Cloudflare routes, ${counts.backendRoutes} backend routes ` +
-      `(${counts.legacyBackendRoutes} legacy-owned), ${counts.resources} staging resources, ` +
+      `(${counts.legacyBackendRoutes} legacy-owned, ${counts.blockedBackendRoutes} blocked with tracked migrations), ${counts.resources} staging resources, ` +
       `${counts.redisFamilies} Redis families, ${counts.vectorNamespaces} vector namespaces, ` +
       `${counts.r2Namespaces} R2 namespaces.`,
   );

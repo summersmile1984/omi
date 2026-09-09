@@ -1,6 +1,6 @@
 import type { Context, Hono } from "hono";
 import type { SignedAuthContext } from "../shared/auth-context";
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import { validAccountDeletionUid } from "./account-deletion-residual";
 import type { JobMessage, JobsEnv } from "./env";
 

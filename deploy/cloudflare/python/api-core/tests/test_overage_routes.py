@@ -51,6 +51,8 @@ class FakeDb:
             "0056_llm_usage_daily.sql",
         ):
             self.connection.executescript((migration_dir / name).read_text())
+        for name in ("0057_stripe_billing.sql", "0058_subscription_mutations.sql", "0165_referrals.sql"):
+            self.connection.executescript((migration_dir / name).read_text())
 
     def prepare(self, sql):
         return FakeStatement(self.connection, sql)
@@ -74,6 +76,7 @@ def signed_headers(secret: str, uid: str = "overage-user"):
 
 def make_env(secret="overage-secret", **values):
     defaults = {
+        "BRAND_RUNTIME_JSON": json.dumps({"brand_id": "omi-upstream", "display_name": "Omi", "ai_persona_name": "Omi"}),
         "APP_DB": FakeDb(),
         "INTERNAL_ASSERTION_SECRET": secret,
         "NEO_CHAT_QUESTIONS_PER_MONTH": "2",
@@ -197,3 +200,18 @@ def test_overage_authenticates_and_fails_closed_for_unsettled_provider_cost():
     failing = type("Env", (), {"APP_DB": FailingDb(), "INTERNAL_ASSERTION_SECRET": secret})()
     unavailable = asyncio.run(get_overage_info(FakeRequest(failing, signed_headers(secret))))
     assert unavailable.status_code == 503
+
+
+def test_overage_display_uses_brand_without_changing_accounting_or_accepting_missing_config():
+    env = make_env()
+    baseline = asyncio.run(get_overage_info(FakeRequest(env, signed_headers("overage-secret"))))
+    env.BRAND_RUNTIME_JSON = json.dumps(
+        {"brand_id": "atlas", "display_name": "Atlas {notes}", "ai_persona_name": "Mira"}
+    )
+    branded = asyncio.run(get_overage_info(FakeRequest(env, signed_headers("overage-secret"))))
+    assert branded.pop("explainer_body") == baseline.pop("explainer_body").replace("Omi", "Atlas {notes}")
+    assert branded == baseline
+    env.BRAND_RUNTIME_JSON = None
+    response = asyncio.run(get_overage_info(FakeRequest(env, signed_headers("overage-secret"))))
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "brand runtime is not configured"}

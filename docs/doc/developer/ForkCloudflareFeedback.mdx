@@ -1,0 +1,94 @@
+---
+title: Cloudflare feedback and daily reports
+description: Append-only ratings, admin report access and erasable context pointers.
+---
+
+The Cloudflare target keeps the upstream feedback envelope and report policy.
+The ordinary Core build stages `backend/models/feedback.py`, the desktop rating
+request and the pure report functions directly from their Server owners. No LLM
+or prompt participates in rating collection, report generation or context reads.
+
+All chat rating endpoints, including desktop voice and notification cards, append
+to `cf_feedback_events`. Conversation summary ratings and memory keep/discard
+reviews write the same envelope. The current rating and its event commit in one
+D1 batch; a failed event write rolls back the rating so a successful request
+cannot silently omit the report input. Retrying a vote creates another event;
+daily reports collapse votes per user, target kind and target ID, keeping the
+most informative reason/comment and then the most recent event. Older clients
+can omit the new fields. Unknown reasons on the legacy query endpoint retain
+the vote with a null reason and sanitized fallback telemetry.
+
+Events contain coordinates and model/prompt provenance, plus the user's optional
+feedback comment. They never copy the rated message, memory or transcript text.
+`cf_chat_messages.created_at` is a history ordering key for some writers, not a
+uniform Unix timestamp. Context uses the message JSON's actual `created_at`,
+normalizing offsets and retaining microseconds. This preserves adjacent turns
+even when native and imported history coexist.
+
+## Admin API
+
+| Method | Path | Result |
+| --- | --- | --- |
+| GET | `/v1/admin/feedback/reports?limit=30` | Newest materialized report dates, limit 1–90 |
+| GET | `/v1/admin/feedback/reports/{date}` | Aggregates and pointer entries |
+| POST | `/v1/admin/feedback/reports/{date}/generate` | Generate or rebuild one UTC date |
+| POST | `/v1/admin/feedback/reports/generate-yesterday` | Generate the previous UTC date |
+| GET | `/v1/admin/feedback/events/{id}/context?report_date={date}` | Hydrate one stored window, or resolve it live |
+
+Edge forwards these exact routes to Jobs. Jobs requires `X-Admin-Key` to match
+its existing `ADMIN_KEY` secret. A user bearer token grants no report access.
+An existing key-only caller remains supported and is attributed as
+`unattributed`; trusted admin callers may supply `X-Admin-User`. Audit logs use
+the deployment key hash, a stable hash of the bounded administrator ID, and a
+resource hash. They contain no raw key, administrator ID, URL or conversation.
+
+Jobs signs a fresh request assertion for Core's private `/internal/feedback`
+service. Core requires an internal authority and the feedback-specific actor;
+user assertions, even correctly signed ones, cannot invoke this service. Jobs
+does not forward the admin key, bearer, cookies or caller assertions to Core.
+Public responses are `no-store`.
+
+The existing five-minute Jobs scheduled handler ensures yesterday's report
+after **01:30 UTC**. It skips completed dates and retries failed generations on
+later invocations. A five-minute D1 lease prevents concurrent publishers from
+replacing one another. Publication replaces entries and aggregates atomically;
+a failed rebuild preserves the previously materialized report. A busy manual
+request returns 409, and a storage/service failure returns 503.
+
+## Limits and privacy
+
+The upstream report policy reads at most 2,001 raw negative events to detect a
+2,000-row cap, then collapses at most 2,000 events. It stores at most 500 entries
+with an 800 KiB serialized-entry budget. As upstream, the first entry is retained
+even if that entry alone exceeds the byte budget. `truncated` reports a raw-row, entry or
+byte limit. `total_negative` and category counts cover the collapsed fetched
+events; when the raw cap is hit, they cannot claim an exhaustive count of the day.
+
+Chat windows contain up to ten earlier turns from the same session, the rated
+turn, and up to ten follow-ups from any session during the next five minutes.
+The SQL projection reads only IDs, sender, session and timestamps during report
+generation. Missing targets or failed windows remain visible as resolution
+errors. Summary and memory entries remain pointers without invented transcripts.
+
+Admin hydration reads only that user's referenced messages and caps each text
+at 4,000 characters. Deleted, missing and unreadable enhanced-encryption messages
+are listed as unavailable; native D1 context does not decrypt imported ciphertext.
+
+Events are included in the user's export. Report entries carry a user column and
+a cascading foreign key to their event; both tables participate in Jobs account
+erasure. Reads and report publication check the current deletion fence. Erasure
+cannot be undone by a generator holding an earlier in-memory snapshot. Aggregate
+counts contain no user identifiers and may survive removal of their entries.
+
+## Verification
+
+Run the existing Cloudflare lane from the repository root:
+
+```bash
+bash deploy/cloudflare/ci/routes.sh
+```
+
+It discovers the Core feedback ledger/report HTTP tests and the Worker admin,
+Edge, scheduler and account-deletion tests. The shared migrations are exercised
+against SQLite with foreign keys enabled. These checks alone do not establish
+that Eddy's full Cloudflare production release is qualified.

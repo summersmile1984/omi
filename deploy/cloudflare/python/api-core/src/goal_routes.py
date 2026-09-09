@@ -583,7 +583,8 @@ async def create_goal(request: Request):
         await request.scope["env"].APP_DB.prepare(
             "INSERT INTO cf_goals (uid, id, title, desired_outcome, why_it_matters, success_criteria_json, horizon_at, "
             "status, focus_rank, metric_json, source, relationship_disposition, is_active, latest_progress_sequence, "
-            "ended_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'retain', ?, 0, NULL, ?, ?)"
+            "ended_at, account_generation, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'retain', ?, 0, "
+            "NULL, COALESCE((SELECT account_generation FROM cf_account_cutover WHERE uid=?),0), ?, ?)"
         ).bind(
             uid,
             goal_id,
@@ -596,6 +597,7 @@ async def create_goal(request: Request):
             json.dumps(metric, ensure_ascii=False) if metric is not None else None,
             goal.source.value,
             0 if goal.status in {GoalStatus.achieved, GoalStatus.abandoned} else 1,
+            uid,
             now,
             now,
         ).run()
@@ -625,6 +627,17 @@ async def create_canonical_goal(request: Request):
     raw_goal_id = f"{uid}\x1f{account_generation}\x1f{operation}\x1f{key}".encode("utf-8")
     goal_id = f"goal_{hashlib.sha256(raw_goal_id).hexdigest()[:12]}"
     try:
+        control = (
+            await env.APP_DB.prepare(
+                "SELECT COALESCE((SELECT account_generation FROM cf_account_cutover WHERE uid=?),0) AS generation, "
+                "(EXISTS(SELECT 1 FROM cf_account_deletion_intents WHERE uid=?) OR "
+                "EXISTS(SELECT 1 FROM cf_account_deletion_tombstones WHERE uid=?)) AS deleted"
+            )
+            .bind(uid, uid, uid)
+            .first()
+        )
+        if control["generation"] != account_generation or control["deleted"]:
+            return JSONResponse({"error": "account generation mismatch"}, status_code=409)
         stored, conflict = await _load_mutation(env, uid, operation, key, account_generation, request_hash)
         if conflict:
             return conflict
@@ -657,7 +670,7 @@ async def create_canonical_goal(request: Request):
             env.APP_DB.prepare(
                 "INSERT INTO cf_goals (uid, id, title, desired_outcome, why_it_matters, success_criteria_json, horizon_at, "
                 "status, focus_rank, metric_json, source, relationship_disposition, is_active, latest_progress_sequence, "
-                "ended_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'retain', ?, 0, NULL, ?, ?)"
+                "ended_at, account_generation, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'retain', ?, 0, NULL, ?, ?, ?)"
             ).bind(
                 uid,
                 goal_id,
@@ -670,13 +683,16 @@ async def create_canonical_goal(request: Request):
                 json.dumps(metric, ensure_ascii=False) if metric is not None else None,
                 goal.source.value,
                 is_active,
+                account_generation,
                 now,
                 now,
             ),
             _mutation_statement(env, uid, operation, key, account_generation, request_hash, result, now),
         ]
         await env.APP_DB.batch(statements)
-    except Exception:
+    except Exception as error:
+        if 'goal_account_generation_changed' in str(error) or 'account deletion fence' in str(error):
+            return JSONResponse({"error": "account generation mismatch"}, status_code=409)
         return JSONResponse({"error": "goals unavailable"}, status_code=503)
     return result
 
@@ -993,12 +1009,16 @@ async def transition_goal_lifecycle(request: Request, goal_id: str):
             # Keep the legacy transaction's bounded relationship guarantee:
             # refusing at 450 avoids an unbounded D1 batch while still allowing
             # the normal product-sized goal to detach in one atomic commit.
-            action_items = await env.APP_DB.prepare(
-                "SELECT id FROM cf_action_items WHERE uid = ? AND goal_id = ? LIMIT 451"
-            ).bind(uid, goal_id).all()
-            workstreams = await env.APP_DB.prepare(
-                "SELECT id FROM cf_workstreams WHERE uid = ? AND goal_id = ? LIMIT 451"
-            ).bind(uid, goal_id).all()
+            action_items = (
+                await env.APP_DB.prepare("SELECT id FROM cf_action_items WHERE uid = ? AND goal_id = ? LIMIT 451")
+                .bind(uid, goal_id)
+                .all()
+            )
+            workstreams = (
+                await env.APP_DB.prepare("SELECT id FROM cf_workstreams WHERE uid = ? AND goal_id = ? LIMIT 451")
+                .bind(uid, goal_id)
+                .all()
+            )
             action_rows = action_items.get("results", []) if isinstance(action_items, dict) else []
             workstream_rows = workstreams.get("results", []) if isinstance(workstreams, dict) else []
             detached_action_items = len(action_rows) if isinstance(action_rows, list) else 0
@@ -1023,12 +1043,10 @@ async def transition_goal_lifecycle(request: Request, goal_id: str):
             *(
                 [
                     env.APP_DB.prepare(
-                        "UPDATE cf_action_items SET goal_id = NULL, updated_at = ? "
-                        "WHERE uid = ? AND goal_id = ?"
+                        "UPDATE cf_action_items SET goal_id = NULL, updated_at = ? " "WHERE uid = ? AND goal_id = ?"
                     ).bind(now, uid, goal_id),
                     env.APP_DB.prepare(
-                        "UPDATE cf_workstreams SET goal_id = NULL, updated_at = ? "
-                        "WHERE uid = ? AND goal_id = ?"
+                        "UPDATE cf_workstreams SET goal_id = NULL, updated_at = ? " "WHERE uid = ? AND goal_id = ?"
                     ).bind(now, uid, goal_id),
                 ]
                 if update.relationship_disposition == GoalRelationshipDisposition.detach

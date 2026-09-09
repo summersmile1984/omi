@@ -1,19 +1,10 @@
 #!/usr/bin/env python3
-"""Render every generated file for one brand from its manifest.
+"""Render brand outputs, or compare their bytes without writing (--check-clean).
 
-Idempotent: running twice produces zero diff on the second run. `--only`
-restricts to one category (flutter, desktop, windows, backend, firmware,
-web, docs, ci); omit it to render everything a brand needs.
-
-B0 shipped the registry and validation path with zero generators registered;
-B1 through B7 each register one category's generator (one category each; see
-dev/unified-main/04-brand-layer.md §4). A category with no renderer yet is
-still a manifest-validation dry run for that slice -- `apply.py --brand <any>
---check-clean` only becomes a meaningful regression guarantee for a category
-once that category's generator lands, not before.
-
-Usage:
-    scripts/brand/apply.py --brand <id> [--only CATEGORY ...] [--check-clean]
+--json reports supported/rendered/skipped/partial categories and output paths.
+--release rejects incomplete categories before any writes. A partial generator
+(such as today's Flutter title-only generator) cannot certify an installation.
+Use --manifest PATH for an explicit private brand overlay or a temporary fixture.
 """
 
 from __future__ import annotations
@@ -25,118 +16,114 @@ from pathlib import Path
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from schema_validate import validate  # noqa: E402
-from yaml_lite import load_yaml  # noqa: E402
-from generators import mobile as _mobile  # noqa: E402
+from generators import firmware as _firmware, mobile as _mobile  # noqa: E402
+from manifest import ManifestError, load_manifest  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_PATH = REPO_ROOT / "brand/_schema/manifest.schema.json"
-BRAND_ROOT = REPO_ROOT / "brand"
-
-# One entry per B1-B7 PR. A generator is `(manifest: dict, repo_root: Path) -> list[Path]`,
-# returning every path it wrote so --check-clean can verify idempotency without
-# re-deriving what "this category's output" means.
-CATEGORIES: tuple[str, ...] = (
-    "flutter",
-    "desktop",
-    "windows",
-    "backend",
-    "firmware",
-    "web",
-    "docs",
-    "ci",
-)
-
-GENERATORS: dict[str, Callable[[dict, Path], list[Path]]] = {
+CATEGORIES = ("flutter", "desktop", "windows", "backend", "firmware", "web", "docs", "ci")
+GENERATORS: dict[str, Callable[[dict], dict[str, str]]] = {
     "flutter": _mobile.render,
+    "firmware": _firmware.render,
 }
+# A category joins this set only when its platform identity contract is complete.
+# Flutter currently generates a title, not native app identity (audit E1).
+COMPLETE_CATEGORIES: frozenset[str] = frozenset()
 
 
 class ApplyError(RuntimeError):
     pass
 
 
-def load_manifest(brand_id: str) -> dict:
-    manifest_path = BRAND_ROOT / brand_id / "manifest.yaml"
-    if not manifest_path.exists():
-        raise ApplyError(
-            f"no manifest at {manifest_path.relative_to(REPO_ROOT)}. "
-            f"Known brands: {sorted(p.name for p in BRAND_ROOT.iterdir() if (p / 'manifest.yaml').exists())}"
-        )
-    manifest = load_yaml(manifest_path)
-    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-    errors = validate(manifest, schema)
-    if errors:
-        formatted = "\n".join(f"  - {e}" for e in errors)
-        raise ApplyError(f"{manifest_path.relative_to(REPO_ROOT)} does not match the schema:\n{formatted}")
-    return manifest
-
-
-def render(manifest: dict, only: list[str] | None) -> list[Path]:
-    categories = only or list(CATEGORIES)
-    unknown = [c for c in categories if c not in CATEGORIES]
-    if unknown:
-        raise ApplyError(
-            f"unknown --only categor{'y' if len(unknown) == 1 else 'ies'}: {unknown}. Choices: {list(CATEGORIES)}"
-        )
-
-    written: list[Path] = []
-    skipped: list[str] = []
+def render(manifest: dict, only: list[str] | None = None) -> tuple[dict[str, str], dict]:
+    categories = list(dict.fromkeys(only or CATEGORIES))
+    if set(categories) - set(CATEGORIES):
+        raise ApplyError(f"unknown categories: {sorted(set(categories) - set(CATEGORIES))}")
+    outputs: dict[str, str] = {}
+    rendered = []
     for category in categories:
-        generator = GENERATORS.get(category)
-        if generator is None:
-            skipped.append(category)
+        if category not in GENERATORS:
             continue
-        written.extend(generator(manifest, REPO_ROOT))
+        files = GENERATORS[category](manifest)
+        if not files:
+            raise ApplyError(f"{category} generator produced no files")
+        for relative, content in files.items():
+            path = Path(relative)
+            if path.is_absolute() or ".." in path.parts or relative in outputs:
+                raise ApplyError(f"unsafe or duplicate generated path: {relative}")
+            outputs[relative] = content
+        rendered.append(category)
+    report = {
+        "brand": manifest["brand"]["id"],
+        "supported": sorted(GENERATORS),
+        "requested": categories,
+        "rendered": rendered,
+        "skipped": [c for c in categories if c not in GENERATORS],
+        "partial": [c for c in rendered if c not in COMPLETE_CATEGORIES],
+        "files": sorted(outputs),
+    }
+    report["release_ready"] = not report["skipped"] and not report["partial"]
+    return outputs, report
 
-    if skipped:
-        print(
-            f"no generator registered yet for: {', '.join(skipped)} "
-            f"(dev/unified-main/04-brand-layer.md §4 -- lands in B1-B7)",
-            file=sys.stderr,
-        )
-    return written
+
+def apply_outputs(outputs: dict[str, str], repo_root: Path, check: bool) -> list[str]:
+    """Check is read-only, including absent/untracked/already-dirty outputs."""
+    drift = []
+    for relative, content in outputs.items():
+        path = repo_root / relative
+        if not path.resolve().is_relative_to(repo_root.resolve()):
+            raise ApplyError(f"generated path escapes output root: {relative}")
+        expected = content.encode("utf-8")
+        if not path.is_file() or path.read_bytes() != expected:
+            drift.append(relative)
+        if not check:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(expected)
+    return drift
+
+
+def assess(manifest: dict, repo_root: Path, only: list[str] | None = None, release: bool = False) -> dict:
+    outputs, report = render(manifest, only)
+    report["drift"] = apply_outputs(outputs, repo_root, check=True)
+    report["ok"] = not report["drift"] and (not release or report["release_ready"])
+    return report
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--brand", required=True, help="brand id -- a directory name under brand/")
-    parser.add_argument("--only", action="append", choices=CATEGORIES, help="restrict to one category; repeatable")
+    parser.add_argument("--brand", help="brand directory id; must match --manifest when both are supplied")
+    parser.add_argument("--manifest", type=Path, help="explicit YAML/JSON brand manifest outside the source tree")
+    parser.add_argument("--output-root", type=Path, default=REPO_ROOT, help="isolated generated build tree")
+    parser.add_argument("--only", action="append", choices=CATEGORIES)
+    parser.add_argument("--check-clean", action="store_true", help="read-only byte comparison, never regenerates")
     parser.add_argument(
-        "--check-clean",
-        action="store_true",
-        help="fail if rendering would change any file already on disk (CI idempotency gate)",
+        "--release", action="store_true", help="require complete generators for every requested category"
     )
+    parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
-
     try:
-        manifest = load_manifest(args.brand)
-        import subprocess
-
-        before = None
-        if args.check_clean:
-            before = subprocess.run(
-                ["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
-            ).stdout
-        written = render(manifest, args.only)
-        if args.check_clean:
-            after = subprocess.run(
-                ["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
-            ).stdout
-            if before != after:
-                print("FAIL: apply.py --check-clean found a diff after rendering:", file=sys.stderr)
-                print(after, file=sys.stderr)
-                return 1
-    except ApplyError as error:
-        print(f"ERROR: {error}", file=sys.stderr)
+        manifest = load_manifest(args.brand, REPO_ROOT, args.manifest)
+        outputs, report = render(manifest, args.only)
+        if args.release and not report["release_ready"]:
+            report.update(ok=False, drift=[])
+        else:
+            report["drift"] = apply_outputs(outputs, args.output_root, args.check_clean)
+            report["ok"] = not args.check_clean or not report["drift"]
+    except (ManifestError, ApplyError, OSError) as error:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(error)}))
+        else:
+            print(f"ERROR: {error}", file=sys.stderr)
         return 1
-
-    print(
-        f"OK: brand '{args.brand}' -- {len(written)} file(s) written"
-        if written
-        else f"OK: brand '{args.brand}' -- nothing to render yet"
-    )
-    return 0
+    if args.json:
+        print(json.dumps(report, sort_keys=True))
+    else:
+        print(
+            f"{'OK' if report['ok'] else 'FAIL'}: brand {report['brand']}; rendered={report['rendered']} "
+            f"skipped={report['skipped']} partial={report['partial']} release_ready={report['release_ready']}"
+        )
+        if args.check_clean and report["drift"]:
+            print("generated bytes differ: " + ", ".join(report["drift"]))
+    return 0 if report["ok"] else 1
 
 
 if __name__ == "__main__":

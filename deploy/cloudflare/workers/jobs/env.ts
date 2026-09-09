@@ -1,3 +1,5 @@
+import type { ShareEmailBinding } from "./share-email";
+
 export type JobMessage = {
   jobId: string;
   uid: string;
@@ -7,6 +9,8 @@ export type JobMessage = {
     | "sync_local_files"
     | "legacy_audio_rebuild"
     | "vector_project"
+    | "memory_privacy_cleanup"
+    | "memory_consolidate"
     | "account_delete"
     | "recording_delete"
     | "app_delete"
@@ -18,6 +22,8 @@ export type JobMessage = {
     | "audio_merge"
     | "audio_merge_legacy"
     | "task_intelligence_evaluate"
+    | "task_recurrence"
+    | "candidate_integration"
     | "wrapped_generate"
     | "hume_webhook"
     | "data_protection_migration"
@@ -59,9 +65,18 @@ export type VectorizeBinding = {
   deleteByIds(ids: string[]): Promise<unknown>;
 };
 
+export type MemoryVectorizeBinding = VectorizeBinding & {
+  getByIds(ids: string[]): Promise<Array<{ id: string }>>;
+  describe(): Promise<{ processedUpToMutation: unknown }>;
+};
+
 export type JobsEnv = {
+  MEMORY_PRIVACY_SECRET: string;
   AUTH: Fetcher;
   API_CORE?: Fetcher;
+  SHARE_EMAIL?: ShareEmailBinding;
+  SHARE_EMAIL_FROM_ADDRESS?: string;
+  SCREEN_FRAME_WRITER?: Fetcher;
   APP_DB: D1Database;
   ASSETS: R2Bucket;
   /** Reviewed desktop release artifact mirror; absent until the bucket is provisioned. */
@@ -71,10 +86,12 @@ export type JobsEnv = {
   CHAT_FILES?: R2Bucket;
   CONVERSATION_RECORDINGS: R2Bucket;
   SPEECH_PROFILES: R2Bucket;
+  FRAME_REQUESTS?: R2Bucket;
+  FRAME_REQUESTS_TEMPORARY?: R2Bucket;
   AI: WorkersAiBinding;
   /** Optional until the account has Cloudflare Images transformations enabled. */
   IMAGES?: ImagesTransformBinding;
-  MEMORY_VECTORS: VectorizeBinding;
+  MEMORY_VECTORS: MemoryVectorizeBinding;
   ACTION_ITEM_VECTORS: VectorizeBinding;
   CONVERSATION_VECTORS: VectorizeBinding;
   TRANSCRIPT_CHUNK_VECTORS: VectorizeBinding;

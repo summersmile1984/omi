@@ -128,18 +128,6 @@ def test_firestore_client_pins_service_account_json_over_host_project_adc(monkey
     client.assert_called_once_with(credentials=credentials, project="based-hardware")
 
 
-def test_cloud_neutral_customer_client_reuses_postgres_authority(monkeypatch) -> None:
-    pg_client = MagicMock(name="postgres-firestore-client")
-    entitlement_lookup = MagicMock(side_effect=AssertionError("must not inspect Firestore credentials in PG mode"))
-    monkeypatch.setenv("FIRESTORE_PG_DSN", "postgresql+psycopg://omi:secret@localhost:5434/omi")
-    monkeypatch.setattr(firestore_client, "_customer_firestore_client", None)
-    monkeypatch.setattr(firestore_client, "get_firestore_client", MagicMock(return_value=pg_client))
-    monkeypatch.setattr(firestore_client, "customer_entitlement_service_account", entitlement_lookup)
-
-    assert firestore_client.get_customer_firestore_client() is pg_client
-    entitlement_lookup.assert_not_called()
-
-
 def test_valid_subscription_without_provision_does_not_write_free() -> None:
     from database import users as users_db
     from models.users import PlanType
@@ -169,3 +157,40 @@ def test_desktop_chat_quota_reads_customer_firestore_without_provisioning() -> N
     assert "provision=False" in quota_source
     assert "get_customer_firestore_client()" in paywall_source
     assert "provision=False" in paywall_source
+
+
+def test_screen_vector_entitlement_reads_customer_firestore_without_provisioning() -> None:
+    import inspect
+
+    from utils.subscription import grants_cloud_screen_vectors
+
+    source = inspect.getsource(grants_cloud_screen_vectors)
+    assert "get_customer_firestore_client()" in source
+    assert "provision=False" in source
+
+
+def test_screen_vector_entitlement_does_not_write_when_customer_subscription_doc_is_missing(monkeypatch) -> None:
+    from database import users as users_db
+    from models.users import PlanType
+    from utils.subscription import grants_cloud_screen_vectors
+    import utils.subscription as subscription
+
+    uid = "uid-missing-customer-subscription"
+    subscription.clear_cloud_screen_vector_entitlement_cache(uid)
+
+    user_ref = MagicMock()
+    snapshot = MagicMock()
+    snapshot.exists = False
+    user_ref.get.return_value = snapshot
+    customer_client = MagicMock()
+    customer_client.collection.return_value.document.return_value = user_ref
+
+    monkeypatch.setattr(subscription, "get_customer_firestore_client", lambda: customer_client)
+
+    entitled = grants_cloud_screen_vectors(uid)
+    stored = users_db.get_user_valid_subscription(uid, firestore_client=customer_client, provision=False)
+
+    assert entitled is False
+    assert stored is not None
+    assert stored.plan == PlanType.basic
+    user_ref.set.assert_not_called()

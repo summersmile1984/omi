@@ -1,4 +1,9 @@
 import type { JobsEnv } from "./env";
+import {
+  cleanupMemoryVectors,
+  publishMemoryVectors,
+  retractMemoryVectors,
+} from "./memory-vector-publication";
 
 export const VECTOR_EMBEDDING_MODEL = "@cf/baai/bge-m3";
 export const VECTOR_EMBEDDING_DIMENSIONS = 1_024;
@@ -271,29 +276,29 @@ async function sourceDocuments(
   uid: string,
   kind: VectorSourceKind,
   sourceId: string,
-): Promise<{ version: number; documents: ProjectionDocument[] } | null> {
+): Promise<{ version: number; documents: ProjectionDocument[]; memoryContent?: string } | null> {
   if (kind === "memory") {
     const row = await env.APP_DB.prepare(
-      `SELECT content, updated_at, deleted_at, invalid_at, user_review, memory_tier
-       FROM cf_memories WHERE uid = ? AND id = ?`,
+      `SELECT content, item_revision, operation
+       FROM cf_memory_projection_sources WHERE uid = ? AND id = ?`,
     )
       .bind(uid, sourceId)
       .first<Record<string, unknown>>();
-    const version = safeInteger(row?.updated_at);
+    const version = safeInteger(row?.item_revision);
     if (
       !row ||
       version === null ||
-      row.deleted_at !== null ||
-      row.invalid_at !== null ||
-      Number(row.user_review) === 0 ||
-      row.memory_tier === "archive" ||
+      row.operation !== "upsert" ||
       typeof row.content !== "string"
     ) {
       return null;
     }
+    const documents = chunkDocuments("memory", row.content);
+    if (!documents.length) return null;
     return {
       version,
-      documents: chunkDocuments("memory", row.content),
+      memoryContent: row.content,
+      documents,
     };
   }
   if (kind === "action_item") {
@@ -477,7 +482,10 @@ async function deleteVectorGroups(
 async function deleteProjection(
   env: JobsEnv,
   row: VectorProjectionOutboxRow,
-): Promise<void> {
+): Promise<boolean> {
+  if (row.source_kind === "memory") {
+    return retractMemoryVectors(env, row.uid, row.source_id, row.desired_version, row.operation);
+  }
   const state = await existingState(
     env,
     row.uid,
@@ -498,18 +506,38 @@ async function deleteProjection(
     env.APP_DB.prepare(
       `DELETE FROM cf_vector_projection_outbox
        WHERE uid = ? AND source_kind = ? AND source_id = ?
-         AND desired_version = ? AND operation = 'delete'`,
-    ).bind(row.uid, row.source_kind, row.source_id, row.desired_version),
+         AND desired_version = ? AND operation = ?`,
+    ).bind(
+      row.uid,
+      row.source_kind,
+      row.source_id,
+      row.desired_version,
+      row.operation,
+    ),
   ]);
+  return true;
 }
 
 async function upsertProjection(
   env: JobsEnv,
   row: VectorProjectionOutboxRow,
-  source: { version: number; documents: ProjectionDocument[] },
+  source: { version: number; documents: ProjectionDocument[]; memoryContent?: string },
 ): Promise<void> {
   const namespace = await vectorNamespace(row.uid);
   const embedded = await embedDocuments(env, source.documents);
+  if (row.source_kind === "memory") {
+    if (typeof source.memoryContent !== "string") throw new Error("memory source content missing");
+    await publishMemoryVectors(env, {
+      uid: row.uid,
+      sourceId: row.source_id,
+      revision: source.version,
+      content: source.memoryContent,
+      namespace,
+      model: env.WORKERS_AI_VECTOR_MODEL || VECTOR_EMBEDDING_MODEL,
+      vectors: embedded,
+    });
+    return;
+  }
   for (const vector of embedded) {
     vector.vectorId = await vectorId(
       vector.projectionKind,
@@ -640,8 +668,7 @@ export async function processVectorProjection(
     if (deletion) return false;
     const source = await sourceDocuments(env, row.uid, kind, row.source_id);
     if (row.operation === "delete" || source === null) {
-      await deleteProjection(env, { ...row, source_kind: kind });
-      return true;
+      return await deleteProjection(env, { ...row, source_kind: kind });
     }
     await upsertProjection(env, { ...row, source_kind: kind }, source);
     return true;
@@ -727,15 +754,13 @@ async function seedMissingProjections(
   const queries = [
     env.APP_DB.prepare(
       `SELECT m.uid, 'memory' AS source_kind, m.id AS source_id,
-              m.updated_at AS desired_version, 'upsert' AS operation
-       FROM cf_memories m
-       LEFT JOIN cf_vector_projection_state s
-         ON s.uid = m.uid AND s.projection_kind = 'memory'
-        AND s.source_id = m.id AND s.sub_id = '000000'
-       WHERE m.deleted_at IS NULL AND m.invalid_at IS NULL
-         AND m.memory_tier != 'archive' AND COALESCE(m.user_review, 1) != 0
+              m.item_revision AS desired_version, 'upsert' AS operation
+       FROM cf_memory_projection_sources m
+       LEFT JOIN cf_memory_vector_publications s
+         ON s.uid = m.uid AND s.source_id = m.id
+       WHERE m.operation = 'upsert'
          AND (
-           s.source_version IS NULL OR s.source_version < m.updated_at OR
+           s.source_version IS NULL OR s.source_version < m.item_revision OR
            s.model != ?
          )
          AND NOT EXISTS (SELECT 1 FROM cf_account_deletion_intents d WHERE d.uid = m.uid)
@@ -743,7 +768,7 @@ async function seedMissingProjections(
            SELECT 1 FROM cf_account_deletion_tombstones t
            WHERE t.uid = m.uid AND t.expires_at > ?
          )
-       ORDER BY m.updated_at, m.uid, m.id LIMIT ?`,
+       ORDER BY m.item_revision, m.uid, m.id LIMIT ?`,
     ).bind(model, now, RECONCILE_SOURCE_BATCH_SIZE),
     env.APP_DB.prepare(
       `SELECT a.uid, 'action_item' AS source_kind, a.id AS source_id,
@@ -853,10 +878,9 @@ async function seedMissingProjections(
               s.source_id, MAX(s.source_version) AS desired_version,
               'delete' AS operation
        FROM cf_vector_projection_state s
-       LEFT JOIN cf_memories m
+       LEFT JOIN cf_memory_projection_sources m
          ON s.projection_kind = 'memory' AND m.uid = s.uid AND m.id = s.source_id
-           AND m.deleted_at IS NULL AND m.invalid_at IS NULL
-           AND m.memory_tier != 'archive' AND COALESCE(m.user_review, 1) != 0
+           AND m.operation = 'upsert'
        LEFT JOIN cf_action_items a
          ON s.projection_kind = 'action_item' AND a.uid = s.uid AND a.id = s.source_id AND a.deleted = 0
        LEFT JOIN cf_conversations c
@@ -933,6 +957,7 @@ export async function reconcileVectorProjections(
   for (const row of result.results || []) {
     if (await processVectorProjection(env, row)) completed += 1;
   }
+  await cleanupMemoryVectors(env);
   return completed;
 }
 
@@ -940,6 +965,11 @@ export async function purgeAccountVectorProjections(
   env: JobsEnv,
   uid: string,
 ): Promise<number> {
+  await env.APP_DB.prepare(
+    "DELETE FROM cf_vector_projection_state WHERE uid = ? AND projection_kind = 'memory'",
+  ).bind(uid).run();
+  const memoryPending = await cleanupMemoryVectors(env, { uid });
+  if (memoryPending) return memoryPending;
   const result = await env.APP_DB.prepare(
     `SELECT projection_kind, sub_id, vector_id
      FROM cf_vector_projection_state

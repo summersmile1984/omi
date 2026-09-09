@@ -1,6 +1,15 @@
 export type AuthAuthority =
-  "firebase" | "better-auth" | "internal" | "mcp-oauth";
-export type AuthAudience = "api-core" | "api-ai" | "auth" | "jobs" | "realtime";
+  | "firebase"
+  | "better-auth"
+  | "internal"
+  | "mcp-oauth";
+export type AuthAudience =
+  | "api-core"
+  | "api-ai"
+  | "auth"
+  | "jobs"
+  | "realtime"
+  | "screen-frame-writer";
 
 export type AuthContext = {
   uid: string;
@@ -47,7 +56,7 @@ function validMcpIdentity(parsed: Partial<SignedAuthContext>): boolean {
     parsed.scopes.length > 16 ||
     parsed.scopes.some(
       (scope) =>
-        typeof scope !== "string" || scope.length === 0 || scope.length > 128,
+        typeof scope !== "string" || scope.length === 0 || scope.length > 128
     ) ||
     new Set(parsed.scopes).size !== parsed.scopes.length ||
     typeof parsed.oauthClientId !== "string" ||
@@ -65,6 +74,7 @@ function validAudience(value: unknown): value is AuthAudience {
     value === "api-ai" ||
     value === "auth" ||
     value === "jobs" ||
+    value === "screen-frame-writer" ||
     value === "realtime"
   );
 }
@@ -80,7 +90,7 @@ export function encodeAuthContext(context: SignedAuthContext): string {
 }
 
 export function decodeAuthContext(
-  value: string | null,
+  value: string | null
 ): SignedAuthContext | null {
   if (!value) return null;
   try {
@@ -89,10 +99,10 @@ export function decodeAuthContext(
       "===".slice((value.length + 3) % 4);
     const binary = atob(padded);
     const bytes = Uint8Array.from(binary, (character) =>
-      character.charCodeAt(0),
+      character.charCodeAt(0)
     );
     const parsed = JSON.parse(
-      new TextDecoder().decode(bytes),
+      new TextDecoder().decode(bytes)
     ) as Partial<SignedAuthContext>;
     if (
       parsed.version !== 1 ||
@@ -128,7 +138,7 @@ export function decodeAuthContext(
 
 export async function signAuthContext(
   value: string,
-  secret: string | undefined,
+  secret: string | undefined
 ): Promise<string | null> {
   if (!secret) return null;
   const key = await crypto.subtle.importKey(
@@ -136,12 +146,12 @@ export async function signAuthContext(
     new TextEncoder().encode(secret),
     { name: "HMAC", hash: "SHA-256" },
     false,
-    ["sign"],
+    ["sign"]
   );
   const signature = await crypto.subtle.sign(
     "HMAC",
     key,
-    new TextEncoder().encode(value),
+    new TextEncoder().encode(value)
   );
   const bytes = new Uint8Array(signature);
   let binary = "";
@@ -155,7 +165,7 @@ export async function signAuthContext(
 export async function verifyAuthContextSignature(
   value: string,
   signature: string | null,
-  secret: string | undefined,
+  secret: string | undefined
 ): Promise<boolean> {
   if (!signature || !secret) return false;
   try {
@@ -164,20 +174,20 @@ export async function verifyAuthContextSignature(
       new TextEncoder().encode(secret),
       { name: "HMAC", hash: "SHA-256" },
       false,
-      ["verify"],
+      ["verify"]
     );
     const padded =
       signature.replace(/-/g, "+").replace(/_/g, "/") +
       "===".slice((signature.length + 3) % 4);
     const binary = atob(padded);
     const bytes = Uint8Array.from(binary, (character) =>
-      character.charCodeAt(0),
+      character.charCodeAt(0)
     );
     return await crypto.subtle.verify(
       "HMAC",
       key,
       bytes,
-      new TextEncoder().encode(value),
+      new TextEncoder().encode(value)
     );
   } catch {
     return false;
@@ -190,7 +200,7 @@ export async function createSignedAuthContext(
   method: string,
   path: string,
   secret: string | undefined,
-  nowSeconds = Math.floor(Date.now() / 1000),
+  nowSeconds = Math.floor(Date.now() / 1000)
 ): Promise<{
   context: SignedAuthContext;
   encoded: string;
@@ -216,7 +226,7 @@ export async function verifyRequestAuthContext(
   request: Request,
   audience: AuthAudience,
   secret: string | undefined,
-  nowSeconds = Math.floor(Date.now() / 1000),
+  nowSeconds = Math.floor(Date.now() / 1000)
 ): Promise<SignedAuthContext | null> {
   const encoded = request.headers.get(AUTH_CONTEXT_HEADER);
   const signature = request.headers.get(AUTH_SIGNATURE_HEADER);

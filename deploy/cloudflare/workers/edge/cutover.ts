@@ -11,18 +11,22 @@ type AccountCutoverControl = {
 
 export const ACCOUNT_CUTOVER_CONTROL_PATH = "/v1/account/cutover/control";
 
-export async function cloudflareProductTrafficDenial(
+type AccountControlEnv = Pick<
+  EdgeEnv,
+  | "API_CORE"
+  | "INTERNAL_ASSERTION_SECRET"
+  | "ACCOUNT_ACTIVATION_FENCE_ENABLED"
+  | "ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED"
+>;
+
+// Core owns initialization and deletion fences. Privacy requests also read this
+// owner, but Jobs decides their eligibility while ordinary traffic is fenced.
+export async function readCloudflareAccountControl(
   clientRequest: Request,
-  env: EdgeEnv,
+  env: AccountControlEnv,
   auth: AuthContext,
   requestId: string,
-): Promise<Response | null> {
-  // Off by default: no omi_cloud->cloudflare account migration in flight for
-  // this brand. Short-circuits before the api-core round-trip so the common
-  // case (fence disabled) costs nothing extra.
-  if (env.ACCOUNT_ACTIVATION_FENCE_ENABLED !== "true") {
-    return null;
-  }
+): Promise<AccountCutoverControl | Response> {
   const target = new URL(
     ACCOUNT_CUTOVER_CONTROL_PATH,
     "https://api-core.internal",
@@ -67,12 +71,35 @@ export async function cloudflareProductTrafficDenial(
   let control: AccountCutoverControl;
   try {
     control = (await response.json()) as AccountCutoverControl;
+    if (!control || typeof control !== "object" || Array.isArray(control))
+      throw new Error("invalid account control");
   } catch {
     return Response.json(
       { error: "account data plane unavailable", retryable: true },
       { status: 503, headers: { "cache-control": "no-store" } },
     );
   }
+  return control;
+}
+
+export async function cloudflareProductTrafficDenial(
+  clientRequest: Request,
+  env: AccountControlEnv,
+  auth: AuthContext,
+  requestId: string,
+): Promise<Response | null> {
+  if (
+    env.ACCOUNT_ACTIVATION_FENCE_ENABLED !== "true" &&
+    env.ACCOUNT_CUTOVER_BOOTSTRAP_ENABLED !== "true"
+  )
+    return null;
+  const control = await readCloudflareAccountControl(
+    clientRequest,
+    env,
+    auth,
+    requestId,
+  );
+  if (control instanceof Response) return control;
   const destinationBound =
     control.migration?.destination_backend_bound === true;
   if (

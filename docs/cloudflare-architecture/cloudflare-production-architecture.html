@@ -1085,13 +1085,68 @@
     <header class="masthead">
       <div class="masthead__inner">
         <p class="eyebrow">Architecture dossier · 2026-09-01</p>
-        <h1>Cloudflare Production<br />详细架构文档</h1>
+        <h1>Cloudflare Production<br />历史架构文档</h1>
         <p class="masthead__lede">
           Omi 的 Cloudflare 版本是一个独立、Cloudflare-only 的生产运行面：它拥有自己的 Workers、D1、R2、Queues、
           Vectorize 与 Durable Objects，不和 legacy Google/Firebase 生产环境合流，也没有切换官方域名。
         </p>
+        <p class="masthead__lede">
+          <strong>Eddy 当前状态（2026-09-08）：生产交付尚未完成。</strong>
+          本页记录的是 2026-09-01 的 omi-cf 生产环境，图表和历史验收不能作为 Eddy 的生产证据。
+          已在隔离 Cloudflare 环境通过两条真实 Qwen 业务链路：推荐生成、反馈与任务接受；
+          原五分钟定时任务自动整理新记忆，并通过真实 BGE-M3／Vectorize 检索找回。
+          两条链路各调用一次 Qwen，默认提示词未改动，测试资源已清理。
+          Core 完整回归 1259 项、Workers 1054 项测试通过；上游提醒快照测试 16 项通过。
+          截图审核已在真实 Images／Qwen／D1／R2 链路验证：会议演示图入库、模拟凭据图未入库，
+          撤销分享、关闭截图和删除后旧预览链接均失效。
+          公开注册登录后的截图链路另有 56 项 HTTP 验证，覆盖原每小时 30 次限额、注销和五分钟定时任务自动清理 R2；
+          会话及图片仍为测试数据，大批量输入与 macOS 实际采集尚未完成验收。
+          macOS 截图请求的普通 30 秒超时已在 fork 构建层修正：真实本机 HTTP 延迟测试中，
+          原请求约 30.5 秒失败，修正后约 41 秒收到结果；这项传输验证不等同于原生完整业务验收。
+          主动提醒预算预占已在真实 D1 验证并发限额、重复请求与写入失败整组回滚。
+          D1 支持 batch 事务；上游 Firestore 的读写事务已适配为提交前检查和原子批次。
+          真实注册登录后的提醒快照与预算预占已通过公开 Auth／Edge 链路验证，
+          包括 500／501 条边界、敏感提醒撤销和注销后旧凭证拒绝；提醒数据采用受控测试记录。
+          提醒反馈另通过 90 项真实公开 HTTP 验证：五种反馈动作、12 个并发重复请求只提交一次、
+          最后一步写入失败整笔回滚。已修复上游写入摘要遗漏参数及适配 SQL 超出 D1 的 50 字节 LIKE 模式限制；
+          精确前缀比较替代了该模式，默认提示词未变。测试资源均已清理。
+          记忆历史读取已通过 24 项真实公开 HTTP 检查及 28 项本地专项检查，保留上游历史筛选和分页，
+          大记录达到读取预算会明确标记截断。恢复写入现已接通并通过 18 项本地专项检查，
+          恢复、重复提交、并发和最终写入失败回滚另通过 32 项真实公开 HTTP 验证；
+          默认提示词未改，相关测试资源均已清理。
+          2026-09-08 15:27（北京时间）直接查询 Cloudflare，9 个 Eddy 生产 Worker 仍全部未部署。
+          发布脚本在首次上传前检查到 CF-4（完整业务）和 CI-1（双目标）验收执行器缺失而退出；
+          这是尚未完成的发布工作，不是等待用户授权，临时测试 Worker 也不算生产部署。
+          随后已跑通本地 Wrangler 的 49 项业务回归及标准 Docker Server 的 16 项共用接口回归，
+          并将冻结候选的双目标本地回归接入 prepare；本地使用受控模型输出，远端模型和完整发布验收仍需实测。
+          大批量、重试与隐藏反例的旧测试仍采用受控模型输出，不能据此声称全面模型质量验收。
+          记忆转任务交接的云端验收、17 个未通过交付验收的接口、整体部署及 macOS 生产端验收仍未完成。
+          <a href="../../dev/unified-main/implementation-2026-09-05/canonical-qwen-live-2026-09-08.md"
+            >真实 Qwen 推荐验收</a>；
+          <a href="../../dev/unified-main/implementation-2026-09-05/canonical-memory-live-2026-09-08.md"
+            >自动记忆整理与检索验收</a>；
+          <a href="../../dev/unified-main/implementation-2026-09-05/jit-reservations-2026-09-08.md"
+            >D1 预算事务验收及剩余范围</a>；
+          <a href="../../dev/unified-main/implementation-2026-09-05/screen-frame-qwen-2026-09-08.md"
+            >Qwen 截图审核与预览撤销验收</a>；
+          <a href="../../dev/unified-main/implementation-2026-09-05/screen-frame-public-2026-09-08.md"
+            >公开截图链路与自动清理验收</a>；
+          <a href="../../dev/unified-main/implementation-2026-09-05/screen-frame-native-timeout-2026-09-08.md"
+            >原生截图请求超时修正验证</a>；
+          <a href="../../dev/unified-main/implementation-2026-09-05/jit-trigger-snapshot-2026-09-08.md"
+            >公开登录链路的提醒快照验收</a>；
+          <a href="../../dev/unified-main/implementation-2026-09-05/jit-trigger-feedback-2026-09-08.md"
+            >提醒反馈事务与 D1 限制修正验收</a>；
+          <a href="../../dev/unified-main/implementation-2026-09-05/memory-history-2026-09-08.md"
+            >记忆历史读取与剩余回退范围</a>。
+
+          <a
+            href="../../dev/unified-main/implementation-2026-09-05/eddy-cloudflare-release-verification.md"
+            >查看 Eddy 验收核对</a
+          >。
+        </p>
         <div class="badge-row" aria-label="文档状态">
-          <span class="badge">Independent production</span>
+          <span class="badge">Historical Omi deployment</span>
           <span class="badge">Cloudflare-native accounts</span>
           <span class="badge">Workers AI canonical path</span>
           <span class="badge">No official DNS cutover</span>
@@ -1129,9 +1184,9 @@
       <main>
         <section id="executive">
           <p class="section-kicker">01 · Executive state</p>
-          <h2>结论与当前状态</h2>
+          <h2>历史部署结论（2026-09-01）</h2>
           <p class="section-lede">
-            当前版本已经真正部署到 Cloudflare，并完成生产级鉴权、Workers AI、浏览器、性能、迁移与删号残留验证。
+            以下是该历史版本部署到 Cloudflare 后记录的鉴权、Workers AI、浏览器、性能、迁移与删号残留验证。
             它不是 legacy backend 的代理壳，也不是 staging 与生产资源的复用组合。
           </p>
 
@@ -1539,6 +1594,13 @@
               </tbody>
             </table>
           </div>
+
+          <p class="section-lede">
+            <strong>D1 支持同一数据库内的事务批次。</strong>
+            <a href="https://developers.cloudflare.com/d1/worker-api/d1-database/#batch">db.batch() 中任一语句失败，整个批次回滚</a>。
+            记忆处理先在事务外检索并调用 LLM，再在事务内校验读取时的版本、提交记忆和日志及待同步记录。
+            只读参考记忆与写入目标分别校验；R2、Vectorize 和 Queue 的后续更新通过待同步记录重试。
+          </p>
 
           <h3>写入与搜索的关键顺序</h3>
           <div class="two-col">
@@ -2062,7 +2124,7 @@
             <li><a href="README.md">Cloudflare 架构与完成度审计</a></li>
             <li><a href="../../deploy/cloudflare/README.md">Cloudflare 部署与操作手册</a></li>
             <li><a href="../../deploy/cloudflare/python/api-core/ARCHITECTURE.md">API Core Worker 架构</a></li>
-            <li><a href="../../dev/cloudflare-adaptation-plan.md">Cloudflare 适配计划</a></li>
+            <li><a href="../../dev/unified-main/09-cloudflare-route-migrations.md">Cloudflare 路由迁移计划</a></li>
           </ul>
 
           <footer class="doc-footer">

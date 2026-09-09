@@ -9,6 +9,91 @@
 # which `scripts/fork/preflight` and `.github/workflows/fork-checks.yml` both do.
 # Every entry declares both lanes, as the upstream runner's validator requires.
 checks:
+  - id: fork-cloudflare-product-core
+    command: ["bash", "deploy/cloudflare/ci/product.sh"]
+    triggers: ["contracts/deployment/**", "deploy/cloudflare/**", "auth/shared/**", "runtime/shared/**", "backend/models/action_item.py", "backend/models/task_intelligence.py", "web/app/src/lib/**", "web/app/src/types/**"]
+    lanes: ["local", "ci"]
+    reason: "Actual 2026-09-04 public Tasks input returned CF400 versus Server422, recording was broadcast without a D1 conversation owner, and explicit chat_session_id was ignored by read/write/clear. Execute the common HTTP cases, separate recording/Queue cases and the current Web text-chat consumer through fresh locked workerd, application Workers and normal D1 migrations; the controlled provider supplies inference only, never product state or approval."
+
+  - id: fork-selfhost-product-core
+    command: ["bash", "deploy/self-host/ci/product.sh"]
+    triggers: ["contracts/deployment/**", "deploy/self-host/**", "backend/fork/**", "backend/firestore_pg/**", "auth-server/**", "auth/shared/**", "runtime/shared/**", "backend/routers/action_items.py", "backend/routers/users.py", "backend/models/action_item.py"]
+    lanes: ["local", "ci"]
+    reason: "The 2026-09-04 real Android onboarding request failed on the missing dynamic PG owner, while the same invalid task body returned Server422/CF400. Run shared HTTP product cases through actual Auth/API/PG/Redis/MinIO/Qdrant and fresh migrations; this tests existing product owners instead of adding another state or validation primitive."
+  - id: fork-electron-native-identity
+    command: ["bash", "desktop/windows/fork/test.sh"]
+    triggers: ["desktop/windows/**", "scripts/profiles/**", "deploy/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
+    lanes: ["local", "ci"]
+    reason: "The audited Electron renderer owned Firebase persistence and pushed caller-supplied identity/base URLs into main. Production owner/IPC/renderer tests and two full staged builds enforce opaque main-only identity; real cold-start blank-window failure and native Origin/HTTP transport incidents are retained as regressions. Packaging, Windows DPAPI/Linux keyring runtime, and live services are separate acceptance."
+
+  - id: fork-selfhost-build-context
+    command: ["python3", "deploy/self-host/ci/build_context.py"]
+    triggers: ["backend/Dockerfile.dockerignore", "deploy/self-host/Dockerfile.dockerignore", "deploy/self-host/Dockerfile.llm.dockerignore", "deploy/self-host/ci/build_context.py"]
+    lanes: ["local", "ci"]
+    reason: "Actual 2026-09-04 self-host images copied the 581MB local OpenAPI venv and 110MB test scratch directory; offline scratch Docker builds exercise the actual context filters and preserve each image's intended runtime sources. This uses the builder's matcher instead of another ignore parser."
+
+  - id: fork-flutter-native-identity
+    command: ["bash", "app/fork/test.sh"]
+    triggers: ["app/fork/**", "app/lib/**", "app/test/fork/**", "app/android/**", "app/pubspec.yaml", "app/pubspec.lock", "scripts/profiles/**", "scripts/brand/raster/**", "deploy/profiles/**", "brand/_schema/**", ".github/workflows/fork-checks.yml"]
+    lanes: ["local", "ci"]
+    reason: "The audited main stored a dev-issued JWT as a 24-hour mobile login and the generated fork profiles had no startup consumer. Execute the real opaque session owner, staged AuthService/401 behavior and both compiled Dart entrypoints; separately prove native APK/UI locally."
+
+  - id: fork-macos-native-identity
+    command: ["bash", "desktop/macos/fork/test.sh"]
+    triggers: ["backend/fork/model_contract.py", "desktop/macos/fork/**", "desktop/macos/Desktop/**", "deploy/profiles/**", "scripts/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
+    lanes: ["local", "ci"]
+    platforms: ["macos"]
+    reason: "The 2026-09-04 main audit B1 found custom bundles classified as production and sharing upstream storage; exercises staged identity behavior, opaque session/JWT/storage failures and reviewed Swift owner drift. This is a platform consumer contract, not another auth issuer."
+
+  - id: fork-macos-native-compile
+    command: ["bash", "desktop/macos/fork/compile.sh"]
+    triggers: ["backend/fork/model_contract.py", "desktop/macos/fork/**", "desktop/macos/Desktop/**", "deploy/profiles/**", "scripts/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
+    lanes: ["local", "ci"]
+    platforms: ["macos"]
+    reason: "The audit B1 native package replaces complete Swift app owners: leaf tests cannot prove those adapters compile into the real consumer. Execute the same staged debug build locally and on the existing fork CI macOS route; no additional auth policy or release pipeline is introduced."
+
+  - id: fork-ci-diff-base
+    command: ["bash", "-c", "python3 scripts/fork/test_ci_diff_base.py && python3 scripts/fork/test_release_prepare.py && python3 scripts/fork/test_release_ci.py && python3 scripts/fork/test_deploy_server.py && python3 scripts/fork/test_hosted_core.py && python3 scripts/fork/test_model_services.py"]
+    triggers: [".github/workflows/fork-*.yml", ".github/actions/fork-release-tools/**", ".github/checks-manifest.fork.yaml", "scripts/fork/**", "deploy/self-host/**", "contracts/deployment/core.py", "backend/fork/tests/**", "backend/tests/**"]
+    lanes: ["local", "ci"]
+    reason: "The advertised manual Fork Checks entry emitted an empty diff base because workflow_dispatch has no event.before; execute that exact shell in real Git fixtures for PR, push and manual events. This tests the workflow consumer rather than duplicating the shared manifest selector."
+
+  - id: fork-workflow-lint
+    command: ["actionlint", "-config-file", ".github/actionlint.fork.yaml", ".github/workflows/fork-checks.yml", ".github/workflows/fork-release-prepare.yml", ".github/workflows/fork-cd-cloudflare.yml", ".github/workflows/fork-cd-server.yml"]
+    triggers: [".github/workflows/fork-*.yml", ".github/actions/fork-release-tools/**", ".github/actionlint.fork.yaml"]
+    lanes: ["local", "ci"]
+    reason: "The fork CI and release preparation workflows use the existing actionlint grammar and shell checks on both local and CI lanes, as required by the workflow component guide."
+
+  - id: fork-deployment-settings
+    command: ["bash", "-c", "python3 scripts/fork/test_deployment_settings.py && python3 scripts/fork/check_deployment_settings.py --base \"$1\"", "--", "{base}"]
+    triggers: [".github/workflows/fork-*.yml", "config/deployment-setting-classification*.json", "scripts/fork/*deployment_settings.py"]
+    lanes: ["local", "ci"]
+    reason: "Reuse the existing deployment-secret-boundary checker with the fork's additive name-only classifications; upstream policy and source restrictions remain intact."
+
+  - id: fork-auth-contracts
+    command: ["bash", "scripts/fork/auth-contracts.sh"]
+    triggers: ["runtime/shared/**", "auth/**", "auth-server/**", "deploy/self-host/auth-runtime.mjs", "contracts/auth/**", "backend/utils/auth_shim.py", "backend/fork/auth_identity.py", "backend/fork/patches/auth.py", "backend/fork/provider_guard.py", "backend/fork/tests/test_auth_identity.py", "backend/fork/tests/test_auth_contract.py", "backend/tests/unit/test_auth_shim.py", "deploy/cloudflare/workers/auth/**", "deploy/cloudflare/tests/auth*.ts", "scripts/fork/auth-contracts.sh"]
+    lanes: ["local", "ci"]
+    reason: "Shared production claims/session contract catches wrong issuer/audience acceptance shipped in self-host PR #7 and prevents divergent Workers/PG JWT revocation behavior."
+
+  - id: fork-web-build-contracts
+    command: ["bash", "deploy/web/ci.sh"]
+    triggers: ["backend/fork/model_contract.py", "deploy/profiles/**", "deploy/web/**", "web/app/fork/**", "web/app/src/lib/fork/**", "web/app/src/components/fork/**", "web/app/scripts/copy-moonshine-assets.ts", "web/app/moonshine.config.ts", "scripts/profiles/**", "brand/_schema/**"]
+    lanes: ["local", "ci"]
+    reason: "the merged deployment scripts still requested removed Next/vinext outputs after upstream switched to Moonshine; a shared source-stage and profile boundary prevents fallback origins and duplicate runtime owners"
+
+  - id: fork-cloudflare-routes
+    command: ["bash", "deploy/cloudflare/ci/routes.sh"]
+    triggers: ["backend/utils/memory/rejected_memory_feedback.py", "backend/utils/memory/canonical_consolidation.py", "backend/fork/consolidation_admission.py", "backend/fork/tests/fixtures/qwen_duplicate_create.json", "runtime/shared/**", "deploy/cloudflare/**", "backend/main.py", "backend/routers/**", "backend/models/action_item.py", "backend/models/task_intelligence.py", "backend/models/screen_frame.py", "backend/models/frame_request.py", "backend/utils/retrieval/frame_request_policy.py", "backend/utils/retrieval/frame_request_storage.py", "backend/utils/jit_rollout.py", "backend/utils/screen_frames/**", "backend/scripts/export_openapi.py", "backend/scripts/openapi_runner.sh", "backend/openapi-requirements.txt"]
+    lanes: ["local", "ci"]
+    reason: "the merged M2 command invoked a removed upstream export surface, leaving 36 new route identities outside the inventory; exercise real FastAPI registrations and Core/Edge handlers before release"
+
+  - id: fork-web-client-contract
+    command: ["bash", "web/app/fork/test.sh"]
+    triggers: ["backend/fork/model_contract.py", "web/app/fork/**", "web/app/src/lib/fork/**", "web/app/src/components/fork/**", "web/app/src/hooks/useGeminiLive.ts", "web/app/src/components/home/HomePage.tsx", "scripts/profiles/**", "deploy/profiles/**"]
+    lanes: ["local", "ci"]
+    reason: "Executes the profile/session/realtime boundary missing from main at the 2026-09-04 audit: fork callers retained Firebase credentials and direct Gemini controls despite their selected capability policy."
+
   - id: fork-upstream-touch
     command: ["python3", "scripts/fork/check-upstream-touch.py", "--base", "{base}"]
     triggers: ["all"]
@@ -21,9 +106,15 @@ checks:
     lanes: ["local", "ci"]
     reason: "the guard is only a guard while its own refusals stay covered; its glob matcher already had a bug that let upstream tests through"
 
+  - id: fork-upstream-sync-plan-tests
+    command: ["python3", "scripts/fork/test_upstream_sync_plan.py"]
+    triggers: ["scripts/fork/upstream_sync_plan.py", "scripts/fork/test_upstream_sync_plan.py", ".github/workflows/fork-upstream-sync.yml"]
+    lanes: ["local", "ci"]
+    reason: "A weekly sync must measure its real merge conflicts without altering main or reusing rerere; a clean import must be able to open one regular merge PR, while a conflict must stop before any branch is pushed."
+
   - id: fork-profile-tables
     command: ["python3", "scripts/profiles/check_tables.py"]
-    triggers: ["deploy/profiles/**", "scripts/profiles/**", "app/lib/env/environment_profile.dart", "app/lib/env/fork/**", "desktop/macos/Desktop/Sources/Generated/**", "desktop/windows/src/shared/fork/**", "web/app/src/lib/fork/**", "backend/fork/deployment_profiles.generated.json"]
+    triggers: ["backend/fork/model_contract.py", "deploy/profiles/**", "scripts/profiles/**", "brand/**", "scripts/brand/**", "app/lib/env/environment_profile.dart", "app/lib/env/fork/**", "desktop/macos/Desktop/Sources/Generated/**", "desktop/windows/src/shared/fork/**", "web/app/src/lib/fork/**", "backend/fork/deployment_profiles.generated.json"]
     lanes: ["local", "ci"]
     reason: "one profile source drives four platforms; omi_cloud must still reproduce upstream's environment_profile.dart literals, so upstream retuning them fails here on the next sync instead of drifting silently"
 
@@ -35,12 +126,30 @@ checks:
 
   - id: fork-brand-tooling-tests
     command: ["python3", "scripts/brand/test_brand_tooling.py"]
-    triggers: ["brand/**", "scripts/brand/**"]
+    triggers: ["brand/**", "scripts/brand/**", "omi/firmware/fork/**"]
     lanes: ["local", "ci"]
     reason: "apply.py/check.py are the enforcement path for the trademark boundary between brands; a bug here is a leak or a false negative, not a cosmetic failure"
+
+  - id: fork-brand-raster
+    command: ["npm", "test", "--prefix", "scripts/brand/raster"]
+    triggers: ["scripts/brand/raster/**"]
+    lanes: ["local", "ci"]
+    reason: "The Electron white-label asset package originally owned the only PNG validator and fixture, leaving macOS and Flutter to diverge or retain copied Omi rasters. Exercise the shared bounded decoder and resize failure boundary before any platform generator consumes it."
 
   - id: fork-brand-upstream-clean
     command: ["python3", "scripts/brand/check.py", "--brand", "omi-upstream"]
     triggers: ["brand/**", "scripts/brand/**"]
     lanes: ["local", "ci"]
     reason: "apply.py --brand omi-upstream must stay a zero-diff no-op as generators land in B1-B7 -- this is the regression guarantee the design doc's B0 acceptance criteria names"
+
+  - id: fork-profile-boundary-tests
+    command: ["python3", "scripts/profiles/test_profiles.py"]
+    triggers: ["backend/fork/model_contract.py", "deploy/profiles/**", "scripts/profiles/**", "brand/**", "scripts/brand/**"]
+    lanes: ["local", "ci"]
+    reason: "2026-09-04 main audit E2 reproduced a schema-valid brand generating blank objects URLs and implicit auth routing; both target fixtures must exercise the same production renderer and all five output checks"
+
+  - id: fork-selfhost-startup
+    command: ["bash", "-c", "cd backend && tests=$(mktemp) && trap 'rm -f \"$tests\"' EXIT && printf '%s\\n' fork/tests/test_startup_contract.py fork/tests/test_memory_maintenance_worker.py fork/tests/test_consolidation_admission.py fork/tests/test_canonical_mutations.py fork/tests/test_memory_operation_clock.py fork/tests/test_finalization_queue.py fork/tests/test_queue_retries.py fork/tests/test_selfhost_config.py fork/tests/test_auth_consumers.py fork/tests/test_account_deletion.py fork/tests/test_vector_qdrant.py fork/tests/test_embedding.py fork/tests/test_local_llm.py fork/tests/test_model_tools.py fork/tests/test_speech_contract.py fork/tests/test_speech_transport.py fork/tests/test_disabled_capabilities.py fork/tests/test_minio_contract.py fork/tests/test_firmware.py fork/tests/test_storage_queue_adapters.py fork/tests/test_provider_guard.py fork/tests/test_pg_write_policy.py fork/tests/test_pg_owner_inventory.py fork/tests/test_pg_nested_transforms.py > \"$tests\" && BACKEND_UNIT_TEST_FILE_LIST=\"$tests\" bash test.sh"]
+    triggers: ["backend/fork/tests/test_storage_queue_adapters.py", "deploy/self-host/**", "backend/fork/**", "backend/requirements-fork.txt", "backend/utils/memory/canonical_memory_adapter.py", "backend/firestore_pg/**", "backend/utils/sensevoice/**", "backend/utils/cloud_tasks_redis.py", "backend/utils/cloud_tasks.py", "backend/utils/auth_shim.py", "backend/utils/other/endpoints.py", "backend/database/users.py", "backend/database/account_deletion_transitions.py", "backend/database/legal_holds.py", "backend/database/vector_db.py", "backend/utils/other/storage.py", "backend/Dockerfile", "backend/Dockerfile.dockerignore", "deploy/profiles/**", "scripts/profiles/**"]
+    lanes: ["local", "ci"]
+    reason: "fork PR #7 shipped a missing PG migration command and an ungenerated profile; prove source closure and fatal process admission through the real entrypoints; the same main audit reproduced PG deletion gaps, now guarded by transactional erasure/receipt behaviors"

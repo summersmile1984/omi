@@ -13,13 +13,10 @@ capabilities:
   marketplace_enabled: false       # first release ships curated integrations only
   model_downloads: false
   account_activation_fence: false
-  embedding_dims: 3072             # Qdrant has no dimension ceiling
   sync_upload_batch_limit: 5
   max_request_bytes: 0
-  push_provider: webhook
-  tts_provider: mimo
+  push_provider: disabled
   realtime_relay: operator
-  stt_providers: [operator_mimo, operator_moss, sensevoice_local]
 
 data_plane:
   store: firestore_pg
@@ -52,6 +49,42 @@ stages:
     auth_base_url: http://127.0.0.1:3000
     web_base_url: http://127.0.0.1:3001
     mcp_base_url: http://127.0.0.1:8100
-    share_base_url: http://127.0.0.1:8100
+    share_base_url: http://127.0.0.1:3001
     objects_base_url: http://127.0.0.1:9000
     auth_callback_scheme: "{scheme}-dev"
+
+# Public, reproducible reference model. Both profile capability and the runtime
+# migration derive dimension from this identity; endpoint/credentials stay env.
+embedding:
+  provider: ollama
+  model: bge-m3:latest
+  manifest_digest: sha256:7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab
+  artifact_digest: sha256:daec91ffb5dd0c27411bd71f29932917c49cf529a641d0168496c3a501e3062c
+  dimension: 1024
+  context_length: 8192
+
+# A separate admitted text model; its context/output limits belong to this row.
+llm:
+  provider: ollama
+  model: qwen3:1.7b
+  manifest_digest: sha256:8f68893c685c3ddff2aa3fffce2aa60a30bb2da65ca488b61fff134a4d1730e7
+  artifact_digest: sha256:3d0b790534fe4b79525fc3692950408dca41171676ed7e21db57af5c65ef6ab6
+  context_length: 40960
+  context_window: 8192
+  max_output_tokens: 2048
+  runtime_version: 0.33.3
+  kv_cache_type: q8_0
+  cpu_threads: 4
+  parallel_requests: 1
+  request_timeout_seconds: 300
+
+# One licensed, content-addressed CPU bundle; capabilities derive from it.
+# Omitting this bundle explicitly disables STT/TTS at their real consumers.
+speech:
+  runtime_version: 1.13.4
+  stt_model: sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17
+  tts_model: kokoro-multi-lang-v1_0
+  bundle_digest: sha256:75734cf4e9c25611e1c4676ce37b5946eb12fa22c03a41a794371cfea0031b0a
+  stt_archive_digest: sha256:7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e
+  tts_archive_digest: sha256:c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046
+  vad_digest: sha256:1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3

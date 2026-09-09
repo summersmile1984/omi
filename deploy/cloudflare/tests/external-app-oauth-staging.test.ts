@@ -484,7 +484,7 @@ describe("namespaced external app OAuth staging seam", () => {
     });
   });
 
-  it("checks setup completion, paid entitlement, and catalog revision CAS", async () => {
+  it("requires external setup completion before installing the app", async () => {
     const fetchImpl = vi.fn(async () =>
       Response.json({ is_setup_completed: false }),
     );
@@ -517,7 +517,9 @@ describe("namespaced external app OAuth staging seam", () => {
       "https://setup.example.test/status?uid=owner-1",
     );
     expect(setupInit).toMatchObject({ method: "GET", redirect: "error" });
+  });
 
+  it("requires a paid entitlement before installing a paid app", async () => {
     const paid = environment({
       app: { is_paid: true },
     });
@@ -534,7 +536,9 @@ describe("namespaced external app OAuth staging seam", () => {
     await expect(notEntitled.json()).resolves.toEqual({
       error: "external_app_not_entitled",
     });
+  });
 
+  it("rejects a changed catalog revision without installing the app", async () => {
     const changed = environment();
     const changedApp = testApp(changed.env, { now: () => NOW }, changed.uid);
     const changedStart = await authorize(changedApp, changed.appId);

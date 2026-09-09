@@ -1,7 +1,7 @@
 import type { Message } from "@cloudflare/workers-types";
 import type { Context, Hono } from "hono";
 import { createSignedAuthContext } from "../shared/auth-context";
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import type { JobMessage, JobsEnv } from "./env";
 
 const LEASE_SECONDS = 15 * 60;

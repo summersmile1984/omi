@@ -434,6 +434,7 @@ describe("SharedRateLimitDurableObject", () => {
       ],
       ["GET", "/v1/goals/suggest", "goals:suggest"],
       ["GET", "/v1/goals/advice", "goals:advice"],
+      ["POST", "/v1/users/desktop-usage/daily", "users:desktop_usage_daily"],
       ["GET", "/v1/goals/goal-1/advice", "goals:advice"],
       ["POST", "/v1/goals/extract-progress", "goals:extract"],
       ["POST", "/v3/memories", "memories:create"],

@@ -1,4 +1,28 @@
+> Current startup CLI: `python -m fork.migrate migrate|check` from `backend/`.
+> Schema v8 registers retained `frame_vision_receipts` for complete account export, including users with no frames. Schema v7 registers the feedback ledger and daily reports; v6 registers canonical-memory paths, including replacement privacy receipts; v5 registers backend onboarding admission; v4 registers legal-hold and deletion-gate authorities; v3 registers `chat_first_dead_letters`, `conversation_keyframe_jobs`,
+> and `frame_requests` without changing v1/v2 mappings. The historical source
+> import/cutover CLI below is not yet shipped on unified main; do not execute its
+> example until the source-freeze/authority tooling is restored and verified.
+
 # firestore_pg — PostgreSQL shim for `google.cloud.firestore`
+
+Nested write values are normalized before JSONB serialization. `set(merge=True)`
+walks map leaves, preserving siblings and treating a supplied empty map as a
+replacement. Nested keys are literal (including dots); the existing top-level
+dotted-path compatibility behavior is unchanged. `set` without merge, `create`
+and `update` materialize nested transforms with their replacement semantics.
+Delete markers require merge for set, are forbidden in create, and require an
+explicit top-level field path in update. Arrays cannot contain transform values.
+
+The existing `write_policy.policy.lock` and SQL transaction still own admission;
+this adds no second lock or retry policy. In self-host mode a contended document
+raises `ProviderOperationBusy`, including a not-yet-committed first usage row.
+Callers must handle that explicit rejection. `fork/tests/test_pg_nested_transforms.py`
+runs in the existing startup local/CI lane. The live suite
+`firestore_pg/tests/test_deletion_write_fence.py` additionally exercises actual
+LLM/question usage owners and a first-use conflict followed by an explicit retry.
+See the recorded incident and verification in
+`../../dev/unified-main/implementation-2026-09-04/PG-nested-usage-verification.md`.
 
 A drop-in replacement for the Google Cloud Firestore client that backs the Omi
 backend's `database/*.py` modules against PostgreSQL instead of Firestore. The
@@ -30,13 +54,13 @@ not reimplement still resolve.
 ```
 
 The shim is a plain package inside the repo (`firestore_pg/`); it needs
-`sqlalchemy` and `psycopg[binary]` (already in the backend lock).
+`sqlalchemy` from upstream and the fork-owned `psycopg`/`psycopg-binary` wheels in `../requirements-fork.txt`.
 
 ## Running
 
-Set `FIRESTORE_PG_DSN` to a SQLAlchemy PostgreSQL URL. When it is set,
-`database/__init__.py` calls `firestore_pg.compat.install()` before any
-`database.*` module imports the SDK, so business code resolves to the shim.
+Set `FIRESTORE_PG_DSN` to a SQLAlchemy PostgreSQL URL. The self-host
+`fork.bootstrap.bootstrap()` entrypoint calls `firestore_pg.compat.install()` before
+it imports any upstream database module, so business code resolves to the shim.
 
 ```bash
 export FIRESTORE_PG_DSN="postgresql+psycopg://omi:omi-dev-password@localhost:5434/omi"
@@ -45,7 +69,7 @@ export FIREBASE_AUTH_EMULATOR_HOST=localhost:9099
 export STORAGE_EMULATOR_HOST=localhost:9199
 export FIREBASE_PROJECT_ID=demo-omi-local
 export ENCRYPTION_SECRET='...'                        # 32-byte base64 dev secret
-uvicorn main:app --host 127.0.0.1 --port 8100
+uvicorn fork.main:app --host 127.0.0.1 --port 8100
 ```
 
 Schema is owned by the forward-only migration CLI; runtime clients never create
@@ -53,8 +77,8 @@ tables or indexes. Run migration and its read-only admission check before any
 backend or worker process:
 
 ```bash
-python scripts/firestore_pg_migrate.py migrate
-python scripts/firestore_pg_migrate.py check
+python -m fork.migrate migrate
+python -m fork.migrate check
 ```
 
 The migration uses a PostgreSQL advisory transaction lock and records every
@@ -159,7 +183,8 @@ it, and start the backend.
 
 ## Verification
 
-- **Shadow diff (regression lane)** — `dev/shadow-diff.sh` (or `make dev-shadow-diff`)
+- **Shadow diff (regression lane)** — `dev/shadow-diff.sh` (or
+  `make -f Makefile.fork dev-shadow-diff`)
   runs the same scenario sequence against the real SDK (emulator) and the shim
   (PG) and diffs normalized JSON; exits 1 on mismatch. 29 scenarios cover CRUD,
   merge, update, delete, `==`/comparison/`in` queries, order+limit, dotted-path
@@ -245,3 +270,93 @@ reconciles count/content hashes, then runs the live PG suite and 29-scenario
 emulator shadow diff. Production enablement still requires the repository-wide
 deployment gate, backups, live source freeze, and rollback—not merely setting
 `FIRESTORE_PG_DSN` on one process.
+
+
+## Self-hosted account deletion
+
+`fork.patches.account_deletion` attaches the upstream worker's existing database
+seams to `fork.account_deletion`. `firestore_pg.erasure` deletes registered
+`users/<uid>` namespaces (including orphaned descendants), the root user row,
+and top-level rows whose explicit `uid` or `user_uid` owns them. Conflicting
+owner fields fail before any deletion; document IDs own `users` rows. The
+entire erasure uses one database transaction. It does not infer ownership from
+arbitrary field names, provider identifiers, object keys or Auth SQL tables.
+
+Top-level `account_deletions`, `account_deletion_receipts`, `legal_holds` and
+`legal_hold_deletion_gates` are control authorities and survive the row wipe.
+Schema v4 provisions the legal-hold collections used by upstream dynamic paths,
+without changing any v1–v3 mapping. The upstream worker finishes its legal-hold
+lease after receipt publication; these control records have a separate
+retention policy and are not a claim that every UID has disappeared from PG.
+
+Schema v5 additionally registers the authenticated backend's dynamic
+`users/<uid>/onboarding_admission/current` path. Run the migration before serving
+the new runtime; v1–v4 ledger records and physical mappings stay unchanged.
+This supports the existing server-issued onboarding admission and does not
+weaken its completion, expiry or caller-identity checks. The shared strict
+schema fixture in `fork/tests/schema_firestore.py` exercises the real onboarding
+and legal-hold owners against the admitted inventory in the startup CI lane.
+It catches required dynamic paths that a literal `.collection()` scan misses.
+
+Schema v6 freezes the collection IDs reached through
+`database.memory_collections.MemoryCollections`, including the canonical
+replacement privacy receipts. It preserves v1–v5 physical mappings and fails
+startup when a future typed memory path is not covered by a new explicit schema
+version. The live PostgreSQL transaction suite verifies both a v5→v6 upgrade
+and a real source-replacement transaction after migration.
+
+Schema v7 registers `feedback_events` and `feedback_reports` for the upstream
+rating ledger and daily report owner. It also creates the registered composite
+index for the negative-feedback daily scan, preserving all v1–v6 mappings.
+
+Completion requires no residual owned rows and no outstanding late VM cleanup.
+One serializable transaction replaces the private UID-keyed active marker with
+an HMAC-keyed receipt containing only schema version, status, opaque job ID and
+time. Retryable late provider cleanup can reopen a minimal active marker with
+the same job ID. Status, task resolution and stale mutation paths consume that
+same authority; a receipt never restores account access. Legacy principals with
+no marker/receipt remain admissible, and legacy running markers without job IDs
+receive a generated opaque ID when completed. Malformed receipts fail closed.
+
+The self-host registry also binds `write_policy.WritePolicy` to
+`fork.pg_write_policy.TerminalReceiptWrites`. Every facade set/create/update,
+including transforms, transactions and batches, checks the existing and proposed
+owner before SQL effects. Root users, nested user namespaces and top-level
+`uid`/`user_uid` follow the erasure ownership rules; changing/removing metadata
+cannot conceal a completed former owner. Only the exact four root control
+collections are exempt. Unknown/ambiguous owner identities fail closed.
+
+Document and account advisory locks belong to the actual SQL transaction and
+last through commit. A wipe remains exclusive; a busy writer/wipe must retry.
+The existing worker mutates control records and deletes product rows while its
+lease is held; the guard adds no privileged path for recreating product data.
+This is terminal-receipt admission, not a new active-deletion lifecycle. Existing
+active-marker/API/provider admission policies still apply. Ordinary shim mode
+without the self-host registry retains its existing PostgreSQL behavior.
+
+`fork.deletion_read` reads the same marker/receipt tables through a separate,
+bounded two-connection pool to the primary engine's exact URL. Its single
+read-only READ COMMITTED query cannot inherit a caller's old SERIALIZABLE
+snapshot or wait for a free writer-pool connection. Pool/connect waits and the
+server statement have two-second limits; this is not an absolute network
+deadline. External provider fences use this fresh view before the call. An
+ambient SQL writer lends its existing account lock until commit; a wipe cannot
+start inside an older SQL transaction. Database connection loss and an unknown
+external provider result still do not constitute a distributed transaction.
+
+Receipt HMACs domain-separate the deployment's `ENCRYPTION_SECRET` (at least 32
+bytes). Preserve this key: changing it without an explicit receipt/data
+migration makes existing receipt identities unresolvable. Key rotation is not
+implemented by changing the environment variable.
+
+Hermetic guards: `fork/tests/test_account_deletion.py` (the existing fork startup
+local/CI check includes it). Live guards: `firestore_pg/tests/test_transaction_semantics.py`
+with a disposable `FIRESTORE_PG_DSN`. The live worker test isolates external
+providers; production Better Auth deletion, vector/object purge, backups and
+provider races require their own contracts before full account-deletion signoff.
+The startup local/CI lane also runs `fork/tests/test_pg_write_policy.py`.
+Run `firestore_pg/tests/test_deletion_write_fence.py` on disposable PostgreSQL
+for the actual snapshot, commit-lock, batch rollback, writer-pool saturation
+and existing deletion-worker contracts; it is deliberately not a hermetic CI
+claim. The [verification record](../../dev/unified-main/implementation-2026-09-04/SH2-pg-write-fence-verification.md)
+separates local/image evidence from full account/provider erasure acceptance.

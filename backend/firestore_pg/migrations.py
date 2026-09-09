@@ -20,11 +20,12 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from database.firestore_index_registry import INDEX_REQUIREMENTS
+from database.memory_collections import MemoryCollections
 
 from .engine import KNOWN_COLLECTIONS, create_composite_indexes, get_engine
 from .sql import build_ddl, resolve_collection
 
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 9
 MIGRATION_LOCK_ID = 7_362_737_641_104_927_311
 MIGRATION_TABLE = 'firestore_pg_schema_migrations'
 COLLECTION_TABLE = 'firestore_pg_collections'
@@ -186,6 +187,52 @@ STATIC_HASHED_COLLECTION_IDS_V2 = frozenset(
 )
 
 
+# Schema v3 records collections introduced by the upstream frame-request and
+# chat-first workflows. Keep v1/v2 frozen so existing physical mappings survive.
+STATIC_HASHED_COLLECTION_IDS_V3 = frozenset({'chat_first_dead_letters', 'conversation_keyframe_jobs', 'frame_requests'})
+
+
+# The upstream legal-hold owner uses dynamic document paths, invisible to literal collection scans.
+STATIC_HASHED_COLLECTION_IDS_V4 = frozenset({'legal_holds', 'legal_hold_deletion_gates'})
+
+# The authenticated onboarding owner also resolves a dynamic document path.
+STATIC_HASHED_COLLECTION_IDS_V5 = frozenset({'onboarding_admission'})
+
+# Canonical memory owners resolve per-user collection paths through
+# ``MemoryCollections``.  These IDs were not present in the earlier literal
+# inventory, so v6 freezes their existing hashed mappings before runtime
+# replacement transactions can touch them.
+STATIC_HASHED_COLLECTION_IDS_V6 = frozenset(
+    {
+        'daily_memory_sweep_daily_summary_staged',
+        'daily_memory_sweep_model_invocations',
+        'daily_memory_sweep_onboarding_sources',
+        'daily_memory_sweep_onboarding_staged',
+        'daily_memory_sweep_receipts',
+        'daily_memory_sweep_sources',
+        'jit_proactivity_candidate_turns',
+        'jit_proactivity_daily_budgets',
+        'jit_proactivity_events',
+        'jit_trigger_feedback',
+        'memory_deletion_receipts',
+        'memory_ledger_reopens',
+    }
+)
+
+# The upstream feedback ledger writes both append-only rating events and its
+# materialized daily reports at top-level paths.  Version them together so a
+# self-hosted runtime cannot accept a rating and then fail the report owner on
+# an unregistered collection.
+STATIC_HASHED_COLLECTION_IDS_V7 = frozenset({'feedback_events', 'feedback_reports'})
+
+# Portability export queries retained vision receipts even for legacy users
+# with no frames. Its empty reads require explicit schema ownership too.
+STATIC_HASHED_COLLECTION_IDS_V8 = frozenset({'frame_vision_receipts'})
+
+# CSAT's singleton/read and create-only per-platform ratings resolve collection constants.
+STATIC_HASHED_COLLECTION_IDS_V9 = frozenset({'csat_config', 'csat_ratings'})
+
+
 class SchemaNotCurrent(RuntimeError):
     """The database has not been admitted by the explicit migration owner."""
 
@@ -204,11 +251,26 @@ _verified_tables_lock = threading.Lock()
 def _declared_known_collections() -> set[str]:
     names = set(KNOWN_COLLECTIONS)
     names.update(req.collection_group for req in INDEX_REQUIREMENTS)
+    names.update(
+        segment
+        for path in MemoryCollections(uid='inventory').all_collection_paths()
+        for segment in path.split('/')[::2]
+    )
     return names
 
 
 def _assert_known_inventory_versioned() -> None:
-    versioned = LEGACY_RAW_COLLECTION_IDS_V1 | STATIC_HASHED_COLLECTION_IDS_V2
+    versioned = (
+        LEGACY_RAW_COLLECTION_IDS_V1
+        | STATIC_HASHED_COLLECTION_IDS_V2
+        | STATIC_HASHED_COLLECTION_IDS_V3
+        | STATIC_HASHED_COLLECTION_IDS_V4
+        | STATIC_HASHED_COLLECTION_IDS_V5
+        | STATIC_HASHED_COLLECTION_IDS_V6
+        | STATIC_HASHED_COLLECTION_IDS_V7
+        | STATIC_HASHED_COLLECTION_IDS_V8
+        | STATIC_HASHED_COLLECTION_IDS_V9
+    )
     declared = _declared_known_collections()
     added = declared - versioned
     if added:
@@ -226,7 +288,19 @@ def _assert_known_inventory_versioned() -> None:
 def known_collections() -> tuple[str, ...]:
     """Return every frozen statically-known production collection ID."""
     _assert_known_inventory_versioned()
-    return tuple(sorted(LEGACY_RAW_COLLECTION_IDS_V1 | STATIC_HASHED_COLLECTION_IDS_V2))
+    return tuple(
+        sorted(
+            LEGACY_RAW_COLLECTION_IDS_V1
+            | STATIC_HASHED_COLLECTION_IDS_V2
+            | STATIC_HASHED_COLLECTION_IDS_V3
+            | STATIC_HASHED_COLLECTION_IDS_V4
+            | STATIC_HASHED_COLLECTION_IDS_V5
+            | STATIC_HASHED_COLLECTION_IDS_V6
+            | STATIC_HASHED_COLLECTION_IDS_V7
+            | STATIC_HASHED_COLLECTION_IDS_V8
+            | STATIC_HASHED_COLLECTION_IDS_V9
+        )
+    )
 
 
 def validate_collection_id(collection_id: Any) -> str:
@@ -334,6 +408,12 @@ def _apply_v2(conn: Connection) -> None:
     create_composite_indexes(conn, collection_table_name)
 
 
+def _apply_v3(conn: Connection) -> None:
+    for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V3):
+        _register_collection(conn, collection_id)
+    create_composite_indexes(conn, collection_table_name)
+
+
 def migrate(engine: Optional[Engine] = None) -> SchemaStatus:
     """Apply every unapplied forward migration under one advisory lock."""
     _assert_known_inventory_versioned()
@@ -359,6 +439,55 @@ def migrate(engine: Optional[Engine] = None) -> SchemaStatus:
                 text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (2, :name)'),
                 {'name': 'production_static_collection_inventory'},
             )
+        if 3 not in applied:
+            _apply_v3(conn)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (3, :name)'),
+                {'name': 'frame_requests_and_chat_first_dead_letters'},
+            )
+        if 4 not in applied:
+            for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V4):
+                _register_collection(conn, collection_id)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (4, :name)'),
+                {'name': 'account_deletion_legal_hold_authorities'},
+            )
+        if 5 not in applied:
+            for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V5):
+                _register_collection(conn, collection_id)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (5, :name)'),
+                {'name': 'backend_onboarding_admission_authority'},
+            )
+        if 6 not in applied:
+            for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V6):
+                _register_collection(conn, collection_id)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (6, :name)'),
+                {'name': 'canonical_memory_collection_inventory'},
+            )
+        if 7 not in applied:
+            for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V7):
+                _register_collection(conn, collection_id)
+            create_composite_indexes(conn, collection_table_name)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (7, :name)'),
+                {'name': 'feedback_ledger_and_daily_reports'},
+            )
+        if 8 not in applied:
+            for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V8):
+                _register_collection(conn, collection_id)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (8, :name)'),
+                {'name': 'retained_frame_vision_receipts'},
+            )
+        if 9 not in applied:
+            for collection_id in sorted(STATIC_HASHED_COLLECTION_IDS_V9):
+                _register_collection(conn, collection_id)
+            conn.execute(
+                text(f'INSERT INTO {MIGRATION_TABLE} (version, name) VALUES (9, :name)'),
+                {'name': 'product_csat_config_and_ratings'},
+            )
     return check_schema(engine)
 
 
@@ -371,9 +500,7 @@ def provision_collections(collection_ids: Iterable[str], engine: Optional[Engine
         _bootstrap_ledger(conn)
         version = conn.execute(text(f'SELECT max(version) FROM {MIGRATION_TABLE}')).scalar()
         if int(version or 0) != LATEST_SCHEMA_VERSION:
-            raise SchemaNotCurrent(
-                'run `python scripts/firestore_pg_migrate.py migrate` before provisioning collections'
-            )
+            raise SchemaNotCurrent('run `python -m fork.migrate migrate` before provisioning collections')
         registered_tables = {
             str(row[0]) for row in conn.execute(text(f'SELECT table_name FROM {COLLECTION_TABLE}')).fetchall()
         }

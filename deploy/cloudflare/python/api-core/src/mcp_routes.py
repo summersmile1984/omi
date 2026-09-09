@@ -19,11 +19,15 @@ import re
 import time
 import uuid
 
+from memory_privacy_delete import MemoryNotFound, delete_selected_memories
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from memory_mutation_errors import memory_mutation_error
 from pydantic import BaseModel, Field, ValidationError
 
-from account_routes import usage_source_statement
+from memory_external_intake import create_external_memories
+from memory_kernel_intake import document_id_from_seed
+from memory_apply_edit import edit_native_memory
 from action_item_routes import _response as action_item_response
 from conversation_routes import (
     MAX_JSON_BYTES as MAX_CONVERSATION_JSON_BYTES,
@@ -39,7 +43,8 @@ from goal_routes import _SELECT as GOAL_SELECT
 from goal_routes import _response as goal_response
 from integration_routes import _json_schema, _workers_ai_json
 from internal_auth import create_request_context
-from memory_routes import MemoryCreate, _SELECT as MEMORY_SELECT
+from memory_routes import MemoryCreate, _SELECT as MEMORY_SELECT, _batch_row
+from memory_vector_hydration import hydrate_memory_vectors
 from vector_search import (
     embed_query,
     hydrate_candidate_ids,
@@ -561,10 +566,6 @@ async def _memory_category(env: object, content: str) -> str:
     return "system"
 
 
-def _memory_id(content: str) -> str:
-    return str(uuid.UUID(bytes=hashlib.sha256(content.encode()).digest()[:16], version=4))
-
-
 def _memory_score(category: str, created_at: int) -> str:
     category_boost = 1 if category == "interesting" else 0
     return "{:02d}_{:02d}_{:010d}".format(1, 999 - category_boost, created_at)
@@ -621,72 +622,18 @@ async def create_memory(request: Request):
     env = request.scope["env"]
     category = await _memory_category(env, memory.content)
     now = int(time.time())
-    memory_id = _memory_id(memory.content)
+    row = _batch_row(principal.uid, document_id_from_seed(memory.content), memory, now)
+    row.update(category=category, reviewed=1, user_review=1, manually_added=1, scoring=_memory_score(category, now))
     try:
-        statement = env.APP_DB.prepare(
-            "INSERT INTO cf_memories "
-            "(uid, id, content, category, visibility, tags_json, headline, predicate, arguments_json, "
-            "subject_entity_id, subject_attribution, object_entity_ids_json, qualifiers_json, capture_confidence, "
-            "veracity, uncertainty_reasons_json, durability, reviewed, user_review, manually_added, scoring, "
-            "memory_tier, valid_at, created_at, updated_at, deleted_at, invalid_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, ?, 'long_term', ?, ?, ?, NULL, NULL) "
-            "ON CONFLICT(uid, id) DO UPDATE SET content = excluded.content, category = excluded.category, "
-            "visibility = excluded.visibility, tags_json = excluded.tags_json, headline = excluded.headline, "
-            "predicate = excluded.predicate, arguments_json = excluded.arguments_json, "
-            "subject_entity_id = excluded.subject_entity_id, subject_attribution = excluded.subject_attribution, "
-            "object_entity_ids_json = excluded.object_entity_ids_json, qualifiers_json = excluded.qualifiers_json, "
-            "capture_confidence = excluded.capture_confidence, veracity = excluded.veracity, "
-            "uncertainty_reasons_json = excluded.uncertainty_reasons_json, durability = excluded.durability, "
-            "reviewed = 1, user_review = 1, manually_added = 1, scoring = excluded.scoring, "
-            "memory_tier = 'long_term', valid_at = excluded.valid_at, updated_at = excluded.updated_at, "
-            "deleted_at = NULL, invalid_at = NULL"
-        ).bind(
-            principal.uid,
-            memory_id,
-            memory.content,
-            category,
-            memory.visibility,
-            json.dumps(memory.tags, ensure_ascii=False, separators=(",", ":")),
-            memory.headline,
-            memory.predicate,
-            json.dumps(memory.arguments, ensure_ascii=False, separators=(",", ":")),
-            memory.subject_entity_id,
-            memory.subject_attribution,
-            json.dumps(memory.object_entity_ids, ensure_ascii=False, separators=(",", ":")),
-            json.dumps(memory.qualifiers, ensure_ascii=False, separators=(",", ":")),
-            memory.capture_confidence,
-            memory.veracity,
-            json.dumps(memory.uncertainty_reasons, ensure_ascii=False, separators=(",", ":")),
-            memory.durability,
-            _memory_score(category, now),
-            now,
-            now,
-            now,
-        )
-        usage = usage_source_statement(
-            env,
-            uid=principal.uid,
-            source_kind="memory",
-            source_id=memory_id,
-            occurred_at=now,
-            memories_created=1,
-            updated_at=now,
-        )
-        projection = vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="memory",
-            source_id=memory_id,
-            desired_version=now,
-            operation="upsert",
-        )
-        await env.APP_DB.batch([statement, usage, projection])
+        stored = (await create_external_memories(env, principal.uid, [row], source_surface='mcp'))[0]
+        response = {
+            name: json.loads(stored[name + '_json']) if name + '_json' in stored else stored[name]
+            for name in MemoryCreate.model_fields
+            if name in stored or name + '_json' in stored
+        }
+        return MemoryCreate.model_validate(response).model_dump(mode='json')
     except Exception:
         return _error("memories unavailable", 503)
-    await publish_vector_projection(env, uid=principal.uid, source_kind="memory", source_id=memory_id)
-    response = memory.model_dump(mode="json")
-    response["category"] = category
-    return response
 
 
 @router.delete("/v1/mcp/memories/{memory_id}")
@@ -699,32 +646,12 @@ async def delete_memory(request: Request, memory_id: str):
     assert principal is not None
     env = request.scope["env"]
     try:
-        row = (
-            await env.APP_DB.prepare(
-                "SELECT id FROM cf_memories WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-            )
-            .bind(principal.uid, memory_id)
-            .first()
-        )
-        if not isinstance(row, dict):
-            return _detail("Memory not found", 404)
-        now = int(time.time())
-        update = env.APP_DB.prepare(
-            "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(now, now, principal.uid, memory_id)
-        projection = vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="memory",
-            source_id=memory_id,
-            desired_version=now,
-            operation="delete",
-        )
-        await env.APP_DB.batch([update, projection])
+        if not await delete_selected_memories(env, principal.uid, [memory_id]):
+            return JSONResponse({"error": "memory_cleanup_pending"}, status_code=503, headers={"retry-after": "2"})
+    except MemoryNotFound:
+        return _detail("Memory not found", 404)
     except Exception:
         return _error("memories unavailable", 503)
-    await publish_vector_projection(env, uid=principal.uid, source_kind="memory", source_id=memory_id)
     return {"status": "ok"}
 
 
@@ -739,32 +666,10 @@ async def edit_memory(request: Request, memory_id: str):
     assert principal is not None
     env = request.scope["env"]
     try:
-        row = (
-            await env.APP_DB.prepare(
-                "SELECT id FROM cf_memories WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-            )
-            .bind(principal.uid, memory_id)
-            .first()
-        )
-        if not isinstance(row, dict):
+        if not await edit_native_memory(env, principal.uid, memory_id, value, int(time.time())):
             return _detail("Memory not found", 404)
-        now = int(time.time())
-        update = env.APP_DB.prepare(
-            "UPDATE cf_memories SET content = ?, edited = 1, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(value.strip(), now, principal.uid, memory_id)
-        projection = vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="memory",
-            source_id=memory_id,
-            desired_version=now,
-            operation="upsert",
-        )
-        await env.APP_DB.batch([update, projection])
-    except Exception:
-        return _error("memories unavailable", 503)
-    await publish_vector_projection(env, uid=principal.uid, source_kind="memory", source_id=memory_id)
+    except Exception as error:
+        return memory_mutation_error(error, key="detail")
     return {"status": "ok"}
 
 
@@ -890,20 +795,13 @@ async def search_memories(request: Request):
             vector,
             top_k=min(int(limit) * 3, 60),
         )
-        candidates = await hydrate_candidate_ids(env, principal.uid, "memory", matches)
-        rows = await _rows_for_ids(
-            env,
-            MEMORY_SELECT,
-            principal.uid,
-            [source_id for source_id, _ in candidates],
-            "AND deleted_at IS NULL AND invalid_at IS NULL AND memory_tier != 'archive' "
-            "AND COALESCE(user_review, 1) != 0 AND is_locked = 0",
-        )
+        hydration = await hydrate_memory_vectors(env, principal.uid, matches)
+        rows = hydration.rows
     except ValueError as error:
         return _detail(str(error), 422)
     except Exception:
         return _error("memory search unavailable", 503)
-    score_by_id = dict(candidates)
+    score_by_id = hydration.scores
     return [
         {
             "id": str(row.get("id") or ""),
@@ -993,9 +891,9 @@ async def search_x_posts(request: Request):
         return _error("X post search unavailable", 503)
     score_by_id = dict(candidates)
     return {
-        "posts": [
-            _x_post_output(row, score=float(score_by_id.get(str(row.get("id") or ""), 0.0))) for row in rows
-        ][: int(limit)]
+        "posts": [_x_post_output(row, score=float(score_by_id.get(str(row.get("id") or ""), 0.0))) for row in rows][
+            : int(limit)
+        ]
     }
 
 

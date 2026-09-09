@@ -7,6 +7,7 @@ keeps its file.
 
 from __future__ import annotations
 
+from functools import wraps
 from typing import Any, Callable, List
 
 from ..registry import Patch
@@ -20,7 +21,6 @@ ENQUEUE_SEAMS = (
     "enqueue_sync_job",
     "enqueue_audio_merge_job",
     "enqueue_account_deletion_wipe",
-    "enqueue_listen_finalization_job",
 )
 
 
@@ -42,14 +42,119 @@ def _redis_enqueue(fork_function_name: str) -> Callable[[Any], Any]:
 
 
 def patches() -> List[Patch]:
+    return (
+        [
+            Patch(
+                name=f"queue.{name}",
+                module="utils.cloud_tasks",
+                attribute=name,
+                build=_redis_enqueue(name),
+                applies_to=_uses_redis_queue,
+                reason="operator-run deployments have no Cloud Tasks; the Redis worker takes the same payloads",
+            )
+            for name in ENQUEUE_SEAMS
+        ]
+        + _authentication_patches()
+        + _finalization_patches()
+    )
+
+
+def _redis_worker_verifier(original: Callable[..., Any]) -> Callable[..., Any]:
+    verify = _route_worker_auth(original)
+
+    from fastapi import Request
+
+    @wraps(original)
+    def route(request: Request) -> int:
+        return verify(request)
+
+    return route
+
+
+def _redis_account_deletion_verifier(original: Callable[..., Any]) -> Callable[..., Any]:
+    verify = _route_worker_auth(original)
+
+    from fastapi import Request
+
+    @wraps(original)
+    def route(request: Request) -> Any:
+        from utils.cloud_tasks import AccountDeletionTaskAuthentication
+
+        return AccountDeletionTaskAuthentication(retry_count=verify(request), audience='account_deletion')
+
+    return route
+
+
+def _authentication_patches() -> List[Patch]:
+    targets = (
+        ('verify_cloud_tasks_oidc', _redis_worker_verifier),
+        ('verify_account_deletion_cloud_tasks_oidc', _redis_account_deletion_verifier),
+        ('verify_listen_finalization_cloud_tasks_oidc', _redis_worker_verifier),
+    )
     return [
         Patch(
-            name=f"queue.{name}",
-            module="utils.cloud_tasks",
+            name='queue.' + name,
+            module='utils.cloud_tasks',
             attribute=name,
-            build=_redis_enqueue(name),
+            build=build,
             applies_to=_uses_redis_queue,
-            reason="operator-run deployments have no Cloud Tasks; the Redis worker takes the same payloads",
+            reason='Redis workers authenticate by route-scoped secret rather than Cloud Tasks OIDC',
         )
-        for name in ENQUEUE_SEAMS
+        for name, build in targets
     ]
+
+
+def _finalization_patches():
+    from .. import finalization_queue as owner
+    from utils.cloud_tasks_redis import enqueue_listen_finalization_job
+
+    targets = [
+        ("utils.cloud_tasks", "enqueue_listen_finalization_job", enqueue_listen_finalization_job),
+        ("utils.cloud_tasks", "is_listen_finalization_dispatch_enabled", owner.enabled),
+        ("utils.cloud_tasks", "is_listen_finalization_dispatch_configured", owner.configured),
+        ("utils.conversations.lifecycle", "enqueue_listen_finalization_job", enqueue_listen_finalization_job),
+        ("utils.conversations.lifecycle", "is_listen_finalization_dispatch_enabled", owner.enabled),
+        ("utils.conversations.lifecycle", "is_listen_finalization_dispatch_configured", owner.configured),
+        ("services.conversation_finalization", "enqueue_listen_finalization_job", enqueue_listen_finalization_job),
+        ("services.conversation_finalization", "is_listen_finalization_dispatch_enabled", owner.enabled),
+        ("routers.listen.conversations", "is_listen_finalization_dispatch_enabled", owner.enabled),
+    ]
+    return [
+        Patch(
+            name="queue.finalization." + module + "." + attribute,
+            module=module,
+            attribute=attribute,
+            build=lambda _, function=function: function,
+            applies_to=_uses_redis_queue,
+            reason="Redis dispatch admission and replay use the existing PG outbox/lease authority",
+        )
+        for module, attribute, function in targets
+    ]
+
+
+def _route_worker_auth(original: Callable[..., Any]) -> Callable[..., Any]:
+    def verify(request: Any) -> int:
+        import os
+        import secrets
+
+        from fastapi import HTTPException
+
+        from ..queue_config import QUEUES
+
+        queue = next((q for q in QUEUES if q.path == request.url.path), None)
+        expected = os.environ.get(queue.secret_env, '') if queue is not None else ''
+        presented = request.headers.get('x-omi-queue-secret', '')
+        if len(expected) < 32 or not secrets.compare_digest(expected.encode(), presented.encode()):
+            raise HTTPException(status_code=403, detail='Invalid Redis worker secret')
+        # Only the authenticated, route-scoped worker may supply delivery state.
+        # Existing queued envelopes/worker requests without a count start at zero.
+        values = request.headers.getlist('x-omi-queue-retry-count')
+        raw = values[0] if values else '0'
+        if len(values) > 1 or not raw.isascii() or not raw.isdecimal() or len(raw) > 3:
+            raise HTTPException(status_code=400, detail='Invalid Redis delivery attempt')
+        retry_count = int(raw)
+        if retry_count >= queue.max_attempts():
+            raise HTTPException(status_code=400, detail='Redis delivery attempt exceeds its queue budget')
+        return retry_count
+
+    return verify

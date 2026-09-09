@@ -1,3 +1,7 @@
+import {
+  cleanupFramePixels,
+  framePixelResidual,
+} from "./frame-request-storage";
 import type { Context, Hono } from "hono";
 import type { SignedAuthContext } from "../shared/auth-context";
 import {
@@ -5,7 +9,7 @@ import {
   AUTH_SIGNATURE_HEADER,
   createSignedAuthContext,
 } from "../shared/auth-context";
-import { recordFallback } from "../shared/fallback";
+import { recordFallback } from "../../../../runtime/shared/fallback.mjs";
 import {
   ACCOUNT_DELETION_CONVERSATION_RECORDING_PREFIX_PATTERNS,
   ACCOUNT_DELETION_CHAT_FILES_PREFIX_PATTERNS,
@@ -27,6 +31,7 @@ import {
   stripeSecretKey,
 } from "./stripe-client";
 import { purgeAccountVectorProjections } from "./vector-projection";
+import { screenFrameStorageState } from "./screen-frame-storage";
 import { isolatedCutoverManifestId } from "./cutover-manifest";
 
 const MAX_REQUEST_BODY_BYTES = 4_096;
@@ -102,7 +107,7 @@ function optionalString(value: unknown, label: string): string | null {
 }
 
 function accountDeletionIntent(
-  row: AccountDeletionIntent,
+  row: AccountDeletionIntent
 ): ParsedAccountDeletionIntent {
   if (!validAccountDeletionUid(String(row.uid || ""))) {
     throw new Error("invalid account deletion uid");
@@ -145,12 +150,12 @@ function accountDeletionMessage(jobId: string): JobMessage {
 async function queueAccountDeletion(
   env: JobsEnv,
   jobId: string,
-  delaySeconds = 0,
+  delaySeconds = 0
 ): Promise<boolean> {
   try {
     await env.JOBS.send(
       accountDeletionMessage(jobId),
-      delaySeconds > 0 ? { delaySeconds } : undefined,
+      delaySeconds > 0 ? { delaySeconds } : undefined
     );
     return true;
   } catch {
@@ -199,7 +204,7 @@ async function readBoundedRequestBody(request: Request): Promise<string> {
 function boundedFeedbackString(
   value: unknown,
   maximum: number,
-  label: string,
+  label: string
 ): string | null {
   if (value === undefined || value === null || value === "") return null;
   if (typeof value !== "string" || value.length > maximum) {
@@ -209,7 +214,7 @@ function boundedFeedbackString(
 }
 
 async function accountDeletionFeedback(
-  request: Request,
+  request: Request
 ): Promise<AccountDeletionFeedback> {
   const raw = await readBoundedRequestBody(request);
   if (!raw.trim()) return { reason: null, reasonDetails: null };
@@ -228,7 +233,7 @@ async function accountDeletionFeedback(
     reasonDetails: boundedFeedbackString(
       object.reason_details,
       2_000,
-      "reason details",
+      "reason details"
     ),
   };
 }
@@ -236,7 +241,7 @@ async function accountDeletionFeedback(
 async function assertCloudflareOwnedAccount(env: JobsEnv, uid: string) {
   const row = await env.APP_DB.prepare(
     `SELECT state, checkpoint_phase, manifest_id, destination_backend_bound
-     FROM cf_account_cutover WHERE uid = ?`,
+     FROM cf_account_cutover WHERE uid = ?`
   )
     .bind(uid)
     .first<{
@@ -257,10 +262,10 @@ async function assertCloudflareOwnedAccount(env: JobsEnv, uid: string) {
 
 async function stripeSubscriptionId(
   env: JobsEnv,
-  uid: string,
+  uid: string
 ): Promise<string | null> {
   const row = await env.APP_DB.prepare(
-    "SELECT stripe_subscription_id FROM cf_user_subscriptions WHERE uid = ?",
+    "SELECT stripe_subscription_id FROM cf_user_subscriptions WHERE uid = ?"
   )
     .bind(uid)
     .first<{ stripe_subscription_id?: unknown }>();
@@ -277,10 +282,10 @@ async function stripeSubscriptionId(
 
 async function stripeAppSubscriptionIds(
   env: JobsEnv,
-  uid: string,
+  uid: string
 ): Promise<string[]> {
   const result = await env.APP_DB.prepare(
-    "SELECT stripe_subscription_id FROM cf_app_subscriptions WHERE uid = ? ORDER BY app_id LIMIT 501",
+    "SELECT stripe_subscription_id FROM cf_app_subscriptions WHERE uid = ? ORDER BY app_id LIMIT 501"
   )
     .bind(uid)
     .all<{ stripe_subscription_id?: unknown }>();
@@ -304,14 +309,14 @@ async function stripeAppSubscriptionIds(
 
 async function stripeOwnedAppSubscriptionIds(
   env: JobsEnv,
-  ownerUid: string,
+  ownerUid: string
 ): Promise<string[]> {
   const result = await env.APP_DB.prepare(
     `SELECT s.stripe_subscription_id
      FROM cf_app_subscriptions s
      JOIN cf_app_catalog a ON a.id = s.app_id
      WHERE a.owner_uid = ?
-     ORDER BY s.app_id, s.uid LIMIT 501`,
+     ORDER BY s.app_id, s.uid LIMIT 501`
   )
     .bind(ownerUid)
     .all<{ stripe_subscription_id?: unknown }>();
@@ -331,10 +336,10 @@ async function stripeOwnedAppSubscriptionIds(
 
 async function stripeConnectAccountId(
   env: JobsEnv,
-  uid: string,
+  uid: string
 ): Promise<string | null> {
   const row = await env.APP_DB.prepare(
-    "SELECT stripe_account_id FROM cf_creator_payment_profiles WHERE uid = ?",
+    "SELECT stripe_account_id FROM cf_creator_payment_profiles WHERE uid = ?"
   )
     .bind(uid)
     .first<{ stripe_account_id?: unknown }>();
@@ -351,7 +356,7 @@ async function stripeConnectAccountId(
 
 async function assertExternalProviderCleanupConfigured(
   env: JobsEnv,
-  uid: string,
+  uid: string
 ) {
   const [subscriptionId, accountId] = await Promise.all([
     stripeSubscriptionId(env, uid),
@@ -379,7 +384,7 @@ type StripeSubscription = {
 
 async function parseStripeSubscription(
   body: unknown,
-  expectedId: string,
+  expectedId: string
 ): Promise<StripeSubscription> {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("Stripe subscription response is invalid");
@@ -414,7 +419,7 @@ function parseStripeSchedule(body: unknown, expectedId: string) {
     schedule.id !== expectedId ||
     typeof schedule.status !== "string" ||
     !["active", "not_started", "completed", "canceled", "released"].includes(
-      schedule.status,
+      schedule.status
     )
   ) {
     throw new Error("Stripe subscription schedule response is invalid");
@@ -426,12 +431,12 @@ async function releaseActiveStripeSchedules(
   env: JobsEnv,
   intent: ParsedAccountDeletionIntent,
   subscriptionId: string,
-  customerId: string,
+  customerId: string
 ) {
   const query = new URLSearchParams({ customer: customerId, limit: "10" });
   const body = await stripeRequest(
     env,
-    `/v1/subscription_schedules?${query.toString()}`,
+    `/v1/subscription_schedules?${query.toString()}`
   );
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("Stripe subscription schedule list is invalid");
@@ -461,28 +466,30 @@ async function releaseActiveStripeSchedules(
         `/v1/subscription_schedules/${encodeURIComponent(schedule.id)}/release`,
         {
           method: "POST",
-          idempotencyKey: `account-delete-${intent.jobId}-release-${schedule.id.slice(-48)}`,
-        },
+          idempotencyKey: `account-delete-${
+            intent.jobId
+          }-release-${schedule.id.slice(-48)}`,
+        }
       ),
-      schedule.id,
+      schedule.id
     );
   }
 }
 
 async function cleanupExternalProviders(
   env: JobsEnv,
-  intent: ParsedAccountDeletionIntent,
+  intent: ParsedAccountDeletionIntent
 ) {
   const ownedAppPaymentLinks = await stripeOwnedAppPaymentLinks(
     env,
-    intent.uid,
+    intent.uid
   );
   if (ownedAppPaymentLinks.length > 0) {
     for (const paymentLink of ownedAppPaymentLinks) {
       await deactivateAppPaymentLink(
         env,
         paymentLink,
-        `account-delete-${intent.jobId}`,
+        `account-delete-${intent.jobId}`
       );
     }
     await retireOwnedPaidApps(env, intent.uid);
@@ -491,7 +498,7 @@ async function cleanupExternalProviders(
   const appSubscriptionIds = await stripeAppSubscriptionIds(env, intent.uid);
   const ownedAppSubscriptionIds = await stripeOwnedAppSubscriptionIds(
     env,
-    intent.uid,
+    intent.uid
   );
   const seenSubscriptions = new Set<string>();
   const subscriptions = [
@@ -513,7 +520,7 @@ async function cleanupExternalProviders(
     const path = `/v1/subscriptions/${encodeURIComponent(subscriptionId)}`;
     const current = await parseStripeSubscription(
       await stripeRequest(env, path),
-      subscriptionId,
+      subscriptionId
     );
     if (!STRIPE_TERMINAL_STATUSES.has(current.status)) {
       if (!current.customerId) {
@@ -523,7 +530,7 @@ async function cleanupExternalProviders(
         env,
         intent,
         subscriptionId,
-        current.customerId,
+        current.customerId
       );
       if (!current.cancelAtPeriodEnd) {
         const form = new URLSearchParams({ cancel_at_period_end: "true" });
@@ -533,7 +540,7 @@ async function cleanupExternalProviders(
             form,
             idempotencyKey: `account-delete-${intent.jobId}${subscription.suffix}`,
           }),
-          subscriptionId,
+          subscriptionId
         );
         if (
           !canceled.cancelAtPeriodEnd &&
@@ -554,7 +561,7 @@ async function cleanupExternalProviders(
       {
         method: "DELETE",
         idempotencyKey: `account-delete-${intent.jobId}-connect`,
-      },
+      }
     );
     if (
       !deleted ||
@@ -576,7 +583,7 @@ async function cleanupExternalProviders(
 
 async function activeDeletionTombstone(env: JobsEnv, uid: string, now: number) {
   return env.APP_DB.prepare(
-    "SELECT 1 AS active FROM cf_account_deletion_tombstones WHERE uid = ? AND expires_at > ?",
+    "SELECT 1 AS active FROM cf_account_deletion_tombstones WHERE uid = ? AND expires_at > ?"
   )
     .bind(uid, now)
     .first<{ active?: unknown }>();
@@ -584,10 +591,10 @@ async function activeDeletionTombstone(env: JobsEnv, uid: string, now: number) {
 
 async function existingDeletionJobId(
   env: JobsEnv,
-  uid: string,
+  uid: string
 ): Promise<string | null> {
   const existing = await env.APP_DB.prepare(
-    "SELECT job_id FROM cf_account_deletion_intents WHERE uid = ?",
+    "SELECT job_id FROM cf_account_deletion_intents WHERE uid = ?"
   )
     .bind(uid)
     .first<{ job_id?: unknown }>();
@@ -600,7 +607,7 @@ async function existingDeletionJobId(
 
 async function admitAccountDeletion(
   c: RequestContext,
-  context: SignedAuthContext,
+  context: SignedAuthContext
 ): Promise<Response> {
   if (context.authority !== "better-auth") {
     return c.json({ error: "account deletion requires Better Auth" }, 409);
@@ -616,7 +623,7 @@ async function admitAccountDeletion(
             ? "request body too large"
             : "invalid request",
       },
-      error instanceof Error && error.message.includes("too large") ? 413 : 400,
+      error instanceof Error && error.message.includes("too large") ? 413 : 400
     );
   }
 
@@ -638,7 +645,7 @@ async function admitAccountDeletion(
           lease_token, lease_until, next_attempt_at, settled_at, last_error,
           created_at, updated_at)
        VALUES (?, ?, 'pending', 'quiescing', ?, ?, 0, NULL, NULL, ?, NULL,
-               NULL, ?, ?)`,
+               NULL, ?, ?)`
     )
       .bind(
         context.uid,
@@ -647,7 +654,7 @@ async function admitAccountDeletion(
         feedback.reasonDetails,
         now + FENCE_QUIESCENCE_SECONDS,
         now,
-        now,
+        now
       )
       .run();
     if (inserted.meta?.changes !== 1) {
@@ -670,7 +677,7 @@ async function admitAccountDeletion(
           ? "external_provider_cleanup_required"
           : "account_deletion_unavailable",
       },
-      503,
+      503
     );
   }
 }
@@ -678,8 +685,8 @@ async function admitAccountDeletion(
 export function registerAccountDeletionRoutes(
   app: Hono<{ Bindings: JobsEnv }>,
   requestContext: (
-    c: Context<{ Bindings: JobsEnv }>,
-  ) => Promise<SignedAuthContext | null>,
+    c: Context<{ Bindings: JobsEnv }>
+  ) => Promise<SignedAuthContext | null>
 ) {
   app.delete("/v1/users/delete-account", async (c) => {
     const context = await requestContext(c);
@@ -730,7 +737,7 @@ export function registerAccountDeletionRoutes(
       const tombstone = await activeDeletionTombstone(
         c.env,
         context.uid,
-        Math.floor(Date.now() / 1_000),
+        Math.floor(Date.now() / 1_000)
       );
       if (tombstone) return c.json({ status: "done" });
       const remaining = await readIntentByJobId(c.env, jobId);
@@ -744,12 +751,12 @@ export function registerAccountDeletionRoutes(
 
 async function readIntentByJobId(
   env: JobsEnv,
-  jobId: string,
+  jobId: string
 ): Promise<ParsedAccountDeletionIntent | null> {
   const row = await env.APP_DB.prepare(
     `SELECT uid, job_id, status, phase, attempts, lease_token, lease_until,
             next_attempt_at, settled_at, created_at
-     FROM cf_account_deletion_intents WHERE job_id = ?`,
+     FROM cf_account_deletion_intents WHERE job_id = ?`
   )
     .bind(jobId)
     .first<AccountDeletionIntent>();
@@ -759,7 +766,7 @@ async function readIntentByJobId(
 async function claimIntent(
   env: JobsEnv,
   jobId: string,
-  now: number,
+  now: number
 ): Promise<ParsedAccountDeletionIntent | null> {
   const leaseToken = crypto.randomUUID();
   const claimed = await env.APP_DB.prepare(
@@ -768,7 +775,7 @@ async function claimIntent(
          lease_until = ?, last_error = NULL, updated_at = ?
      WHERE job_id = ?
        AND ((status IN ('pending', 'failed') AND next_attempt_at <= ?)
-         OR (status = 'running' AND lease_until IS NOT NULL AND lease_until <= ?))`,
+         OR (status = 'running' AND lease_until IS NOT NULL AND lease_until <= ?))`
   )
     .bind(leaseToken, now + INTENT_LEASE_SECONDS, now, jobId, now, now)
     .run();
@@ -786,12 +793,12 @@ function prefixFor(pattern: string, uid: string): string {
 
 async function assertStorageKeysBoundToAccount(env: JobsEnv, uid: string) {
   const prefixes = ACCOUNT_DELETION_R2_PREFIX_PATTERNS.map((pattern) =>
-    prefixFor(pattern, uid),
+    prefixFor(pattern, uid)
   );
   const storagePrefixes = [
     ...prefixes,
     ...ACCOUNT_DELETION_CHAT_FILES_PREFIX_PATTERNS.map((pattern) =>
-      prefixFor(pattern, uid),
+      prefixFor(pattern, uid)
     ),
   ];
   const checks = [
@@ -816,7 +823,7 @@ async function assertStorageKeysBoundToAccount(env: JobsEnv, uid: string) {
     const row = await env.APP_DB.prepare(
       `SELECT ${column} AS storage_key FROM ${table}
        WHERE uid = ? AND ${column} IS NOT NULL
-         AND NOT (${columnPrefixPredicate}) LIMIT 1`,
+         AND NOT (${columnPrefixPredicate}) LIMIT 1`
     )
       .bind(uid, ...storagePrefixes)
       .first<{ storage_key?: unknown }>();
@@ -830,7 +837,7 @@ async function purgeOneR2Page(env: JobsEnv, uid: string): Promise<boolean> {
       (pattern) => ({
         bucket: env.CONVERSATION_RECORDINGS,
         prefix: prefixFor(pattern, uid),
-      }),
+      })
     ),
     ...ACCOUNT_DELETION_R2_PREFIX_PATTERNS.map((pattern) => ({
       bucket: env.ASSETS,
@@ -868,9 +875,9 @@ async function purgeOneD1Batch(env: JobsEnv, uid: string): Promise<number> {
          WHERE rowid IN (
            SELECT rowid FROM ${surface.table}
            WHERE ${surface.column} = ? LIMIT ?
-         )`,
-      ).bind(uid, D1_DELETE_BATCH_SIZE),
-    ),
+         )`
+      ).bind(uid, D1_DELETE_BATCH_SIZE)
+    )
   );
   if (results.length !== ACCOUNT_DELETION_D1_PURGE_SURFACES.length) {
     throw new Error("account deletion D1 batch is incomplete");
@@ -894,7 +901,7 @@ async function releaseIntent(
     phase?: ParsedAccountDeletionIntent["phase"];
     settledAt?: number | null;
     delaySeconds: number;
-  },
+  }
 ) {
   if (!intent.leaseToken) throw new Error("account deletion lease is missing");
   const now = Math.floor(Date.now() / 1_000);
@@ -903,7 +910,7 @@ async function releaseIntent(
     `UPDATE cf_account_deletion_intents
      SET status = 'pending', phase = ?, lease_token = NULL, lease_until = NULL,
          next_attempt_at = ?, settled_at = ?, updated_at = ?
-     WHERE job_id = ? AND lease_token = ?`,
+     WHERE job_id = ? AND lease_token = ?`
   )
     .bind(
       phase,
@@ -911,7 +918,7 @@ async function releaseIntent(
       options.settledAt === undefined ? intent.settledAt : options.settledAt,
       now,
       intent.jobId,
-      intent.leaseToken,
+      intent.leaseToken
     )
     .run();
   if (updated.meta?.changes !== 1) {
@@ -922,20 +929,20 @@ async function releaseIntent(
 
 async function markIntentFailed(
   env: JobsEnv,
-  intent: ParsedAccountDeletionIntent,
+  intent: ParsedAccountDeletionIntent
 ) {
   if (!intent.leaseToken) return;
   const now = Math.floor(Date.now() / 1_000);
   const delay = Math.min(
     RETRY_MAX_SECONDS,
-    RETRY_BASE_SECONDS * 2 ** Math.min(intent.attempts, 5),
+    RETRY_BASE_SECONDS * 2 ** Math.min(intent.attempts, 5)
   );
   await env.APP_DB.prepare(
     `UPDATE cf_account_deletion_intents
      SET status = 'failed', lease_token = NULL, lease_until = NULL,
          next_attempt_at = ?, last_error = 'account deletion dependency unavailable',
          updated_at = ?
-     WHERE job_id = ? AND lease_token = ?`,
+     WHERE job_id = ? AND lease_token = ?`
   )
     .bind(now + delay, now, intent.jobId, intent.leaseToken)
     .run();
@@ -947,20 +954,20 @@ async function authLifecycleRequest(
   uid: string,
   method: "GET" | "DELETE",
   path: string,
-  requestId: string,
+  requestId: string
 ): Promise<Response> {
   const signed = await createSignedAuthContext(
     { uid, authority: "internal", requestId },
     "auth",
     method,
     path,
-    env.INTERNAL_ASSERTION_SECRET,
+    env.INTERNAL_ASSERTION_SECRET
   );
   if (!signed) throw new Error("Auth lifecycle assertion unavailable");
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
-    AUTH_LIFECYCLE_TIMEOUT_MS,
+    AUTH_LIFECYCLE_TIMEOUT_MS
   );
   try {
     return await env.AUTH.fetch(
@@ -972,7 +979,7 @@ async function authLifecycleRequest(
           "x-request-id": requestId,
         },
         signal: controller.signal,
-      }),
+      })
     );
   } finally {
     clearTimeout(timeout);
@@ -983,13 +990,13 @@ function authIdentityResidualIsEmpty(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const residual = value as Record<string, unknown>;
   return ["users", "sessions", "accounts", "deletionVerifications"].every(
-    (field) => residual[field] === 0,
+    (field) => residual[field] === 0
   );
 }
 
 async function deleteAuthIdentity(
   env: JobsEnv,
-  intent: ParsedAccountDeletionIntent,
+  intent: ParsedAccountDeletionIntent
 ) {
   const path = `/internal/users/${encodeURIComponent(intent.uid)}`;
   const deleted = await authLifecycleRequest(
@@ -997,7 +1004,7 @@ async function deleteAuthIdentity(
     intent.uid,
     "DELETE",
     path,
-    `account-deletion:${intent.jobId}:delete`,
+    `account-deletion:${intent.jobId}:delete`
   );
   if (!deleted.ok) throw new Error("Auth identity deletion failed");
   const body = (await deleted.json()) as { residual?: unknown };
@@ -1008,7 +1015,7 @@ async function deleteAuthIdentity(
 
 async function transferFenceToTombstone(
   env: JobsEnv,
-  intent: ParsedAccountDeletionIntent,
+  intent: ParsedAccountDeletionIntent
 ) {
   if (!intent.leaseToken) throw new Error("account deletion lease is missing");
   const now = Math.floor(Date.now() / 1_000);
@@ -1017,10 +1024,10 @@ async function transferFenceToTombstone(
       `INSERT INTO cf_account_deletion_tombstones (uid, completed_at, expires_at)
        VALUES (?, ?, ?)
        ON CONFLICT(uid) DO UPDATE SET completed_at = excluded.completed_at,
-         expires_at = excluded.expires_at`,
+         expires_at = excluded.expires_at`
     ).bind(intent.uid, now, now + TOMBSTONE_SECONDS),
     env.APP_DB.prepare(
-      "DELETE FROM cf_account_deletion_intents WHERE job_id = ? AND lease_token = ?",
+      "DELETE FROM cf_account_deletion_intents WHERE job_id = ? AND lease_token = ?"
     ).bind(intent.jobId, intent.leaseToken),
   ]);
   if (
@@ -1034,7 +1041,7 @@ async function transferFenceToTombstone(
 
 export async function processAccountDeletionMessage(
   message: Message<JobMessage>,
-  env: JobsEnv,
+  env: JobsEnv
 ): Promise<void> {
   if (message.body.kind !== "account_delete" || message.body.uid !== "") {
     throw new Error("invalid account deletion queue message");
@@ -1056,7 +1063,7 @@ export async function processAccountDeletionMessage(
     if (intent.phase === "quiescing") {
       const remaining = Math.max(
         0,
-        intent.createdAt + FENCE_QUIESCENCE_SECONDS - now,
+        intent.createdAt + FENCE_QUIESCENCE_SECONDS - now
       );
       if (remaining > 0) {
         await releaseIntent(env, intent, { delaySeconds: remaining });
@@ -1069,7 +1076,7 @@ export async function processAccountDeletionMessage(
     if (intent.phase === "purging") {
       const removedVectors = await purgeAccountVectorProjections(
         env,
-        intent.uid,
+        intent.uid
       );
       if (removedVectors) {
         await releaseIntent(env, intent, {
@@ -1086,6 +1093,30 @@ export async function processAccountDeletionMessage(
           phase: "purging",
           settledAt: null,
           delaySeconds: 1,
+        });
+        message.ack();
+        return;
+      }
+      const screenshots = await screenFrameStorageState(
+        env,
+        intent.uid,
+        "cleanup"
+      );
+      if (!screenshots.empty) {
+        await releaseIntent(env, intent, {
+          phase: "purging",
+          settledAt: null,
+          delaySeconds: 1,
+        });
+        message.ack();
+        return;
+      }
+      await cleanupFramePixels(env, intent.uid, now);
+      if (!(await framePixelResidual(env, intent.uid)).empty) {
+        await releaseIntent(env, intent, {
+          phase: "purging",
+          settledAt: null,
+          delaySeconds: 30,
         });
         message.ack();
         return;
@@ -1112,7 +1143,7 @@ export async function processAccountDeletionMessage(
       }
       const settleRemaining = Math.max(
         0,
-        intent.settledAt + ZERO_SCAN_SETTLE_SECONDS - now,
+        intent.settledAt + ZERO_SCAN_SETTLE_SECONDS - now
       );
       if (settleRemaining > 0) {
         await releaseIntent(env, intent, {
@@ -1141,13 +1172,13 @@ export async function processAccountDeletionMessage(
 
 export async function reconcileAccountDeletions(
   env: JobsEnv,
-  now = Math.floor(Date.now() / 1_000),
+  now = Math.floor(Date.now() / 1_000)
 ) {
   const rows = await env.APP_DB.prepare(
     `SELECT job_id FROM cf_account_deletion_intents
      WHERE (status IN ('pending', 'failed') AND next_attempt_at <= ?)
         OR (status = 'running' AND lease_until IS NOT NULL AND lease_until <= ?)
-     ORDER BY next_attempt_at, created_at LIMIT ?`,
+     ORDER BY next_attempt_at, created_at LIMIT ?`
   )
     .bind(now, now, RECONCILE_BATCH_SIZE)
     .all<{ job_id?: unknown }>();
@@ -1161,10 +1192,10 @@ export async function reconcileAccountDeletions(
 
 export async function cleanupExpiredAccountDeletionTombstones(
   env: JobsEnv,
-  now = Math.floor(Date.now() / 1_000),
+  now = Math.floor(Date.now() / 1_000)
 ) {
   await env.APP_DB.prepare(
-    "DELETE FROM cf_account_deletion_tombstones WHERE expires_at <= ?",
+    "DELETE FROM cf_account_deletion_tombstones WHERE expires_at <= ?"
   )
     .bind(now)
     .run();

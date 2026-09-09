@@ -3,6 +3,8 @@
 > 日期：2026-09-02 · 状态：待决策签字（`07-pr-plan.md` §1）后开工
 > 前置研究：`omi-repo-topology.md`（为什么是单主线）、`omi-white-label-strategy.md`（品牌触点全清单）、`omi-cloud-neutral-postgres-migration.md`、`dev/cloudflare-adaptation-plan.md`、`dev/cloud-neutral-overview.md`。本目录是"怎么做"，那些文档是"为什么"。
 
+> **2026-09-04 实测更新**：以上日期与待签状态保留原始规划语境；当前代码进度和下一步以三路审计为准：[标准服务器](audit-2026-09-04/01-self-host-action-plan.md)、[Cloudflare](audit-2026-09-04/02-cloudflare-action-plan.md)、[白牌终端](audit-2026-09-04/03-whitelabel-action-plan.md)。审计基线是 `origin/main@d238a85af9`，区分已经验证、失败和未覆盖的路径。下文 D3/Next.js 的事实前提已过时：该主线及本次检查的上游都已使用 Moonshine/Bun，Web 双目标交付由三路计划中的 `WEB-1` 重新验证。
+
 ## 一句话
 
 把 `codex/cloudflare-adaptation` 与 `feature/cloud-neutral-shim` 各自的**接缝**（客户端认证、部署 profile、Web 构建、限流/检查清单）在 `main` 上重写成一份，把它们的**新增目录**（`deploy/cloudflare/` 616 文件、`deploy/self-host/` 24 文件、`backend/firestore_pg/`、`auth-server/`）直接检出，把**不该合的**（Moonshine 重写、上游文件格式化、上游测试改动、上游不变量改动）归档；之后部署目标由 `deploy/<target>/` + profile 表达，品牌由 `brand/<id>/` 表达，CI 跑 品牌 × 目标 矩阵，上游每周合一次、真实冲突 ≤5 个文件；**上游文件默认零改动**，例外只在 T1 白名单里（`00`）；契约权威是上游 API 与自托管参考实现，Cloudflare 单向对齐；Web 保持上游 Next.js，不引入 Bun。
@@ -11,6 +13,8 @@
 
 | 文档 | 回答的问题 | 产出物 |
 |---|---|---|
+| [architecture/three-track-architecture.md](architecture/three-track-architecture.md) | 整体系统如何在一个主线、两个部署目标和白牌客户端之间组织；数据、实体、处理和删除边界如何流动 | 架构文档 + 图集 |
+| [Cloudflare Candidates 与推荐](../../docs/doc/developer/ForkCloudflareRecommendations.mdx) | fork 的候选建议、反馈、D1 事务与验证范围；通过 fork 索引访问，保持上游 Mintlify 导航不变 | 开发者文档 |
 | [00-upstream-touch-policy.md](00-upstream-touch-policy.md) | 为什么"能不改上游代码就不改"、shim 分支 653 个上游文件改动的诊断、T0 技术目录（每个平台）、T1 白名单、T2 禁改、两条测试通道 | 纪律 + 技术目录 |
 | [01-branch-consolidation.md](01-branch-consolidation.md) | 两条分支怎么收敛到 main：冻结、先同步上游、接缝 PR（S 系列）、新增目录合入（M 系列）、20 个冲突文件归属、门禁命令、回滚 | 操作手册 |
 | [02-deployment-profile.md](02-deployment-profile.md) | 客户端与后端如何用同一份 profile 同时支持 `omi_cloud / self_hosted / cloudflare`；身份契约 v1（Better Auth 两种部署同一契约）；能力开关默认值；两分支现有代码的迁移映射 | 设计 + 生成器规范 |
@@ -66,7 +70,7 @@ main（fork of BasedHardware/omi）
 - [ ] `fork-build-matrix.yml` 在无密钥的 fork PR 上全绿；有密钥时对每个 品牌 × 客户端 产出可安装件。
 - [ ] `apply.py --brand omi-upstream --check-clean` 零 diff；`check.py --brand <brand>` 三个面为零。
 - [ ] 上游 `openapi-contract.yml` 在 `omi-upstream` 品牌下输出与上游字节一致。
-- [ ] 每周自动同步 PR 由 `fork-upstream-sync.yml` 生成，`sync-log.md` 有连续记录。
+- [ ] `fork-upstream-sync.yml` 已实现非变异冲突探测和无冲突时的常规 merge PR；首次远端运行与连续 `sync-log.md` 记录仍待完成。
 
 ## 使用方式
 

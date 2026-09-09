@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "FC-d1-schema-expression-depth",
+  "violated_contract": "Every schema definition must remain valid under the D1 runtime expression-depth limit, including when a later ALTER TABLE reparses existing triggers. A long left-associated conjunction can pass ordinary SQLite migration tests but prevent an unrelated table rebuild in workerd.",
+  "canonical_prevention": "Preserve each original null-safe field comparison while balancing conjunctions instead of removing checks or increasing runtime limits. Execute the complete migration chain in the existing actual workerd/D1/R2 test and retain behavioral Candidate conflict tests. The 2026-09-08 snapshot migration revalidation failed at cf_candidate_guard_tasks with maximum depth 100; the full incident and unchanged 33-comparison repair are recorded in dev/unified-main/implementation-2026-09-05/canonical-device-snapshots-2026-09-08.md. Local CPython SQLite alone cannot establish this runtime property.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/tests/screen-frame-r2.test.mjs",
+    "deploy/cloudflare/python/api-core/tests/test_candidate_accept.py"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/migrations/**/*.sql",
+    "deploy/cloudflare/tests/screen-frame-r2.test.mjs"
+  ],
+  "status": "open"
+}

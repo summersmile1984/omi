@@ -11,9 +11,12 @@ import uuid
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from memory_mutation_errors import memory_mutation_error
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from account_routes import usage_source_statement
+from memory_external_intake import create_external_memories
+from memory_kernel_intake import document_id_from_seed
+from memory_product_mutation import mutate_external_fields
 from action_item_routes import (
     ActionItemUpdate,
     _apply_update as apply_action_item_update,
@@ -45,6 +48,7 @@ from goal_routes import (
 from mcp_routes import _memory_category, _memory_score
 from memory_routes import _first_active as first_active_memory
 from vector_search import publish_vector_projection, vector_outbox_statement
+from memory_privacy_delete import MemoryNotFound, delete_selected_memories
 
 router = APIRouter()
 
@@ -89,7 +93,7 @@ class DeveloperMemoryUpdate(BaseModel):
 
     @model_validator(mode="after")
     def validate_update(self) -> "DeveloperMemoryUpdate":
-        if not self.model_fields_set:
+        if not any(getattr(self, name) is not None for name in ("content", "visibility", "tags", "category")):
             raise ValueError("at least one memory field is required")
         if self.tags is not None and any(not tag or len(tag) > MAX_TAG_LENGTH for tag in self.tags):
             raise ValueError("invalid memory tag")
@@ -210,31 +214,11 @@ def _memory_row(
         "edited": 0,
         "scoring": _memory_score(category, now),
         "is_locked": 0,
-        "memory_tier": "long_term",
+        "memory_tier": "short_term",
         "valid_at": now,
         "created_at": now,
         "updated_at": now,
     }
-
-
-def _memory_insert_statement(env: object, row: dict[str, object]):
-    return env.APP_DB.prepare(
-        "INSERT INTO cf_memories "
-        "(uid, id, content, category, visibility, tags_json, reviewed, user_review, manually_added, edited, "
-        "scoring, is_locked, memory_tier, valid_at, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, 1, 1, 1, 0, ?, 0, 'long_term', ?, ?, ?)"
-    ).bind(
-        row["uid"],
-        row["id"],
-        row["content"],
-        row["category"],
-        row["visibility"],
-        row["tags_json"],
-        row["scoring"],
-        row["valid_at"],
-        row["created_at"],
-        row["updated_at"],
-    )
 
 
 async def _publish_projection(env: object, uid: str, source_kind: str, source_id: str) -> None:
@@ -261,35 +245,13 @@ async def create_developer_memory(request: Request):
     env = request.scope["env"]
     category = payload.category or await _memory_category(env, payload.content)
     now = int(time.time())
-    memory_id = uuid.uuid4().hex
+    memory_id = document_id_from_seed(payload.content)
     row = _memory_row(uid=principal.uid, memory_id=memory_id, payload=payload, category=category, now=now)
     try:
-        await env.APP_DB.batch(
-            [
-                _memory_insert_statement(env, row),
-                usage_source_statement(
-                    env,
-                    uid=principal.uid,
-                    source_kind="memory",
-                    source_id=memory_id,
-                    occurred_at=now,
-                    memories_created=1,
-                    updated_at=now,
-                ),
-                vector_outbox_statement(
-                    env,
-                    uid=principal.uid,
-                    source_kind="memory",
-                    source_id=memory_id,
-                    desired_version=now,
-                    operation="upsert",
-                ),
-            ]
-        )
+        stored = (await create_external_memories(env, principal.uid, [row], source_surface='developer_api'))[0]
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
-    await _publish_projection(env, principal.uid, "memory", memory_id)
-    return _developer_memory(row)
+    return _developer_memory(stored)
 
 
 @router.post("/v1/dev/user/memories/batch")
@@ -307,41 +269,22 @@ async def create_developer_memories_batch(request: Request):
     env = request.scope["env"]
     now = int(time.time())
     rows: list[dict[str, object]] = []
-    statements: list[object] = []
     for payload in batch.memories:
         category = payload.category or await _memory_category(env, payload.content)
-        memory_id = uuid.uuid4().hex
-        row = _memory_row(uid=principal.uid, memory_id=memory_id, payload=payload, category=category, now=now)
-        rows.append(row)
-        statements.extend(
-            [
-                _memory_insert_statement(env, row),
-                usage_source_statement(
-                    env,
-                    uid=principal.uid,
-                    source_kind="memory",
-                    source_id=memory_id,
-                    occurred_at=now,
-                    memories_created=1,
-                    updated_at=now,
-                ),
-                vector_outbox_statement(
-                    env,
-                    uid=principal.uid,
-                    source_kind="memory",
-                    source_id=memory_id,
-                    desired_version=now,
-                    operation="upsert",
-                ),
-            ]
+        rows.append(
+            _memory_row(
+                uid=principal.uid,
+                memory_id=document_id_from_seed(payload.content),
+                payload=payload,
+                category=category,
+                now=now,
+            )
         )
     try:
-        await env.APP_DB.batch(statements)
+        stored = await create_external_memories(env, principal.uid, rows, source_surface='developer_api')
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
-    for row in rows:
-        await _publish_projection(env, principal.uid, "memory", str(row["id"]))
-    return {"memories": [_developer_memory(row) for row in rows], "created_count": len(rows)}
+    return {"memories": [_developer_memory(row) for row in stored], "created_count": len(stored)}
 
 
 @router.patch("/v1/dev/user/memories/{memory_id}")
@@ -366,38 +309,14 @@ async def update_developer_memory(request: Request, memory_id: str):
                 {"detail": "A paid plan is required to access this memory."},
                 status_code=402,
             )
-        values: dict[str, object] = {}
-        if update.content is not None:
-            values["content"] = update.content
-            values["edited"] = 1
-        if update.visibility is not None:
-            values["visibility"] = update.visibility
-        if update.tags is not None:
-            values["tags_json"] = json.dumps(update.tags, ensure_ascii=False, separators=(",", ":"))
-        if update.category is not None:
-            values["category"] = update.category
-        now = int(time.time())
-        values["updated_at"] = now
-        assignments = ", ".join(f"{key} = ?" for key in values)
-        mutation = env.APP_DB.prepare(
-            f"UPDATE cf_memories SET {assignments} "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(*values.values(), principal.uid, memory_id)
-        projection = vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="memory",
-            source_id=memory_id,
-            desired_version=now,
-            operation="upsert",
-        )
-        await env.APP_DB.batch([mutation, projection])
+        values = update.model_dump(exclude_none=True)
+        if not await mutate_external_fields(env, principal.uid, memory_id, values, int(time.time())):
+            return JSONResponse({"detail": "Memory not found"}, status_code=404)
         row = await first_active_memory(env, principal.uid, memory_id)
-    except Exception:
-        return JSONResponse({"error": "memories unavailable"}, status_code=503)
+    except Exception as error:
+        return memory_mutation_error(error, key="detail")
     if row is None:
         return JSONResponse({"detail": "Memory not found"}, status_code=404)
-    await _publish_projection(env, principal.uid, "memory", memory_id)
     return _developer_memory(row)
 
 
@@ -412,30 +331,14 @@ async def delete_developer_memory(request: Request, memory_id: str):
     env = request.scope["env"]
     try:
         existing = await first_active_memory(env, principal.uid, memory_id)
-        if existing is None:
-            return JSONResponse({"detail": "Memory not found"}, status_code=404)
-        if _bool(existing.get("is_locked")):
-            return JSONResponse(
-                {"detail": "A paid plan is required to access this memory."},
-                status_code=402,
-            )
-        now = int(time.time())
-        mutation = env.APP_DB.prepare(
-            "UPDATE cf_memories SET deleted_at = ?, updated_at = ? "
-            "WHERE uid = ? AND id = ? AND deleted_at IS NULL AND invalid_at IS NULL"
-        ).bind(now, now, principal.uid, memory_id)
-        projection = vector_outbox_statement(
-            env,
-            uid=principal.uid,
-            source_kind="memory",
-            source_id=memory_id,
-            desired_version=now,
-            operation="delete",
-        )
-        await env.APP_DB.batch([mutation, projection])
+        if existing is not None and _bool(existing.get("is_locked")):
+            return JSONResponse({"detail": "A paid plan is required to access this memory."}, status_code=402)
+        if not await delete_selected_memories(env, principal.uid, [memory_id]):
+            return JSONResponse({"error": "memory_cleanup_pending"}, status_code=503, headers={"retry-after": "2"})
+    except MemoryNotFound:
+        return JSONResponse({"detail": "Memory not found"}, status_code=404)
     except Exception:
         return JSONResponse({"error": "memories unavailable"}, status_code=503)
-    await _publish_projection(env, principal.uid, "memory", memory_id)
     return {"success": True}
 
 
