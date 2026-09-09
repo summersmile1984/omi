@@ -64,8 +64,9 @@ def test_registry_pager_rejects_a_malformed_identity():
         worker.RegistryPager()(db, 1)
 
 
-def test_projection_registry_contains_only_the_required_provider_seams():
+def test_projection_registry_contains_only_the_required_outbox_seams():
     assert {patch.name for patch in collect_memory_projection()} == {
+        'canonical-memory.operation-clock',
         'embedding.utils.llm.clients',
         'embedding.database.vector_db',
         'vector.qdrant-index',

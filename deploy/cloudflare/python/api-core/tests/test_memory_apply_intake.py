@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))
 from memory_apply_intake import MODEL_COLUMNS, create_native_memories
 from memory_kernel_item import MemoryItem
 from memory_kernel_operations import MemoryOperation
+import memory_kernel_operation_clock
 from memory_routes import MemoryCreate, _batch_row
 from test_memory_mutation_lock import Database, target as target
 from test_memory_routes import FakeRequest as MemoryRequest
@@ -131,6 +132,40 @@ def test_http_batch_commits_items_receipts_head_evidence_and_outbox_together(tar
         assert set(receipt['committed_outbox_event_ids']) == {event['event_id'] for event in events}
     assert len(snapshot['cf_vector_projection_outbox']) == 2
     assert len(snapshot['cf_usage_sources']) == 2
+
+
+def test_http_batch_commits_when_runtime_wall_clock_regresses_between_operation_steps(target, monkeypatch):
+    class RegressingClock(datetime):
+        current = datetime.now().astimezone()
+
+        @classmethod
+        def now(cls, tz=None):
+            cls.current -= timedelta(microseconds=1)
+            return cls.current
+
+    # Creation uses the unchanged upstream clock; only transition reads regress.
+    RegressingClock.current -= timedelta(seconds=10)
+    monkeypatch.setattr(memory_kernel_operation_clock, 'datetime', RegressingClock)
+    database, request, _ = target
+    response = request(
+        'POST',
+        '/v3/memories/batch',
+        body={
+            'memories': [
+                {'content': 'Synthetic tea preference', 'category': 'manual'},
+                {'content': 'Synthetic lunch walk', 'category': 'interesting'},
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()['created_count'] == 2
+    snapshot = state(database)
+    assert len(snapshot['cf_memories']) == len(snapshot['cf_memory_operations']) == 2
+    assert snapshot['cf_memory_apply_guard'] == []
+    for row in snapshot['cf_memory_operations']:
+        operation = MemoryOperation.model_validate_json(row['operation_json'])
+        assert operation.status.value == 'committed'
+        assert operation.updated_at >= operation.created_at
 
 
 def test_exact_retry_is_noop_but_changed_metadata_or_mixed_retry_cannot_overwrite(database, monkeypatch):

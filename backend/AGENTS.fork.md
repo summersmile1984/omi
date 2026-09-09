@@ -10,6 +10,11 @@ Canonical mutation guidance lives in
 the operation. Register both public and internal mutation entrypoints; do not
 edit the upstream adapter or its tests. The startup lane exercises feedback,
 receipt replay and conflicting reuse through the original apply owner.
+`fork/memory_operation_clock.py` scopes a nondecreasing clock to the original
+operation transition body; persisted-record decoding and terminal-state guards
+remain upstream-owned. It is installed for Server API/maintenance and copied by
+the Cloudflare kernel projection. The startup and CF intake lanes both exercise
+clock regression (the observed Workers regression was 999 microseconds).
 
 ## Cloud-neutral runtime switches
 

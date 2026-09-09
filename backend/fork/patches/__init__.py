@@ -18,6 +18,7 @@ from . import llm as _llm
 from . import capabilities as _capabilities
 from . import consolidation as _consolidation
 from . import canonical_memory as _canonical_memory
+from . import memory_clock as _memory_clock
 from . import speech as _speech
 from . import provider_guard as _provider_guard
 from . import queue as _queue
@@ -33,6 +34,7 @@ ALL = (
     _capabilities,
     _consolidation,
     _canonical_memory,
+    _memory_clock,
     _speech,
     _account_deletion,
     _provider_guard,
@@ -63,6 +65,7 @@ def collect_memory_projection() -> List[Patch]:
         'provider.receipt-fence.utils.memory.atom_keyword_index',
     }
     return [
+        *_memory_clock.patches(),
         *_embedding.patches(),
         *_vector.patches(),
         *(patch for patch in _provider_guard.patches() if patch.name in provider_names),

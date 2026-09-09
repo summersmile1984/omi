@@ -100,6 +100,7 @@ export function sourceIdentity(root) {
         "backend/models/memory_promotion.py",
         "backend/models/memory_domain.py",
         "backend/models/memory_operations.py",
+        "backend/fork/memory_operation_clock.py",
         "backend/models/product_memory.py",
         "backend/models/memory_evidence.py",
         "backend/utils/memory/short_term_lifecycle.py",

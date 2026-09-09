@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage the unchanged, persistence-free canonical memory apply rules for Core."""
+"""Stage canonical memory rules with fork-owned runtime clock dependencies."""
 
 from __future__ import annotations
 
@@ -78,6 +78,11 @@ def project(module: str) -> str:
 
 def generate(output: Path) -> None:
     outputs = {target + '.py': project(module) for module, target in MODULES.items()}
+    outputs['memory_kernel_operation_clock.py'] = (ROOT / 'backend/fork/memory_operation_clock.py').read_text()
+    outputs['memory_kernel_operations.py'] += (
+        '\nfrom memory_kernel_operation_clock import install_operation_clock\n'
+        'MemoryOperation = install_operation_clock(MemoryOperation)\n'
+    )
     outputs.update(consolidation_sources())
     outputs.update(candidate_sources())
     outputs.update(recommendation_sources())
