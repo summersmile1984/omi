@@ -37,6 +37,16 @@ Preparation requires a clean committed checkout, pinned component dependencies
 and Docker. `prepare_release.py --plan` prints its build recipe without
 execution. The supported Server image platform remains `linux/amd64`.
 
+Cloudflare CD creates the Python 3.14 interpreter consumed by its frozen HTTP
+contract runner before downloading artifacts. The HTTP client uses only the
+standard library; the frozen Python Workers already carry their runtime
+dependencies. A fresh checkout removes the API project's ignored `.venv`, so
+CD must not rely on the environment produced as a side effect of preparation's
+pytest run. This target-specific setup is inline in the deployment workflow:
+an already accepted artifact keeps its original source and bytes when the
+workflow's tool provisioning is repaired. `test_release_ci.py` executes this
+step from a clean fixture and verifies provisioning failure stops the probe.
+
 ## Artifacts and provenance
 
 Artifacts are retained by Actions for 30 days. `delivery.json` binds source
