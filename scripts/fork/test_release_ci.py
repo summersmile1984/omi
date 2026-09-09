@@ -427,6 +427,36 @@ class ReusableDeliveryWorkflowTests(unittest.TestCase):
     def workflow(self, target):
         return yaml.safe_load((ROOT / f'.github/workflows/fork-cd-{target}.yml').read_text())
 
+    def test_cloudflare_call_declares_secret_inheritance_static_contract(self):
+        # Static wiring guard for run 34401734852: its environment existed but
+        # both credentials resolved empty across the undeclared call boundary.
+        workflow = yaml.safe_load((ROOT / PREPARE_PATH).read_text())
+        self.assertEqual(workflow['jobs']['cloudflare']['secrets'], 'inherit')
+        self.assertEqual(self.workflow('cloudflare')['jobs']['deploy']['environment'], 'cloudflare-${{ inputs.stage }}')
+
+    def test_cloudflare_credentials_fail_before_setup_and_never_print_values(self):
+        step = self.workflow('cloudflare')['jobs']['deploy']['steps'][0]
+        for missing in [None, 'CLOUDFLARE_API_TOKEN', 'RELEASE_SECRETS_JSON']:
+            with self.subTest(missing=missing):
+                credentials = {
+                    'CLOUDFLARE_API_TOKEN': 'synthetic-cloud-credential',
+                    'RELEASE_SECRETS_JSON': '{"SYNTHETIC":"private-fixture-value"}',
+                }
+                if missing:
+                    credentials[missing] = ''
+                result = subprocess.run(
+                    ['bash', '-e', '-o', 'pipefail', '-c', step['run']],
+                    env={**os.environ, **credentials},
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 1 if missing else 0, result.stderr)
+                output = result.stdout + result.stderr
+                self.assertNotIn('synthetic-cloud-credential', output)
+                self.assertNotIn('private-fixture-value', output)
+                if missing:
+                    self.assertIn('reusable-workflow secret inheritance', output)
+
     def execute(self, step, environment, *, fail_verify=False):
         with tempfile.TemporaryDirectory() as work:
             directory = Path(work)

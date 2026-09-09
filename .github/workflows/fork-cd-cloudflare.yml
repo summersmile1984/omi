@@ -69,6 +69,15 @@ jobs:
     runs-on: ${{ fromJSON('["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
     timeout-minutes: 180
     steps:
+      - name: Require Cloudflare deployment credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RELEASE_SECRETS_JSON: ${{ secrets.RELEASE_SECRETS_JSON }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$RELEASE_SECRETS_JSON" ]; then
+            echo 'Cloudflare environment credentials are unavailable; check the selected environment and reusable-workflow secret inheritance.' >&2
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve.outputs.sha }}
