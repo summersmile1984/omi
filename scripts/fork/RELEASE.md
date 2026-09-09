@@ -49,14 +49,20 @@ step from a clean fixture and verifies provisioning failure stops the probe.
 
 ## Artifacts and provenance
 
-Both CD workflows download through GitHub CLI into an attempt-owned temporary
-folder. A successful command must also produce all four delivery files before
-that folder is handed to admission. Interrupted or incomplete downloads get at
-most three isolated attempts; partial files never become a deployment input.
-This addresses the observed `download-artifact@v4` silent truncation in run
-34362300799 (also reported in actions/download-artifact#454). The subsequent
-source, stage and archive-hash verification remains mandatory. This download
-step is workflow-owned so transport repairs preserve previously accepted bytes.
+Both CD workflows obtain the selected artifact's current metadata from GitHub,
+then download its ZIP with bounded, resumable curl requests. Each request stops
+after five minutes or thirty seconds without meaningful progress; at most five
+requests run per invocation. Signed URLs are sent through curl's stdin rather
+than command arguments or logs. Partial ZIP bytes survive interruption under
+`~/.cache/eddy-delivery/summersmile1984-omi/<artifact-id>/<zip-sha256>/`.
+
+A cache hit must match both the size and SHA-256 freshly returned by GitHub.
+Only then are the four ordinary delivery files extracted into an isolated
+folder and handed to admission. Corrupt or incomplete bytes never become a
+verified cache or deployment input. The subsequent source, stage and archive
+hash checks remain mandatory. This handles the observed v4 silent truncation
+in run 34362300799 and the stalled transfer in run 34367542966 without dropping
+already received bytes or changing accepted application payloads.
 
 The Cloudflare archive transports `candidate.json` plus only the files declared
 by that candidate's `artifact_files` owner. Staged dependency links and build
@@ -66,7 +72,7 @@ and never materializes unlisted archive members. The existing Node candidate
 owner still verifies source identity and complete frozen trees before publishing.
 The full archive hash in `delivery.json` is checked before selective extraction.
 
-Each CD loads the independent admission utility and its archive module from
+Each CD loads the independent download/admission utilities and archive module from
 `GITHUB_WORKFLOW_SHA` using the fetched Git objects into `RUNNER_TEMP`. The
 application checkout stays at the admitted source SHA. This lets a workflow
 repair its transport/decoding without changing accepted application bytes or
