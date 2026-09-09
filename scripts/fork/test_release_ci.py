@@ -2,6 +2,7 @@
 """Exercise the deployment authority boundary with GitHub API responses."""
 
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -9,14 +10,148 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
 import yaml
 
 from release_ci import CI_PATH, PREPARE_PATH, REPOSITORY, resolve_delivery, verify_ci, verify_delivery
+from release_archive import pack_candidate, unpack_candidate
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class FrozenArchiveTests(unittest.TestCase):
+    def fixture(self, directory):
+        directory.mkdir()
+        content = b'accepted Worker module'
+        payload = directory / 'workers/core/index.js'
+        payload.parent.mkdir(parents=True)
+        payload.write_bytes(content)
+        body = {'artifact_files': {'workers': {'core/index.js': hashlib.sha256(content).hexdigest()}}}
+        digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        raw = json.dumps({**body, 'candidate_digest': digest}).encode()
+        (directory / 'candidate.json').write_bytes(raw)
+        return raw, digest, content
+
+    def test_pack_transports_only_the_frozen_manifest_and_payload(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            candidate = root / 'candidate'
+            _, digest, content = self.fixture(candidate)
+            (candidate / 'resources').mkdir()
+            (candidate / 'resources/python_modules').symlink_to('/absent/build/machine/dependencies')
+            archive = root / 'candidate.tar.gz'
+            pack_candidate(candidate, archive)
+            with tarfile.open(archive) as bundle:
+                self.assertEqual(bundle.getnames(), ['cloudflare/candidate.json', 'cloudflare/workers/core/index.js'])
+            unpack_candidate(archive, root / 'unpacked', digest)
+            self.assertEqual((root / 'unpacked/cloudflare/workers/core/index.js').read_bytes(), content)
+
+    def fat_archive(self, archive, raw, content, mutation=None):
+        with tarfile.open(archive, 'w:gz') as bundle:
+            scratch = tarfile.TarInfo('cloudflare/resources/workers/api-core/python_modules')
+            scratch.type = tarfile.SYMTYPE
+            scratch.linkname = '/absent/build/machine/python_modules'
+            bundle.addfile(scratch)
+            for name, data in [('cloudflare/candidate.json', raw), ('cloudflare/workers/core/index.js', content)]:
+                item = tarfile.TarInfo(name)
+                if name.endswith('index.js') and mutation == 'missing':
+                    continue
+                if name.endswith('index.js') and mutation == 'link':
+                    item.type = tarfile.SYMTYPE
+                    item.linkname = '/tmp/foreign-owned-file'
+                    bundle.addfile(item)
+                    continue
+                if name.endswith('index.js') and mutation == 'bytes':
+                    data = b'changed module'
+                item.size = len(data)
+                bundle.addfile(item, io.BytesIO(data))
+                if name.endswith('index.js') and mutation == 'duplicate':
+                    bundle.addfile(item, io.BytesIO(data))
+
+    def test_extract_ignores_unowned_build_links_but_verifies_every_frozen_file(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            raw, digest, content = self.fixture(root / 'candidate')
+            archive = root / 'candidate.tar.gz'
+            self.fat_archive(archive, raw, content)
+            unpack_candidate(archive, root / 'unpacked', digest)
+            self.assertEqual((root / 'unpacked/cloudflare/workers/core/index.js').read_bytes(), content)
+            self.assertFalse((root / 'unpacked/cloudflare/resources').exists())
+
+    def test_declared_links_missing_duplicates_and_changed_bytes_are_rejected(self):
+        for mutation in ['link', 'missing', 'duplicate', 'bytes']:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as work:
+                root = Path(work)
+                raw, digest, content = self.fixture(root / 'candidate')
+                archive = root / 'candidate.tar.gz'
+                self.fat_archive(archive, raw, content, mutation)
+                with self.assertRaises(ValueError):
+                    unpack_candidate(archive, root / 'unpacked', digest)
+
+    def test_archive_identity_must_match_the_admitted_receipt(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            raw, _, content = self.fixture(root / 'candidate')
+            archive = root / 'candidate.tar.gz'
+            self.fat_archive(archive, raw, content)
+            with self.assertRaisesRegex(ValueError, 'candidate digest'):
+                unpack_candidate(archive, root / 'unpacked', 'a' * 64)
+            self.assertFalse((root / 'unpacked').exists())
+
+
+class AdmissionSourceTests(unittest.TestCase):
+    def test_both_cd_workflows_load_admission_from_the_workflow_revision(self):
+        for target in ['cloudflare', 'server']:
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as work:
+                root = Path(work)
+                source = root / 'checkout'
+                source.mkdir()
+                environment = {**os.environ, 'PATH': str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH']}
+
+                def git(*args):
+                    return subprocess.check_output(
+                        ['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', *args],
+                        cwd=source,
+                        env=environment,
+                        text=True,
+                    ).strip()
+
+                git('init', '-q')
+                tools = source / 'scripts/fork'
+                tools.mkdir(parents=True)
+                (tools / 'release_ci.py').write_text('raise RuntimeError("old application admission")\n')
+                (tools / 'release_archive.py').write_text('REVISION = "old"\n')
+                git('add', '.')
+                git('commit', '-qm', 'application')
+                application = git('rev-parse', 'HEAD')
+                (tools / 'release_ci.py').write_text('from release_archive import REVISION\nprint(REVISION)\n')
+                (tools / 'release_archive.py').write_text('REVISION = "workflow"\n')
+                git('commit', '-qam', 'controller')
+                workflow_revision = git('rev-parse', 'HEAD')
+                git('checkout', '-q', application)
+                workflow = yaml.safe_load((ROOT / f'.github/workflows/fork-cd-{target}.yml').read_text())
+                step = next(
+                    row
+                    for row in workflow['jobs']['deploy']['steps']
+                    if row.get('name') == 'Load release admission from workflow revision'
+                )
+                for revision, succeeds in [(workflow_revision, True), ('f' * 40, False)]:
+                    temporary = root / revision
+                    temporary.mkdir()
+                    result = subprocess.run(
+                        ['bash', '-e', '-o', 'pipefail', '-c', step['run']],
+                        cwd=source,
+                        env={**environment, 'RUNNER_TEMP': str(temporary), 'GITHUB_WORKFLOW_SHA': revision},
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                    self.assertEqual(result.stdout.strip(), 'workflow' if succeeds else '')
+                self.assertEqual(git('rev-parse', 'HEAD'), application)
+                self.assertEqual(git('status', '--porcelain'), '')
 
 
 class DeliveryDownloadTests(unittest.TestCase):

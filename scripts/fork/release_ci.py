@@ -10,7 +10,8 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import tarfile
+
+from release_archive import unpack_candidate
 
 REPOSITORY = 'summersmile1984/omi'
 CI_PATH = '.github/workflows/fork-checks.yml'
@@ -86,10 +87,7 @@ def verify_delivery(directory, sha, stage, target, api=github):
     if actual != receipt['files'][filename]:
         raise ValueError('delivery archive hash differs from its accepted receipt')
     if target == 'cloudflare':
-        destination = directory / 'unpacked'
-        destination.mkdir(mode=0o700)
-        with tarfile.open(path, 'r:gz') as archive:
-            archive.extractall(destination, filter='data')
+        unpack_candidate(path, directory / 'unpacked', receipt['candidate_digest'])
     return receipt
 
 

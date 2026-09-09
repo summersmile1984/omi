@@ -52,6 +52,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/fork-release-tools
+      - name: Load release admission from workflow revision
+        run: |
+          admission_dir="$RUNNER_TEMP/fork-release-admission"
+          mkdir "$admission_dir"
+          for file in release_ci.py release_archive.py; do
+            git show "$GITHUB_WORKFLOW_SHA:scripts/fork/$file" > "$admission_dir/$file"
+          done
+          python3 "$admission_dir/release_ci.py" --help
       - name: Download complete frozen delivery
         env:
           GH_TOKEN: ${{ github.token }}
@@ -86,7 +94,7 @@ jobs:
           SERVER_DEPLOY_ROOT: ${{ vars.SERVER_DEPLOY_ROOT }}
           SERVER_DOCKER_CONTEXT: ${{ vars.SERVER_DOCKER_CONTEXT }}
         run: |
-          python3 scripts/fork/release_ci.py verify --directory "$RELEASE_DIRECTORY" \
+          python3 "$RUNNER_TEMP/fork-release-admission/release_ci.py" verify --directory "$RELEASE_DIRECTORY" \
             --sha "$RELEASE_SHA" --stage "$RELEASE_STAGE" --target self_hosted
           python3 scripts/fork/deploy_server.py --delivery "$RELEASE_DIRECTORY" \
             --root "$SERVER_DEPLOY_ROOT" --docker-context "$SERVER_DOCKER_CONTEXT"

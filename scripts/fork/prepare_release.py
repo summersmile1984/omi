@@ -118,7 +118,15 @@ def build_plan(root: Path, output: Path, inventory: Path, brand: str, stage: str
             *[image for role, image in images.items() if role != 'runtime'],
         ],
         ['git', 'archive', '--format=tar.gz', f'--output={output / "source.tar.gz"}', commit],
-        ['tar', '-czf', str(output / 'cloudflare.tar.gz'), '-C', str(output), 'cloudflare'],
+        [
+            sys.executable,
+            'scripts/fork/release_archive.py',
+            'pack',
+            '--candidate',
+            str(candidate),
+            '--output',
+            str(output / 'cloudflare.tar.gz'),
+        ],
     ]
     return {
         'schema_version': 1,

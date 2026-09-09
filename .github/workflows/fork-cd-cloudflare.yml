@@ -56,6 +56,14 @@ jobs:
         run: |
           uvx uv==0.12.3 venv --python 3.14 deploy/cloudflare/python/api-core/.venv
           deploy/cloudflare/python/api-core/.venv/bin/python contracts/deployment/core.py --help
+      - name: Load release admission from workflow revision
+        run: |
+          admission_dir="$RUNNER_TEMP/fork-release-admission"
+          mkdir "$admission_dir"
+          for file in release_ci.py release_archive.py; do
+            git show "$GITHUB_WORKFLOW_SHA:scripts/fork/$file" > "$admission_dir/$file"
+          done
+          python3 "$admission_dir/release_ci.py" --help
       - name: Download complete frozen delivery
         env:
           GH_TOKEN: ${{ github.token }}
@@ -91,7 +99,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           RELEASE_SECRETS_JSON: ${{ secrets.RELEASE_SECRETS_JSON }}
         run: |
-          python3 scripts/fork/release_ci.py verify --directory "$RELEASE_DIRECTORY" \
+          python3 "$RUNNER_TEMP/fork-release-admission/release_ci.py" verify --directory "$RELEASE_DIRECTORY" \
             --sha "$RELEASE_SHA" --stage "$RELEASE_STAGE" --target cloudflare
           node scripts/fork/deploy-cloudflare.mjs --delivery "$RELEASE_DIRECTORY" \
             --journal-root "$RELEASE_JOURNAL_ROOT"

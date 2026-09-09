@@ -58,6 +58,20 @@ This addresses the observed `download-artifact@v4` silent truncation in run
 source, stage and archive-hash verification remains mandatory. This download
 step is workflow-owned so transport repairs preserve previously accepted bytes.
 
+The Cloudflare archive transports `candidate.json` plus only the files declared
+by that candidate's `artifact_files` owner. Staged dependency links and build
+scratch directories are excluded. Admission recomputes the candidate digest,
+checks every declared file hash, rejects links/duplicates/missing payload files,
+and never materializes unlisted archive members. The existing Node candidate
+owner still verifies source identity and complete frozen trees before publishing.
+The full archive hash in `delivery.json` is checked before selective extraction.
+
+Each CD loads the independent admission utility and its archive module from
+`GITHUB_WORKFLOW_SHA` using the fetched Git objects into `RUNNER_TEMP`. The
+application checkout stays at the admitted source SHA. This lets a workflow
+repair its transport/decoding without changing accepted application bytes or
+injecting untracked controller sources into the candidate identity.
+
 Artifacts are retained by Actions for 30 days. `delivery.json` binds source
 commit/tree, full CI run/attempt, brand/stage, Cloudflare candidate digest,
 Docker image IDs and each archive's SHA-256. `cloudflare.tar.gz` holds the
