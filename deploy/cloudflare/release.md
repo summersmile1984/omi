@@ -129,8 +129,11 @@ this first-release proof makes no claim about rollback to a previous version.
 An interrupted first deployment can use `apply --continue-from /absolute/prior-journal`
 with a newly qualified candidate. The release owner validates retained candidate
 files, journals and Git ancestry, checks every live Worker against the recorded
-version owner, and requires unchanged artifacts for any already published
-Worker. Both D1 authorities must exactly match the frozen schema catalog and
+version owner, and requires unchanged actual upload payloads and configuration
+for every already published Worker. The publisher's excluded
+timestamped README and root source map do not participate in this comparison;
+source-map-enabled uploads are refused by this continuation path. Both D1
+authorities must exactly match the frozen schema catalog and
 migration ledger with no foreign-key violations. Catalog comparison removes
 only SQL line-comment text outside quoted literals and identifiers: the real
 D1 migration removed comments from two table definitions, while local SQLite

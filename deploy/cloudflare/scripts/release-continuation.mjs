@@ -14,6 +14,21 @@ const version = (value) => Object.fromEntries(
     .map((key) => [key, value[key]]),
 );
 
+export function uploadedArtifactDigest(candidate, role) {
+  const files = Object.entries(candidate.artifact_files.workers ?? {})
+    .filter(([name]) => name.startsWith(`${role}/`));
+  if (!files.some(([name]) => name === `${role}/wrangler.json`))
+    throw new Error("continuation requires the retained Worker file manifest");
+  // The existing frozen publisher excludes its generated README (which contains
+  // a build timestamp) and root source map from upload. Config/assets/vendor and
+  // all executable module bytes remain exact; diagnostic timestamps are not code.
+  return digest(Object.fromEntries(files.filter(([name]) =>
+    name !== `${role}/modules/README.md` &&
+    !(name.startsWith(`${role}/modules/`) && name.endsWith(".map") &&
+      !name.slice(`${role}/modules/`.length).includes("/")),
+  )));
+}
+
 // This is retained release history, never a substitute for the new candidate's
 // exact-source CI/product qualification. The failed run 34373519437 owns the
 // motivating partial first release: full SQL, three Workers, failed Core upload.
@@ -32,6 +47,12 @@ export function readContinuation(reference, { root, candidate }) {
     const prior = verifyCandidateArtifacts(`${directory}-candidate`);
     const journal = readJson(resolve(directory, "journal.json"));
     assertJournal(prior, journal);
+    for (const event of journal.events.filter((entry) => entry.id.startsWith("deploy:") && entry.state === "confirmed")) {
+      const role = event.id.slice("deploy:".length), worker = prior.workers[role];
+      if (!worker || !/^[a-z][a-z-]*$/.test(role) || worker.config !== `workers/${role}/wrangler.json` ||
+          readJson(resolve(`${directory}-candidate`, worker.config)).upload_source_maps === true)
+        throw new Error("continuation requires the existing no-source-map upload contract");
+    }
     if (
       prior.candidate_digest !== next.candidate_digest ||
       journal.journal_digest !== next.journal_digest ||
@@ -88,7 +109,7 @@ export function assertContinuationBasis(candidate, chain, observations) {
             observed.message !== expectedMessage || !observed.version)
           throw new Error("continuation Worker ownership is incomplete");
         states[worker.name] = version(observed);
-        owners[worker.name] = worker.sha256;
+        owners[worker.name] = uploadedArtifactDigest(prior, role);
       } else if (["unknown", "in_flight"].includes(event.state)) {
         // Only an unchanged active version (including observed absence) proves
         // that an ambiguous upload did not replace serving code. An owned but
@@ -99,10 +120,10 @@ export function assertContinuationBasis(candidate, chain, observations) {
       } else throw new Error("unknown continuation mutation state");
     }
   }
-  for (const { name, sha256 } of Object.values(candidate.workers)) {
+  for (const [role, { name }] of Object.entries(candidate.workers)) {
     if (digest(observations[name]) !== digest(states[name]))
       throw new Error("Worker changed outside the retained release owner");
-    if (states[name].status === "present" && owners[name] !== sha256)
+    if (states[name].status === "present" && owners[name] !== uploadedArtifactDigest(candidate, role))
       throw new Error("continuation must preserve every already published artifact");
   }
 }

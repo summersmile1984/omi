@@ -34,17 +34,24 @@ async function fixture() {
     schema_version: 1, release_ready: false, brand: plan.brand, stage: plan.stage, account_id: plan.account_id,
     inventory: { d1_ids: {} }, resource_plan: structuredClone(plan), artifact_files: {},
     workers: {
-      auth: { name: "fixture-auth", sha256: digest("auth") },
-      core: { name: "fixture-core", sha256: digest(core) },
+      auth: { name: "fixture-auth", config: "workers/auth/wrangler.json", sha256: digest("auth") },
+      core: { name: "fixture-core", config: "workers/core/wrangler.json", sha256: digest(core) },
     },
     source: { commit: git("rev-parse", "HEAD"), tree: git("rev-parse", "HEAD^{tree}"), working_diff_sha256: digest("") },
   }, "candidate_digest");
   const retain = (value, name) => {
     const directory = resolve(root, name), payload = `${directory}-candidate`;
     mkdirSync(directory);
-    mkdirSync(resolve(payload, "payload"), { recursive: true });
-    writeFileSync(resolve(payload, "payload/core.txt"), value.workers.core.sha256);
-    value.artifact_files = { payload: fileTree(resolve(payload, "payload")) };
+    for (const [role, worker] of Object.entries(value.workers)) {
+      const directory = resolve(payload, "workers", role);
+      mkdirSync(resolve(directory, "modules"), { recursive: true });
+      writeFileSync(resolve(directory, "modules/index.js"), role === "auth" ? "auth" : worker.sha256);
+      writeFileSync(resolve(directory, "modules/README.md"), `Generated in ${name}`);
+      writeFileSync(resolve(directory, "modules/index.js.map"), `Build debug path ${name}`);
+      writeJson(directory, "wrangler.json", { name: worker.name, no_bundle: true });
+      worker.sha256 = digest(fileTree(directory));
+    }
+    value.artifact_files = { workers: fileTree(resolve(payload, "workers")) };
     seal(value, "candidate_digest");
     writeJson(payload, "candidate.json", value);
     return directory;
@@ -94,6 +101,7 @@ describe("observed first-release continuation", () => {
   it("keeps migrated data and published bytes, then qualifies and publishes a fresh candidate", async () => {
     const f = await fixture();
     const oldVersion = f.states["fixture-auth"].version;
+    expect(f.next.workers.auth.sha256).not.toBe(f.previous.workers.auth.sha256);
     f.succeed();
     const result = await f.execute();
     expect(f.adapter.migrate).toHaveBeenCalledTimes(1);
@@ -118,7 +126,7 @@ describe("observed first-release continuation", () => {
       const before = f.adapter.deploy.mock.calls.length;
       if (fault === "external-version") f.states["fixture-auth"].version = "external";
       if (fault === "unconfirmed-upload") f.states["fixture-core"] = { status: "present", version: "ambiguous" };
-      if (fault === "published-bytes") f.next.workers.auth.sha256 = digest("different-auth");
+      if (fault === "published-bytes") f.next.artifact_files.workers["auth/modules/index.js"] = digest("different-auth");
       if (fault === "sql") f.next.resource_plan.migrations[0].files[0].sha256 = digest("different-sql");
       if (fault === "journal-integrity") {
         f.previousJournal.state = "deploying";

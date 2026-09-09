@@ -200,6 +200,9 @@ describe("first-release schema qualification", () => {
   it.each([false, true])("checks fully migrated D1 before an owned partial continuation (drift=%s)", async (drift) => {
     const f = fixture("deployed");
     const { candidate, observations } = f.context;
+    candidate.artifact_files = { workers: Object.fromEntries(
+      Object.keys(candidate.workers).map((role) => [`${role}/wrangler.json`, digest(role)]),
+    ) };
     const before = structuredClone(observations.prior_versions);
     const [role, worker] = Object.entries(candidate.workers)[0];
     const owned = structuredClone(f.current[worker.name]);

@@ -176,7 +176,10 @@ that journal and its retained candidate, follows earlier failed attempts back
 to observed Worker absence, and locks the entire journal lineage. Every live
 version must match the recorded owner; an ambiguous upload may only be retried
 when the active version is provably unchanged. Already published Worker
-artifacts must be byte-identical in the freshly qualified candidate. The schema
+upload payloads and configuration must be byte-identical in the freshly qualified
+candidate. Wrangler's timestamped README and root source map are not uploaded
+under the existing no-source-map contract; their fresh build metadata does not
+change the retained code identity. The schema
 runner observes full D1 catalogs, migration ledgers and foreign keys before any
 continuation mutation. Publication gives all nine Workers the new candidate
 annotations while retaining Worker identities and persistent data. The normal
