@@ -52,6 +52,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/fork-release-tools
+      - name: Prepare Cloudflare HTTP contract Python
+        run: |
+          uvx uv==0.12.3 venv --python 3.14 deploy/cloudflare/python/api-core/.venv
+          deploy/cloudflare/python/api-core/.venv/bin/python contracts/deployment/core.py --help
       - uses: actions/download-artifact@v4
         with:
           name: ${{ needs.resolve.outputs.artifact }}

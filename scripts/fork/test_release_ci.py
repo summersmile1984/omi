@@ -3,11 +3,82 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
+import yaml
+
 from release_ci import CI_PATH, PREPARE_PATH, REPOSITORY, resolve_delivery, verify_ci, verify_delivery
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+class CloudflareQualificationToolsTests(unittest.TestCase):
+    """PR #14 omitted the interpreter on a clean CD checkout (run 34358400820)."""
+
+    def run_step(self, fail=False):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/fork-cd-cloudflare.yml').read_text())
+        step = next(
+            row
+            for row in workflow['jobs']['deploy']['steps']
+            if row.get('name') == 'Prepare Cloudflare HTTP contract Python'
+        )
+        with tempfile.TemporaryDirectory() as work:
+            directory = Path(work)
+            probe = directory / 'contracts/deployment/core.py'
+            probe.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / 'contracts/deployment/core.py', probe)
+            interpreter = directory / 'deploy/cloudflare/python/api-core/.venv/bin/python'
+            self.assertFalse(interpreter.exists())
+            bin_dir = directory / 'bin'
+            bin_dir.mkdir()
+            # The package/Python downloader is the controlled seam. The step
+            # creates a real venv and executes the unchanged standard-library
+            # HTTP probe; CI never downloads a Python distribution from this test.
+            provisioner = directory / 'provisioner.py'
+            provisioner.write_text(
+                'import sys, venv\n'
+                'assert sys.argv[1:] == ["uv==0.12.3", "venv", "--python", "3.14", '
+                '"deploy/cloudflare/python/api-core/.venv"]\n'
+                + (
+                    'raise SystemExit(47)\n'
+                    if fail
+                    else 'venv.EnvBuilder(with_pip=False, symlinks=True).create(sys.argv[-1])\n'
+                )
+            )
+            launcher = bin_dir / 'uvx'
+            launcher.write_text(
+                '#!/bin/bash\nexec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(provisioner)) + ' "$@"\n'
+            )
+            launcher.chmod(0o700)
+            result = subprocess.run(
+                ['bash', '-e', '-o', 'pipefail', '-c', step['run']],
+                cwd=directory,
+                env={**os.environ, 'PATH': str(bin_dir) + os.pathsep + os.environ['PATH']},
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return result, interpreter.exists()
+
+    def test_clean_cd_checkout_provisions_and_executes_the_real_http_probe(self):
+        result, exists = self.run_step()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(exists)
+        self.assertIn('--metadata', result.stdout)
+        self.assertIn('--remote', result.stdout)
+
+    def test_provisioning_failure_stops_before_running_the_probe(self):
+        result, exists = self.run_step(fail=True)
+        self.assertEqual(result.returncode, 47)
+        self.assertFalse(exists)
+        self.assertEqual(result.stdout, '')
 
 
 class ReleaseAuthorityTests(unittest.TestCase):
