@@ -30,6 +30,9 @@ combines it with candidate/version observations and the other product evidence.
 An isolated boot test may supply `auth_public_origin` to send the real HTTPS
 Origin header while connecting to a temporary loopback port. This preserves
 beta/production Auth guards without adding localhost to trusted origins.
+`api_public_origin` likewise checks referral URLs against the frozen public API
+identity while requests use the isolated boot-test port. Both overrides must be
+exact HTTPS origins.
 The client follows no redirects, retains no cookie jar, writes
 only route/status/timing traces, and never writes credentials or response
 bodies. Every run needs a fresh trace directory; it reports each case and exits

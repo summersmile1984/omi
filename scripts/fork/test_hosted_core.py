@@ -42,6 +42,7 @@ class HostedCoreTests(unittest.TestCase):
                 {
                     **self.metadata(directory),
                     'api_origin': 'http://127.0.0.1:12345',
+                    'api_public_origin': 'https://api.example.com',
                     'auth_origin': 'http://127.0.0.1:12346',
                     'auth_public_origin': 'https://auth.example.com',
                 }
@@ -54,6 +55,7 @@ class HostedCoreTests(unittest.TestCase):
 
             contract.opener.open = open_request
             contract.request('auth', 'GET', '/api/auth/get-session', 200)
+            self.assertEqual(contract.api_public_origin, 'https://api.example.com')
 
     def test_only_owned_signup_is_deleted_after_fresh_signin(self):
         for deletion_status in (200, 503):

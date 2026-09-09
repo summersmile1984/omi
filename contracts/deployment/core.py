@@ -61,8 +61,11 @@ class ProductContract:
             )
         self.metadata = metadata
         self.auth_public_origin = metadata.get('auth_public_origin', metadata['auth_origin'])
-        if 'auth_public_origin' in metadata:
-            origin = urlsplit(self.auth_public_origin)
+        self.api_public_origin = metadata.get('api_public_origin', metadata['api_origin'])
+        for key in ('auth_public_origin', 'api_public_origin'):
+            if key not in metadata:
+                continue
+            origin = urlsplit(metadata[key])
             require(
                 origin.scheme == 'https'
                 and bool(origin.hostname)
@@ -71,7 +74,7 @@ class ProductContract:
                 and origin.path in ('', '/')
                 and not origin.query
                 and not origin.fragment,
-                'auth_public_origin must be an explicit HTTPS origin',
+                key + ' must be an explicit HTTPS origin',
             )
         self.trace_dir = Path(metadata['trace_dir']).resolve()
         self.trace_dir.mkdir(parents=True, exist_ok=True)
@@ -501,7 +504,7 @@ class ProductContract:
         def referral_trial():
             link, _ = self.request('api', 'GET', '/v1/users/me/referral', 200, bearer=other.jwt)
             issued = urlsplit(link['referral_url'])
-            authority = urlsplit(self.metadata['api_origin'])
+            authority = urlsplit(self.api_public_origin)
             require(
                 (issued.scheme, issued.netloc) == (authority.scheme, authority.netloc),
                 'referral issuer escaped the selected API origin',

@@ -4,9 +4,11 @@
 import argparse
 import base64
 import json
+import io
 from pathlib import Path
 import re
 import sys
+import wave
 
 import httpx
 
@@ -23,7 +25,12 @@ def verify_chat_stream(text):
     require(len(terminal) == 1, 'chat must complete exactly once')
     answer = json.loads(base64.b64decode(terminal[0], validate=True))
     streamed = ''.join(line[6:].replace('__CRLF__', '\n') for line in lines if line.startswith('data: '))
-    require(bool(streamed.strip()) and streamed == answer.get('text'), 'chat stream differs from completed answer')
+    # utils.chat_followup.split_followup_tail rstrips the visible answer when
+    # removing the follow-up chip. Already emitted whitespace remains in SSE.
+    require(
+        bool(streamed.strip()) and streamed.rstrip() == str(answer.get('text', '')).rstrip(),
+        'chat stream differs from completed answer',
+    )
     return answer
 
 
@@ -49,7 +56,7 @@ def run(metadata):
 
             def request(method, path, **kwargs):
                 response = client.request(method, path, **kwargs)
-                require(response.status_code == 200, f'AI acceptance returned HTTP {response.status_code}')
+                require(response.status_code == 200, f'AI {method} {path} returned HTTP {response.status_code}')
                 require(len(response.content) < 4 * 1024 * 1024, 'AI acceptance response exceeded its bound')
                 return response
 
@@ -71,21 +78,46 @@ def run(metadata):
 
             contract.case('ai.public-streamed-chat-and-history', chat)
 
-            def speech():
-                audio = request('POST', '/v1/tts/synthesize', json={'text': '今天整理工作笔记。', 'voice_id': 'alloy'})
-                require(
-                    audio.headers.get('content-type', '').startswith('audio/mpeg') and len(audio.content) > 1000,
-                    'TTS omitted MP3 audio',
+            def speech_audio():
+                audio = request(
+                    'POST', '/v2/tts/synthesize', json={'text': '今天整理工作笔记。', 'output_format': 'wav'}
                 )
+                require(
+                    audio.headers.get('content-type', '').startswith('audio/wav') and len(audio.content) > 1000,
+                    'TTS omitted WAV audio',
+                )
+                return audio.content
+
+            audio_bytes = None
+
+            def speech_pcm():
+                nonlocal audio_bytes
+                audio_bytes = speech_audio()
+                with wave.open(io.BytesIO(audio_bytes)) as audio:
+                    require(audio.getsampwidth() == 2, 'TTS WAV is not PCM16')
+                    channels, sample_rate = audio.getnchannels(), audio.getframerate()
+                    pcm = audio.readframes(audio.getnframes())
                 transcript = request(
                     'POST',
                     '/v2/voice-message/transcribe',
-                    files={'file': ('release.mp3', audio.content, 'audio/mpeg')},
+                    content=pcm,
+                    headers={'Content-Type': 'application/octet-stream'},
+                    params={'language': 'zh', 'sample_rate': sample_rate, 'channels': channels, 'encoding': 'linear16'},
+                ).json()
+                verify_transcript(transcript)
+
+            contract.case('ai.public-tts-to-pcm-asr', speech_pcm)
+
+            def speech_upload():
+                transcript = request(
+                    'POST',
+                    '/v2/voice-message/transcribe',
+                    files={'files': ('release.wav', audio_bytes or speech_audio(), 'audio/wav')},
                     data={'language': 'zh'},
                 ).json()
                 verify_transcript(transcript)
 
-            contract.case('ai.public-tts-to-asr', speech)
+            contract.case('ai.public-tts-to-upload-asr', speech_upload)
     finally:
         report = contract.report()
         report['scope'] = 'public-chat-history-and-tts-asr-roundtrip'

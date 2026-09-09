@@ -20,7 +20,19 @@ from urllib.request import urlopen
 from release_ci import sha256_file
 
 ROOT = Path(__file__).resolve().parents[2]
-IMAGE_KEYS = {'backend': 'BACKEND_IMAGE', 'auth': 'AUTH_SERVER_IMAGE', 'llm': 'LLM_IMAGE', 'web': 'WEB_IMAGE'}
+sys.path.insert(0, str(ROOT / 'deploy/self-host'))
+from model_services import profile_for, image_keys
+
+
+def accepted_image_keys(receipt):
+    selected = image_keys(
+        profile_for(
+            {'SELF_HOST_BRAND_MANIFEST': f'brand/{receipt["brand"]}/manifest.yaml', 'SELF_HOST_STAGE': receipt['stage']}
+        )
+    )
+    if set(receipt['images']) != set(selected):
+        raise ValueError('delivery image roles differ from the frozen deployment profile')
+    return selected
 
 
 def run(command, *, env=None, capture=False, cwd=ROOT):
@@ -40,7 +52,7 @@ def read_environment(path):
 
 
 def verify_images(receipt, environment, execute=run):
-    for role, key in IMAGE_KEYS.items():
+    for role, key in accepted_image_keys(receipt).items():
         accepted = receipt['images'][role]['image_id']
         if not re.fullmatch(r'sha256:[a-f0-9]{64}', accepted) or environment.get(key) != accepted:
             raise ValueError(f'{role} deployment must use its exact accepted image ID')
@@ -121,6 +133,7 @@ def boot_test(release, values, env):
         'brand_id': 'eddy',
         'trace_dir': str(directory),
         'api_origin': 'http://127.0.0.1:' + ports['BACKEND_PORT'],
+        'api_public_origin': values['PUBLIC_BACKEND_URL'],
         'auth_origin': auth_origin,
         'auth_public_origin': values['PUBLIC_AUTH_URL'],
     }
@@ -176,7 +189,7 @@ def deploy(delivery, destination, docker_context):
         # Import only after checking the accepted archive. Every service then uses
         # the content-addressed image ID, never its mutable tag.
         run(['docker', 'image', 'load', '--input', str(archive)], env=env, capture=True)
-        values.update({key: receipt['images'][role]['image_id'] for role, key in IMAGE_KEYS.items()})
+        values.update({key: receipt['images'][role]['image_id'] for role, key in accepted_image_keys(receipt).items()})
         verify_images(receipt, values, lambda args, **kwargs: run(args, env=env, **kwargs))
         release = destination / 'releases' / receipt['commit']
         if release.exists():

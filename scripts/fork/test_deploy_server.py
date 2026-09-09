@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from urllib.error import URLError
-from deploy_server import IMAGE_KEYS, verify_images, save, deploy, wait_ready
+from deploy_server import verify_images, save, deploy, wait_ready
 from release_ci import sha256_file
 from server_gateway import gateway_config
 from server_ai_acceptance import verify_chat_stream, verify_transcript
@@ -18,6 +18,12 @@ class ServerDeliveryTests(unittest.TestCase):
     def test_public_ai_requires_a_completed_payload_and_recognized_audio(self):
         terminal = base64.b64encode(json.dumps({'text': 'Synthetic answer'}).encode()).decode()
         self.assertEqual(verify_chat_stream('data: Synthetic answer\n\ndone: ' + terminal)['text'], 'Synthetic answer')
+        self.assertEqual(
+            verify_chat_stream('data: Synthetic answer__CRLF____CRLF__\n\ndone: ' + terminal)['text'],
+            'Synthetic answer',
+        )
+        with self.assertRaises(RuntimeError):
+            verify_chat_stream('data: Different answer\n\ndone: ' + terminal)
         for stream in ('data: Synthetic answer', 'done: ' + terminal, 'error: unavailable\n' + 'done: ' + terminal):
             with self.assertRaises(RuntimeError):
                 verify_chat_stream(stream)
@@ -27,13 +33,16 @@ class ServerDeliveryTests(unittest.TestCase):
 
     def setUp(self):
         self.image_id = 'sha256:' + 'c' * 64
+        image_keys = {'backend': 'BACKEND_IMAGE', 'auth': 'AUTH_SERVER_IMAGE', 'web': 'WEB_IMAGE'}
         self.receipt = {
+            'brand': 'eddy',
+            'stage': 'beta',
             'commit': 'a' * 40,
             'tree': 'b' * 40,
             'platform': 'linux/amd64',
-            'images': {role: {'image_id': self.image_id} for role in IMAGE_KEYS},
+            'images': {role: {'image_id': self.image_id} for role in image_keys},
         }
-        self.environment = {key: self.image_id for key in IMAGE_KEYS.values()}
+        self.environment = {key: self.image_id for key in image_keys.values()}
         self.image = {
             'Id': self.image_id,
             'Os': 'linux',
@@ -93,6 +102,15 @@ class ServerDeliveryTests(unittest.TestCase):
 
     def test_accepted_content_addressed_images(self):
         verify_images(self.receipt, self.environment, self.inspect)
+
+    def test_image_roles_must_match_the_selected_profile(self):
+        del self.receipt['images']['backend']
+        with self.assertRaisesRegex(ValueError, 'image roles'):
+            verify_images(self.receipt, self.environment, self.inspect)
+        self.receipt['images']['backend'] = {'image_id': self.image_id}
+        self.receipt['images']['llm'] = {'image_id': self.image_id}
+        with self.assertRaisesRegex(ValueError, 'image roles'):
+            verify_images(self.receipt, self.environment, self.inspect)
 
     def test_mutable_tag_or_wrong_source_rejected(self):
         self.environment['BACKEND_IMAGE'] = 'backend:latest'

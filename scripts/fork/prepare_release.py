@@ -9,8 +9,12 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'deploy/self-host'))
+from model_services import profile_for, image_keys
+
 PYTHON_BASE = 'python:3.11.10-slim-bookworm@sha256:840e180ebcc6e5c8efab209c43f5e40fd2af98cb49db5c7103c90539c56bb30e'
 
 
@@ -29,7 +33,10 @@ def build_plan(root: Path, output: Path, inventory: Path, brand: str, stage: str
     if output == root or root in output.parents:
         raise ValueError('release output must be outside the source checkout')
     candidate = output / 'cloudflare'
-    images = {role: f'memweft-release/{brand}-{role}:{commit}' for role in ('runtime', 'backend', 'auth', 'llm', 'web')}
+    profile = profile_for(
+        {'SELF_HOST_BRAND_MANIFEST': f'brand/{brand}/manifest.yaml', 'SELF_HOST_STAGE': stage}, root=root
+    )
+    images = {role: f'memweft-release/{brand}-{role}:{commit}' for role in ('runtime', *image_keys(profile))}
     common = ['docker', 'build', '--platform', 'linux/amd64']
     labels = ['--build-arg', f'OMI_SOURCE_GIT_COMMIT={commit}', '--build-arg', f'OMI_SOURCE_GIT_TREE={tree}']
     commands = [
@@ -73,17 +80,23 @@ def build_plan(root: Path, output: Path, inventory: Path, brand: str, stage: str
             '.',
         ],
         [*common, '-f', 'auth-server/Dockerfile', *labels, '-t', images['auth'], '.'],
-        [
-            *common,
-            '-f',
-            'deploy/self-host/Dockerfile.llm',
-            *labels,
-            '--build-arg',
-            f'BACKEND_IMAGE={images["backend"]}',
-            '-t',
-            images['llm'],
-            '.',
-        ],
+        *(
+            [
+                [
+                    *common,
+                    '-f',
+                    'deploy/self-host/Dockerfile.llm',
+                    *labels,
+                    '--build-arg',
+                    f'BACKEND_IMAGE={images["backend"]}',
+                    '-t',
+                    images['llm'],
+                    '.',
+                ]
+            ]
+            if 'llm' in images
+            else []
+        ),
         [
             *common,
             '-f',

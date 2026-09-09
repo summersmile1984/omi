@@ -43,7 +43,10 @@ Artifacts are retained by Actions for 30 days. `delivery.json` binds source
 commit/tree, full CI run/attempt, brand/stage, Cloudflare candidate digest,
 Docker image IDs and each archive's SHA-256. `cloudflare.tar.gz` holds the
 original frozen Worker/Web/SQL candidate; `server-images.tar` holds backend,
-Auth, LLM runtime and Web images; `source.tar.gz` holds committed source.
+Auth and Web images, plus the LLM runtime only for native inference profiles;
+`source.tar.gz` holds committed source. Preparation and deployment derive the
+required image roles from the same frozen brand/stage profile. Missing or extra
+roles fail admission.
 Model weights and runtime credentials are outside the archives.
 
 The CD resolver verifies the fork, workflow path, successful manual run, main

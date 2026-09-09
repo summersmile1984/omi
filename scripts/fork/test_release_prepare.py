@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import yaml
 
 from prepare_release import ROOT, build_plan, prepare, sha256
 
@@ -83,7 +84,10 @@ class PreparationTests(unittest.TestCase):
         self.root = Path(temporary.name) / 'source'
         brand = self.root / 'brand/example/manifest.yaml'
         brand.parent.mkdir(parents=True)
-        brand.write_text('fixture')
+        manifest = yaml.safe_load((ROOT / 'brand/eddy/manifest.yaml').read_text())
+        manifest['brand']['id'] = 'example'
+        manifest.pop('self_hosted_inference')
+        brand.write_text(json.dumps(manifest))
         self.output = self.root.parent / 'delivery'
         self.plan = build_plan(
             self.root, self.output, self.root.parent / 'inventory.json', 'example', 'production', 'a' * 40, 'b' * 40
@@ -170,6 +174,18 @@ class PreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'commit source'):
             prepare(self.plan, self.root, self.output, self.run_command)
         self.assertFalse(self.output.exists())
+
+    def test_mimo_freezes_only_selected_application_images(self):
+        manifest_path = self.root / 'brand/example/manifest.yaml'
+        manifest = json.loads(manifest_path.read_text())
+        manifest['self_hosted_inference'] = {'production': 'mimo-cn'}
+        manifest_path.write_text(json.dumps(manifest))
+        self.plan = build_plan(
+            self.root, self.output, self.root.parent / 'inventory.json', 'example', 'production', 'a' * 40, 'b' * 40
+        )
+        receipt = prepare(self.plan, self.root, self.output, self.run_command)
+        self.assertEqual(set(receipt['images']), {'backend', 'auth', 'web'})
+        self.assertFalse(any('deploy/self-host/Dockerfile.llm' in cmd for cmd in self.commands))
 
 
 if __name__ == '__main__':

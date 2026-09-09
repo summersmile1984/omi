@@ -12,15 +12,26 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = Path(__file__).with_name('compose.production.yml')
 
 
-def profile_for(values):
+def profile_for(values, *, root=ROOT):
     sys.path.insert(0, str(ROOT / 'scripts/profiles'))
     from render import resolve
 
-    manifest = (ROOT / values['SELF_HOST_BRAND_MANIFEST']).resolve()
-    if not manifest.is_relative_to(ROOT):
+    root = root.resolve()
+    manifest = (root / values['SELF_HOST_BRAND_MANIFEST']).resolve()
+    if not manifest.is_relative_to(root):
         raise ValueError('deployment manifest must remain inside the source checkout')
     stage = values.get('SELF_HOST_STAGE', 'production')
     return resolve('self_hosted', None, manifest, stage)['profiles']['self_hosted.' + stage]
+
+
+def image_keys(profile):
+    """The frozen application images required by the selected Compose graph."""
+    from fork.operator_ai import select
+
+    keys = {'backend': 'BACKEND_IMAGE', 'auth': 'AUTH_SERVER_IMAGE', 'web': 'WEB_IMAGE'}
+    if not select(profile):
+        keys['llm'] = 'LLM_IMAGE'
+    return keys
 
 
 def specialize(config, profile):
