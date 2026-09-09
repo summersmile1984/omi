@@ -8,7 +8,9 @@ import { runReleaseProcess } from "../scripts/release-wrangler.mjs";
 // Real incident: PR #14 Fork Checks 34331397206 failed after an unread-body 401
 // because Wrangler's separate ProxyWorker dropped the next request and exited.
 // This runtime contract complements the unchanged full Python product suite.
-it("serves frozen multiworker HTTP, D1, SSE and WebSocket without the dev proxy", () => {
+// Preparation 34347494195 then exposed the release projection's absolute paths;
+// the same real runtime behavior must hold for both producer representations.
+it.each(["relative", "absolute"])("serves frozen multiworker HTTP, D1, SSE and WebSocket with %s module paths", (paths) => {
   const root = resolve(import.meta.dirname, "..");
   const directory = mkdtempSync(resolve(tmpdir(), "cf-direct-runtime-"));
   const worker = `export default { async fetch(request, env) {
@@ -45,8 +47,12 @@ it("serves frozen multiworker HTTP, D1, SSE and WebSocket without the dev proxy"
         resolve(bundle, "wrangler.json"),
         JSON.stringify({
           name,
-          main: "modules/index.js",
-          base_dir: "modules",
+          main:
+            paths === "absolute"
+              ? resolve(bundle, "modules/index.js")
+              : "modules/index.js",
+          base_dir:
+            paths === "absolute" ? resolve(bundle, "modules") : "modules",
           no_bundle: true,
           find_additional_modules: true,
           compatibility_date: "2026-08-27",
@@ -74,8 +80,14 @@ it("serves frozen multiworker HTTP, D1, SSE and WebSocket without the dev proxy"
       resolve(directory, "web/wrangler.json"),
       JSON.stringify({
         name: "web",
-        main: "modules/index.js",
-        base_dir: "modules",
+        main:
+          paths === "absolute"
+            ? resolve(directory, "web/modules/index.js")
+            : "modules/index.js",
+        base_dir:
+          paths === "absolute"
+            ? resolve(directory, "web/modules")
+            : "modules",
         no_bundle: true,
         find_additional_modules: true,
         compatibility_date: "2026-08-27",
@@ -84,7 +96,7 @@ it("serves frozen multiworker HTTP, D1, SSE and WebSocket without the dev proxy"
       })
     );
     const source = `import assert from 'node:assert/strict';
-      import {writeFileSync} from 'node:fs'; import {once} from 'node:events'; import {WebSocket} from 'ws';
+      import {readFileSync,writeFileSync} from 'node:fs'; import {once} from 'node:events'; import {WebSocket} from 'ws';
       import {startFrozenRuntime,frozenRuntimeWorker} from './contracts/local-runtime.mjs';
       const directory=${JSON.stringify(directory)};
       const configs=['edge','api'].map(role=>directory+'/'+role+'/wrangler.json');
@@ -115,6 +127,10 @@ it("serves frozen multiworker HTTP, D1, SSE and WebSocket without the dev proxy"
         assert.deepEqual(await (await fetch(web)).json(),[{id:'retained'}]);
         writeFileSync(directory+'/edge/modules/unknown.extension','not a declared module');
         assert.throws(()=>frozenRuntimeWorker(configs[0]),/no declared runtime type/);
+        const invalid=JSON.parse(readFileSync(configs[0],'utf8'));
+        invalid.base_dir=directory+'/api/modules';
+        writeFileSync(configs[0],JSON.stringify(invalid));
+        assert.throws(()=>frozenRuntimeWorker(configs[0]),/requires a frozen upload configuration/);
         console.log('RESULT direct runtime passed');
       } finally { await runtime.dispose(); }`;
     const invocation = pythonWorkerInvocation("api-core", ["dev"], {

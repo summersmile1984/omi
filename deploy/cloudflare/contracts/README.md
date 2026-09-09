@@ -101,6 +101,12 @@ locked Wrangler/workerd, then executes:
 
 The frozen local target uses Wrangler's pinned binding converter and serves
 HTTP, SSE and WebSocket directly from the pinned Miniflare/workerd runtime.
+Its module-directory check compares resolved paths: release projection makes
+the copied artifact paths absolute, while source-mode freezing uses relative
+paths. Both must still point to that artifact's own `modules` directory. The
+existing runtime test exercises HTTP, D1, SSE, WebSocket and Web assets in both
+forms and rejects another artifact's module directory. This covers preparation
+run `34347494195`, which rejected the valid absolute projection before startup.
 Wrangler still builds the upload artifacts and applies the real D1 migrations.
 The extra `wrangler dev` ProxyWorker hop is excluded: the Linux reproduction
 of [workers-sdk#14641](https://github.com/cloudflare/workers-sdk/issues/14641)
