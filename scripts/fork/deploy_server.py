@@ -169,7 +169,7 @@ def boot_test(release, values, env):
         )
 
 
-def deploy(delivery, destination, docker_context):
+def deploy(delivery, destination, docker_context, *, qualification=False):
     if not destination.is_absolute() or '/_work/' in str(destination) or destination == Path('/'):
         raise ValueError('Server requires a persistent absolute directory outside Actions _work')
     if not docker_context or docker_context in {'default', 'desktop-linux'}:
@@ -191,7 +191,14 @@ def deploy(delivery, destination, docker_context):
         run(['docker', 'image', 'load', '--input', str(archive)], env=env, capture=True)
         values.update({key: receipt['images'][role]['image_id'] for role, key in accepted_image_keys(receipt).items()})
         verify_images(receipt, values, lambda args, **kwargs: run(args, env=env, **kwargs))
-        release = destination / 'releases' / receipt['commit']
+        # Keep bind-mounted source on the same host mount as the deployment.
+        # A macOS /var/folders scratch path is not shared into the Server VM;
+        # Docker otherwise creates an empty directory for searxng-settings.yml.
+        release = (
+            destination / 'qualifications' / f'{receipt["commit"]}-{uuid.uuid4().hex}'
+            if qualification
+            else destination / 'releases' / receipt['commit']
+        )
         if release.exists():
             raise ValueError('release already has an execution directory; inspect its journal before retrying')
         source = release / 'source'
@@ -227,6 +234,17 @@ def deploy(delivery, destination, docker_context):
             journal['state'] = 'boot-testing'
             save(path, journal)
             boot_test(release, values, env)
+            if qualification:
+                journal.update(
+                    state='image-qualified',
+                    artifact_qualified=True,
+                    image_archive_sha256=receipt['files']['server-images.tar'],
+                    images=receipt['images'],
+                    execution_directory=str(release),
+                    completed_at=int(time.time()),
+                )
+                save(path, journal)
+                return journal
             if journal['previous']:
                 previous = Path(journal['previous']['release'])
                 prior_env = {
@@ -296,7 +314,7 @@ def deploy(delivery, destination, docker_context):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', nargs='?', default='deploy', choices=['deploy', 'verify-images'])
+    parser.add_argument('operation', nargs='?', default='deploy', choices=['deploy', 'verify-images', 'qualify'])
     parser.add_argument('--delivery', type=Path)
     parser.add_argument('--root', type=Path)
     parser.add_argument('--docker-context')
@@ -306,7 +324,18 @@ def main():
     if args.operation == 'verify-images':
         verify_images(json.loads(args.receipt.read_text()), read_environment(args.env_file))
     else:
-        deploy(args.delivery.resolve(), args.root, args.docker_context)
+        result = deploy(
+            args.delivery.resolve(),
+            args.root,
+            args.docker_context,
+            qualification=args.operation == 'qualify',
+        )
+        if args.operation == 'qualify':
+            print(
+                json.dumps(
+                    {key: result[key] for key in ('state', 'commit', 'artifact_qualified', 'execution_directory')}
+                )
+            )
 
 
 if __name__ == '__main__':

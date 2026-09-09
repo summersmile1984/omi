@@ -154,6 +154,31 @@ export async function provisionResources({
   return journal;
 }
 
+export async function observeReleaseCandidate(candidate, adapter, continuation) {
+  const before = {};
+  for (const resource of candidate.resource_plan.resources.filter((entry) =>
+    ["d1", "r2", "queue", "vectorize"].includes(entry.kind),
+  )) {
+    const observed = await adapter.observeResource(resource);
+    if (observed.status !== "present")
+      throw new Error(`resource is not provisioned: ${resource.key}`);
+    if (
+      resource.kind === "d1" &&
+      observed.id !== candidate.inventory.d1_ids[resource.key.split(":")[1]]
+    )
+      throw new Error("remote D1 UUID differs from candidate");
+    before[resource.key] = observed;
+  }
+  for (const worker of Object.values(candidate.workers))
+    before[worker.name] = await adapter.observeWorker(worker.name);
+  before.release_phase = "candidate";
+  if (continuation) {
+    continuation.verify(before);
+    before.continuation = continuation.reference;
+  }
+  return before;
+}
+
 export async function applyRelease({
   candidate,
   journal,
@@ -171,26 +196,7 @@ export async function applyRelease({
   // never accepted from an operator-authored approval JSON file.
   journal.state = "qualifying";
   record(journal, persist);
-  for (const resource of candidate.resource_plan.resources.filter((entry) =>
-    ["d1", "r2", "queue", "vectorize"].includes(entry.kind),
-  )) {
-    const observed = await adapter.observeResource(resource);
-    if (observed.status !== "present")
-      throw new Error(`resource is not provisioned: ${resource.key}`);
-    if (
-      resource.kind === "d1" &&
-      observed.id !== candidate.inventory.d1_ids[resource.key.split(":")[1]]
-    )
-      throw new Error("remote D1 UUID differs from candidate");
-    journal.before[resource.key] = observed;
-  }
-  for (const worker of Object.values(candidate.workers))
-    journal.before[worker.name] = await adapter.observeWorker(worker.name);
-  journal.before.release_phase = "candidate";
-  if (continuation) {
-    continuation.verify(journal.before);
-    journal.before.continuation = continuation.reference;
-  }
+  journal.before = await observeReleaseCandidate(candidate, adapter, continuation);
   journal.qualification = await qualify(journal.before);
   if (
     !journal.qualification.length ||

@@ -1,4 +1,4 @@
-name: Fork Release Preparation
+name: Fork Release CI
 
 on:
   workflow_dispatch:
@@ -22,6 +22,10 @@ on:
         description: CF3 resource inventory JSON (resource IDs and secret references only)
         required: false
         type: string
+      continue_from:
+        description: Retained incomplete Cloudflare first-release journal to qualify
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -33,9 +37,12 @@ concurrency:
 
 jobs:
   prepare:
+    name: Freeze delivery artifacts
     if: github.repository == 'summersmile1984/omi'
-    runs-on: [self-hosted, macOS, ARM64, mac-studio, memweft]
+    runs-on: ${{ fromJSON('["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
     timeout-minutes: 180
+    outputs:
+      artifact: delivery-${{ github.sha }}-${{ inputs.brand }}-${{ inputs.stage }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,6 +97,7 @@ jobs:
           RELEASE_STAGE: ${{ inputs.stage }}
           RELEASE_INVENTORY: ${{ inputs.inventory_json || (inputs.stage == 'beta' && vars.CF_INVENTORY_BETA || vars.CF_INVENTORY_PRODUCTION) }}
           RELEASE_CI_RUN_ID: ${{ inputs.ci_run_id }}
+          RELEASE_CONTINUE_FROM: ${{ inputs.continue_from }}
           GH_TOKEN: ${{ github.token }}
         run: |
           work=$(mktemp -d "$RUNNER_TEMP/fork-delivery.XXXXXX")
@@ -103,14 +111,15 @@ jobs:
           PY
           unset RELEASE_INVENTORY
           python3 scripts/fork/prepare_release.py --brand "$RELEASE_BRAND" --stage "$RELEASE_STAGE" \
-            --inventory "$work/inventory.json" --output "$work/delivery" --ci-run-id "$RELEASE_CI_RUN_ID"
+            --inventory "$work/inventory.json" --output "$work/delivery" --ci-run-id "$RELEASE_CI_RUN_ID" \
+            --continue-from "$RELEASE_CONTINUE_FROM"
           echo "RELEASE_OUT=$work/delivery" >> "$GITHUB_ENV"
           {
             echo '### Prepared deployment artifacts'
             echo "Source: $GITHUB_SHA"
             echo 'Cloudflare: nine frozen Workers, assets, SQL and both Web targets.'
             echo 'Server OS: Linux amd64 backend, auth and Web images; native inference profiles also include the LLM runtime.'
-            echo 'delivery.json binds source, image IDs and archive hashes. Deployment qualification remains pending.'
+            echo 'delivery.json binds source, image IDs, archive hashes and Cloudflare continuation intent. Artifact qualification runs next.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Preserve hidden Worker modules and filesystem metadata inside the tar.
@@ -125,3 +134,38 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+
+  cloudflare:
+    name: Cloudflare artifact qualification
+    needs: prepare
+    uses: ./.github/workflows/fork-cd-cloudflare.yml
+    with:
+      delivery_run_id: ${{ format('{0}', github.run_id) }}
+      stage: ${{ inputs.stage }}
+      qualification_artifact: ${{ needs.prepare.outputs.artifact }}
+
+  server:
+    name: Server image qualification
+    needs: prepare
+    uses: ./.github/workflows/fork-cd-server.yml
+    with:
+      delivery_run_id: ${{ format('{0}', github.run_id) }}
+      stage: ${{ inputs.stage }}
+      qualification_artifact: ${{ needs.prepare.outputs.artifact }}
+
+  ready:
+    name: Release ready
+    if: always()
+    needs: [prepare, cloudflare, server]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every artifact qualification
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          CLOUDFLARE_RESULT: ${{ needs.cloudflare.result }}
+          SERVER_RESULT: ${{ needs.server.result }}
+        run: |
+          test "$PREPARE_RESULT" = success
+          test "$CLOUDFLARE_RESULT" = success
+          test "$SERVER_RESULT" = success
+          echo 'The exact GitHub delivery passed transport, Cloudflare runtime/schema and Server image boot qualification. CD may consume this run.' >> "$GITHUB_STEP_SUMMARY"

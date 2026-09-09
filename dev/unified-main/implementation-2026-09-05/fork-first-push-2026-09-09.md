@@ -39,11 +39,14 @@ tests that secret/config sources and upstream classifications remain enforced.
 Until the combined upstream entry point can consume the fork policy, the
 documented PR-preflight hatch is also needed for the CD feature-branch push.
 The standalone upstream check remains reported as incompatible, not passed.
-The upstream push actionlint invocation likewise omits the fork's checked-in
-runner-label config and rejects `mac-studio` / `memweft`. For this CD push,
-`PRE_PUSH_SKIP_ACTIONLINT=1` replaces that invocation with the completed
-`fork-workflow-lint` manifest check using `.github/actionlint.fork.yaml`.
-The same full syntax/shell checker passed for all four fork workflow files.
+The original CD push also needed `PRE_PUSH_SKIP_ACTIONLINT=1` because the
+upstream invocation omitted the fork's runner-label config. The release CI
+upgrade resolves that subissue: constant `fromJSON` runner selectors keep the
+same labels and pass upstream actionlint. `fork-workflow-lint` resolves those
+constant YAML nodes before checking the real labels with the existing fork
+config; a behavioral test also proves an unknown label still fails. The
+actionlint hatch is no longer needed. Other incompatibilities in this record
+remain open.
 
 The upstream dead-code scanner only follows `app/lib/main.dart`; it cannot see
 the imports added by `app/fork/prepare.py` to the staged main/AuthService. It

@@ -16,12 +16,43 @@ import unittest
 
 import yaml
 
-from release_ci import CI_PATH, PREPARE_PATH, REPOSITORY, resolve_delivery, verify_ci, verify_delivery
+from release_ci import CI_PATH, PREPARE_PATH, RELEASE_JOBS, REPOSITORY, resolve_delivery, verify_ci, verify_delivery
 from release_archive import pack_candidate, unpack_candidate
 from download_delivery import download, FILES as DELIVERY_FILES, ATTEMPTS
+from workflow_lint import resolve_constant_runners
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class WorkflowRunnerLabelsTests(unittest.TestCase):
+    def test_fork_runner_labels_are_still_checked_by_the_actual_linter(self):
+        for label in ['mac-studio', 'misspelled-fork-runner']:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                workflow = Path(directory) / 'fixture.yml'
+                selector = json.dumps(['self-hosted', 'macOS', 'ARM64', label, 'memweft'])
+                workflow.write_text(
+                    'on: workflow_dispatch\njobs:\n  fixture:\n'
+                    "    runs-on: ${{ fromJSON('" + selector + "') }}\n"
+                    '    steps:\n      - run: exit 0\n'
+                )
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / 'scripts/fork/workflow_lint.py'), str(workflow)],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode == 0, label == 'mac-studio', result.stdout + result.stderr)
+                if label != 'mac-studio':
+                    self.assertIn('runner-label', result.stdout + result.stderr)
+
+    def test_selector_resolution_preserves_workflow_lines_and_rejects_wrong_shapes(self):
+        prefix = 'name: fixture\njobs:\n  fixture:\n    runs-on: '
+        suffix = "    steps:\n      - run: |\n          runs-on: ${{ fromJSON('[1]') }}\n"
+        source = prefix + "${{ fromJSON('[\"self-hosted\",\"memweft\"]') }}\n" + suffix
+        self.assertEqual(resolve_constant_runners(source), prefix + '["self-hosted", "memweft"]\n' + suffix)
+        for value in ['{}', 'null', '[]', '[1]']:
+            with self.assertRaises(ValueError):
+                resolve_constant_runners(prefix + "${{ fromJSON('" + value + "') }}")
 
 
 class CloudflareContinuationHandoffTests(unittest.TestCase):
@@ -40,7 +71,15 @@ class CloudflareContinuationHandoffTests(unittest.TestCase):
             }
             (candidate_dir / 'candidate.json').write_text(json.dumps(candidate))
             (delivery / 'delivery.json').write_text(
-                json.dumps({'candidate_digest': 'c' * 64, 'commit': 'a' * 40, 'stage': 'beta', 'ci_run_id': 123})
+                json.dumps(
+                    {
+                        'candidate_digest': 'c' * 64,
+                        'commit': 'a' * 40,
+                        'stage': 'beta',
+                        'ci_run_id': 123,
+                        'cloudflare_continue_from': previous,
+                    }
+                )
             )
             publisher = directory / 'deploy/cloudflare/scripts/release.mjs'
             publisher.parent.mkdir(parents=True)
@@ -57,8 +96,6 @@ class CloudflareContinuationHandoffTests(unittest.TestCase):
                 '--journal-root',
                 str(directory / 'journals'),
             ]
-            if previous:
-                command += ['--continue-from', previous]
             result = subprocess.run(
                 command,
                 cwd=directory,
@@ -386,6 +423,100 @@ class CloudflareQualificationToolsTests(unittest.TestCase):
         self.assertEqual(result.stdout, '')
 
 
+class ReusableDeliveryWorkflowTests(unittest.TestCase):
+    def workflow(self, target):
+        return yaml.safe_load((ROOT / f'.github/workflows/fork-cd-{target}.yml').read_text())
+
+    def execute(self, step, environment, *, fail_verify=False):
+        with tempfile.TemporaryDirectory() as work:
+            directory = Path(work)
+            capture = directory / 'commands.jsonl'
+            fake = directory / 'capture.py'
+            fake.write_text(
+                'import json, os, sys\n'
+                'with open(os.environ["CAPTURE"], "a") as f: f.write(json.dumps(sys.argv[1:])+"\\n")\n'
+                'if os.environ.get("FAIL_VERIFY") == "true" and "verify" in sys.argv: sys.exit(47)\n'
+            )
+            for name in ('python3', 'node'):
+                launcher = directory / name
+                launcher.write_text(
+                    '#!/bin/bash\nexec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(fake)) + ' "$@"\n'
+                )
+                launcher.chmod(0o700)
+            output = directory / 'outputs'
+            result = subprocess.run(
+                ['bash', '-e', '-o', 'pipefail', '-c', step['run']],
+                env={
+                    **os.environ,
+                    'PATH': str(directory) + os.pathsep + os.environ['PATH'],
+                    'CAPTURE': str(capture),
+                    'FAIL_VERIFY': str(fail_verify).lower(),
+                    'GITHUB_OUTPUT': str(output),
+                    'RUNNER_TEMP': str(directory),
+                    **environment,
+                },
+                capture_output=True,
+                text=True,
+            )
+            commands = [json.loads(line) for line in capture.read_text().splitlines()] if capture.exists() else []
+            return result, commands, output.read_text() if output.exists() else ''
+
+    def test_private_qualification_selects_only_the_current_run_artifact_and_cd_keeps_full_admission(self):
+        sha = 'a' * 40
+        for target in ('cloudflare', 'server'):
+            step = self.workflow(target)['jobs']['resolve']['steps'][-1]
+            env = {
+                'GITHUB_SHA': sha,
+                'GITHUB_RUN_ID': '12',
+                'DELIVERY_RUN_ID': '12',
+                'RELEASE_STAGE': 'beta',
+                'QUALIFICATION_ARTIFACT': f'delivery-{sha}-eddy-beta',
+            }
+            result, commands, output = self.execute(step, env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(commands, [])
+            self.assertEqual(output, f'sha={sha}\nartifact=delivery-{sha}-eddy-beta\n')
+            for changed in [{'DELIVERY_RUN_ID': '11'}, {'QUALIFICATION_ARTIFACT': f'delivery-{sha}-eddy-production'}]:
+                result, commands, _ = self.execute(step, {**env, **changed})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(commands, [])
+            result, commands, _ = self.execute(step, {**env, 'QUALIFICATION_ARTIFACT': ''})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(commands, [['scripts/fork/release_ci.py', 'resolve', '--run-id', '12', '--stage', 'beta']])
+
+    def test_shared_execution_verifies_before_selecting_private_qualification_or_persistent_deploy(self):
+        for target in ('cloudflare', 'server'):
+            step = self.workflow(target)['jobs']['deploy']['steps'][-1]
+            for qualification in (True, False):
+                for failure in (True, False):
+                    env = {
+                        'RELEASE_DIRECTORY': '/fixture/delivery',
+                        'RELEASE_SHA': 'a' * 40,
+                        'RELEASE_STAGE': 'beta',
+                        'QUALIFICATION_ARTIFACT': 'fixture' if qualification else '',
+                        'RELEASE_JOURNAL_ROOT': '/fixture/journals',
+                        'SERVER_DEPLOY_ROOT': '/fixture/server',
+                        'SERVER_DOCKER_CONTEXT': 'colima-eddy-server',
+                    }
+                    result, commands, _ = self.execute(step, env, fail_verify=failure)
+                    self.assertEqual(result.returncode, 47 if failure else 0, result.stderr)
+                    self.assertIn('verify', commands[0])
+                    self.assertEqual(len(commands), 1 if failure else 2)
+                    if not failure and target == 'cloudflare':
+                        self.assertEqual(
+                            commands[1][0],
+                            (
+                                'deploy/cloudflare/scripts/release-cloud-probe.mjs'
+                                if qualification
+                                else 'scripts/fork/deploy-cloudflare.mjs'
+                            ),
+                        )
+                    elif not failure:
+                        self.assertEqual(
+                            commands[1][:2], ['scripts/fork/deploy_server.py', 'qualify' if qualification else 'deploy']
+                        )
+
+
 class ReleaseAuthorityTests(unittest.TestCase):
     def setUp(self):
         self.sha = 'a' * 40
@@ -436,9 +567,66 @@ class ReleaseAuthorityTests(unittest.TestCase):
 
     def test_delivery_run_must_have_correct_stage_artifact(self):
         self.run['path'] = PREPARE_PATH
+        self.jobs = [{'name': name, 'conclusion': 'success'} for name in RELEASE_JOBS]
         self.assertEqual(resolve_delivery(2, 'beta', self.api)['sha'], self.sha)
         with self.assertRaises(ValueError):
             resolve_delivery(2, 'production', self.api)
+
+    def test_legacy_build_only_runs_and_incomplete_artifact_qualification_cannot_authorize_cd(self):
+        self.run['path'] = PREPARE_PATH
+        for jobs in [
+            [{'name': 'prepare', 'conclusion': 'success'}],
+            [
+                {
+                    'name': name,
+                    'conclusion': (
+                        'skipped'
+                        if name == 'Cloudflare artifact qualification / Execute accepted delivery'
+                        else 'success'
+                    ),
+                }
+                for name in RELEASE_JOBS
+            ],
+            [
+                {
+                    'name': name,
+                    'conclusion': (
+                        'failure' if name == 'Server image qualification / Execute accepted delivery' else 'success'
+                    ),
+                }
+                for name in RELEASE_JOBS
+            ],
+        ]:
+            with self.subTest(jobs=jobs):
+                self.jobs = jobs
+                with self.assertRaisesRegex(ValueError, 'release CI must qualify'):
+                    resolve_delivery(2, 'beta', self.api)
+
+    def test_release_ready_executes_the_workflow_gate_for_success_failure_and_skipped_jobs(self):
+        workflow = yaml.safe_load((ROOT / PREPARE_PATH).read_text())
+        names = set()
+        for job in workflow['jobs'].values():
+            if 'uses' in job:
+                called = yaml.safe_load((ROOT / job['uses']).read_text())
+                names.update(job['name'] + ' / ' + child['name'] for child in called['jobs'].values())
+            else:
+                names.add(job['name'])
+        self.assertEqual(names, RELEASE_JOBS)
+        step = workflow['jobs']['ready']['steps'][0]
+        for outcome in ['success', 'failure', 'skipped', 'cancelled', '']:
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as directory:
+                result = subprocess.run(
+                    ['bash', '-e', '-o', 'pipefail', '-c', step['run']],
+                    env={
+                        **os.environ,
+                        'PREPARE_RESULT': 'success',
+                        'CLOUDFLARE_RESULT': outcome,
+                        'SERVER_RESULT': 'success',
+                        'GITHUB_STEP_SUMMARY': str(Path(directory) / 'summary'),
+                    },
+                    capture_output=True,
+                )
+                self.assertEqual(result.returncode == 0, outcome == 'success')
 
     def test_archive_tampering_stops_before_deployment(self):
         with tempfile.TemporaryDirectory() as work:

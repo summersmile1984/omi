@@ -1,10 +1,22 @@
 name: Fork CD Cloudflare
 
 on:
+  workflow_call:
+    inputs:
+      delivery_run_id:
+        type: string
+        required: true
+      stage:
+        type: string
+        required: true
+      qualification_artifact:
+        description: Frozen artifact from the calling Release CI; only private qualification runs
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       delivery_run_id:
-        description: Successful Fork Release Preparation run ID
+        description: Successful Fork Release CI run ID with both artifact qualifications
         type: string
         required: true
       stage:
@@ -13,10 +25,6 @@ on:
         options: [beta, production]
         default: beta
         required: true
-      continue_from:
-        description: Retained incomplete first-release journal name; leave empty for a fresh release
-        type: string
-        required: false
 
 permissions:
   contents: read
@@ -28,8 +36,9 @@ concurrency:
 
 jobs:
   resolve:
+    name: Resolve delivery
     if: github.repository == 'summersmile1984/omi' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, macOS, ARM64, mac-studio, memweft]
+    runs-on: ${{ fromJSON('["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
     outputs:
       sha: ${{ steps.delivery.outputs.sha }}
       artifact: ${{ steps.delivery.outputs.artifact }}
@@ -42,12 +51,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DELIVERY_RUN_ID: ${{ inputs.delivery_run_id }}
           RELEASE_STAGE: ${{ inputs.stage }}
-        run: python3 scripts/fork/release_ci.py resolve --run-id "$DELIVERY_RUN_ID" --stage "$RELEASE_STAGE"
+          QUALIFICATION_ARTIFACT: ${{ inputs.qualification_artifact }}
+        run: |
+          if [ -n "$QUALIFICATION_ARTIFACT" ]; then
+            test "$DELIVERY_RUN_ID" = "$GITHUB_RUN_ID"
+            test "$QUALIFICATION_ARTIFACT" = "delivery-$GITHUB_SHA-eddy-$RELEASE_STAGE"
+            echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            echo "artifact=$QUALIFICATION_ARTIFACT" >> "$GITHUB_OUTPUT"
+          else
+            python3 scripts/fork/release_ci.py resolve --run-id "$DELIVERY_RUN_ID" --stage "$RELEASE_STAGE"
+          fi
 
   deploy:
+    name: Execute accepted delivery
     needs: resolve
     environment: cloudflare-${{ inputs.stage }}
-    runs-on: [self-hosted, macOS, ARM64, mac-studio, memweft]
+    runs-on: ${{ fromJSON('["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -78,22 +97,23 @@ jobs:
           python3 "$RUNNER_TEMP/fork-release-admission/download_delivery.py" \
             --run-id "$DELIVERY_RUN_ID" --artifact "$DELIVERY_ARTIFACT" \
             --directory "$DELIVERY_DIRECTORY"
-      - name: Verify and publish frozen Cloudflare release
+      - name: Verify and execute frozen Cloudflare delivery
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_STAGE: ${{ inputs.stage }}
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+          QUALIFICATION_ARTIFACT: ${{ inputs.qualification_artifact }}
           RELEASE_DIRECTORY: ${{ runner.temp }}/cf-delivery-${{ github.run_id }}
           RELEASE_JOURNAL_ROOT: ${{ vars.RELEASE_JOURNAL_ROOT }}
-          RELEASE_CONTINUE_FROM: ${{ inputs.continue_from }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           RELEASE_SECRETS_JSON: ${{ secrets.RELEASE_SECRETS_JSON }}
         run: |
           python3 "$RUNNER_TEMP/fork-release-admission/release_ci.py" verify --directory "$RELEASE_DIRECTORY" \
             --sha "$RELEASE_SHA" --stage "$RELEASE_STAGE" --target cloudflare
-          continuation=()
-          if [[ -n "$RELEASE_CONTINUE_FROM" ]]; then
-            continuation=(--continue-from "$RELEASE_CONTINUE_FROM")
+          if [ -n "$QUALIFICATION_ARTIFACT" ]; then
+            node deploy/cloudflare/scripts/release-cloud-probe.mjs --delivery "$RELEASE_DIRECTORY" \
+              --journal-root "$RELEASE_JOURNAL_ROOT"
+          else
+            node scripts/fork/deploy-cloudflare.mjs --delivery "$RELEASE_DIRECTORY" \
+              --journal-root "$RELEASE_JOURNAL_ROOT"
           fi
-          node scripts/fork/deploy-cloudflare.mjs --delivery "$RELEASE_DIRECTORY" \
-            --journal-root "$RELEASE_JOURNAL_ROOT" "${continuation[@]}"

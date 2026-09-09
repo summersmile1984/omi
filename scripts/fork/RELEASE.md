@@ -9,14 +9,14 @@ domains, environment credentials and serialization locks.
 | Workflow | Input | Effect |
 | --- | --- | --- |
 | Fork Checks (`fork-checks.yml`) | Manual run at the selected commit | Runs the complete portable and native check manifest. Push/PR runs remain diff-scoped. |
-| Fork Release Preparation (`fork-release-prepare.yml`) | Successful full `ci_run_id`, `brand`, `stage`, optional `inventory_json` | Revalidates the exact CI SHA and freezes both delivery archives. No deployment credentials. |
+| Fork Release CI (`fork-release-prepare.yml`) | Successful full `ci_run_id`, `brand`, `stage`, optional `inventory_json` and `continue_from` | Freezes once, downloads the actual GitHub artifact through the CD transport, qualifies all nine Workers in Cloudflare and boots the accepted Server images with disposable state. |
 | Fork CD Cloudflare (`fork-cd-cloudflare.yml`) | Successful `delivery_run_id`, `stage` | Checks main ancestry and artifact hashes, then publishes the frozen nine-Worker candidate with qualified migrations and remote observations. |
 | Fork CD Server OS (`fork-cd-server.yml`) | Successful `delivery_run_id`, `stage` | Imports accepted Docker image IDs, boots them against disposable state, snapshots an existing deployment, migrates and starts the persistent service, then checks public HTTP contracts. |
 
 Deploy workflows must be dispatched from `main`. The artifact's source must
 already be integrated into `main`; a feature branch cannot use production
 secrets. Each target/stage has its own concurrency group with cancellation
-disabled. A successful prepare run can feed either deployment independently.
+disabled. A successful Release CI run can feed either deployment independently.
 Preparing the same SHA does not rerun the entire Fork Checks workflow. The
 existing Cloudflare build owner still runs its local component qualification
 and Wrangler/Docker business regression before freezing artifacts.
@@ -26,16 +26,74 @@ and Wrangler/Docker business regression before freezing artifacts.
 gh workflow run fork-release-prepare.yml --ref main \
   -f ci_run_id=CI_RUN_ID -f brand=eddy -f stage=beta
 
-# Use the resulting successful preparation run ID in either independent CD.
+# Use the successful Release CI run ID in either independent CD.
 gh workflow run fork-cd-cloudflare.yml --ref main \
-  -f delivery_run_id=PREPARATION_RUN_ID -f stage=beta
+  -f delivery_run_id=RELEASE_CI_RUN_ID -f stage=beta
 gh workflow run fork-cd-server.yml --ref main \
-  -f delivery_run_id=PREPARATION_RUN_ID -f stage=beta
+  -f delivery_run_id=RELEASE_CI_RUN_ID -f stage=beta
 ```
 
 Preparation requires a clean committed checkout, pinned component dependencies
 and Docker. `prepare_release.py --plan` prints its build recipe without
 execution. The supported Server image platform remains `linux/amd64`.
+
+Source checks alone never authorize CD. Release CI must finish all four stages:
+`Freeze delivery artifacts`, `Cloudflare artifact qualification`, `Server image
+qualification`, and `Release ready`. Each target stage calls its existing CD workflow in
+qualification mode, yielding six executable jobs in total. Both CD resolvers
+require those exact job names and successful outcomes in the selected run attempt. Historical build-only
+preparation runs, skipped qualification and failed qualification are rejected.
+The freeze job has no deployment credentials. The reusable target workflows own
+both qualification and deployment: the same tool setup, artifact transport,
+verification, environment credentials and concurrency lock run in both modes.
+Only `workflow_call` accepts `qualification_artifact`; the ordinary manual CD
+inputs cannot bypass completed Release CI admission. Qualification accepts only
+the calling run's exact SHA/stage artifact and returns before persistent promotion.
+Both modes use the existing target/stage GitHub environments, restricted to `main`.
+[GitHub's reusable workflow contract](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)
+keeps same-repository calls at the caller's commit and uses the environment
+secrets declared by the called job. Deployment settings remain owned by the
+existing target workflows, so the upstream name-only diff checker and the
+fork's additive classifier both run without a new classification exception.
+
+Cloudflare qualification reuses the actual frozen publisher with all uploaded
+module/assets bytes, variables, secrets and compatibility settings. It creates
+two uniquely owned temporary D1 databases, executes the frozen SQL through the
+real remote migration command and compares catalogs, ledgers and foreign keys
+with the existing frozen SQL owner. Trial Workers bind to those temporary D1
+IDs; other resource bindings remain the candidate's.
+Nine temporary private Workers use isolated Worker/DO identities and service
+bindings within that temporary set. Public routes, Cron and Queue consumers are
+not installed. A tenth, token-guarded gateway allows only the five fixed read-only
+health/readiness/login paths, and checks each twice for application initialization and a
+subsequent request. Auth's signing-key bootstrap stays in temporary D1; Edge
+readiness also exercises the trial service graph and private rate-limit DO.
+The production schema/continuation owner also checks the real
+D1 catalogs and active version basis before upload. Every probe is observed and
+deleted only with matching transaction/version annotations; temporary D1 deletion
+requires the independently returned and observed creation ID. An unknown external
+version is retained for reconciliation and fails CI. Evidence lives in a private
+`ci-<commit>-<uuid>` directory under `RELEASE_JOURNAL_ROOT`.
+
+This cloud rehearsal catches actual upload/startup failures such as beta run
+34373519437; a local Wrangler dry-run cannot substitute for it. It does not
+promote temporary Worker version IDs to the target names. CD publishes the same
+verified frozen bytes and rechecks live state and public business behavior.
+Durable Object Workers do not support ordinary Preview URLs, and data-resource
+state is outside Worker version identity; see the official [Preview URL limits](https://developers.cloudflare.com/workers/versions-and-deployments/preview-urls/#limitations)
+and [version model](https://developers.cloudflare.com/workers/versions-and-deployments/).
+
+Server qualification invokes the same `deploy_server.py` image loader, identity
+validation and `boot_test` used by CD, with a separate execution directory and
+disposable Compose project/volumes. A failed boot fails CI. A successful boot
+records `artifact_qualified=true` and `release_ready=false`; it does not back up,
+restart or promote the persistent service. The exact downloaded images are
+exercised before the delivery run becomes eligible for either CD.
+Qualification source and private evidence are retained under
+`SERVER_DEPLOY_ROOT/qualifications/<commit>-<uuid>`, on the same host mount as
+the real deployment. Do not stage bind-mounted source under macOS
+`/var/folders`: that path is outside the default Colima host mounts and Docker
+can create an empty directory where a settings file was expected.
 
 Cloudflare CD creates the Python 3.14 interpreter consumed by its frozen HTTP
 contract runner before downloading artifacts. The HTTP client uses only the
@@ -79,7 +137,8 @@ repair its transport/decoding without changing accepted application bytes or
 injecting untracked controller sources into the candidate identity.
 
 Artifacts are retained by Actions for 30 days. `delivery.json` binds source
-commit/tree, full CI run/attempt, brand/stage, Cloudflare candidate digest,
+commit/tree, full CI run/attempt, brand/stage, Cloudflare candidate digest and
+the qualified `cloudflare_continue_from` journal name,
 Docker image IDs and each archive's SHA-256. `cloudflare.tar.gz` holds the
 original frozen Worker/Web/SQL candidate; `server-images.tar` holds backend,
 Auth and Web images, plus the LLM runtime only for native inference profiles;
@@ -89,7 +148,8 @@ roles fail admission.
 Model weights and runtime credentials are outside the archives.
 
 The CD resolver verifies the fork, workflow path, successful manual run, main
-ancestry, stage-specific artifact and full CI jobs. The consumer verifies the
+ancestry, stage-specific artifact, all six executable Release CI jobs and full source CI.
+The consumer verifies the
 archive bytes again. Server image inspection additionally verifies Linux
 architecture and commit/tree labels. Neither deployment rebuilds accepted
 application images. Local build receipts alone never authorize deployment.
@@ -170,7 +230,7 @@ claim that every native UI journey was exercised against the public endpoint.
 
 The existing prior-schema qualifier admits first release into empty D1, or
 continuation of an owned incomplete first release with exactly matching SQL and
-infrastructure. Cloudflare CD's optional `continue_from` input names the retained
+infrastructure. Release CI's optional `continue_from` input names the retained
 journal (a basename under the stage's `RELEASE_JOURNAL_ROOT`). The owner checks
 that journal and its retained candidate, follows earlier failed attempts back
 to observed Worker absence, and locks the entire journal lineage. Every live
@@ -186,6 +246,9 @@ annotations while retaining Worker identities and persistent data. The normal
 source/CI/local-product and deployed-product gates still run. No old proof
 approves new bytes, no prior journal is rewritten, and a completed release
 cannot be adopted as an incomplete first release.
+The continuation intent is part of the immutable `delivery.json`. Cloudflare
+CD consumes that qualified intent directly; operators cannot substitute a
+different journal in the CD dispatch inputs.
 
 An update with changed retained Worker artifacts, arbitrary schema migration,
 or rollback must provide the separate prior-version/new-schema compatibility
@@ -210,6 +273,14 @@ environment variables no longer block startup.
 Hermetic provenance, image admission, private journal writes and hosted-account
 cleanup tests run in the existing fork manifest lane. Workflow syntax uses
 `actionlint`. Cloudflare product-runner tests run in its Vitest suite. Live
-provider/public-origin tests run during CD and are not hermetic CI tests.
-Successful CI, successful preparation, and successful public deployment are
-separate results; only a completed deployment journal proves the last one.
+`scripts/fork/workflow_lint.py` resolves constant `fromJSON` runner selectors
+through the YAML syntax tree before invoking actionlint with the fork catalog.
+The upstream workflow/catalog stay unchanged, while the fork check still rejects
+unknown labels. This removes the observed upstream custom-label false failure
+without hiding misspelled runner selectors from the fork's required check.
+
+The source CI test suite stays hermetic. The separately credentialed Release CI
+performs real cloud runtime/schema and installed-image qualification; CD retains
+the full provider/public-origin acceptance. Only a completed deployment journal
+proves that the public deployment has succeeded. External platform/state changes
+after qualification can still fail CD; no source test promises their availability.

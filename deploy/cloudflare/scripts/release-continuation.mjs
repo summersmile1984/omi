@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import { lstatSync } from "node:fs";
 import { digest } from "./resource-input.mjs";
 import { git, readJson, verifyCandidateArtifacts } from "./release-files.mjs";
@@ -9,6 +9,16 @@ const infrastructure = [
   "platform_bindings", "secrets", "deploy_order", "rollback_order",
 ];
 const absent = () => ({ status: "absent" });
+
+export function deliveryContinuation(journalRoot, receipt) {
+  const previous = receipt.cloudflare_continue_from;
+  if (previous === undefined || previous === "") return undefined;
+  if (typeof previous !== "string" || basename(previous) !== previous ||
+      !/^(beta|production)-[0-9a-f]{40}-[0-9a-f-]{36}$/.test(previous) ||
+      !previous.startsWith(`${receipt.stage}-`))
+    throw new Error("continuation must name one retained journal in this stage");
+  return resolve(journalRoot, previous);
+}
 const version = (value) => Object.fromEntries(
   ["status", "version", "tag", "message"].filter((key) => key in value)
     .map((key) => [key, value[key]]),

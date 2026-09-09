@@ -59,10 +59,10 @@ checks:
     reason: "The advertised manual Fork Checks entry emitted an empty diff base because workflow_dispatch has no event.before; execute that exact shell in real Git fixtures for PR, push and manual events. This tests the workflow consumer rather than duplicating the shared manifest selector."
 
   - id: fork-workflow-lint
-    command: ["actionlint", "-config-file", ".github/actionlint.fork.yaml", ".github/workflows/fork-checks.yml", ".github/workflows/fork-release-prepare.yml", ".github/workflows/fork-cd-cloudflare.yml", ".github/workflows/fork-cd-server.yml"]
-    triggers: [".github/workflows/fork-*.yml", ".github/actions/fork-release-tools/**", ".github/actionlint.fork.yaml"]
+    command: ["python3", "scripts/fork/workflow_lint.py"]
+    triggers: [".github/workflows/fork-*.yml", ".github/actions/fork-release-tools/**", ".github/actionlint.fork.yaml", "scripts/fork/workflow_lint.py"]
     lanes: ["local", "ci"]
-    reason: "The fork CI and release preparation workflows use the existing actionlint grammar and shell checks on both local and CI lanes, as required by the workflow component guide."
+    reason: "Upstream Repo Checks 34385427248 rejected only the fork's declared Mac Studio labels. Resolve constant fromJSON selectors, then run the same actionlint grammar, shell and runner-label checks with the fork catalog in both lanes; changing the upstream catalog is forbidden."
 
   - id: fork-deployment-settings
     command: ["bash", "-c", "python3 scripts/fork/test_deployment_settings.py && python3 scripts/fork/check_deployment_settings.py --base \"$1\"", "--", "{base}"]

@@ -48,7 +48,7 @@ export function comparableSchemaCatalog(rows) {
   });
 }
 
-async function query(adapter, authority, sql) {
+export async function querySchema(adapter, authority, sql) {
   const response = await adapter.api(
     `d1/database/${authority.database_id}/query`,
     { method: "POST", body: { sql } }
@@ -187,7 +187,7 @@ export async function qualifyFirstRelease(
       authority.database_id !== candidate.inventory.d1_ids[authority.authority]
     )
       throw new Error("schema database does not match the candidate authority");
-    const rows = await query(adapter, authority, SCHEMA_QUERY);
+    const rows = await querySchema(adapter, authority, SCHEMA_QUERY);
     const ledger = await adapter.migrationLedger(authority);
     const expected = fixtures.find(
       (row) => row.authority === authority.authority
@@ -205,7 +205,7 @@ export async function qualifyFirstRelease(
         digest(ledger) !== digest(authority.files.map((file) => file.name))
       )
         throw new Error("deployed schema differs from the executed frozen SQL");
-      if ((await query(adapter, authority, "PRAGMA foreign_key_check")).length)
+      if ((await querySchema(adapter, authority, "PRAGMA foreign_key_check")).length)
         throw new Error("deployed D1 has invalid foreign key references");
       cases.push(`first-release.${phase === "candidate" ? "retained" : "deployed"}-frozen-schema.${authority.authority}`);
     }

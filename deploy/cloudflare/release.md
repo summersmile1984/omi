@@ -61,6 +61,20 @@ removed Next/vinext commands, and production could mutate resources/migrations
 before building Web. These are behavioral owner tests, not a new source scrape
 or duplicate deployment registry.
 
+The trusted `Fork Release CI` workflow adds a mandatory test of the actual
+transported GitHub artifact before its run can authorize CD. The fixed
+`release-cloud-probe.mjs` owner reuses `WranglerReleaseAdapter` to upload all nine
+frozen Worker payloads with their runtime bindings into private temporary names,
+executes and verifies the frozen migrations on two independently owned temporary
+D1 databases to which those trial Workers bind,
+checks schema/continuation through `observeReleaseCandidate` and the existing
+first-release schema owner, and exercises cold/subsequent health requests through
+a separate restricted service gateway. It never registers live routes, Cron or
+Queue consumers. Probe cleanup verifies the recorded transaction and observed
+version before deletion. This is an actual cloud integration qualification,
+separate from hermetic source CI tests, and catches the upload failure observed
+in beta CD 34373519437 before a release run can turn green.
+
 ## Local product regression
 
 After building and freezing all artifacts, `release.mjs prepare` now starts

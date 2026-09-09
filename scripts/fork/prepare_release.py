@@ -210,7 +210,12 @@ def main() -> None:
     parser.add_argument(
         '--ci-run-id', type=int, help='reuse a successful complete Fork Checks run at this exact commit'
     )
+    parser.add_argument('--continue-from', default='', help='bind the Cloudflare continuation intent to this delivery')
     args = parser.parse_args()
+    if args.continue_from and not re.fullmatch(
+        re.escape(args.stage) + r'-[0-9a-f]{40}-[0-9a-f-]{36}', args.continue_from
+    ):
+        parser.error('continuation must name a retained journal in the selected stage')
     output = args.output.resolve()
     plan = build_plan(
         ROOT,
@@ -227,8 +232,10 @@ def main() -> None:
 
         ci = verify_ci(args.ci_run_id, plan['commit'])
     result = plan if args.plan else prepare(plan, ROOT, output)
-    if ci and not args.plan:
-        result.update(ci)
+    if not args.plan:
+        if ci:
+            result.update(ci)
+        result['cloudflare_continue_from'] = args.continue_from
         (output / 'delivery.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))
 

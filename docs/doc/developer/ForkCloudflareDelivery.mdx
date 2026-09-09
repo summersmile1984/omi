@@ -4,10 +4,26 @@ description: "Frozen releases, Core initialization, and deployment evidence"
 ---
 
 The fork prepares immutable Cloudflare and Server OS artifacts from one source
-commit with successful full CI. Separate GitHub deployment workflows consume the
-same preparation receipt. The workflow source controls download/admission; the
+commit with successful full source CI. `Fork Release CI` then downloads the
+actual GitHub artifact through the CD transport, verifies its frozen bytes,
+uploads all nine Workers into an isolated private Worker set, checks actual
+Python application startup, validates the target D1/version basis, and boots the
+accepted Server images with disposable volumes. Its final `Release ready` job
+fails if either target's artifact qualification failed or was skipped. Separate
+GitHub deployment workflows require that complete successful run and consume the
+same receipt. Historical build-only runs no longer authorize CD. The workflow source controls download/admission; the
 application and its qualification runners remain bound to the accepted source.
 See `scripts/fork/RELEASE.md` for workflow inputs and environment configuration.
+
+Cloudflare trial uploads retain the exact application modules, variables and
+secrets while isolating Worker/DO names and service routing. The same frozen SQL
+is applied to two newly created temporary D1 databases; its remote schema, ledger
+and foreign keys must match before trial Workers bind to those databases. They
+have no public routes, scheduled triggers or Queue consumers. A separate secret
+protected gateway exercises only fixed health/readiness/login paths. Trial versions and D1 databases are
+cleaned up under their recorded owner; the CD action publishes the same frozen
+bytes to the real names and runs public business acceptance. Its continuation
+journal is selected during Release CI and bound into the delivery receipt.
 
 Cloudflare Core keeps its business composition in `python/api-core/src/entry.py`.
 The ordinary source projector copies those exact bytes to the staged
