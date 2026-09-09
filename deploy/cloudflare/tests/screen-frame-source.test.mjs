@@ -11,7 +11,9 @@ const generator = resolve(
   "deploy/cloudflare/scripts/screen_frame_sources.py"
 );
 
-it("executes the staged screenshot wire, codec, prompt and survivor policy from upstream sources", () => {
+// CI run 34301227612 took 6.739s including interpreter/import/codec startup.
+// Keep the ordinary 5s suite deadline; give this subprocess integration 15s.
+it("executes the staged screenshot wire, codec, prompt and survivor policy from upstream sources", { timeout: 15_000 }, () => {
   const stage = mkdtempSync(resolve(tmpdir(), "screen-frame-source-"));
   try {
     const generated = spawnSync(python, [generator, "--output", stage], {

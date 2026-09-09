@@ -99,3 +99,19 @@ All 11 tests pass; the actual bootstrap selected managed Python 3.12.13 on this
 Mac without privilege changes. Workflow actionlint including shellcheck passes.
 The correction push retains the documented first-push hook exception; this
 record does not claim the separate upstream preflight passed.
+
+## Screenshot CI timeout correction and endpoint configuration
+
+The correction to run `34301227612` bounds Cloudflare Vitest concurrency to
+four and budgets the observed 6.739-second screenshot subprocess integration
+at 15 seconds. The original assertions remain. The exact route lane passes
+locally: 1108 Vitest, 1295 API Core and 151 API AI tests, plus route registration,
+manifest and TypeScript checks. All four selected profile/brand checks and
+all three selected ownership/workflow checks also pass. The Eddy configuration
+now separates both deployment targets under the operator's `smartipproxy.com`.
+
+This feature-branch correction push uses the same explicit `--no-verify` hook
+hatch under open record `CI-FORK-2026-09-09-1`: the main-relative upstream
+dead-code/format/toolchain conflicts above remain unresolved. It does not claim
+that gate passed or authorize a main merge. Fork CI still runs on the pushed
+commit; the complete manifest is requested independently of diff selection.

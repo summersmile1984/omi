@@ -120,6 +120,13 @@ establish timing variability, not the exact cause of the original host delay.
 The fix bounds Vitest to four workers and gives only that subprocess integration
 15 seconds; all upstream behavior assertions and other test deadlines remain.
 
+After the fix, `bash deploy/cloudflare/ci/routes.sh` passed end to end on Node
+22.23.2: 133 Vitest files / 1108 tests, 1295 API Core tests and 151 API AI tests,
+plus route inventory, manifest and TypeScript checks. Profile/brand checks
+passed all four manifest entries, and upstream ownership, CI orchestration and
+workflow lint passed all three entries. These are local results; a subsequent
+GitHub run must report its own result for the pushed commit.
+
 ## Proposed Server endpoint on the CI machine
 
 Mac Studio can host the persistent Server deployment as well as the runner.

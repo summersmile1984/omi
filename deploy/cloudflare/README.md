@@ -380,6 +380,14 @@ does not claim workerd, browser, authentication integration, or production
 qualification. `verify:migrations` reads remote D1 and is intentionally outside
 this credential-free lane. Runtime contracts remain part of CI-1.
 
+Vitest uses at most four workers in local runs and CI because these tests also
+launch Python interpreters; the shared Mac Studio's CPU count is not a safe
+process budget. Ordinary tests keep Vitest's 5-second deadline. The staged
+screenshot integration has a 15-second deadline, sized above the observed
+6.739-second run in [34301227612](https://github.com/summersmile1984/omi/actions/runs/34301227612).
+It still executes the unchanged upstream wire, image codec, prompt and survivor
+policy assertions; no retries or skipped tests turn a failure into a pass.
+
 API Core now serves `GET /v2/desktop/prompts` through authenticated Edge
 routing. Migration `0153_desktop_prompts.sql` stores operator-authored global
 prompt documents in `cf_desktop_prompts`; `active=1` rows retain upstream
