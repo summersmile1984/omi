@@ -109,7 +109,7 @@ jobs:
             echo '### Prepared deployment artifacts'
             echo "Source: $GITHUB_SHA"
             echo 'Cloudflare: nine frozen Workers, assets, SQL and both Web targets.'
-            echo 'Server OS: Linux amd64 backend, auth, LLM runtime and Web image archive.'
+            echo 'Server OS: Linux amd64 backend, auth and Web images; native inference profiles also include the LLM runtime.'
             echo 'delivery.json binds source, image IDs and archive hashes. Deployment qualification remains pending.'
           } >> "$GITHUB_STEP_SUMMARY"
 

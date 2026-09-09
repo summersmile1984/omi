@@ -31,6 +31,39 @@ import { fileTree, git } from "../scripts/release-files.mjs";
 
 const componentRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export function failedCoreCases(metadata) {
+  if (!metadata?.trace_dir) return [];
+  try {
+    const path = resolve(metadata.trace_dir, "core-results.json");
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024)
+      return [];
+    const report = JSON.parse(readFileSync(path, "utf8"));
+    if (!Array.isArray(report.cases)) return [];
+    return report.cases
+      .filter(
+        (row) =>
+          row.result === "fail" &&
+          typeof row.id === "string" &&
+          /^[a-zA-Z0-9_.:-]{1,100}$/.test(row.id)
+      )
+      .slice(0, 50)
+      .map((row) => ({
+        id: row.id,
+        ...(typeof row.error === "string" &&
+        /returned HTTP [1-5][0-9]{2}; expected [1-5][0-9]{2}/.test(row.error)
+          ? {
+              status: row.error.match(
+                /returned HTTP [1-5][0-9]{2}; expected [1-5][0-9]{2}/
+              )[0],
+            }
+          : {}),
+      }));
+  } catch {
+    return [];
+  }
+}
 async function freePort() {
   const socket = createServer();
   await new Promise((resolve, reject) => {
@@ -654,6 +687,9 @@ if (
     process.exitCode = controller.signal.aborted ? 130 : 0;
   } catch (error) {
     console.error(error.message);
+    const failed = failedCoreCases(target?.metadata);
+    if (failed.length)
+      console.error(JSON.stringify({ failed_core_cases: failed }));
     process.exitCode = 1;
   } finally {
     await target?.close();

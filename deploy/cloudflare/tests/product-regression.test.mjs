@@ -14,6 +14,7 @@ import {
   PRODUCT_SUITES,
 } from "../contracts/product-regression.mjs";
 import { regressCandidate } from "../../../contracts/deployment/regress.mjs";
+import { failedCoreCases } from "../contracts/local-target.mjs";
 const directories = [];
 afterEach(() => {
   for (const dir of directories.splice(0))
@@ -32,6 +33,32 @@ function context(phase = "candidate") {
     verify: vi.fn(),
   };
 }
+
+it("reports failed core identities and statuses without private error text", () => {
+  const trace_dir = directory();
+  writeFileSync(
+    resolve(trace_dir, "core-results.json"),
+    JSON.stringify({
+      cases: [
+        {
+          id: "auth.admission",
+          result: "fail",
+          error: "private value returned HTTP 401; expected 200",
+        },
+        { id: "memory.edit", result: "fail", error: "private response" },
+        { id: "unsafe identifier", result: "fail", error: "private value" },
+        { id: "task.create", result: "pass" },
+      ],
+    })
+  );
+  expect(failedCoreCases({ trace_dir })).toEqual([
+    { id: "auth.admission", status: "returned HTTP 401; expected 200" },
+    { id: "memory.edit" },
+  ]);
+  expect(failedCoreCases({ trace_dir: resolve(trace_dir, "missing") })).toEqual(
+    []
+  );
+});
 const report = (id) => ({
   schema_version: 1,
   brand_id: "eddy",

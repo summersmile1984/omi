@@ -1,5 +1,9 @@
 # Disposable Cloudflare product contracts
 
+When the common core suite fails, the CLI emits bounded failed-case IDs and
+HTTP status comparisons in CI. Full assertion text and command logs remain in
+the private fixture directory; response bodies and credentials are not echoed.
+
 `consolidation-output-schema.json` is the original backend
 `ConsolidationAgentBatch.model_json_schema()` captured with its pinned
 Pydantic 2.11.10. The memory projector stages it as data for both the unchanged
