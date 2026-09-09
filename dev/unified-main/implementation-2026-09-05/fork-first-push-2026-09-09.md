@@ -31,6 +31,20 @@ Owner: this fork's CI maintenance. Close only after ordinary fork preflight
 checks both deployment targets without classifying generated entrypoints as
 dead code.
 
+The CD follow-up also encounters a classification mismatch: the upstream
+checker reads only `config/deployment-setting-classification.json`, while this
+fork's ownership contract requires fork settings in the separate `.fork.json`.
+The fork lane now invokes that same checker with an additive merged policy and
+tests that secret/config sources and upstream classifications remain enforced.
+Until the combined upstream entry point can consume the fork policy, the
+documented PR-preflight hatch is also needed for the CD feature-branch push.
+The standalone upstream check remains reported as incompatible, not passed.
+The upstream push actionlint invocation likewise omits the fork's checked-in
+runner-label config and rejects `mac-studio` / `memweft`. For this CD push,
+`PRE_PUSH_SKIP_ACTIONLINT=1` replaces that invocation with the completed
+`fork-workflow-lint` manifest check using `.github/actionlint.fork.yaml`.
+The same full syntax/shell checker passed for all four fork workflow files.
+
 The upstream dead-code scanner only follows `app/lib/main.dart`; it cannot see
 the imports added by `app/fork/prepare.py` to the staged main/AuthService. It
 flags all seven live `app/lib/fork/identity/` owners. It also scans the ignored

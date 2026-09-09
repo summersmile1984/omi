@@ -1,0 +1,7 @@
+{
+  "kinds": {
+    "secret": ["CLOUDFLARE_API_TOKEN", "RELEASE_SECRETS_JSON"],
+    "config": ["CF_INVENTORY_BETA", "CF_INVENTORY_PRODUCTION", "RELEASE_JOURNAL_ROOT", "SERVER_DEPLOY_ROOT", "SERVER_DOCKER_CONTEXT"],
+    "public_build": []
+  }
+}

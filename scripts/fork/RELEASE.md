@@ -67,6 +67,13 @@ the deploy wrapper resolves only references present in the accepted candidate.
 The token is scoped to the selected account and `smartipproxy.com` zone.
 Cloudflare retains a copy of each accepted candidate beside its transaction
 journal, so Actions temporary-directory cleanup cannot remove recovery inputs.
+The name-only classifications live in
+`config/deployment-setting-classification.fork.json`. The fork manifest runs
+the existing upstream secret-boundary checker with the additive policy;
+reclassification and fork exceptions are refused. The standalone upstream
+checker only loads its own policy and consequently cannot classify fork CD
+settings. This limitation is tracked with the upstream preflight incompatibilities
+in `dev/unified-main/implementation-2026-09-05/fork-first-push-2026-09-09.md`.
 
 ## Mac Studio Server owner
 

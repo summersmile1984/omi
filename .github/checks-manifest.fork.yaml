@@ -64,6 +64,12 @@ checks:
     lanes: ["local", "ci"]
     reason: "The fork CI and release preparation workflows use the existing actionlint grammar and shell checks on both local and CI lanes, as required by the workflow component guide."
 
+  - id: fork-deployment-settings
+    command: ["bash", "-c", "python3 scripts/fork/test_deployment_settings.py && python3 scripts/fork/check_deployment_settings.py --base \"$1\"", "--", "{base}"]
+    triggers: [".github/workflows/fork-*.yml", "config/deployment-setting-classification*.json", "scripts/fork/*deployment_settings.py"]
+    lanes: ["local", "ci"]
+    reason: "Reuse the existing deployment-secret-boundary checker with the fork's additive name-only classifications; upstream policy and source restrictions remain intact."
+
   - id: fork-auth-contracts
     command: ["bash", "scripts/fork/auth-contracts.sh"]
     triggers: ["runtime/shared/**", "auth/**", "auth-server/**", "deploy/self-host/auth-runtime.mjs", "contracts/auth/**", "backend/utils/auth_shim.py", "backend/fork/auth_identity.py", "backend/fork/patches/auth.py", "backend/fork/provider_guard.py", "backend/fork/tests/test_auth_identity.py", "backend/fork/tests/test_auth_contract.py", "backend/tests/unit/test_auth_shim.py", "deploy/cloudflare/workers/auth/**", "deploy/cloudflare/tests/auth*.ts", "scripts/fork/auth-contracts.sh"]
