@@ -154,6 +154,29 @@ class ProfileTests(unittest.TestCase):
             row = json.loads(self.cli(target, "--emit-json").stdout)["profiles"][f"{target}.production"]
             self.assertEqual(row["auth_base_url"], "https://auth-base.shared.example")
 
+    def test_eddy_resolves_separate_server_and_cloudflare_public_origins(self):
+        # Exercise the shipped brand, not a fixture that already supplies the
+        # missing overrides: Eddy previously sent both targets to CF Workers.
+        for stage, suffix in (("production", ""), ("beta", "-beta")):
+            for target, label in (("cloudflare", "cf"), ("self_hosted", "server")):
+                with self.subTest(target=target, stage=stage):
+                    row = render.resolve(target, "eddy", stage=stage)["profiles"][f"{target}.{stage}"]
+                    prefix = f"eddy-{label}{suffix}"
+                    api = f"https://{prefix}-api.smartipproxy.com"
+                    web = f"https://{prefix}.smartipproxy.com"
+                    self.assertEqual(row["api_base_url"], api)
+                    self.assertEqual(row["auth_base_url"], f"https://{prefix}-auth.smartipproxy.com")
+                    self.assertEqual(row["mcp_base_url"], api)
+                    self.assertEqual(row["web_base_url"], web)
+                    self.assertEqual(row["share_base_url"], web)
+                    self.assertEqual(
+                        row["objects_base_url"],
+                        api if target == "cloudflare" else f"https://{prefix}-objects.smartipproxy.com",
+                    )
+        for target, port in (("cloudflare", 8787), ("self_hosted", 8100)):
+            row = render.resolve(target, "eddy", stage="local")["profiles"][f"{target}.local"]
+            self.assertEqual(row["api_base_url"], f"http://127.0.0.1:{port}/")
+
     def test_local_only_resolution_needs_no_fictional_production_endpoints(self):
         self.write()
         for target, port in (("self_hosted", 8100), ("cloudflare", 8787)):

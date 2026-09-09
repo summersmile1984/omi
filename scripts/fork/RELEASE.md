@@ -112,6 +112,14 @@ Cloudflare and Server product lanes, Electron/Flutter identity, build context,
 auth contracts and Web build checks passed. Remaining manifest checks and the
 dependent macOS job did not run; this is not a full green release result.
 
+The screenshot case took 6.739 seconds, including Python startup/imports and
+codec execution, against a 5-second deadline. On the same Mac Studio and Node
+22.23.2, unchanged-code reruns passed: isolated 0.770 seconds, full-suite
+0.813 seconds, and full-suite with four workers 0.438 seconds. Those reruns
+establish timing variability, not the exact cause of the original host delay.
+The fix bounds Vitest to four workers and gives only that subprocess integration
+15 seconds; all upstream behavior assertions and other test deadlines remain.
+
 ## Proposed Server endpoint on the CI machine
 
 Mac Studio can host the persistent Server deployment as well as the runner.
@@ -129,20 +137,29 @@ HTTPS/WSS client → Cloudflare hostname → named Tunnel
 The connector makes outbound connections, so the machine needs no public IP or
 inbound router port mapping. One named tunnel can publish several hostnames.
 This does not require an application Worker in front of the Server target.
-Use an operator-owned Cloudflare DNS zone; the currently configured
-`*.workers.dev` hostnames belong to the native Workers deployment and are not
-the operator's Tunnel DNS zone. No tunnel, hostname, DNS record or daemon was
-created by this design update.
+The selected operator-owned zone is `smartipproxy.com`, verified active in the
+Cloudflare account on 2026-09-09. The DNS search for `eddy` returned no records.
+Both targets now have separate names in `brand/eddy/manifest.yaml`; Workers
+custom domains and Server Tunnel hostnames must remain disjoint. No tunnel,
+DNS record, traffic switch or daemon was created by this configuration update.
 
-Example hostnames below are placeholders, not selected production endpoints:
+Selected production endpoints (binding awaits the corresponding deployment):
 
-| Public hostname | Local gateway destination |
-| --- | --- |
-| `app.example.com`, `share.example.com` | Frozen Server Web artifact/container |
-| `api.example.com` | Backend public HTTP and recording WebSocket routes |
-| `auth.example.com` | Better Auth public routes; `/internal/` remains private |
-| `mcp.example.com` | Existing backend MCP routes, without response buffering |
-| `objects.example.com` | MinIO S3 endpoint for authorized/signed object operations |
+| Surface | Cloudflare target | Server OS target |
+| --- | --- | --- |
+| API / recording / MCP | `eddy-cf-api.smartipproxy.com` → Edge Worker | `eddy-server-api.smartipproxy.com` → Tunnel → backend gateway |
+| Authentication | `eddy-cf-auth.smartipproxy.com` → Auth Worker | `eddy-server-auth.smartipproxy.com` → Tunnel → Better Auth |
+| Web / share | `eddy-cf.smartipproxy.com` → Web Worker | `eddy-server.smartipproxy.com` → Tunnel → frozen Web container |
+| Authorized objects | CF API host → existing authenticated object routes | `eddy-server-objects.smartipproxy.com` → Tunnel → MinIO S3 endpoint |
+
+Beta uses the separate prefixes `eddy-cf-beta` and `eddy-server-beta`, e.g.
+`eddy-cf-beta-api.smartipproxy.com`; local profiles remain on loopback.
+The manifest's `deployments.<target>.<stage>` overrides feed both artifacts
+prepared from the same commit. For native CF delivery, the resource inventory
+must select `routing.mode: custom_domains`; the existing resource renderer
+derives Worker host bindings from that resolved profile. Server names belong
+only in the named Tunnel's public ingress and gateway configuration. Keep
+auth `/internal/` routes private and disable proxy buffering for streaming/MCP.
 
 The same public HTTPS origins must be rendered into the Server brand profile,
 Better Auth issuer/audience, CORS, share links and signed-object URLs. Preserve
