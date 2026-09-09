@@ -52,12 +52,39 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/fork-release-tools
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.resolve.outputs.artifact }}
-          run-id: ${{ inputs.delivery_run_id }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/server-delivery-${{ github.run_id }}
+      - name: Load release admission from workflow revision
+        run: |
+          admission_dir="$RUNNER_TEMP/fork-release-admission"
+          mkdir "$admission_dir"
+          for file in release_ci.py release_archive.py; do
+            git show "$GITHUB_WORKFLOW_SHA:scripts/fork/$file" > "$admission_dir/$file"
+          done
+          python3 "$admission_dir/release_ci.py" --help
+      - name: Download complete frozen delivery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DELIVERY_RUN_ID: ${{ inputs.delivery_run_id }}
+          DELIVERY_ARTIFACT: ${{ needs.resolve.outputs.artifact }}
+          DELIVERY_DIRECTORY: ${{ runner.temp }}/server-delivery-${{ github.run_id }}
+        run: |
+          download_root=$(mktemp -d "$RUNNER_TEMP/eddy-delivery.XXXXXX")
+          trap 'rm -rf "$download_root"' EXIT
+          for attempt in 1 2 3; do
+            attempt_dir="$download_root/$attempt"
+            if gh run download "$DELIVERY_RUN_ID" --repo summersmile1984/omi \
+              --name "$DELIVERY_ARTIFACT" --dir "$attempt_dir" \
+              && test -s "$attempt_dir/delivery.json" \
+              && test -s "$attempt_dir/cloudflare.tar.gz" \
+              && test -s "$attempt_dir/server-images.tar" \
+              && test -s "$attempt_dir/source.tar.gz"; then
+              test ! -e "$DELIVERY_DIRECTORY"
+              mv "$attempt_dir" "$DELIVERY_DIRECTORY"
+              exit 0
+            fi
+            echo "Artifact download attempt $attempt did not yield a complete delivery" >&2
+          done
+          echo 'Frozen delivery download failed; deployment has not started' >&2
+          exit 1
       - name: Deploy accepted images to the persistent Server host
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,7 +94,7 @@ jobs:
           SERVER_DEPLOY_ROOT: ${{ vars.SERVER_DEPLOY_ROOT }}
           SERVER_DOCKER_CONTEXT: ${{ vars.SERVER_DOCKER_CONTEXT }}
         run: |
-          python3 scripts/fork/release_ci.py verify --directory "$RELEASE_DIRECTORY" \
+          python3 "$RUNNER_TEMP/fork-release-admission/release_ci.py" verify --directory "$RELEASE_DIRECTORY" \
             --sha "$RELEASE_SHA" --stage "$RELEASE_STAGE" --target self_hosted
           python3 scripts/fork/deploy_server.py --delivery "$RELEASE_DIRECTORY" \
             --root "$SERVER_DEPLOY_ROOT" --docker-context "$SERVER_DOCKER_CONTEXT"
