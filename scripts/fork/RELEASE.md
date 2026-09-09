@@ -104,3 +104,90 @@ business contracts were not selected. The subsequent manually triggered
 [34301227612](https://github.com/summersmile1984/omi/actions/runs/34301227612)
 compares the whole branch against main using the already-published workflow.
 Its result is independent of these new, locally prepared workflow changes.
+
+The whole-branch run subsequently failed in `fork-cloudflare-routes`:
+`screen-frame-source.test.mjs` exceeded Vitest's 5-second test deadline.
+The Cloudflare suite reported 1107 passed / 1 failed. Before that, the actual
+Cloudflare and Server product lanes, Electron/Flutter identity, build context,
+auth contracts and Web build checks passed. Remaining manifest checks and the
+dependent macOS job did not run; this is not a full green release result.
+
+## Proposed Server endpoint on the CI machine
+
+Mac Studio can host the persistent Server deployment as well as the runner.
+The application still runs in the Server OS Linux containers. The present
+locked runtime is Linux amd64, so Apple Silicon uses Docker's emulation; this
+proposal does not claim a native ARM64 runtime-lock qualification.
+
+Public traffic follows this path:
+
+```text
+HTTPS/WSS client → Cloudflare hostname → named Tunnel
+  → persistent cloudflared → local reverse proxy → Server Compose services
+```
+
+The connector makes outbound connections, so the machine needs no public IP or
+inbound router port mapping. One named tunnel can publish several hostnames.
+This does not require an application Worker in front of the Server target.
+Use an operator-owned Cloudflare DNS zone; the currently configured
+`*.workers.dev` hostnames belong to the native Workers deployment and are not
+the operator's Tunnel DNS zone. No tunnel, hostname, DNS record or daemon was
+created by this design update.
+
+Example hostnames below are placeholders, not selected production endpoints:
+
+| Public hostname | Local gateway destination |
+| --- | --- |
+| `app.example.com`, `share.example.com` | Frozen Server Web artifact/container |
+| `api.example.com` | Backend public HTTP and recording WebSocket routes |
+| `auth.example.com` | Better Auth public routes; `/internal/` remains private |
+| `mcp.example.com` | Existing backend MCP routes, without response buffering |
+| `objects.example.com` | MinIO S3 endpoint for authorized/signed object operations |
+
+The same public HTTPS origins must be rendered into the Server brand profile,
+Better Auth issuer/audience, CORS, share links and signed-object URLs. Preserve
+Host and forwarded HTTPS information. Databases, MinIO console, Docker API and
+the Ollama embedding endpoint remain internal. With Docker Desktop, containers
+can reach a native host service through `host.docker.internal`; the Ollama
+listener must be reachable from that VM and restricted from public ingress.
+Local LLM/ASR/TTS continue to use the selected MiMo configuration, while
+embedding uses Ollama; this topology does not rewrite prompts or select a new
+provider implicitly.
+
+Use a named tunnel with a stable hostname. Cloudflare documents WebSocket
+support; SSE requires the origin's `Content-Type: text/event-stream` and an
+unbuffered reverse proxy. Quick `trycloudflare.com` tunnels do not support SSE.
+Acceptance must exercise login/refresh, streamed chat, recording WebSocket,
+MCP, signed objects and reconnects through the actual hostname. Tunnel traffic
+is still subject to Cloudflare proxy upload/connection limits.
+
+The connector, gateway and state volumes are persistent services independent
+of Actions jobs. The Server CD operation should import or pull the exact
+accepted image identities, record the previous versions, back up persistent
+data, run the existing forward migration sequence, replace application
+containers, then smoke-test through the public hostname. Do not put production
+data or checkout under the runner's `_work` directory. Do not attach deployment
+teardown to a CI job's cleanup. A version rollback must first establish schema
+compatibility; it must not silently reverse a database migration.
+
+For shared physical hardware, isolate CI and persistent deployment into
+separate VM/Docker environments and restrict the production engine to the
+deployment owner. Separate Compose project names prevent naming collisions
+but do not isolate privileges on a shared Docker socket. The existing public
+fork's external PR jobs must continue on disposable hosted runners. The host,
+Docker runtime, connector and network must stay running for the endpoint to
+remain available; Tunnel does not replicate the local database or application.
+
+Native Cloudflare CD has a different request path: clients terminate at the
+deployed Workers and Cloudflare storage services. Mac Studio only builds and
+publishes those artifacts; it is not an origin required for their availability.
+Its publisher already owns frozen D1 migration checks, dependency-ordered
+Worker deployment, observed version IDs, readiness and transaction journals.
+The pending product qualification and production workflow connection described
+above still apply.
+
+References: [Tunnel setup](https://developers.cloudflare.com/tunnel/setup/),
+[WebSocket support](https://developers.cloudflare.com/cloudflare-one/faq/cloudflare-tunnels-faq/),
+[SSE streaming](https://developers.cloudflare.com/cloudflare-one/troubleshooting/tunnel/),
+[Docker host networking](https://docs.docker.com/desktop/features/networking/networking-how-tos/),
+[self-hosted runner isolation](https://docs.github.com/en/actions/reference/security/secure-use).
