@@ -193,6 +193,21 @@ describe("Python Worker tool and runtime boundary", () => {
         expect(
           readFileSync(resolve(dirname(config.main), "chat_target.py"), "utf8"),
         ).toBe("value=1\n");
+        expect(
+          readFileSync(
+            resolve(dirname(config.main), "_worker_application.py"),
+            "utf8",
+          ),
+        ).toBe("import chat_target\n");
+        expect(readFileSync(config.main, "utf8")).toBe(
+          readFileSync(
+            resolve(componentRoot, "python/core_entrypoint.py"),
+            "utf8",
+          ),
+        );
+        expect(
+          readFileSync(resolve(root, "python/api-core/src/entry.py"), "utf8"),
+        ).toBe("import chat_target\n");
       }
       return { status: action === "deploy" && failDeploy ? 1 : 0 };
     };

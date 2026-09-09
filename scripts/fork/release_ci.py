@@ -16,6 +16,14 @@ from release_archive import unpack_candidate
 REPOSITORY = 'summersmile1984/omi'
 CI_PATH = '.github/workflows/fork-checks.yml'
 PREPARE_PATH = '.github/workflows/fork-release-prepare.yml'
+RELEASE_JOBS = {
+    'Freeze delivery artifacts',
+    'Cloudflare artifact qualification / Resolve delivery',
+    'Cloudflare artifact qualification / Execute accepted delivery',
+    'Server image qualification / Resolve delivery',
+    'Server image qualification / Execute accepted delivery',
+    'Release ready',
+}
 
 
 def sha256_file(path):
@@ -59,6 +67,9 @@ def verify_ci(run_id, sha, api=github):
 def resolve_delivery(run_id, stage, api=github):
     run = api(f'actions/runs/{int(run_id)}')
     sha = successful_run(run, PREPARE_PATH)
+    jobs = api(f'actions/runs/{int(run_id)}/attempts/{run["run_attempt"]}/jobs?per_page=100')['jobs']
+    if {job['name'] for job in jobs} != RELEASE_JOBS or any(job['conclusion'] != 'success' for job in jobs):
+        raise ValueError('release CI must qualify transported Cloudflare artifacts and actual Server image boot')
     comparison = api(f'compare/{sha}...main')
     if comparison.get('status') not in {'ahead', 'identical'}:
         raise ValueError('deployment source must be integrated into main')

@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
+import { deliveryContinuation } from "../../deploy/cloudflare/scripts/release-continuation.mjs";
 
 const { values } = parseArgs({
   options: {
@@ -27,6 +28,7 @@ try {
   const candidate = JSON.parse(
     readFileSync(resolve(directory, "candidate.json"))
   );
+  const previous = deliveryContinuation(journalRoot, receipt);
   if (
     candidate.candidate_digest !== receipt.candidate_digest ||
     candidate.source.commit !== receipt.commit
@@ -79,6 +81,7 @@ try {
       journal,
       "--authorize",
       candidate.candidate_digest,
+      ...(previous ? ["--continue-from", previous] : []),
     ],
     { env, stdio: "inherit", timeout: 150 * 60 * 1000 }
   );

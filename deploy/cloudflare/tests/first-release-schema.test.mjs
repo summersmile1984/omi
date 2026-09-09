@@ -13,6 +13,7 @@ import {
   executeFrozenSchema,
   qualifyFirstRelease,
   SCHEMA_QUERY,
+  comparableSchemaCatalog,
 } from "../contracts/qualify-prior-schema.mjs";
 import { WranglerReleaseAdapter } from "../scripts/release-wrangler.mjs";
 import { digest, WORKERS } from "../scripts/resource-input.mjs";
@@ -158,7 +159,13 @@ function fixture(phase = "candidate") {
         rows = fault.foreignKey ? [{ table: "session" }] : [];
       else throw new Error("unexpected or mutating SQL");
       if (fault.schemaDrift && sql === SCHEMA_QUERY && rows.length)
-        rows[0].sql += " -- unqualified drift";
+        rows[0].sql = rows[0].sql.includes("CREATE UNIQUE INDEX")
+          ? rows[0].sql.replace("CREATE UNIQUE INDEX", "CREATE INDEX")
+          : rows[0].sql.replace("CREATE INDEX", "CREATE UNIQUE INDEX");
+      if (fault.commentStripping && sql === SCHEMA_QUERY)
+        for (const row of rows)
+          row.sql = row.sql?.split("\n").map((line) => line.trimStart().startsWith("--")
+            ? line.slice(0, line.indexOf("--")) : line).join("\n") ?? null;
       if (
         fault.ledgerDrift &&
         sql === "SELECT name FROM d1_migrations ORDER BY id"
@@ -177,6 +184,54 @@ function fixture(phase = "candidate") {
 }
 
 describe("first-release schema qualification", () => {
+  it("accepts D1's observed removal of line comments without changing the frozen SQL authority", async () => {
+    const f = fixture("deployed");
+    f.fault.commentStripping = true;
+    const proof = await qualifyFirstRelease(f.context, f.adapter);
+    expect(proof.cases.every((row) => row.result === "pass")).toBe(true);
+  });
+  it("preserves comment-like text in literals, escaped quotes, identifiers and block comments", () => {
+    const sql = "CREATE TABLE [--table] (`--column` TEXT DEFAULT 'it''s--literal', \"--other\" TEXT) /* -- keep */\n  -- remove\n";
+    const [row] = comparableSchemaCatalog([{ sql }]);
+    expect(row.sql).toBe(sql.replace("-- remove", ""));
+    expect(comparableSchemaCatalog([{ sql: "SELECT '--value'" }]))
+      .not.toEqual(comparableSchemaCatalog([{ sql: "SELECT ''" }]));
+  });
+  it.each([false, true])("checks fully migrated D1 before an owned partial continuation (drift=%s)", async (drift) => {
+    const f = fixture("deployed");
+    const { candidate, observations } = f.context;
+    candidate.artifact_files = { workers: Object.fromEntries(
+      Object.keys(candidate.workers).map((role) => [`${role}/wrangler.json`, digest(role)]),
+    ) };
+    const before = structuredClone(observations.prior_versions);
+    const [role, worker] = Object.entries(candidate.workers)[0];
+    const owned = structuredClone(f.current[worker.name]);
+    const journal = {
+      transaction: "fixture", before,
+      events: [{
+        id: `deploy:${role}`, state: "confirmed",
+        observation: { ...owned, name: worker.name, owned_by_transaction: true },
+      }],
+    };
+    for (const { name } of Object.values(candidate.workers))
+      f.current[name] = name === worker.name ? owned : { status: "absent" };
+    f.context.observations = { ...structuredClone(f.current), release_phase: "candidate", continuation: {} };
+    f.fault.schemaDrift = drift;
+    const history = vi.fn(() => [{ candidate, journal }]);
+    const proof = qualifyFirstRelease(f.context, f.adapter, { history });
+    if (drift) await expect(proof).rejects.toThrow("schema differs");
+    else {
+      const result = await proof;
+      expect(result.cases.map((row) => row.id)).toEqual([
+        "first-release.observed-owned-continuation",
+        "first-release.retained-frozen-schema.auth",
+        "first-release.frozen-sql-and-legacy-fixture.auth",
+        "first-release.retained-frozen-schema.app",
+        "first-release.frozen-sql-and-legacy-fixture.app",
+      ]);
+    }
+    expect(history).toHaveBeenCalledOnce();
+  });
   it("executes frozen SQL, preserves a legacy principal and only qualifies observed absence/empty databases", async () => {
     const f = fixture();
     const proof = await qualifyFirstRelease(f.context, f.adapter);

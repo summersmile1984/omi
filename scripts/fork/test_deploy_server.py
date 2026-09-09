@@ -157,6 +157,53 @@ class ServerDeliveryTests(unittest.TestCase):
             self.assertFalse(journal['release_ready'])
             self.assertEqual(journal['state'], 'failed-reconciliation-required')
 
+    def test_release_ci_qualifies_the_actual_boot_owner_without_live_promotion(self):
+        for healthy in [True, False]:
+            with self.subTest(healthy=healthy), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                delivery, destination = root / 'delivery', root / 'server'
+                delivery.mkdir()
+                destination.mkdir()
+                (delivery / 'server-images.tar').write_bytes(b'accepted image archive')
+                receipt = {
+                    **self.receipt,
+                    'files': {'server-images.tar': sha256_file(delivery / 'server-images.tar')},
+                }
+                (delivery / 'delivery.json').write_text(json.dumps(receipt))
+                (destination / 'runtime.env').write_text('SELF_HOST_STAGE=beta\n')
+                pointer = {'commit': 'previous', 'release': str(root / 'previous')}
+                save(destination / 'current.json', pointer)
+                commands = []
+                qualifications = []
+
+                def execute(args, **kwargs):
+                    commands.append(args)
+                    return json.dumps([self.image]) if args[:3] == ['docker', 'image', 'inspect'] else ''
+
+                def boot(release, values, environment):
+                    self.assertEqual(release.parent, destination / 'qualifications')
+                    qualifications.append(release)
+                    self.assertEqual(values['BACKEND_IMAGE'], self.image_id)
+                    self.assertEqual(environment['DOCKER_CONTEXT'], 'colima-eddy-server')
+                    if not healthy:
+                        raise RuntimeError('unhealthy frozen image')
+
+                with patch('deploy_server.run', side_effect=execute), patch(
+                    'deploy_server.boot_test', side_effect=boot
+                ):
+                    if healthy:
+                        deploy(delivery, destination, 'colima-eddy-server', qualification=True)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'unhealthy frozen image'):
+                            deploy(delivery, destination, 'colima-eddy-server', qualification=True)
+                journal = json.loads((qualifications[0] / 'journal.json').read_text())
+                self.assertEqual(journal['state'], 'image-qualified' if healthy else 'failed-reconciliation-required')
+                self.assertEqual(journal.get('artifact_qualified', False), healthy)
+                self.assertFalse(journal['release_ready'])
+                self.assertFalse((destination / 'releases').exists())
+                self.assertEqual(json.loads((destination / 'current.json').read_text()), pointer)
+                self.assertFalse(any('backup' in command or 'deploy-images' in command for command in commands))
+
     def test_accepted_release_advances_only_after_public_acceptance(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1,10 +1,22 @@
 name: Fork CD Server OS
 
 on:
+  workflow_call:
+    inputs:
+      delivery_run_id:
+        type: string
+        required: true
+      stage:
+        type: string
+        required: true
+      qualification_artifact:
+        description: Frozen artifact from the calling Release CI; only private qualification runs
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       delivery_run_id:
-        description: Successful Fork Release Preparation run ID
+        description: Successful Fork Release CI run ID with both artifact qualifications
         type: string
         required: true
       stage:
@@ -24,8 +36,9 @@ concurrency:
 
 jobs:
   resolve:
+    name: Resolve delivery
     if: github.repository == 'summersmile1984/omi' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, macOS, ARM64, mac-studio, memweft]
+    runs-on: ${{ fromJSON('["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
     outputs:
       sha: ${{ steps.delivery.outputs.sha }}
       artifact: ${{ steps.delivery.outputs.artifact }}
@@ -38,12 +51,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DELIVERY_RUN_ID: ${{ inputs.delivery_run_id }}
           RELEASE_STAGE: ${{ inputs.stage }}
-        run: python3 scripts/fork/release_ci.py resolve --run-id "$DELIVERY_RUN_ID" --stage "$RELEASE_STAGE"
+          QUALIFICATION_ARTIFACT: ${{ inputs.qualification_artifact }}
+        run: |
+          if [ -n "$QUALIFICATION_ARTIFACT" ]; then
+            test "$DELIVERY_RUN_ID" = "$GITHUB_RUN_ID"
+            test "$QUALIFICATION_ARTIFACT" = "delivery-$GITHUB_SHA-eddy-$RELEASE_STAGE"
+            echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            echo "artifact=$QUALIFICATION_ARTIFACT" >> "$GITHUB_OUTPUT"
+          else
+            python3 scripts/fork/release_ci.py resolve --run-id "$DELIVERY_RUN_ID" --stage "$RELEASE_STAGE"
+          fi
 
   deploy:
+    name: Execute accepted delivery
     needs: resolve
     environment: server-${{ inputs.stage }}
-    runs-on: [self-hosted, macOS, ARM64, mac-studio, memweft]
+    runs-on: ${{ fromJSON('["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -70,16 +93,19 @@ jobs:
           python3 "$RUNNER_TEMP/fork-release-admission/download_delivery.py" \
             --run-id "$DELIVERY_RUN_ID" --artifact "$DELIVERY_ARTIFACT" \
             --directory "$DELIVERY_DIRECTORY"
-      - name: Deploy accepted images to the persistent Server host
+      - name: Verify and execute accepted Server images
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_STAGE: ${{ inputs.stage }}
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+          QUALIFICATION_ARTIFACT: ${{ inputs.qualification_artifact }}
           RELEASE_DIRECTORY: ${{ runner.temp }}/server-delivery-${{ github.run_id }}
           SERVER_DEPLOY_ROOT: ${{ vars.SERVER_DEPLOY_ROOT }}
           SERVER_DOCKER_CONTEXT: ${{ vars.SERVER_DOCKER_CONTEXT }}
         run: |
           python3 "$RUNNER_TEMP/fork-release-admission/release_ci.py" verify --directory "$RELEASE_DIRECTORY" \
             --sha "$RELEASE_SHA" --stage "$RELEASE_STAGE" --target self_hosted
-          python3 scripts/fork/deploy_server.py --delivery "$RELEASE_DIRECTORY" \
+          operation=deploy
+          if [ -n "$QUALIFICATION_ARTIFACT" ]; then operation=qualify; fi
+          python3 scripts/fork/deploy_server.py "$operation" --delivery "$RELEASE_DIRECTORY" \
             --root "$SERVER_DEPLOY_ROOT" --docker-context "$SERVER_DOCKER_CONTEXT"

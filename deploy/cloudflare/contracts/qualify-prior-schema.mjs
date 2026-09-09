@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { digest, WORKERS } from "../scripts/resource-input.mjs";
 import { WranglerReleaseAdapter } from "../scripts/release-wrangler.mjs";
+import { readContinuation, assertContinuationBasis } from "../scripts/release-continuation.mjs";
 import {
   qualificationContext,
   qualificationProof,
@@ -13,7 +14,41 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 export const SCHEMA_QUERY =
   "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' AND name NOT IN ('_cf_KV','d1_migrations') ORDER BY type,name";
 
-async function query(adapter, authority, sql) {
+// D1 removed line-comment text from two CREATE TABLE statements in the actual
+// 34373519437 migration, while SQLite's local catalog retained it. SQLite treats
+// comments as whitespace: https://www.sqlite.org/lang_comment.html. Preserve
+// every other byte, including quoted literals/identifiers and block comments.
+export function comparableSchemaCatalog(rows) {
+  return rows.map((row) => {
+    if (row.sql === null) return row;
+    if (typeof row.sql !== "string") throw new Error("schema SQL is invalid");
+    const source = row.sql;
+    let sql = "", i = 0;
+    while (i < source.length) {
+      const start = i, character = source[i];
+      if ("'\"`[".includes(character)) {
+        const closing = character === "[" ? "]" : character;
+        i++;
+        while (i < source.length) {
+          if (source[i++] !== closing) continue;
+          if (character !== "[" && source[i] === closing) { i++; continue; }
+          break;
+        }
+        sql += source.slice(start, i);
+      } else if (source.startsWith("/*", i)) {
+        const end = source.indexOf("*/", i + 2);
+        i = end < 0 ? source.length : end + 2;
+        sql += source.slice(start, i);
+      } else if (source.startsWith("--", i)) {
+        const end = source.indexOf("\n", i + 2);
+        i = end < 0 ? source.length : end;
+      } else sql += source[i++];
+    }
+    return { ...row, sql };
+  });
+}
+
+export async function querySchema(adapter, authority, sql) {
   const response = await adapter.api(
     `d1/database/${authority.database_id}/query`,
     { method: "POST", body: { sql } }
@@ -98,7 +133,7 @@ export function executeFrozenSchema(context, { spawn = spawnSync } = {}) {
 export async function qualifyFirstRelease(
   context,
   adapter,
-  { schema = executeFrozenSchema } = {}
+  { schema = executeFrozenSchema, history = readContinuation } = {}
 ) {
   const { candidate, observations } = context;
   context.verify();
@@ -114,15 +149,18 @@ export async function qualifyFirstRelease(
     throw new Error("schema qualification requires the complete Worker set");
   const prior =
     phase === "deployed" ? observations.prior_versions : observations;
+  const continuation = observations.continuation;
+  if (continuation)
+    assertContinuationBasis(candidate, history(continuation, context), prior);
   for (const { name, sha256 } of Object.values(candidate.workers)) {
-    if (!prior?.[name] || digest(prior[name]) !== digest({ status: "absent" }))
+    if (!continuation && (!prior?.[name] || digest(prior[name]) !== digest({ status: "absent" })))
       throw new Error(
         "retained Worker requires executable prior-version compatibility evidence"
       );
     const current = await adapter.observeWorker(name);
     if (
       digest(current) !== digest(observations[name]) ||
-      current.status !== (phase === "candidate" ? "absent" : "present")
+      (!continuation && current.status !== (phase === "candidate" ? "absent" : "present"))
     )
       throw new Error("Worker changed during schema qualification");
     if (
@@ -134,7 +172,9 @@ export async function qualifyFirstRelease(
         "deployed Worker does not carry this candidate's artifact identity"
       );
   }
-  const cases = ["first-release.observed-prior-worker-absence"];
+  const cases = [continuation
+    ? "first-release.observed-owned-continuation"
+    : "first-release.observed-prior-worker-absence"];
   const fixtures = schema(context);
   for (const authority of candidate.resource_plan.migrations) {
     const resource = candidate.resource_plan.resources.find(
@@ -147,12 +187,12 @@ export async function qualifyFirstRelease(
       authority.database_id !== candidate.inventory.d1_ids[authority.authority]
     )
       throw new Error("schema database does not match the candidate authority");
-    const rows = await query(adapter, authority, SCHEMA_QUERY);
+    const rows = await querySchema(adapter, authority, SCHEMA_QUERY);
     const ledger = await adapter.migrationLedger(authority);
     const expected = fixtures.find(
       (row) => row.authority === authority.authority
     );
-    if (phase === "candidate") {
+    if (phase === "candidate" && !continuation) {
       if (rows.length || ledger.length)
         throw new Error(
           "first deployment requires observed empty business schemas and migration ledgers"
@@ -161,13 +201,13 @@ export async function qualifyFirstRelease(
     } else {
       if (
         !expected ||
-        digest(rows) !== digest(expected.schema_catalog) ||
+        digest(comparableSchemaCatalog(rows)) !== digest(comparableSchemaCatalog(expected.schema_catalog)) ||
         digest(ledger) !== digest(authority.files.map((file) => file.name))
       )
         throw new Error("deployed schema differs from the executed frozen SQL");
-      if ((await query(adapter, authority, "PRAGMA foreign_key_check")).length)
+      if ((await querySchema(adapter, authority, "PRAGMA foreign_key_check")).length)
         throw new Error("deployed D1 has invalid foreign key references");
-      cases.push(`first-release.deployed-frozen-schema.${authority.authority}`);
+      cases.push(`first-release.${phase === "candidate" ? "retained" : "deployed"}-frozen-schema.${authority.authority}`);
     }
     cases.push(
       `first-release.frozen-sql-and-legacy-fixture.${authority.authority}`

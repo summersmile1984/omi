@@ -154,22 +154,8 @@ export async function provisionResources({
   return journal;
 }
 
-export async function applyRelease({
-  candidate,
-  journal,
-  adapter,
-  persist,
-  qualify,
-  verify,
-}) {
-  assertJournal(candidate, journal);
-  if (journal.phase !== "apply" || journal.state !== "prepared")
-    throw new Error("apply cannot replay a used transaction; reconcile first");
-  verify();
-  // Product and schema runner evidence must be produced in this invocation,
-  // never accepted from an operator-authored approval JSON file.
-  journal.state = "qualifying";
-  record(journal, persist);
+export async function observeReleaseCandidate(candidate, adapter, continuation) {
+  const before = {};
   for (const resource of candidate.resource_plan.resources.filter((entry) =>
     ["d1", "r2", "queue", "vectorize"].includes(entry.kind),
   )) {
@@ -181,11 +167,36 @@ export async function applyRelease({
       observed.id !== candidate.inventory.d1_ids[resource.key.split(":")[1]]
     )
       throw new Error("remote D1 UUID differs from candidate");
-    journal.before[resource.key] = observed;
+    before[resource.key] = observed;
   }
   for (const worker of Object.values(candidate.workers))
-    journal.before[worker.name] = await adapter.observeWorker(worker.name);
-  journal.before.release_phase = "candidate";
+    before[worker.name] = await adapter.observeWorker(worker.name);
+  before.release_phase = "candidate";
+  if (continuation) {
+    continuation.verify(before);
+    before.continuation = continuation.reference;
+  }
+  return before;
+}
+
+export async function applyRelease({
+  candidate,
+  journal,
+  adapter,
+  persist,
+  qualify,
+  verify,
+  continuation,
+}) {
+  assertJournal(candidate, journal);
+  if (journal.phase !== "apply" || journal.state !== "prepared")
+    throw new Error("apply cannot replay a used transaction; reconcile first");
+  verify();
+  // Product and schema runner evidence must be produced in this invocation,
+  // never accepted from an operator-authored approval JSON file.
+  journal.state = "qualifying";
+  record(journal, persist);
+  journal.before = await observeReleaseCandidate(candidate, adapter, continuation);
   journal.qualification = await qualify(journal.before);
   if (
     !journal.qualification.length ||
