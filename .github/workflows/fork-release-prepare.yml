@@ -1,0 +1,118 @@
+name: Fork Release Preparation
+
+on:
+  workflow_dispatch:
+    inputs:
+      brand:
+        description: Repository brand ID
+        required: true
+        default: eddy
+        type: string
+      stage:
+        description: Deployment profile stage
+        required: true
+        default: production
+        type: choice
+        options: [beta, production]
+      inventory_json:
+        description: CF3 resource inventory JSON (resource IDs and secret references only)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-prepare-${{ github.ref }}-${{ inputs.brand }}-${{ inputs.stage }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.repository == 'summersmile1984/omi'
+    uses: ./.github/workflows/fork-checks.yml
+
+  prepare:
+    needs: verify
+    runs-on: [self-hosted, macOS, ARM64, mac-studio, memweft]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/pylock*.toml
+
+      - name: Provision pinned backend and fork dependencies
+        run: |
+          uv python install 3.12
+          fork_python=$(uv python find --managed-python 3.12)
+          PATH="$(dirname "$fork_python"):$PATH"
+          export PATH
+          make setup-backend
+          uv pip install --python backend/.venv/bin/python --no-deps --require-hashes -r backend/requirements-fork.txt
+          echo "$GITHUB_WORKSPACE/backend/.venv/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            auth-server/package-lock.json
+            deploy/cloudflare/package-lock.json
+            scripts/brand/raster/package-lock.json
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Provision frozen build dependencies
+        run: |
+          npm ci --prefix auth-server --ignore-scripts --no-audit --no-fund
+          npm ci --prefix deploy/cloudflare --ignore-scripts --no-audit --no-fund
+          npm ci --prefix scripts/brand/raster --ignore-scripts --no-audit --no-fund
+          (cd web/app && bun install --frozen-lockfile)
+          docker info --format '{{.OSType}}'
+
+      - name: Freeze both deployment deliverables
+        env:
+          RELEASE_BRAND: ${{ inputs.brand }}
+          RELEASE_STAGE: ${{ inputs.stage }}
+          RELEASE_INVENTORY: ${{ inputs.inventory_json }}
+        run: |
+          work=$(mktemp -d "$RUNNER_TEMP/fork-delivery.XXXXXX")
+          export RELEASE_WORK="$work"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ['RELEASE_WORK']) / 'inventory.json'
+          path.write_text(json.dumps(json.loads(os.environ['RELEASE_INVENTORY'])))
+          path.chmod(0o600)
+          PY
+          unset RELEASE_INVENTORY
+          python3 scripts/fork/prepare_release.py --brand "$RELEASE_BRAND" --stage "$RELEASE_STAGE" \
+            --inventory "$work/inventory.json" --output "$work/delivery"
+          echo "RELEASE_OUT=$work/delivery" >> "$GITHUB_ENV"
+          {
+            echo '### Prepared deployment artifacts'
+            echo "Source: $GITHUB_SHA"
+            echo 'Cloudflare: nine frozen Workers, assets, SQL and both Web targets.'
+            echo 'Server OS: Linux amd64 backend, auth, LLM runtime and Web image archive.'
+            echo 'delivery.json binds source, image IDs and archive hashes. Deployment qualification remains pending.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Preserve hidden Worker modules and filesystem metadata inside the tar.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: delivery-${{ github.sha }}-${{ inputs.brand }}-${{ inputs.stage }}
+          path: |
+            ${{ env.RELEASE_OUT }}/cloudflare.tar.gz
+            ${{ env.RELEASE_OUT }}/server-images.tar
+            ${{ env.RELEASE_OUT }}/source.tar.gz
+            ${{ env.RELEASE_OUT }}/delivery.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3

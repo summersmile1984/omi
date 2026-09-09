@@ -63,11 +63,18 @@ The explicitly selected live MiMo/Ollama lane remains documented in
 [`deploy/cloudflare/contracts/README.md`](../../deploy/cloudflare/contracts/README.md).
 CI does not deploy Server OS or Cloudflare production targets.
 
+Manual runs now select the complete fork manifest, retaining each job's platform
+scope. `.github/workflows/fork-release-prepare.yml` reuses that workflow and
+packages frozen Cloudflare candidates plus Linux Server images from one commit.
+See [delivery preparation and remaining promotion work](RELEASE.md) for inputs,
+artifact formats, local verification and the outstanding production owners.
+
 PRs compare against their fetched target branch. Existing-branch pushes use the
 event's `before` commit. First pushes and manual feature-branch runs compare the
 whole branch with `origin/main`; on `main` itself, manual runs inspect the current
-commit against its parent. An unavailable base fails instead of selecting no
-checks. `test_ci_diff_base.py` executes the workflow shell in temporary Git repos
+commit against its parent, while the complete-manifest selector forces all
+eligible checks independently of that diff. An unavailable base fails instead
+of selecting no checks. `test_ci_diff_base.py` executes the workflow shell in temporary Git repos
 and validates the real manifest, including relocated backend test references.
 
 ## Upstream boundary

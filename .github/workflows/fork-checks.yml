@@ -9,6 +9,7 @@ on:
   push:
     branches: [main, "codex/**", "sync/**"]
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: fork-checks-${{ github.ref }}
@@ -23,6 +24,8 @@ jobs:
     if: github.repository == 'summersmile1984/omi'
     runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
     timeout-minutes: 120
+    env:
+      FORK_FULL_CHECKS: ${{ github.event_name == 'workflow_dispatch' }}
     outputs:
       base: ${{ steps.base.outputs.ref }}
       macos: ${{ steps.platforms.outputs.macos }}
@@ -100,8 +103,7 @@ jobs:
         env:
           DIFF_BASE: ${{ steps.base.outputs.ref }}
         run: |
-          python3 .github/scripts/run_checks.py \
-            --manifest .github/checks-manifest.fork.yaml \
+          python3 scripts/fork/run_checks.py \
             --lane ci --base "$DIFF_BASE" --platform macos \
             --exclusive-platform --output json > "$RUNNER_TEMP/fork-macos-checks.json"
           python3 - <<'PY'
@@ -111,6 +113,16 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f"macos={str(bool(selection['checks'])).lower()}\n")
           PY
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache: false
+
+      - name: Provision workflow lint
+        run: |
+          GOBIN="$RUNNER_TEMP/fork-tools" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          echo "$RUNNER_TEMP/fork-tools" >> "$GITHUB_PATH"
 
       - uses: actions/setup-node@v4
         with:
@@ -137,7 +149,7 @@ jobs:
       - name: Select native terminal contract dependencies
         id: flutter
         run: |
-          python3 .github/scripts/run_checks.py --manifest .github/checks-manifest.fork.yaml \
+          python3 scripts/fork/run_checks.py \
             --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux --output json > /tmp/fork-check-selection.json
           python3 - <<'PY'
           import json, os
@@ -181,8 +193,7 @@ jobs:
       # Server OS still executes in Linux Docker containers on Mac Studio.
       - name: Fork manifest (ci lane)
         run: |
-          python3 .github/scripts/run_checks.py \
-            --manifest .github/checks-manifest.fork.yaml \
+          python3 scripts/fork/run_checks.py \
             --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux
 
       - name: Report upstream divergence
@@ -207,6 +218,7 @@ jobs:
     runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '["macos-26"]' || '["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
     timeout-minutes: 60
     env:
+      FORK_FULL_CHECKS: ${{ github.event_name == 'workflow_dispatch' }}
       DEVELOPER_DIR: ${{ github.event_name == 'pull_request' && '/Applications/Xcode_26.6.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
     steps:
       - uses: actions/checkout@v4
@@ -256,6 +268,5 @@ jobs:
         env:
           DIFF_BASE: ${{ needs.fork-gate.outputs.base }}
         run: |
-          python3 .github/scripts/run_checks.py \
-            --manifest .github/checks-manifest.fork.yaml \
+          python3 scripts/fork/run_checks.py \
             --lane ci --base "$DIFF_BASE" --platform macos --exclusive-platform

@@ -53,10 +53,16 @@ checks:
     reason: "The audit B1 native package replaces complete Swift app owners: leaf tests cannot prove those adapters compile into the real consumer. Execute the same staged debug build locally and on the existing fork CI macOS route; no additional auth policy or release pipeline is introduced."
 
   - id: fork-ci-diff-base
-    command: ["python3", "scripts/fork/test_ci_diff_base.py"]
-    triggers: [".github/workflows/fork-checks.yml", ".github/checks-manifest.fork.yaml", "scripts/fork/test_ci_diff_base.py", "scripts/fork/git-hooks/**", "scripts/fork/preflight", "backend/fork/tests/**", "backend/tests/**"]
+    command: ["bash", "-c", "python3 scripts/fork/test_ci_diff_base.py && python3 scripts/fork/test_release_prepare.py"]
+    triggers: [".github/workflows/fork-checks.yml", ".github/workflows/fork-release-prepare.yml", ".github/checks-manifest.fork.yaml", "scripts/fork/run_checks.py", "scripts/fork/prepare_release.py", "scripts/fork/test_release_prepare.py", "scripts/fork/test_ci_diff_base.py", "scripts/fork/git-hooks/**", "scripts/fork/preflight", "backend/fork/tests/**", "backend/tests/**"]
     lanes: ["local", "ci"]
     reason: "The advertised manual Fork Checks entry emitted an empty diff base because workflow_dispatch has no event.before; execute that exact shell in real Git fixtures for PR, push and manual events. This tests the workflow consumer rather than duplicating the shared manifest selector."
+
+  - id: fork-workflow-lint
+    command: ["actionlint", "-config-file", ".github/actionlint.fork.yaml", ".github/workflows/fork-checks.yml", ".github/workflows/fork-release-prepare.yml"]
+    triggers: [".github/workflows/fork-checks.yml", ".github/workflows/fork-release-prepare.yml", ".github/actionlint.fork.yaml"]
+    lanes: ["local", "ci"]
+    reason: "The fork CI and release preparation workflows use the existing actionlint grammar and shell checks on both local and CI lanes, as required by the workflow component guide."
 
   - id: fork-auth-contracts
     command: ["bash", "scripts/fork/auth-contracts.sh"]
