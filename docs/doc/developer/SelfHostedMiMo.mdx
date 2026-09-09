@@ -1,5 +1,5 @@
 ---
-title: "Local Server OS with Xiaomi MiMo"
+title: "Server OS with Xiaomi MiMo"
 description: "Select hosted chat and speech while retaining local embedding and storage."
 ---
 
@@ -19,7 +19,21 @@ windows and preserves the existing transcript, finalization and memory owners.
 It provides chunked recognition and a single anonymous speaker, not native
 MiMo WebSocket streaming or speaker identification. Default prompts are retained.
 
-This local option does not change production/beta selection or qualify a
-Cloudflare deployment. The repository runbook `deploy/self-host/mimo-local.md`
-documents the complete launch command, credentials, boundaries and official API
-references.
+For beta/production, declare `self_hosted_inference.<stage>: mimo-cn` in the
+brand manifest. Eddy selects both stages. The shared renderer freezes this
+choice into backend, Web and native profiles. The production Compose wrapper
+derives the model services from that same selection, keeps local Embedding,
+and requires `MIMO_API_KEY` in the private host environment. It removes unused
+local LLM services and the speech model mount before Compose interpolation.
+
+Server CD verifies public streamed chat and persisted history, then sends a
+synthetic TTS recording through ASR and requires recognition of its work-notes
+phrase. It also executes the admitted Embedding driver inside the accepted
+backend image before advancing the release pointer. These checks do not claim
+speaker-identification or realtime multimodal relay coverage. Historical relay
+environment variables have no current Server consumer and are not startup
+requirements.
+
+MiMo selection does not qualify a Cloudflare deployment or the historical
+zero-vendor cutover plan. The repository runbook `deploy/self-host/mimo-local.md`
+documents credentials, boundaries and official API references.

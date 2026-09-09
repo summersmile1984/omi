@@ -4,8 +4,19 @@ The opt-in `mimo-cn` profile uses China Token Plan for `mimo-v2.5` chat and
 business extraction, `mimo-v2.5-asr` transcription, and `mimo-v2.5-tts` speech.
 Embedding remains the pinned local BGE-M3/Ollama model. Default prompts, tool
 descriptions, PostgreSQL owners, memory extraction and tool execution are unchanged.
-This selection applies only to `self_hosted.local`; production/beta and the
-hermetic core fixture retain their existing provider contracts.
+The local command remains an explicit opt-in. A brand can also freeze
+`self_hosted_inference.beta: mimo-cn` and/or the production selection in its
+manifest; Eddy selects both. That single policy is consumed by every profile
+renderer and the production Compose model-service selector. The normal native
+profile and hermetic core fixture retain their existing model contracts.
+
+For an accepted beta/production image, store `MIMO_API_KEY` in the private host
+`runtime.env` and provision only `EMBEDDING_MODEL_STORE`. The canonical Compose
+wrapper removes the unused LLM services and speech mount before interpolation;
+the startup checker therefore requires the selected provider's actual inputs.
+MiMo credentials reach only the API service, never images or client profiles.
+The historical zero-vendor/cutover attestation intentionally does not certify
+a hosted MiMo deployment; CD runs its separately documented public acceptance.
 
 Render public configuration without credentials:
 

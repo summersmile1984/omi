@@ -19,7 +19,10 @@ is `production`, `beta`, or `local`; Python derives its upstream env stage.
 For CI delivery, `operations.sh deploy-images` instead verifies the accepted
 `SELF_HOST_DELIVERY_RECEIPT` and starts its exact image IDs without building.
 `SELF_HOST_PROJECT` selects the isolated deployment project. Both Embedding and
-LLM provider services start before callers. The two fork CD workflows, persistent
+selected LLM provider services start before callers. `model_services.py` derives
+that service set from the same manifest/profile rendered into the accepted
+image. MiMo selections start only local Embedding and inject the required API
+credential into the backend. The two fork CD workflows, persistent
 host directories, boot test and Tunnel gateway are documented in
 [`scripts/fork/RELEASE.md`](../../scripts/fork/RELEASE.md).
 
@@ -107,17 +110,12 @@ id. Private targets may use HTTP; public targets require HTTPS plus
 and there is no default URL, model, download, or hosted-MOSS fallback.
 `STT_ROUTE_FALLBACK_TO_DEFAULT=false` prevents a missing local model from
 falling through to any managed STT policy default.
-Realtime multimodal sessions use the authenticated provider-neutral relay.
-`REALTIME_PROVIDER=relay` requires an explicit compatible WebSocket URL,
-server-only credential, provider id, model and exact target-host allowlist.
-`REALTIME_RELAY_WIRE_PROTOCOL` is also mandatory (currently only
-`openai_realtime_v1` is supported): the relay is byte-opaque, so this field tells signed clients
-which upstream event dialect to speak while `REALTIME_RELAY_PROVIDER_ID` remains
-descriptive metadata.
-There is no official endpoint default. The profile validator rejects official
-vendor hosts, and the relay limits each frame and session duration. Optional
-integrations require separately configured services; the core profile does not
-silently reach an official endpoint for them.
+The current Server backend has no consumer of the historical
+`REALTIME_PROVIDER` / `REALTIME_RELAY_*` settings. They no longer block Compose
+startup. The provider-neutral multimodal WebSocket relay described in the
+historical cutover plan is not implemented in this backend. This is separate
+from the working MiMo recording ASR and HTTP TTS paths; configuring Chat/ASR/TTS
+credentials does not establish a realtime multimodal relay.
 
 The backend also exposes two authenticated desktop model boundaries:
 

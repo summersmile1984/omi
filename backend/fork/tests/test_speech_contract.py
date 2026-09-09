@@ -48,8 +48,11 @@ def test_explicit_mimo_profile_preserves_embedding_and_bounds_egress(monkeypatch
     for url in (endpoint + '?extra=1', endpoint.replace('https:', 'http:'), endpoint.replace('token-plan-cn', 'api')):
         with pytest.raises(EgressPolicyUnavailable):
             assert_http_endpoint_allowed(url)
+    for stage in ('beta', 'production'):
+        released = operator_ai.configure({**original, 'stage': stage}, 'mimo-cn')
+        assert operator_ai.select(released).model == 'mimo-v2.5'
     with pytest.raises(ValueError):
-        operator_ai.configure({**original, 'stage': 'production'}, 'mimo-cn')
+        operator_ai.configure({**original, 'target': 'cloudflare'}, 'mimo-cn')
     monkeypatch.setattr(profile, 'current', lambda: original)
     with pytest.raises(EgressPolicyUnavailable):
         assert_http_endpoint_allowed(endpoint)

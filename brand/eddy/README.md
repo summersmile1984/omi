@@ -32,6 +32,11 @@ python3 scripts/profiles/render.py --brand eddy --target cloudflare --stage prod
 python3 scripts/profiles/render.py --brand eddy --target self_hosted --stage production --emit-json
 ```
 
+Server beta/production explicitly select MiMo CN for LLM, ASR and TTS, with the
+pinned BGE-M3/Ollama Embedding service. This is public build policy; the MiMo key
+is injected only into the Server API at runtime. Other brands retain native
+inference unless their manifest explicitly selects a hosted provider.
+
 `deployments.<target>.<stage>` owns the independent public origins. Production
 API hosts are `eddy-cf-api.smartipproxy.com` (Workers) and
 `eddy-server-api.smartipproxy.com` (Server through Tunnel). Web/share hosts are

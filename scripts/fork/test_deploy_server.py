@@ -10,9 +10,21 @@ from urllib.error import URLError
 from deploy_server import IMAGE_KEYS, verify_images, save, deploy, wait_ready
 from release_ci import sha256_file
 from server_gateway import gateway_config
+from server_ai_acceptance import verify_chat_stream, verify_transcript
+import base64
 
 
 class ServerDeliveryTests(unittest.TestCase):
+    def test_public_ai_requires_a_completed_payload_and_recognized_audio(self):
+        terminal = base64.b64encode(json.dumps({'text': 'Synthetic answer'}).encode()).decode()
+        self.assertEqual(verify_chat_stream('data: Synthetic answer\n\ndone: ' + terminal)['text'], 'Synthetic answer')
+        for stream in ('data: Synthetic answer', 'done: ' + terminal, 'error: unavailable\n' + 'done: ' + terminal):
+            with self.assertRaises(RuntimeError):
+                verify_chat_stream(stream)
+        verify_transcript({'stt_provider': 'mimo', 'transcript': '整理工作笔记'})
+        with self.assertRaises(RuntimeError):
+            verify_transcript({'stt_provider': 'mimo', 'transcript': 'unrelated response'})
+
     def setUp(self):
         self.image_id = 'sha256:' + 'c' * 64
         self.receipt = {
@@ -158,13 +170,18 @@ class ServerDeliveryTests(unittest.TestCase):
                 if '--remote' in args:
                     self.assertEqual(json.loads((destination / 'current.json').read_text()), pointer)
                     phases.append('accept')
+                if any(str(arg).endswith('server_ai_acceptance.py') for arg in args):
+                    phases.append('ai')
+                    self.assertEqual(json.loads((destination / 'current.json').read_text()), pointer)
+                if 'exec' in args:
+                    phases.append('embedding')
                 return ''
 
             with patch('deploy_server.run', side_effect=execute), patch(
                 'deploy_server.boot_test', side_effect=lambda *args: phases.append('boot')
             ), patch('deploy_server.wait_ready', side_effect=lambda *args: phases.append('ready')):
                 deploy(delivery, destination, 'colima-eddy-server')
-            self.assertEqual(phases, ['boot', 'backup', 'deploy', 'ready', 'accept'])
+            self.assertEqual(phases, ['boot', 'backup', 'deploy', 'ready', 'accept', 'ai', 'embedding'])
             release = destination / 'releases' / receipt['commit']
             self.assertEqual(json.loads((destination / 'current.json').read_text())['release'], str(release))
             self.assertTrue(json.loads((release / 'journal.json').read_text())['release_ready'])

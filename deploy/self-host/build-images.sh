@@ -6,8 +6,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/../.." && pwd)"
 ENV_FILE="${SELF_HOST_ENV:?SELF_HOST_ENV is required}"
 PY="${PYTHON:-python3}"
-BASE_IMAGE="$("$PY" -c 'import sys; values=dict(line.strip().split("=",1) for line in open(sys.argv[1]) if line.strip() and not line.lstrip().startswith("#") and "=" in line); print(values["BACKEND_RUNTIME_IMAGE"])' "$ENV_FILE")"
-PLATFORM="$("$PY" -c 'import sys; values=dict(line.strip().split("=",1) for line in open(sys.argv[1]) if line.strip() and not line.lstrip().startswith("#") and "=" in line); print(values["BACKEND_PLATFORM"])' "$ENV_FILE")"
+BASE_IMAGE="$("$PY" -c 'import sys; from dotenv import dotenv_values; print(dotenv_values(sys.argv[1],interpolate=False)["BACKEND_RUNTIME_IMAGE"])' "$ENV_FILE")"
+PLATFORM="$("$PY" -c 'import sys; from dotenv import dotenv_values; print(dotenv_values(sys.argv[1],interpolate=False)["BACKEND_PLATFORM"])' "$ENV_FILE")"
 [[ "$BASE_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$ ]] || { echo 'invalid BACKEND_RUNTIME_IMAGE' >&2; exit 1; }
 [[ "$PLATFORM" == linux/amd64 ]] || { echo 'the locked backend runtime currently requires linux/amd64' >&2; exit 1; }
 docker build --platform "$PLATFORM" --file "$ROOT/backend/Dockerfile" \
@@ -16,4 +16,7 @@ docker build --platform "$PLATFORM" --file "$ROOT/backend/Dockerfile" \
 bash "$DIR/compose-clean-env.sh" "$ENV_FILE" "$DIR/compose.production.yml" build auth-server backend
 
 # The thin Ollama layer compiles runtime precision/context from that exact profile.
-bash "$DIR/compose-clean-env.sh" "$ENV_FILE" "$DIR/compose.production.yml" build llm
+providers="$("$PY" "$DIR/model_services.py" --env-file "$ENV_FILE" --providers)"
+case " $providers " in
+  *" llm "*) bash "$DIR/compose-clean-env.sh" "$ENV_FILE" "$DIR/compose.production.yml" build llm ;;
+esac

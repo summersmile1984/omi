@@ -139,8 +139,8 @@ def resolve(
     stage: str | None = None,
     operator_ai: str | None = None,
 ) -> dict:
-    if operator_ai is not None and (target != 'self_hosted' or stage != 'local'):
-        raise ProfileError('operator AI selection requires --target self_hosted --stage local')
+    if operator_ai is not None and (target != 'self_hosted' or stage is None):
+        raise ProfileError('operator AI selection requires --target self_hosted and an explicit stage')
     if target not in ("omi_cloud", "self_hosted", "cloudflare") or (stage is not None and stage not in STAGES):
         raise ProfileError("unknown deployment target or stage")
     try:
@@ -235,11 +235,15 @@ def resolve(
             row["speech"] = speech.as_dict()
         if llm is not None:
             row["llm"] = llm.as_dict()
-        if operator_ai is not None:
+        declared_ai = manifest.get('self_hosted_inference', {}).get(stage) if target == 'self_hosted' else None
+        if operator_ai and declared_ai and declared_ai != operator_ai:
+            raise ProfileError('operator AI argument conflicts with the brand manifest')
+        selected_ai = operator_ai or declared_ai
+        if selected_ai and selected_ai != 'native':
             from fork.operator_ai import configure
 
             try:
-                row = configure(row, operator_ai)
+                row = configure(row, selected_ai)
             except ValueError as error:
                 raise ProfileError(str(error)) from error
         for key, value in row.items():
@@ -417,7 +421,7 @@ def main() -> int:
     parser.add_argument("--brand")
     parser.add_argument("--manifest", type=Path, help="explicit validated brand manifest (YAML or JSON)")
     parser.add_argument("--stage", choices=STAGES, help="resolve one stage; default resolves all stages")
-    parser.add_argument('--operator-ai', choices=['mimo-cn'], help='explicit hosted AI for the local Server OS stage')
+    parser.add_argument('--operator-ai', choices=['mimo-cn'], help='explicit hosted AI for one Server OS stage')
     parser.add_argument("--output-root", type=Path, default=REPO_ROOT, help="isolated build tree for generated files")
     parser.add_argument("--check", action="store_true", help="fail if generated files differ from source")
     parser.add_argument("--emit-json", action="store_true", help="print the resolved table and write nothing")

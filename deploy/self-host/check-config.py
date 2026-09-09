@@ -20,6 +20,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / 'deploy/self-host/compose.production.yml'
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from model_services import selected_config
+
 REQUIRED_SOURCE = (
     'backend/fork/bootstrap.py',
     'backend/fork/main.py',
@@ -49,6 +52,7 @@ REQUIRED_SOURCE = (
     'deploy/self-host/build-images.sh',
     'deploy/self-host/operations.sh',
     'deploy/self-host/compose-clean-env.sh',
+    'deploy/self-host/model_services.py',
     'deploy/self-host/volume-snapshot.py',
     'deploy/self-host/runtime-evidence.py',
 )
@@ -118,7 +122,10 @@ def check_environment(path: Path) -> None:
     if path.name.endswith('.example'):
         raise ValueError('an example file is not reviewed deployment configuration')
     values = read_env(path)
-    required = set(re.findall(r'\$\{([A-Z0-9_]+):\?', COMPOSE.read_text()))
+    for key in ('SELF_HOST_BRAND_MANIFEST',):
+        if not values.get(key):
+            raise ValueError('required configuration missing: ' + key)
+    required = set(re.findall(r'\$\{([A-Z0-9_]+):\?', yaml.safe_dump(selected_config(values))))
     missing = sorted(name for name in required if not values.get(name))
     if missing:
         raise ValueError('required configuration missing: ' + ', '.join(missing))

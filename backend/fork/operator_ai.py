@@ -1,4 +1,4 @@
-"""Explicit hosted AI selection for local Server OS; never contains credentials."""
+"""Explicit hosted AI selection frozen into Server profiles; no credentials."""
 
 from dataclasses import asdict, dataclass
 import json
@@ -23,12 +23,12 @@ def select(row):
         return None
     if (
         row.get('target') != 'self_hosted'
-        or row.get('stage') != 'local'
+        or row.get('stage') not in {'local', 'beta', 'production'}
         or value != asdict(MiMo())
         or row.get('llm') is not None
         or row.get('speech') is not None
     ):
-        raise ValueError('operator AI requires the explicit local MiMo CN profile')
+        raise ValueError('operator AI requires an explicit Server MiMo CN profile')
     return MiMo()
 
 

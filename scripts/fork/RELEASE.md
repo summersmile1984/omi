@@ -94,7 +94,11 @@ acceptance traces and transaction journals outside Actions `_work`:
 
 `operations.sh deploy-images` uses the existing migration/health owner while
 requiring the accepted image receipt. `start` retains its local build behavior.
-The provider startup sequence includes both Embedding and LLM before callers.
+The provider startup sequence starts the selected model services before callers.
+The shared brand profile selects the actual model-service set: Eddy beta and
+production use MiMo chat/ASR/TTS plus local BGE-M3/Ollama Embedding, requiring
+`MIMO_API_KEY` in the private host environment. Native profiles retain both
+local model services. No runtime secret can switch the frozen provider choice.
 A unique `eddy-boot-*` project exercises the delivered images before persistent
 state is changed and removes only its own disposable volumes afterwards.
 
@@ -135,6 +139,11 @@ not part of the deployment workflow. Use the existing `operations.sh`
 backup/verify-backup/rollback-plan/restore owner with the matching retained
 source, environment and encryption key. See `deploy/self-host/README.md`
 and `deploy/cloudflare/release.md` for their recovery contracts.
+Before advancing the Server pointer, CD also checks public chat streaming and
+persisted history, a synthetic TTS-to-ASR round trip, and real Embedding
+inference through the admitted driver inside the accepted backend container.
+The historical Server realtime multimodal relay is not implemented; its unused
+environment variables no longer block startup.
 
 ## Verification
 

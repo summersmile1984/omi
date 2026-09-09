@@ -6,6 +6,11 @@ and profile rendering. `--manifest PATH` loads a validated private YAML/JSON
 overlay without adding a real brand to the public repository. When `--brand` is
 also supplied, it must match `brand.id`.
 
+Optional `self_hosted_inference.<stage>` selects `native` or `mimo-cn` for a
+Server stage. The same renderer freezes that public selection into backend,
+Web and native client profiles. No credentials belong in the manifest. An
+explicit `--operator-ai` argument cannot contradict a declared brand selection.
+
 ## Current coverage
 
 The Flutter runtime title generator and the CV1 firmware identity generator

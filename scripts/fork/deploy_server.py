@@ -246,6 +246,32 @@ def deploy(delivery, destination, docker_context):
                 ],
                 env=env,
             )
+            run(
+                [
+                    sys.executable,
+                    str(ROOT / 'scripts/fork/server_ai_acceptance.py'),
+                    '--metadata',
+                    str(release / 'metadata.json'),
+                ],
+                env=env,
+            )
+            run(
+                [
+                    'bash',
+                    str(source / 'deploy/self-host/compose-clean-env.sh'),
+                    str(release_env),
+                    str(source / 'deploy/self-host/compose.production.yml'),
+                    '--project-name',
+                    env['SELF_HOST_PROJECT'],
+                    'exec',
+                    '-T',
+                    'backend',
+                    'python',
+                    '-c',
+                    'from fork.embedding import build; vector=build().embed_query("Synthetic release embedding"); assert len(vector)==1024; print("Embedding inference passed: 1024 dimensions")',
+                ],
+                env=env,
+            )
             journal.update(state='deployed', release_ready=True, completed_at=int(time.time()))
             save(path, journal)
             save(destination / 'current.json', {'release': str(release), 'commit': receipt['commit']})

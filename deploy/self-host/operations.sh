@@ -81,6 +81,9 @@ require_runtime() {
   [[ -f "$ENV_FILE" ]] || { echo "error: environment file not found: $ENV_FILE" >&2; exit 1; }
   [[ "$ENV_FILE" != *.example ]] || { echo "error: operations refuse the checked-in example environment" >&2; exit 1; }
   "$PY" "$CONFIG_CHECKER" --env-file "$ENV_FILE"
+  local providers
+  providers="$("$PY" "$OPS_DIR/model_services.py" --env-file "$ENV_FILE" --providers)"
+  read -r -a PROVIDER_SERVICES <<< "$providers"
   compose config --quiet
 }
 

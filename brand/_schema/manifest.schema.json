@@ -92,6 +92,16 @@
     }
   },
   "properties": {
+    "self_hosted_inference": {
+      "type": "object",
+      "description": "Public Server inference selection frozen into every client and backend profile. Credentials remain runtime secrets.",
+      "additionalProperties": false,
+      "properties": {
+        "local": { "enum": ["native", "mimo-cn"] },
+        "beta": { "enum": ["native", "mimo-cn"] },
+        "production": { "enum": ["native", "mimo-cn"] }
+      }
+    },
     "deployments": {
       "type": "object",
       "description": "Explicit endpoint overrides by deployment target and stage. No auth/MCP/object URL is inferred from api_base. Local defaults come from target profiles; production/beta require complete resolved endpoints.",

@@ -62,4 +62,9 @@ fi
 [[ -z "${CUTOVER_TLS_CERT_PATH+x}" ]] || clean_env+=("CUTOVER_TLS_CERT_PATH=$CUTOVER_TLS_CERT_PATH")
 [[ -z "${CUTOVER_TLS_KEY_PATH+x}" ]] || clean_env+=("CUTOVER_TLS_KEY_PATH=$CUTOVER_TLS_KEY_PATH")
 
-exec "${clean_env[@]}" docker compose --env-file "$ENV_FILE" --file "$COMPOSE_FILE" "$@"
+selected_compose="$(mktemp)"
+trap 'rm -f "$selected_compose"' EXIT
+"${PYTHON:-python3}" "$(dirname "${BASH_SOURCE[0]}")/model_services.py" \
+  --env-file "$ENV_FILE" --input "$COMPOSE_FILE" > "$selected_compose"
+"${clean_env[@]}" docker compose --project-directory "$(dirname "$COMPOSE_FILE")" \
+  --env-file "$ENV_FILE" --file "$selected_compose" "$@"

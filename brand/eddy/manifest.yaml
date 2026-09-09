@@ -25,6 +25,9 @@ domains:
   terms: https://eddy-cf.smartipproxy.com/terms
   status: https://eddy-cf-api.smartipproxy.com/ready
   community: ""
+self_hosted_inference:
+  beta: mimo-cn
+  production: mimo-cn
 deployments:
   cloudflare:
     production:

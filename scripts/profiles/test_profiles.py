@@ -98,7 +98,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(row["llm"]["parallel_requests"], 1)
         self.assertEqual(row["llm"]["request_timeout_seconds"], 300)
 
-    def test_mimo_selection_is_explicit_local_only_and_leaves_embedding_unchanged(self):
+    def test_mimo_selection_is_explicit_and_leaves_embedding_unchanged(self):
         self.configure()
         baseline = json.loads(self.cli('self_hosted', '--stage', 'local', '--emit-json').stdout)
         selected = self.cli('self_hosted', '--stage', 'local', '--operator-ai', 'mimo-cn', '--emit-json')
@@ -109,9 +109,21 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(row['operator_ai']['asr_model'], 'mimo-v2.5-asr')
         self.assertNotIn('llm', row)
         self.assertNotIn('speech', row)
-        for target, stage in [('cloudflare', 'local'), ('self_hosted', 'production')]:
+        for target, stage in [('cloudflare', 'local'), ('omi_cloud', 'production')]:
             denied = self.cli(target, '--stage', stage, '--operator-ai', 'mimo-cn', '--emit-json')
             self.assertNotEqual(denied.returncode, 0)
+
+    def test_eddy_release_inference_is_frozen_for_all_profile_consumers(self):
+        from render import resolve
+
+        table = resolve('self_hosted', 'eddy')
+        for stage in ('beta', 'production'):
+            row = table['profiles']['self_hosted.' + stage]
+            self.assertEqual(row['operator_ai']['model'], 'mimo-v2.5')
+            self.assertEqual(row['capabilities']['stt_providers'], ['mimo'])
+            self.assertEqual(row['capabilities']['tts_provider'], 'mimo')
+            self.assertEqual(row['embedding']['provider'], 'ollama')
+        self.assertIn('llm', table['profiles']['self_hosted.local'])
 
     def test_all_five_generated_outputs_are_checked_and_missing_is_failure(self):
         self.configure()
