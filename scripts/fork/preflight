@@ -42,7 +42,10 @@ fi
 if [ "$(command -v python3)" != "$(command -v "$PYTHON_BIN")" ]; then
   SHIM_DIR="$(mktemp -d)"
   trap 'rm -rf "$SHIM_DIR"' EXIT
-  ln -sf "$(command -v "$PYTHON_BIN")" "$SHIM_DIR/python3"
+  # A symlink outside .venv loses pyvenv.cfg discovery and its locked packages.
+  # Exec the selected path so child checks retain the interpreter's environment.
+  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$(command -v "$PYTHON_BIN")" > "$SHIM_DIR/python3"
+  chmod +x "$SHIM_DIR/python3"
   PATH="$SHIM_DIR:$PATH"
   export PATH
   echo "note: using $("$PYTHON_BIN" --version 2>&1) as python3 for this run"

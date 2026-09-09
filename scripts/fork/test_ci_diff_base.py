@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -63,6 +64,24 @@ class DiffBaseTests(unittest.TestCase):
 
     def test_manual_dispatch_without_before_uses_current_commit_parent(self) -> None:
         self.assertEqual(self.resolve("workflow_dispatch"), f"ref={self.base}")
+
+    def test_preflight_child_python_keeps_selected_virtual_environment(self) -> None:
+        root = self.root / 'preflight with spaces'
+        for relative in ('scripts/fork/preflight', 'scripts/dev-harness/_resolve_python.sh'):
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, destination)
+        venv = root / 'backend/.venv'
+        subprocess.run([sys.executable, '-m', 'venv', '--without-pip', str(venv)], check=True)
+        python = venv / 'bin/python'
+        site = subprocess.check_output([str(python), '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'], text=True).strip()
+        Path(site, 'fork_venv_marker.py').write_text('selected = True\n')
+        checker = root / '.github/scripts/run_checks.py'
+        checker.parent.mkdir(parents=True)
+        checker.write_text('import subprocess\nsubprocess.run(["python3", "-c", "import fork_venv_marker; assert fork_venv_marker.selected"], check=True)\n')
+        environment = {key: value for key, value in os.environ.items() if key != 'PYTHON'}
+        subprocess.run(['bash', str(root / 'scripts/fork/preflight'), '--fork-only', '--base', 'HEAD'],
+                       env=environment, check=True, capture_output=True, text=True)
 
     def test_push_uses_the_entire_pushed_range(self) -> None:
         self.commit("second pushed commit")

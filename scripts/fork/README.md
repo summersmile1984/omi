@@ -24,6 +24,8 @@ The wrapper prefers the existing pinned backend interpreter and puts it on the
 child-process PATH. Install the Node 22 and component dependencies used by the
 workflow before exercising their tests. `--fork-only` selects a named workflow
 lane; it does not certify the separate upstream gate or production deployment.
+The child `python3` shim executes the original venv interpreter path; relocating
+it as a symlink loses virtual-environment package discovery on macOS.
 
 After `make setup-backend`, install the fork runtime layer with
 `uv pip install --python backend/.venv/bin/python --no-deps --require-hashes -r backend/requirements-fork.txt`.
