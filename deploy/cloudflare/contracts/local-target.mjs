@@ -374,13 +374,9 @@ export async function startLocalTarget({
     const runtimeLog = resolve(logs, "runtime.log");
     const runtimeFd = openSync(runtimeLog, "a", 0o600);
     const args = [
-      wrangler,
-      "dev",
-      "--local",
+      resolve(root, "contracts/local-runtime.mjs"),
       "--port",
       String(port),
-      "--inspector-port",
-      String(await freePort()),
       "--persist-to",
       resolve(output, "state"),
       "--config",
@@ -388,6 +384,9 @@ export async function startLocalTarget({
       ...Object.entries(frozen)
         .filter(([role]) => role !== "edge" && role !== "web")
         .flatMap(([, path]) => ["--config", path]),
+      ...(candidateInput
+        ? ["--web-config", frozen.web, "--web-port", String(webPort)]
+        : []),
     ];
     const { child: runtime, completion: runtimeDone } = processes.start(
       process.execPath,
@@ -427,46 +426,19 @@ export async function startLocalTarget({
       }
       await sleep(100);
     }
-    let webRuntimeDone;
     if (candidateInput) {
-      const webLog = resolve(logs, "web-runtime.log");
-      const fd = openSync(webLog, "a", 0o600);
-      const web = processes.start(
-        process.execPath,
-        [
-          wrangler,
-          "dev",
-          "--local",
-          "--port",
-          String(webPort),
-          "--inspector-port",
-          String(await freePort()),
-          "--persist-to",
-          resolve(output, "web-state"),
-          "--config",
-          frozen.web,
-        ],
-        {
-          cwd: root,
-          env,
-          timeout: 3600000,
-          stdio: ["ignore", fd, fd],
-        }
-      );
-      closeSync(fd);
-      webRuntimeDone = web.completion;
       const deadline = Date.now() + 120000;
       while (true) {
         if (
           signal?.aborted ||
-          web.child.exitCode !== null ||
-          web.child.signalCode !== null
+          runtime.exitCode !== null ||
+          runtime.signalCode !== null
         )
           throw new Error("local frozen Web exited before readiness");
         if (Date.now() > deadline)
           throw new Error("local frozen Web readiness deadline exceeded");
         if (
-          readFileSync(webLog, "utf8").includes(
+          readFileSync(runtimeLog, "utf8").includes(
             `Ready on http://localhost:${webPort}`
           )
         ) {
@@ -514,6 +486,7 @@ export async function startLocalTarget({
         ),
       },
       tools: {
+        local_transport: "direct-miniflare-workerd",
         python: PYTHON_TOOLS,
         ...Object.fromEntries(
           ["wrangler", "workerd"].map((name) => [
@@ -559,9 +532,7 @@ export async function startLocalTarget({
       metadata,
       close,
       command,
-      runtimeDone: webRuntimeDone
-        ? Promise.race([runtimeDone, webRuntimeDone])
-        : runtimeDone,
+      runtimeDone,
       verifyPayload: candidateInput?.verifyPayload,
     };
   } catch (error) {

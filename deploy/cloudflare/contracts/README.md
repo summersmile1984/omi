@@ -99,6 +99,21 @@ locked Wrangler/workerd, then executes:
   error state. Remote custom domains and Server OS browser execution remain
   separate evidence.
 
+The frozen local target uses Wrangler's pinned binding converter and serves
+HTTP, SSE and WebSocket directly from the pinned Miniflare/workerd runtime.
+Wrangler still builds the upload artifacts and applies the real D1 migrations.
+The extra `wrangler dev` ProxyWorker hop is excluded: the Linux reproduction
+of [workers-sdk#14641](https://github.com/cloudflare/workers-sdk/issues/14641)
+returned 500 after an unread-body 401 and terminated the entire dev server
+([Fork Checks 34331397206](https://github.com/summersmile1984/omi/actions/runs/34331397206)).
+The same frozen Python payload and D1 state passed all 16 core cases through
+the direct runtime. No request retry or business assertion was changed.
+`local-runtime.test.mjs` exercises the actual HTTP rejection sequence, service
+binding, D1 persistence across restart, cookies, SSE and WebSocket; the existing
+blocking product lane exercises the complete Python/Queues/R2 business path.
+Module types and Python SDK assets follow the locked Wrangler upload rules;
+unknown artifacts fail instead of silently falling back to another runtime.
+
 For an interactive isolated fixture:
 
 ```sh
