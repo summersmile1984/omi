@@ -10,11 +10,18 @@ verified; they do not enable those providers in the current Compose profile.
 ## Current main startup boundary (SH-1)
 
 Use `operations.sh self-check` for startup source closure and `operations.sh start`
-with a reviewed environment file. Startup always builds the unchanged upstream
+with a reviewed environment file. Local `start` builds the unchanged upstream
 backend runtime (`BACKEND_RUNTIME_IMAGE`), then the fork-only Dockerfile layer. That layer installs the hash-pinned `backend/requirements-fork.txt` only for the Server OS target, then writes the generated profile and source commit/tree labels. Set `SELF_HOST_STAGE`
 and `SELF_HOST_BRAND_MANIFEST` (a repository-relative public manifest); the
 manifest endpoints and `PUBLIC_*` environment values must agree. `SELF_HOST_STAGE`
 is `production`, `beta`, or `local`; Python derives its upstream env stage.
+
+For CI delivery, `operations.sh deploy-images` instead verifies the accepted
+`SELF_HOST_DELIVERY_RECEIPT` and starts its exact image IDs without building.
+`SELF_HOST_PROJECT` selects the isolated deployment project. Both Embedding and
+LLM provider services start before callers. The two fork CD workflows, persistent
+host directories, boot test and Tunnel gateway are documented in
+[`scripts/fork/RELEASE.md`](../../scripts/fork/RELEASE.md).
 
 The fork image also prewarms the locked tiktoken `cl100k_base` vocabulary using
 the upstream build helper. `TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache` is packaged

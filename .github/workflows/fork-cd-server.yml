@@ -1,0 +1,73 @@
+name: Fork CD Server OS
+
+on:
+  workflow_dispatch:
+    inputs:
+      delivery_run_id:
+        description: Successful Fork Release Preparation run ID
+        type: string
+        required: true
+      stage:
+        description: Deployment stage
+        type: choice
+        options: [beta, production]
+        default: beta
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fork-cd-server-eddy-${{ inputs.stage }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: github.repository == 'summersmile1984/omi' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, macOS, ARM64, mac-studio, memweft]
+    outputs:
+      sha: ${{ steps.delivery.outputs.sha }}
+      artifact: ${{ steps.delivery.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: delivery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DELIVERY_RUN_ID: ${{ inputs.delivery_run_id }}
+          RELEASE_STAGE: ${{ inputs.stage }}
+        run: python3 scripts/fork/release_ci.py resolve --run-id "$DELIVERY_RUN_ID" --stage "$RELEASE_STAGE"
+
+  deploy:
+    needs: resolve
+    environment: server-${{ inputs.stage }}
+    runs-on: [self-hosted, macOS, ARM64, mac-studio, memweft]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/fork-release-tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.resolve.outputs.artifact }}
+          run-id: ${{ inputs.delivery_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/server-delivery-${{ github.run_id }}
+      - name: Deploy accepted images to the persistent Server host
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_STAGE: ${{ inputs.stage }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+          RELEASE_DIRECTORY: ${{ runner.temp }}/server-delivery-${{ github.run_id }}
+          SERVER_DEPLOY_ROOT: ${{ vars.SERVER_DEPLOY_ROOT }}
+          SERVER_DOCKER_CONTEXT: ${{ vars.SERVER_DOCKER_CONTEXT }}
+        run: |
+          python3 scripts/fork/release_ci.py verify --directory "$RELEASE_DIRECTORY" \
+            --sha "$RELEASE_SHA" --stage "$RELEASE_STAGE" --target self_hosted
+          python3 scripts/fork/deploy_server.py --delivery "$RELEASE_DIRECTORY" \
+            --root "$SERVER_DEPLOY_ROOT" --docker-context "$SERVER_DOCKER_CONTEXT"

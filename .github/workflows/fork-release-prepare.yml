@@ -3,6 +3,10 @@ name: Fork Release Preparation
 on:
   workflow_dispatch:
     inputs:
+      ci_run_id:
+        description: Successful full Fork Checks run ID for this exact commit
+        required: true
+        type: string
       brand:
         description: Repository brand ID
         required: true
@@ -11,28 +15,25 @@ on:
       stage:
         description: Deployment profile stage
         required: true
-        default: production
+        default: beta
         type: choice
         options: [beta, production]
       inventory_json:
         description: CF3 resource inventory JSON (resource IDs and secret references only)
-        required: true
+        required: false
         type: string
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: fork-prepare-${{ github.ref }}-${{ inputs.brand }}-${{ inputs.stage }}
   cancel-in-progress: false
 
 jobs:
-  verify:
-    if: github.repository == 'summersmile1984/omi'
-    uses: ./.github/workflows/fork-checks.yml
-
   prepare:
-    needs: verify
+    if: github.repository == 'summersmile1984/omi'
     runs-on: [self-hosted, macOS, ARM64, mac-studio, memweft]
     timeout-minutes: 180
     steps:
@@ -40,6 +41,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Reuse complete CI for this exact source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CI_RUN_ID: ${{ inputs.ci_run_id }}
+        run: python3 scripts/fork/release_ci.py ci --run-id "$RELEASE_CI_RUN_ID" --sha "$GITHUB_SHA"
 
       - uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
         with:
@@ -81,7 +88,9 @@ jobs:
         env:
           RELEASE_BRAND: ${{ inputs.brand }}
           RELEASE_STAGE: ${{ inputs.stage }}
-          RELEASE_INVENTORY: ${{ inputs.inventory_json }}
+          RELEASE_INVENTORY: ${{ inputs.inventory_json || (inputs.stage == 'beta' && vars.CF_INVENTORY_BETA || vars.CF_INVENTORY_PRODUCTION) }}
+          RELEASE_CI_RUN_ID: ${{ inputs.ci_run_id }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           work=$(mktemp -d "$RUNNER_TEMP/fork-delivery.XXXXXX")
           export RELEASE_WORK="$work"
@@ -94,7 +103,7 @@ jobs:
           PY
           unset RELEASE_INVENTORY
           python3 scripts/fork/prepare_release.py --brand "$RELEASE_BRAND" --stage "$RELEASE_STAGE" \
-            --inventory "$work/inventory.json" --output "$work/delivery"
+            --inventory "$work/inventory.json" --output "$work/delivery" --ci-run-id "$RELEASE_CI_RUN_ID"
           echo "RELEASE_OUT=$work/delivery" >> "$GITHUB_ENV"
           {
             echo '### Prepared deployment artifacts'
@@ -115,4 +124,4 @@ jobs:
             ${{ env.RELEASE_OUT }}/delivery.json
           if-no-files-found: error
           compression-level: 0
-          retention-days: 3
+          retention-days: 30

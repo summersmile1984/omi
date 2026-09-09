@@ -15,16 +15,18 @@ COMPOSE_WRAPPER="$OPS_DIR/compose-clean-env.sh"
 CONFIG_CHECKER="$OPS_DIR/check-config.py"
 APPLICATION_SERVICES=(memory-maintenance-worker queue-worker backend auth-server)
 STATE_SERVICES=(postgres redis minio qdrant typesense searxng)
-PROVIDER_SERVICES=(embedding)
+PROVIDER_SERVICES=(embedding llm)
 STATE_ARCHIVES=(redis minio qdrant typesense backend)
 ARCHIVE_FILES=(postgres.dump.enc redis.tar.gz.enc minio.tar.gz.enc qdrant.tar.gz.enc typesense.tar.gz.enc backend.tar.gz.enc)
 
 usage() {
-  echo "usage: SELF_HOST_ENV=... SELF_HOST_BACKUP_KEY_FILE=... $0 <self-check|start|status|runtime-evidence|metrics|backup DIR|verify-backup DIR|restore DIR|rollback-plan DIR>" >&2
+  echo "usage: SELF_HOST_ENV=... SELF_HOST_BACKUP_KEY_FILE=... $0 <self-check|start|deploy-images|status|runtime-evidence|metrics|backup DIR|verify-backup DIR|restore DIR|rollback-plan DIR>" >&2
 }
 
 compose() {
-  bash "$COMPOSE_WRAPPER" "$ENV_FILE" "$COMPOSE_FILE" "$@"
+  local selection=()
+  [[ -z "${SELF_HOST_PROJECT:-}" ]] || selection+=(--project-name "$SELF_HOST_PROJECT")
+  bash "$COMPOSE_WRAPPER" "$ENV_FILE" "$COMPOSE_FILE" "${selection[@]}" "$@"
 }
 
 effective_config_sha256() {
@@ -235,17 +237,22 @@ start_profile() {
     echo "error: reviewed environment changed before attributed build" >&2; exit 1;
   }
   export OMI_RUNTIME_CONFIG_SHA256="$actual_config_sha256"
-  SELF_HOST_ENV="$ENV_FILE" PYTHON="$PY" bash "$OPS_DIR/build-images.sh"
+  if [[ "${1:-build}" == immutable ]]; then
+    "$PY" "$REPO_ROOT/scripts/fork/deploy_server.py" verify-images \
+      --receipt "${SELF_HOST_DELIVERY_RECEIPT:?accepted delivery receipt is required}" --env-file "$ENV_FILE"
+  else
+    SELF_HOST_ENV="$ENV_FILE" PYTHON="$PY" bash "$OPS_DIR/build-images.sh"
+  fi
   # A previously successful one-shot container is not proof that the current
   # database is migrated: restore may have replaced PostgreSQL underneath it.
   # Quiesce callers, admit state services, and execute a fresh disposable
   # migration container before Auth/backend/worker traffic can resume.
   compose stop "${APPLICATION_SERVICES[@]}" >/dev/null 2>&1 || true
-  compose up --detach --wait "${STATE_SERVICES[@]}" "${PROVIDER_SERVICES[@]}"
+  compose up --detach --wait --no-build "${STATE_SERVICES[@]}" "${PROVIDER_SERVICES[@]}"
   compose run --rm --no-deps -T auth-migrate
   compose run --rm --no-deps -T firestore-pg-migrate
   compose run --rm --no-deps -T qdrant-migrate
-  compose up --detach --wait --no-deps "${APPLICATION_SERVICES[@]}"
+  compose up --detach --wait --no-build --no-deps "${APPLICATION_SERVICES[@]}"
 }
 
 runtime_evidence() {
@@ -275,9 +282,9 @@ backup_state() {
     echo "error: backup directory must be empty: $directory" >&2
     exit 1
   }
-  start_profile
+  start_profile "${SELF_HOST_START_MODE:-build}"
   compose stop "${APPLICATION_SERVICES[@]}"
-  trap 'start_profile >/dev/null 2>&1 || true' EXIT INT TERM
+  trap 'start_profile "${SELF_HOST_START_MODE:-build}" >/dev/null 2>&1 || true' EXIT INT TERM
 
   compose exec -T postgres sh -ec 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc --no-owner' \
     | seal_stdin "$directory/postgres.dump.enc"
@@ -294,7 +301,7 @@ backup_state() {
   config_sha256="$(effective_config_sha256)"
   migration_sha256="$(migration_fingerprint)"
   write_snapshot_manifest "$directory" "$git_sha" "$runtime_sha256" "$config_sha256" "$migration_sha256"
-  start_profile
+  start_profile "${SELF_HOST_START_MODE:-build}"
   trap - EXIT INT TERM
   echo "backup OK: $directory"
 }
@@ -392,6 +399,11 @@ case "${1:-}" in
   start)
     require_runtime
     start_profile
+    status
+    ;;
+  deploy-images)
+    require_runtime
+    start_profile immutable
     status
     ;;
   metrics)

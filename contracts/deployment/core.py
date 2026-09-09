@@ -43,14 +43,15 @@ class Principal:
 
 
 class ProductContract:
-    def __init__(self, metadata):
+    def __init__(self, metadata, *, remote=False):
         require(metadata['target'] in {'self_hosted', 'cloudflare'}, 'unknown target')
         for key in ('api_origin', 'auth_origin'):
             value = urlsplit(metadata[key])
             require(
-                value.scheme == 'http'
-                and value.hostname in {'127.0.0.1', 'localhost'}
-                and value.port
+                (
+                    (value.scheme == 'http' and value.hostname in {'127.0.0.1', 'localhost'} and value.port)
+                    or (remote and value.scheme == 'https' and bool(value.hostname))
+                )
                 and not value.username
                 and not value.password
                 and value.path in ('', '/')
@@ -59,17 +60,32 @@ class ProductContract:
                 f'{key} must be an explicit loopback fixture origin',
             )
         self.metadata = metadata
+        self.auth_public_origin = metadata.get('auth_public_origin', metadata['auth_origin'])
+        if 'auth_public_origin' in metadata:
+            origin = urlsplit(self.auth_public_origin)
+            require(
+                origin.scheme == 'https'
+                and bool(origin.hostname)
+                and not origin.username
+                and not origin.password
+                and origin.path in ('', '/')
+                and not origin.query
+                and not origin.fragment,
+                'auth_public_origin must be an explicit HTTPS origin',
+            )
         self.trace_dir = Path(metadata['trace_dir']).resolve()
         self.trace_dir.mkdir(parents=True, exist_ok=True)
         self.trace = self.trace_dir / 'core-http.jsonl'
         require(not self.trace.exists(), 'core trace already exists; use a fresh fixture')
         self.opener = build_opener(NoRedirect())
         self.cases = []
+        self.remote = remote
+        self.cleanup_accounts = []
 
     def request(self, service, method, path, expected, *, bearer='', body=None, as_text=False):
         headers = {'Accept': 'text/html' if as_text else 'application/json', 'X-App-Platform': 'web'}
         if service == 'auth':
-            headers['Origin'] = self.metadata['auth_origin']
+            headers['Origin'] = self.auth_public_origin
         if bearer:
             headers['Authorization'] = f'Bearer {bearer}'
         if body is not None:
@@ -142,17 +158,20 @@ class ProductContract:
 
     def signup(self):
         account = secrets.token_hex(12)
+        credentials = {
+            'email': f'product-{account}@example.invalid',
+            'password': secrets.token_urlsafe(24),
+            'name': 'Product Contract',
+        }
         body, headers = self.request(
             'auth',
             'POST',
             '/api/auth/sign-up/email',
             200,
-            body={
-                'email': f'product-{account}@example.invalid',
-                'password': secrets.token_urlsafe(24),
-                'name': 'Product Contract',
-            },
+            body=credentials,
         )
+        if self.remote:
+            self.cleanup_accounts.append(credentials)
         uid = body.get('user', {}).get('id')
         session = headers.get('set-auth-token')
         require(isinstance(uid, str) and bool(uid), 'signup omitted identity')
@@ -539,6 +558,18 @@ class ProductContract:
         return self.report()
 
     def report(self):
+        if self.remote and self.cleanup_accounts:
+            accounts, self.cleanup_accounts = self.cleanup_accounts, []
+            for index, credentials in enumerate(accounts):
+
+                def cleanup(credentials=credentials):
+                    _, headers = self.request('auth', 'POST', '/api/auth/sign-in/email', 200, body=credentials)
+                    session = headers.get('set-auth-token')
+                    require(bool(session), 'cleanup login omitted session')
+                    payload, _ = self.request('auth', 'GET', '/api/auth/token', 200, bearer=session)
+                    self.request('api', 'DELETE', '/v1/users/delete-account', 200, bearer=payload['token'])
+
+                self.case(f'cleanup.synthetic-account-{index}', cleanup)
         report = {
             'schema_version': 1,
             'scope': 'identity-jit-onboarding-calendar-email-csat-memory-tasks-referrals',
@@ -555,8 +586,11 @@ class ProductContract:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--metadata', required=True, type=Path)
+    parser.add_argument(
+        '--remote', action='store_true', help='exercise explicit HTTPS deployment origins with fresh accounts'
+    )
     args = parser.parse_args()
-    result = ProductContract(json.loads(args.metadata.read_text())).run()
+    result = ProductContract(json.loads(args.metadata.read_text()), remote=args.remote).run()
     print(json.dumps(result))
     return 0 if result['passed'] else 1
 

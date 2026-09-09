@@ -172,7 +172,7 @@ def prepare(plan: dict, root: Path, output: Path, run=execute) -> dict:
                 name: sha256(output / name) for name in ('cloudflare.tar.gz', 'server-images.tar', 'source.tar.gz')
             },
             'scope': 'frozen-workers-and-linux-images; deployment-and-image-boot-qualification-pending',
-            'pending': [*candidate['pending'], 'Server image boot smoke, registry digests and pull-only rollout'],
+            'pending': [*candidate['pending'], 'Server accepted-image boot and public deployment acceptance'],
         }
     )
     (output / 'delivery.json').write_text(json.dumps(receipt, indent=2) + '\n')
@@ -186,6 +186,9 @@ def main() -> None:
     parser.add_argument('--inventory', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--plan', action='store_true', help='print commands without building or deploying')
+    parser.add_argument(
+        '--ci-run-id', type=int, help='reuse a successful complete Fork Checks run at this exact commit'
+    )
     args = parser.parse_args()
     output = args.output.resolve()
     plan = build_plan(
@@ -197,7 +200,16 @@ def main() -> None:
         execute(['git', 'rev-parse', 'HEAD'], root=ROOT, capture=True).strip(),
         execute(['git', 'rev-parse', 'HEAD^{tree}'], root=ROOT, capture=True).strip(),
     )
-    print(json.dumps(plan if args.plan else prepare(plan, ROOT, output), indent=2))
+    ci = None
+    if args.ci_run_id:
+        from release_ci import verify_ci
+
+        ci = verify_ci(args.ci_run_id, plan['commit'])
+    result = plan if args.plan else prepare(plan, ROOT, output)
+    if ci and not args.plan:
+        result.update(ci)
+        (output / 'delivery.json').write_text(json.dumps(result, indent=2) + '\n')
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == '__main__':

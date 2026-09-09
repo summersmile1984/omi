@@ -22,7 +22,15 @@ python3 contracts/deployment/core.py --metadata /absolute/fixture/metadata.json
 
 Metadata contains `api_origin`, `auth_origin`, `target` (`self_hosted` or
 `cloudflare`), `brand_id`, and `trace_dir`. Origins must be explicit loopback
-HTTP origins. The client follows no redirects, retains no cookie jar, writes
+HTTP origins by default. CD passes `--remote` for explicit HTTPS deployment
+origins and deletes only the accounts created by that invocation, using a fresh
+sign-in after logout tests. Cleanup failure fails the report. The shared contract
+still marks its slice `release_qualified: false`; the fixed qualification runner
+combines it with candidate/version observations and the other product evidence.
+An isolated boot test may supply `auth_public_origin` to send the real HTTPS
+Origin header while connecting to a temporary loopback port. This preserves
+beta/production Auth guards without adding localhost to trusted origins.
+The client follows no redirects, retains no cookie jar, writes
 only route/status/timing traces, and never writes credentials or response
 bodies. Every run needs a fresh trace directory; it reports each case and exits
 nonzero on failure. Target runners own the disposable accounts and state.

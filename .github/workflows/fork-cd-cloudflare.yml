@@ -1,0 +1,74 @@
+name: Fork CD Cloudflare
+
+on:
+  workflow_dispatch:
+    inputs:
+      delivery_run_id:
+        description: Successful Fork Release Preparation run ID
+        type: string
+        required: true
+      stage:
+        description: Deployment stage
+        type: choice
+        options: [beta, production]
+        default: beta
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fork-cd-cloudflare-eddy-${{ inputs.stage }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: github.repository == 'summersmile1984/omi' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, macOS, ARM64, mac-studio, memweft]
+    outputs:
+      sha: ${{ steps.delivery.outputs.sha }}
+      artifact: ${{ steps.delivery.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: delivery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DELIVERY_RUN_ID: ${{ inputs.delivery_run_id }}
+          RELEASE_STAGE: ${{ inputs.stage }}
+        run: python3 scripts/fork/release_ci.py resolve --run-id "$DELIVERY_RUN_ID" --stage "$RELEASE_STAGE"
+
+  deploy:
+    needs: resolve
+    environment: cloudflare-${{ inputs.stage }}
+    runs-on: [self-hosted, macOS, ARM64, mac-studio, memweft]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/fork-release-tools
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.resolve.outputs.artifact }}
+          run-id: ${{ inputs.delivery_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/cf-delivery-${{ github.run_id }}
+      - name: Verify and publish frozen Cloudflare release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_STAGE: ${{ inputs.stage }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+          RELEASE_DIRECTORY: ${{ runner.temp }}/cf-delivery-${{ github.run_id }}
+          RELEASE_JOURNAL_ROOT: ${{ vars.RELEASE_JOURNAL_ROOT }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RELEASE_SECRETS_JSON: ${{ secrets.RELEASE_SECRETS_JSON }}
+        run: |
+          python3 scripts/fork/release_ci.py verify --directory "$RELEASE_DIRECTORY" \
+            --sha "$RELEASE_SHA" --stage "$RELEASE_STAGE" --target cloudflare
+          node scripts/fork/deploy-cloudflare.mjs --delivery "$RELEASE_DIRECTORY" \
+            --journal-root "$RELEASE_JOURNAL_ROOT"

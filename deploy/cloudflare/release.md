@@ -78,11 +78,13 @@ Rerun the frozen local step with:
 node contracts/deployment/regress.mjs --candidate /absolute/candidate
 ```
 
-## Admission still pending
+## Executable release admission
 
-The current tree cannot publish while CF-4 and CI-1 remain unimplemented product
-owners. First-release schema qualification is implemented; retained-version/new
-schema compatibility still requires its executable harness. These are execution
+CF-4 and CI-1 have executable local and hosted product runners. The fork CD
+workflow binds these to the exact successful full CI run and accepted artifact;
+see `scripts/fork/RELEASE.md` for their measured scope. First-release schema
+qualification is implemented; retained-version/new-schema compatibility still
+requires its executable harness. These are execution
 contracts rather than operator approval flags. The CLI reports absent fixed
 runner paths before remote apply/restore:
 
