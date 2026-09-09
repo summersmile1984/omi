@@ -22,15 +22,18 @@ function files(directory) {
 // directly, excluding the extra development ProxyWorker hop (workers-sdk#14641).
 export function frozenRuntimeWorker(configPath) {
   const config = JSON.parse(readFileSync(configPath, "utf8"));
+  const modulesRoot = resolve(dirname(configPath), "modules");
+  // The disposable projection makes release paths absolute. Both forms must
+  // still identify this artifact's exact module directory.
   if (
     config.no_bundle !== true ||
     config.find_additional_modules !== true ||
-    config.base_dir !== "modules"
+    typeof config.base_dir !== "string" ||
+    resolve(dirname(configPath), config.base_dir) !== modulesRoot
   )
     throw new Error("local runtime requires a frozen upload configuration");
   const { main, workerOptions, externalWorkers } =
     unstable_getMiniflareWorkerOptions(configPath);
-  const modulesRoot = resolve(dirname(configPath), "modules");
   if (dirname(main) !== modulesRoot)
     throw new Error("unexpected frozen entrypoint");
   const typeOf = (path) => {
