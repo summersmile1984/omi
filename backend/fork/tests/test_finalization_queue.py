@@ -94,3 +94,15 @@ def test_omi_cloud_keeps_original_dispatch_admission():
     configured = cloud_tasks.is_listen_finalization_dispatch_configured
     build_registry(_finalization_patches()).apply({'target': 'omi_cloud', 'data_plane': {'queue': 'cloud_tasks'}})
     assert cloud_tasks.is_listen_finalization_dispatch_configured is configured
+
+
+@pytest.mark.parametrize('job_id', [None, 123, '', {'job_id': 'untrusted'}])
+def test_invalid_job_identity_is_rejected_before_queue_access(job_id, monkeypatch):
+    from utils import cloud_tasks_redis
+
+    def unexpected_queue_access():
+        pytest.fail('invalid identity reached Redis')
+
+    monkeypatch.setattr(cloud_tasks_redis, '_r', unexpected_queue_access)
+    with pytest.raises(ValueError, match='job identity'):
+        cloud_tasks_redis.enqueue_listen_finalization_job(job_id, 1)

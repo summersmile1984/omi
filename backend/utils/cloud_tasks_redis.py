@@ -106,7 +106,7 @@ def enqueue_account_deletion_wipe(wipe_job_id: str) -> None:
     _enqueue(_queue_names()["account-deletion"], f"wipe-{wipe_job_id}", {"job_id": wipe_job_id})
 
 
-def enqueue_listen_finalization_job(job_id: str, dispatch_generation: int) -> None:
+def enqueue_listen_finalization_job(job_id: object, dispatch_generation: int) -> None:
     if not isinstance(job_id, str) or not job_id or type(dispatch_generation) is not int or dispatch_generation < 1:
         raise ValueError("finalization requires job identity and a positive dispatch generation")
     next(queue for queue in QUEUES if queue.name == "finalization").validate()
