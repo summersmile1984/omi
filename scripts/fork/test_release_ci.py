@@ -18,6 +18,8 @@ import yaml
 
 from release_ci import CI_PATH, PREPARE_PATH, REPOSITORY, resolve_delivery, verify_ci, verify_delivery
 from release_archive import pack_candidate, unpack_candidate
+from download_delivery import download, FILES as DELIVERY_FILES, ATTEMPTS
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -124,11 +126,13 @@ class AdmissionSourceTests(unittest.TestCase):
                 tools.mkdir(parents=True)
                 (tools / 'release_ci.py').write_text('raise RuntimeError("old application admission")\n')
                 (tools / 'release_archive.py').write_text('REVISION = "old"\n')
+                (tools / 'download_delivery.py').write_text('VERSION = "old"\n')
                 git('add', '.')
                 git('commit', '-qm', 'application')
                 application = git('rev-parse', 'HEAD')
                 (tools / 'release_ci.py').write_text('from release_archive import REVISION\nprint(REVISION)\n')
                 (tools / 'release_archive.py').write_text('REVISION = "workflow"\n')
+                (tools / 'download_delivery.py').write_text('VERSION = "workflow"\n')
                 git('commit', '-qam', 'controller')
                 workflow_revision = git('rev-parse', 'HEAD')
                 git('checkout', '-q', application)
@@ -155,84 +159,99 @@ class AdmissionSourceTests(unittest.TestCase):
 
 
 class DeliveryDownloadTests(unittest.TestCase):
-    """Run 34362300799 reported a successful but incomplete artifact transfer."""
-
-    def run_step(self, target, incomplete=False):
-        workflow = yaml.safe_load((ROOT / f'.github/workflows/fork-cd-{target}.yml').read_text())
-        step = next(
-            row for row in workflow['jobs']['deploy']['steps'] if row.get('name') == 'Download complete frozen delivery'
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as archive:
+            for name in sorted(DELIVERY_FILES):
+                archive.writestr(name, 'frozen ' + name)
+        self.payload = buffer.getvalue()
+        self.digest = hashlib.sha256(self.payload).hexdigest()
+        self.artifact = dict(
+            id=123, name='selected', expired=False, digest='sha256:' + self.digest, size_in_bytes=len(self.payload)
         )
-        with tempfile.TemporaryDirectory() as work:
-            directory = Path(work)
-            destination = directory / 'accepted'
-            record = directory / 'attempts'
-            transport = directory / 'transport.py'
-            transport.write_text('''import os, sys
-from pathlib import Path
-args = sys.argv[1:]
-assert args[:6] == ['run', 'download', '123', '--repo', 'summersmile1984/omi', '--name']
-assert args[6:8] == ['delivery-synthetic-eddy-beta', '--dir']
-record = Path(os.environ['DOWNLOAD_TEST_RECORD'])
-attempt = int(record.read_text()) + 1 if record.exists() else 1
-record.write_text(str(attempt))
-destination = Path(args[8])
-destination.mkdir(parents=True)
-(destination / 'cloudflare.tar.gz').write_text('partial' if attempt == 1 else 'complete')
-if os.environ['DOWNLOAD_TEST_INCOMPLETE'] == 'true':
-    raise SystemExit(0)
-if attempt == 1:
-    raise SystemExit(1)
-for name in ['delivery.json', 'server-images.tar', 'source.tar.gz']:
-    (destination / name).write_text('complete')
-''')
-            launcher = directory / 'gh'
-            launcher.write_text(
-                '#!/bin/bash\nexec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(transport)) + ' "$@"\n'
-            )
-            launcher.chmod(0o700)
-            result = subprocess.run(
-                ['bash', '-e', '-o', 'pipefail', '-c', step['run']],
-                cwd=directory,
-                env={
-                    **os.environ,
-                    'PATH': str(directory) + os.pathsep + os.environ['PATH'],
-                    'RUNNER_TEMP': str(directory),
-                    'DELIVERY_RUN_ID': '123',
-                    'DELIVERY_ARTIFACT': 'delivery-synthetic-eddy-beta',
-                    'DELIVERY_DIRECTORY': str(destination),
-                    'DOWNLOAD_TEST_RECORD': str(record),
-                    'DOWNLOAD_TEST_INCOMPLETE': str(incomplete).lower(),
-                },
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            files = {p.name: p.read_text() for p in destination.glob('*')} if destination.exists() else None
-            self.assertEqual(list(directory.glob('eddy-delivery.*')), [], 'attempt-owned temporary files leaked')
-            return result, int(record.read_text()), files
+        self.cache = self.root / 'cache'
+        self.partial = self.cache / '123' / self.digest / 'artifact.zip.partial'
+        self.metadata_reads = 0
 
-    def test_both_targets_retry_interrupted_transfer_without_publishing_partial_files(self):
-        for target in ['cloudflare', 'server']:
-            with self.subTest(target=target):
-                result, attempts, files = self.run_step(target)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(attempts, 2)
-                self.assertEqual(
-                    files,
-                    {
-                        name: 'complete'
-                        for name in ['delivery.json', 'cloudflare.tar.gz', 'server-images.tar', 'source.tar.gz']
-                    },
-                )
+    def api(self, path):
+        self.assertEqual(path, 'actions/runs/456/artifacts?per_page=100')
+        self.metadata_reads += 1
+        return {'artifacts': [self.artifact]}
 
-    def test_both_targets_refuse_false_success_after_three_incomplete_attempts(self):
-        for target in ['cloudflare', 'server']:
-            with self.subTest(target=target):
-                result, attempts, files = self.run_step(target, incomplete=True)
-                self.assertEqual(result.returncode, 1)
-                self.assertEqual(attempts, 3)
-                self.assertIsNone(files)
-                self.assertIn('deployment has not started', result.stderr)
+    def execute(self, destination, fetch):
+        return download(
+            456,
+            'selected',
+            destination,
+            self.cache,
+            api=self.api,
+            locate=lambda value: f'https://artifact.example/{value}',
+            fetch=fetch,
+        )
+
+    def test_first_download_without_any_cache_verifies_and_extracts(self):
+        def fetch(url, partial):
+            self.assertFalse(partial.exists())
+            partial.write_bytes(self.payload)
+            return True
+
+        self.execute(self.root / 'first', fetch)
+        self.assertEqual({path.name for path in (self.root / 'first').iterdir()}, DELIVERY_FILES)
+        self.assertFalse(self.partial.exists())
+
+    def test_resume_preserves_received_bytes_and_cache_reuse_rechecks_github_and_zip_hash(self):
+        self.partial.parent.mkdir(parents=True)
+        self.partial.write_bytes(self.payload[:100])
+        offsets = []
+
+        def fetch(url, partial):
+            self.assertEqual(url, 'https://artifact.example/123')
+            offset = partial.stat().st_size
+            offsets.append(offset)
+            stop = len(self.payload) // 2 if len(offsets) == 1 else len(self.payload)
+            with partial.open('ab') as output:
+                output.write(self.payload[offset:stop])
+            return stop == len(self.payload)
+
+        self.execute(self.root / 'first', fetch)
+        self.assertEqual(offsets, [100, len(self.payload) // 2])
+        self.assertEqual({p.name for p in (self.root / 'first').iterdir()}, DELIVERY_FILES)
+        self.execute(self.root / 'second', lambda *_: self.fail('verified cache unexpectedly downloaded again'))
+        self.assertEqual(self.metadata_reads, 2)
+        archive = self.partial.with_name('artifact.zip')
+        archive.write_bytes(b'corrupt')
+        with self.assertRaisesRegex(ValueError, 'cached artifact ZIP'):
+            self.execute(self.root / 'third', lambda *_: self.fail('corrupt cache was silently replaced'))
+        self.assertFalse((self.root / 'third').exists())
+
+    def test_false_success_on_incomplete_transfer_never_enters_admission(self):
+        calls = []
+
+        def fetch(url, partial):
+            calls.append(url)
+            with partial.open('ab') as output:
+                output.write(b'x')
+            return True
+
+        with self.assertRaisesRegex(RuntimeError, 'incomplete'):
+            self.execute(self.root / 'output', fetch)
+        self.assertEqual(len(calls), ATTEMPTS)
+        self.assertFalse((self.root / 'output').exists())
+        self.assertEqual(self.partial.stat().st_size, ATTEMPTS)
+        self.assertFalse(self.partial.with_name('artifact.zip').exists())
+
+    def test_full_size_without_the_github_digest_is_not_a_verified_cache(self):
+        def fetch(url, partial):
+            partial.write_bytes(b'x' * len(self.payload))
+            return True
+
+        with self.assertRaisesRegex(ValueError, 'ZIP hash differs'):
+            self.execute(self.root / 'output', fetch)
+        self.assertFalse((self.root / 'output').exists())
+        self.assertFalse(self.partial.with_name('artifact.zip').exists())
 
 
 class CloudflareQualificationToolsTests(unittest.TestCase):
