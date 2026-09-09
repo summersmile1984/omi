@@ -14,7 +14,7 @@ import {
   PRODUCT_SUITES,
 } from "../contracts/product-regression.mjs";
 import { regressCandidate } from "../../../contracts/deployment/regress.mjs";
-import { failedCoreCases } from "../contracts/local-target.mjs";
+import { failedProductCases } from "../contracts/local-target.mjs";
 const directories = [];
 afterEach(() => {
   for (const dir of directories.splice(0))
@@ -51,13 +51,30 @@ it("reports failed core identities and statuses without private error text", () 
       ],
     })
   );
-  expect(failedCoreCases({ trace_dir })).toEqual([
+  expect(failedProductCases({ trace_dir })).toEqual([
     { id: "auth.admission", status: "returned HTTP 401; expected 200" },
     { id: "memory.edit" },
   ]);
-  expect(failedCoreCases({ trace_dir: resolve(trace_dir, "missing") })).toEqual(
+  expect(failedProductCases({ trace_dir: resolve(trace_dir, "missing") })).toEqual(
     []
   );
+});
+it("reports recording failures after their last passed case without leaking arbitrary errors", () => {
+  const trace_dir = directory();
+  writeFileSync(resolve(trace_dir, "core-results.json"), "malformed");
+  writeFileSync(resolve(trace_dir, "recording-results.json"), JSON.stringify({ cases: [
+    { id: "recording.reconnect-fences-stale-writer", result: "pass" },
+    { id: "recording-flow", result: "fail", error: "actual queue did not finalize recording" },
+  ] }));
+  writeFileSync(resolve(trace_dir, "chat-results.json"), JSON.stringify({ cases: [
+    { id: "chat-flow", result: "fail", error: "private token in arbitrary library error" },
+    { id: "chat.status", result: "fail", error: "api POST expected 200, received 503" },
+  ] }));
+  expect(failedProductCases({ trace_dir })).toEqual([
+    { id: "recording-flow", after: "recording.reconnect-fences-stale-writer", reason: "actual queue did not finalize recording" },
+    { id: "chat-flow" },
+    { id: "chat.status", status: "api POST expected 200, received 503" },
+  ]);
 });
 const report = (id) => ({
   schema_version: 1,
