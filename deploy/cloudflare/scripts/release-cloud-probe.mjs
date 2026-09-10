@@ -123,7 +123,9 @@ export async function qualifyCloudRuntime(context, {
   const before = {};
   let failure;
   try {
-    await original.preconditions();
+    const preconditions = await original.preconditions();
+    journal.cases.push(...(preconditions?.ingress ?? []));
+    persist();
     const observations = await observeReleaseCandidate(candidate, original, continuation);
     const schema = await qualifySchema({ ...context, observations }, original);
     journal.cases.push(...schema.cases);

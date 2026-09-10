@@ -79,7 +79,7 @@ with the existing frozen SQL owner. Trial Workers bind to those temporary D1
 IDs; other resource bindings remain the candidate's.
 Nine temporary private Workers use isolated Worker/DO identities and service
 bindings within that temporary set. Public routes, Cron and Queue consumers are
-not installed. A tenth, token-guarded gateway allows only the five fixed read-only
+not installed. A tenth, token-guarded gateway allows only the six fixed read-only
 health/readiness/login paths, and checks each twice for application initialization and a
 subsequent request. Auth's signing-key bootstrap stays in temporary D1; Edge
 readiness also exercises the trial service graph and private rate-limit DO.
@@ -89,6 +89,17 @@ deleted only with matching transaction/version annotations; temporary D1 deletio
 requires the independently returned and observed creation ID. An unknown external
 version is retained for reconciliation and fails CI. Evidence lives in a private
 `ci-<commit>-<uuid>` directory under `RELEASE_JOURNAL_ROOT`.
+
+Both target readiness contracts come from `contracts/deployment/readiness.json`.
+Cloudflare checks the same Web-to-Edge `/api/worker-ready` JSON through the frozen
+local build, private cloud gateway and public CD; login SSR is checked separately.
+Server image boot and public CD reject HTML/degraded JSON from API/Auth `/ready`,
+while Web `/login` remains an SSR check. Before cloud upload, the existing release
+adapter also checks both frozen target profiles' public ingress using Cloudflare
+Request Trace (`skip_response=true`). The existing Cloudflare token needs account
+**Allow Request Tracer: Read** in addition to its existing permissions. These
+read-only checks catch BIC/WAF route mismatches even for first publication, without
+creating public trial routes. They do not replace public business acceptance.
 
 This cloud rehearsal catches actual upload/startup failures such as beta run
 34373519437; a local Wrangler dry-run cannot substitute for it. It does not

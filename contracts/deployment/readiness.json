@@ -1,0 +1,11 @@
+{
+  "cloudflare": {
+    "edge": { "origin": "api", "path": "/ready", "ready_json": true },
+    "web": { "origin": "web", "path": "/api/worker-ready", "ready_json": true }
+  },
+  "self_hosted": {
+    "api": { "origin": "api", "path": "/ready", "ready_json": true },
+    "auth": { "origin": "auth", "path": "/ready", "ready_json": true },
+    "web": { "origin": "web", "path": "/login", "ready_json": false }
+  }
+}
