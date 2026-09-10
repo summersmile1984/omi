@@ -28,6 +28,7 @@ import { readDevLlmVars } from "./dev-llm-config.mjs";
 import { attachDevAsr } from "./dev-asr-socket.mjs";
 import { digest, REQUIRED_SECRETS } from "../scripts/resource-input.mjs";
 import { fileTree, git } from "../scripts/release-files.mjs";
+import { RELEASE_READINESS, isReleaseReady } from "../scripts/release-wrangler.mjs";
 
 const componentRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -455,6 +456,12 @@ export async function startLocalTarget({
           });
           if (response.status !== 200)
             throw new Error(`local frozen Web returned ${response.status}`);
+          await response.body?.cancel();
+          const readiness = await fetch(`${webOrigin}${RELEASE_READINESS.web.path}`, {
+            redirect: "error", signal: AbortSignal.timeout(15000),
+          });
+          if (!(await isReleaseReady(readiness)))
+            throw new Error(`local frozen Web binding readiness returned ${readiness.status}`);
           break;
         }
         await sleep(100);

@@ -9,7 +9,7 @@ import { probeConfiguration, stageProbeWorker, qualifyCloudRuntime } from "../sc
 
 const directories = [];
 afterEach(() => directories.splice(0).forEach((directory) => rmSync(directory, { recursive: true, force: true })));
-function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occupiedName, failedMigration, catalogDrift } = {}) {
+function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occupiedName, failedMigration, catalogDrift, webResponse } = {}) {
   const directory = mkdtempSync(resolve(tmpdir(), "release-cloud-probe-"));
   directories.push(directory);
   const states = new Map(), databases = new Map(), removedDatabases = [], removed = [], uploaded = [], configs = [], requests = [];
@@ -130,7 +130,8 @@ function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occup
       requests.push(url);
       expect(options.headers["x-release-probe"]).toMatch(/^[0-9a-f]{64}$/);
       expect(options.redirect).toBe("manual");
-      return new Response(null, { status: failedHealth ? 503 : 200 });
+      if (new URL(url).pathname === "/web" && webResponse) return webResponse();
+      return Response.json({ status: "ready" }, { status: failedHealth ? 503 : 200 });
     },
   };
   return { directory, context: { directory, root: directory, candidate, verify }, options, uploaded, removed, removedDatabases, configs, requests,
@@ -172,10 +173,10 @@ describe("frozen Cloudflare release CI rehearsal", () => {
     const result = await qualifyCloudRuntime(f.context, f.options);
     expect(result.artifact_qualified).toBe(true);
     expect(result.release_ready).toBe(false);
-    expect(result.cases).toHaveLength(17);
+    expect(result.cases).toHaveLength(18);
     expect(f.uploaded).toHaveLength(10);
     expect(f.removed).toEqual([...f.uploaded].reverse());
-    expect(f.requests).toHaveLength(10);
+    expect(f.requests).toHaveLength(12);
     expect(result.cleanup.every((entry) => entry.result === "pass")).toBe(true);
     expect(JSON.stringify(result)).not.toContain("synthetic-existing-secret");
     expect(f.removedDatabases).toHaveLength(2);
@@ -183,17 +184,34 @@ describe("frozen Cloudflare release CI rehearsal", () => {
     const code = readFileSync(f.configs.at(-1).main);
     const { default: gateway } = await import(`data:text/javascript;base64,${code.toString("base64")}`);
     const forwarded = [];
-    const env = { PROBE_TOKEN: "synthetic-token", api_core: {
+    const binding = {
       fetch: async (url) => { forwarded.push(url); return new Response("healthy"); },
-    } };
+    };
+    const env = { PROBE_TOKEN: "synthetic-token", api_core: binding, web: binding, edge: binding };
     for (const [path, method, token, expected] of [
       ["api-core", "GET", "", 404], ["api-core", "POST", "synthetic-token", 404],
       ["unknown", "GET", "synthetic-token", 404], ["api-core", "GET", "synthetic-token", 200],
+      ["web", "GET", "synthetic-token", 200], ["web-ssr", "GET", "synthetic-token", 200],
+      ["edge", "GET", "synthetic-token", 200],
     ]) {
       const response = await gateway.fetch(new Request(`https://fixture/${path}`, { method, headers: { "x-release-probe": token } }), env);
       expect(response.status).toBe(expected);
     }
-    expect(forwarded).toEqual(["https://release-ci.internal/health"]);
+    expect(forwarded).toEqual([
+      "https://release-ci.internal/health", "https://release-ci.internal/api/worker-ready",
+      "https://release-ci.internal/login", "https://release-ci.internal/ready",
+    ]);
+  });
+  it.each([
+    ["missing route", () => new Response(null, { status: 404 })],
+    ["login HTML", () => new Response("<html>login</html>")],
+    ["degraded Edge", () => Response.json({ status: "degraded" })],
+    ["non-200 ready JSON", () => Response.json({ status: "ready" }, { status: 503 })],
+  ])("rejects %s at the actual CD Web readiness route even when SSR passes", async (_, webResponse) => {
+    const f = fixture({ webResponse });
+    await expect(qualifyCloudRuntime(f.context, f.options)).rejects.toThrow("cloud runtime health did not qualify: web");
+    expect(f.journal().artifact_qualified).toBe(false);
+    expect(f.removed).toEqual([...f.uploaded].reverse());
   });
   it("rejects the Core upload failure and cleans up a remotely created version even when its process failed", async () => {
     const f = fixture({ failedRole: "api-core" });

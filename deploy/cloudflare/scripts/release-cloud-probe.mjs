@@ -5,13 +5,20 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { readJson, verifyCandidate, writeJson } from "./release-files.mjs";
 import { digest, WORKERS } from "./resource-input.mjs";
-import { WranglerReleaseAdapter } from "./release-wrangler.mjs";
+import { WranglerReleaseAdapter, RELEASE_READINESS, isReleaseReady } from "./release-wrangler.mjs";
 import { observeReleaseCandidate } from "./release-transaction.mjs";
 import { continuationContext, deliveryContinuation } from "./release-continuation.mjs";
 import { qualifyFirstRelease, executeFrozenSchema, querySchema, comparableSchemaCatalog, SCHEMA_QUERY } from "../contracts/qualify-prior-schema.mjs";
 import { qualificationContext } from "../contracts/qualification-context.mjs";
 
-const HEALTH = { auth: "/ready", "api-core": "/health", "api-ai": "/health", edge: "/ready", web: "/login" };
+const HEALTH = {
+  auth: { role: "auth", path: "/ready" },
+  "api-core": { role: "api-core", path: "/health" },
+  "api-ai": { role: "api-ai", path: "/health" },
+  ...Object.fromEntries(Object.entries(RELEASE_READINESS).map(([role, { path }]) =>
+    [role, { role, path, readiness: true }])),
+  "web-ssr": { role: "web", path: "/login" },
+};
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const PROBE_SECRET = "CF_RELEASE_PROBE_TOKEN";
 const gatewaySource = `export default {
@@ -20,7 +27,7 @@ const gatewaySource = `export default {
     const role = new URL(request.url).pathname.slice(1);
     if (request.method !== "GET" || request.headers.get("x-release-probe") !== env.PROBE_TOKEN || !Object.hasOwn(paths, role))
       return new Response(null, {status: 404});
-    return env[role.replaceAll("-", "_")].fetch("https://release-ci.internal" + paths[role]);
+    return env[paths[role].role.replaceAll("-", "_")].fetch("https://release-ci.internal" + paths[role].path);
   }
 };\n`;
 
@@ -100,7 +107,7 @@ export async function qualifyCloudRuntime(context, {
     name: gateway, account_id: candidate.account_id,
     main: gatewayFile, compatibility_date: "2026-09-01",
     workers_dev: true, preview_urls: false, routes: [],
-    services: Object.keys(HEALTH).map((role) => ({ binding: role.replaceAll("-", "_"), service: probe.workers[role].name })),
+    services: [...new Set(Object.values(HEALTH).map(({ role }) => role))].map((role) => ({ binding: role.replaceAll("-", "_"), service: probe.workers[role].name })),
   }), { mode: 0o600 });
   probe.workers.probe = { name: gateway, config: gatewayConfig };
   probe.resource_plan.secrets.probe = { PROBE_TOKEN: PROBE_SECRET };
@@ -212,8 +219,9 @@ export async function qualifyCloudRuntime(context, {
         const response = await fetchProbe(`https://${gateway}.${subdomain}.workers.dev/${role}`, {
           headers: { "x-release-probe": token }, redirect: "manual", signal: AbortSignal.timeout(60_000),
         });
-        await response.body?.cancel();
-        if (response.status !== 200) throw new Error(`cloud runtime health did not qualify: ${role} (${response.status})`);
+        const ready = HEALTH[role].readiness ? await isReleaseReady(response) : response.status === 200;
+        if (!response.bodyUsed) await response.body?.cancel();
+        if (!ready) throw new Error(`cloud runtime health did not qualify: ${role} (${response.status})`);
       }
       journal.cases.push({ id: `cloud.cold-and-warm.${role}`, result: "pass" });
       persist();

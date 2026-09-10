@@ -75,6 +75,15 @@ version before deletion. This is an actual cloud integration qualification,
 separate from hermetic source CI tests, and catches the upload failure observed
 in beta CD 34373519437 before a release run can turn green.
 
+Readiness routes and ready-JSON validation have one owner in
+`release-wrangler.mjs`, shared by private cloud qualification and public CD.
+The gateway exercises Edge `/ready` and Web `/api/worker-ready` twice through
+their actual service bindings; it separately checks Web `/login`. Local frozen
+product qualification also exercises Web binding readiness. A 200 HTML page,
+missing route or degraded dependency cannot pass readiness. This closes the
+specific gap in beta CD 34419433912: all nine uploads succeeded, while the old
+private probe checked login and missed the unimplemented CD readiness route.
+
 ## Local product regression
 
 After building and freezing all artifacts, `release.mjs prepare` now starts

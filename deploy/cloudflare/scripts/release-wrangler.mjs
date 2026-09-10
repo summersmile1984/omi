@@ -6,6 +6,21 @@ import { assertInstalledRuntime } from "./python-worker.mjs";
 
 export const WRANGLER_PROCESS_TIMEOUT_MS = 15 * 60 * 1000;
 
+// One route and response contract for the private cloud rehearsal and CD.
+export const RELEASE_READINESS = Object.freeze({
+  edge: { origin: "api", path: "/ready" },
+  web: { origin: "web", path: "/api/worker-ready" },
+});
+
+export async function isReleaseReady(response) {
+  try {
+    const body = await response.json();
+    return response.status === 200 && body?.status === "ready";
+  } catch {
+    return false;
+  }
+}
+
 // POSIX process groups include Wrangler's Node launcher child and any runner
 // descendants. A timeout must end their ownership, not just the wrapper PID.
 export function runReleaseProcess(
@@ -581,24 +596,19 @@ export class WranglerReleaseAdapter {
     const origins = this.candidate.resource_plan.origins;
     if (!Number.isInteger(attempts) || attempts < 1)
       throw new Error("readiness attempts must be positive");
-    for (const url of [
-      `${origins.api}/ready`,
-      `${origins.web}/api/worker-ready`,
-    ]) {
+    for (const [role, { origin, path }] of Object.entries(RELEASE_READINESS)) {
+      const url = `${origins[origin]}${path}`;
       for (let attempt = 1; attempt <= attempts; attempt++) {
-        let response, body;
+        let ready = false;
         try {
-          response = await this.fetch(url, {
+          ready = await isReleaseReady(await this.fetch(url, {
             signal: AbortSignal.timeout(15_000),
             redirect: "error",
-          });
-          body = await response.json();
-        } catch {
-          response = undefined;
-        }
-        if (response?.status === 200 && body?.status === "ready") break;
+          }));
+        } catch {}
+        if (ready) break;
         if (attempt === attempts)
-          throw new Error("release readiness did not report ready JSON");
+          throw new Error(`release readiness did not report ready JSON: ${role}`);
         await sleep(retryDelayMs);
       }
     }
