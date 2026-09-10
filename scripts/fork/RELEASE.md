@@ -39,10 +39,13 @@ execution. The supported Server image platform remains `linux/amd64`.
 
 Source checks alone never authorize CD. Release CI must finish all four stages:
 `Freeze delivery artifacts`, `Cloudflare artifact qualification`, `Server image
-qualification`, and `Release ready`. Each target stage calls its existing CD workflow in
+qualification`, and `Release ready (runtime and public ingress)`. Each target stage calls its existing CD workflow in
 qualification mode, yielding six executable jobs in total. Both CD resolvers
 require those exact job names and successful outcomes in the selected run attempt. Historical build-only
-preparation runs, skipped qualification and failed qualification are rejected.
+preparation runs, the older `Release ready` contract (including green run
+34415705069), skipped qualification and failed qualification are rejected.
+An older green run must requalify through the current workflow; it cannot supply
+the newly required public readiness and ingress evidence.
 The freeze job has no deployment credentials. The reusable target workflows own
 both qualification and deployment: the same tool setup, artifact transport,
 verification, environment credentials and concurrency lock run in both modes.
@@ -99,7 +102,10 @@ adapter also checks both frozen target profiles' public ingress using Cloudflare
 Request Trace (`skip_response=true`). The existing Cloudflare token needs account
 **Allow Request Tracer: Read** in addition to its existing permissions. These
 read-only checks catch BIC/WAF route mismatches even for first publication, without
-creating public trial routes. They do not replace public business acceptance.
+creating public trial routes. Public hostnames must already have DNS records:
+the API rejects an unregistered host even with `skip_response=true` (observed for
+`eddy-cf-api.smartipproxy.com` on 2026-09-10). Missing DNS fails Release CI rather
+than being accepted as an empty policy. They do not replace public business acceptance.
 
 This cloud rehearsal catches actual upload/startup failures such as beta run
 34373519437; a local Wrangler dry-run cannot substitute for it. It does not

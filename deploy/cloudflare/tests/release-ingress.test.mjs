@@ -12,7 +12,7 @@ const candidate = {
 };
 const rule = (matched, bic) => ({ type: "rule", matched, action: "set_config", action_parameter: { bic } });
 // Shape captured from the account Trace API on 2026-09-10. Trace requests skip
-// the origin, so even a not-yet-published hostname returns evaluated rules.
+// the origin; DNS must already exist even if no Worker route is published.
 const trace = (rules) => ({ status_code: 200, trace: [{
   type: "phase", step_name: "http_config_settings", matched: true,
   trace: [{ type: "ruleset", matched: true, trace: rules }],
@@ -62,7 +62,7 @@ describe("public ingress qualification before publication", () => {
     await expect(qualifyPublicIngress(candidate, [zone], DEPLOYMENT_READINESS, async () => { throw Error("permission denied"); })).rejects.toThrow("public ingress did not qualify");
     expect(() => publicIngressRequests({ stage: "beta" }, DEPLOYMENT_READINESS)).toThrow("both frozen");
   });
-  it("executes ingress checks in the actual CD precondition owner even before domains exist", async () => {
+  it("executes ingress checks in the actual CD precondition owner before Worker domain associations exist", async () => {
     const paths = [];
     const adapter = Object.assign(Object.create(WranglerReleaseAdapter.prototype), {
       account: zone.account.id, env: {},

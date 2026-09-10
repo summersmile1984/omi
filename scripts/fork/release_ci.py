@@ -22,7 +22,7 @@ RELEASE_JOBS = {
     'Cloudflare artifact qualification / Execute accepted delivery',
     'Server image qualification / Resolve delivery',
     'Server image qualification / Execute accepted delivery',
-    'Release ready',
+    'Release ready (runtime and public ingress)',
 }
 
 
@@ -69,7 +69,7 @@ def resolve_delivery(run_id, stage, api=github):
     sha = successful_run(run, PREPARE_PATH)
     jobs = api(f'actions/runs/{int(run_id)}/attempts/{run["run_attempt"]}/jobs?per_page=100')['jobs']
     if {job['name'] for job in jobs} != RELEASE_JOBS or any(job['conclusion'] != 'success' for job in jobs):
-        raise ValueError('release CI must qualify transported Cloudflare artifacts and actual Server image boot')
+        raise ValueError('release CI must qualify transported artifacts, actual runtime readiness and public ingress')
     comparison = api(f'compare/{sha}...main')
     if comparison.get('status') not in {'ahead', 'identical'}:
         raise ValueError('deployment source must be integrated into main')

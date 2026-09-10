@@ -632,6 +632,26 @@ class ReleaseAuthorityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'release CI must qualify'):
                     resolve_delivery(2, 'beta', self.api)
 
+    def test_historical_green_release_without_runtime_and_ingress_contract_cannot_authorize_cd(self):
+        # Run 34415705069 passed its old six jobs, then CD 34419433912
+        # failed on the public Web readiness route and ingress policy.
+        self.run['path'] = PREPARE_PATH
+        self.jobs = [
+            {'name': name, 'conclusion': 'success'}
+            for name in [
+                'Freeze delivery artifacts',
+                'Cloudflare artifact qualification / Resolve delivery',
+                'Cloudflare artifact qualification / Execute accepted delivery',
+                'Server image qualification / Resolve delivery',
+                'Server image qualification / Execute accepted delivery',
+                'Release ready',
+            ]
+        ]
+        with self.assertRaisesRegex(ValueError, 'runtime readiness and public ingress'):
+            resolve_delivery(34415705069, 'beta', self.api)
+        self.jobs[-1]['name'] = 'Release ready (runtime and public ingress)'
+        self.assertEqual(resolve_delivery(2, 'beta', self.api)['sha'], self.sha)
+
     def test_release_ready_executes_the_workflow_gate_for_success_failure_and_skipped_jobs(self):
         workflow = yaml.safe_load((ROOT / PREPARE_PATH).read_text())
         names = set()

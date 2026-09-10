@@ -155,7 +155,7 @@ jobs:
       qualification_artifact: ${{ needs.prepare.outputs.artifact }}
 
   ready:
-    name: Release ready
+    name: Release ready (runtime and public ingress)
     if: always()
     needs: [prepare, cloudflare, server]
     runs-on: ubuntu-latest

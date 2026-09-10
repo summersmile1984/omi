@@ -1,4 +1,5 @@
-// The account Trace API evaluates ingress before a Worker/domain is published.
+// The account Trace API evaluates ingress before a Worker is published, but
+// requires the hostname's DNS record to exist. Missing DNS fails qualification.
 // skip_response never calls the origin; this is not application health evidence.
 // Contract: https://developers.cloudflare.com/rules/trace-request/
 export function publicIngressRequests(candidate, readiness) {
