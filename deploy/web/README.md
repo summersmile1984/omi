@@ -126,6 +126,12 @@ pages use the same upstream route/renderer code on both targets.
   The app continues to own SSR, marketplace metadata, routes and response
   headers. Workers Assets replaces filesystem asset delivery. Build paths are
   canonicalized so `/tmp` and `/private/tmp` cannot duplicate the fetch owner.
+  The Worker adapter owns `GET /api/worker-ready`: it calls the actual `EDGE`
+  service binding's `/ready` and returns 200 with `{"status":"ready"}` only
+  when Edge reports the same. Missing bindings, invalid responses and dependency
+  failures return 503 with no dependency payload; other methods return 405.
+  Readiness is never cached. The frozen local regression, private cloud Release
+  CI and public CD all check this route, in addition to the SSR login check.
 - Server OS bundles the generated server into one Bun executable module and
   ships only that module plus public assets. The Dockerfile consumes this
   artifact; an image build is separate evidence from a successful Bun run.

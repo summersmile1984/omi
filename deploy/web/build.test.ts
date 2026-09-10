@@ -26,6 +26,7 @@ import { generateWebAssets, snapshotWebAssets } from "./brand-assets.mjs";
 import { writeFixtureAssets } from "../../scripts/brand/raster/fixture.mjs";
 import { PNG } from "../../scripts/brand/raster/png.mjs";
 import { rewritePresentation } from "./presentation";
+import { workerReadiness } from "./worker-runtime";
 
 const profile = {
   name: "cloudflare.local",
@@ -58,6 +59,36 @@ const presentation = {
 };
 
 describe("the shared Web build boundary", () => {
+  test("readiness executes the Edge binding and cannot certify missing or unhealthy dependencies", async () => {
+    const request = new Request("https://web.fixture.invalid/api/worker-ready", {
+      headers: { Authorization: "Bearer private-client-token" },
+    });
+    const calls: Request[] = [];
+    const edge = { async fetch(upstream: Request) {
+      calls.push(upstream);
+      return Response.json({ status: "ready", private: "dependency-only" });
+    } };
+    const ready = await workerReadiness(request, edge);
+    expect(ready?.status).toBe(200);
+    expect(ready?.headers.get("cache-control")).toBe("no-store");
+    expect(await ready?.json()).toEqual({ status: "ready" });
+    expect(calls[0].url).toBe("https://edge.internal/ready");
+    expect(calls[0].headers.get("authorization")).toBeNull();
+    expect(await workerReadiness(new Request("https://web.fixture.invalid/login"), edge)).toBeUndefined();
+    expect((await workerReadiness(new Request(request.url, { method: "POST" }), edge))?.status).toBe(405);
+    expect(calls).toHaveLength(1);
+    for (const dependency of [
+      undefined,
+      { async fetch() { throw new Error("private provider failure"); } },
+      { async fetch() { return new Response("<html>login</html>"); } },
+      { async fetch() { return Response.json({ status: "degraded" }); } },
+      { async fetch() { return Response.json({ status: "ready" }, { status: 503 }); } },
+    ]) {
+      const failed = await workerReadiness(request, dependency);
+      expect(failed?.status).toBe(503);
+      expect(await failed?.json()).toEqual({ status: "unavailable" });
+    }
+  });
   test("executes presentation literals safely while preserving data and model prompts", () => {
     const brand = {
       ...presentation,

@@ -39,10 +39,13 @@ execution. The supported Server image platform remains `linux/amd64`.
 
 Source checks alone never authorize CD. Release CI must finish all four stages:
 `Freeze delivery artifacts`, `Cloudflare artifact qualification`, `Server image
-qualification`, and `Release ready`. Each target stage calls its existing CD workflow in
+qualification`, and `Release ready (runtime and public ingress)`. Each target stage calls its existing CD workflow in
 qualification mode, yielding six executable jobs in total. Both CD resolvers
 require those exact job names and successful outcomes in the selected run attempt. Historical build-only
-preparation runs, skipped qualification and failed qualification are rejected.
+preparation runs, the older `Release ready` contract (including green run
+34415705069), skipped qualification and failed qualification are rejected.
+An older green run must requalify through the current workflow; it cannot supply
+the newly required public readiness and ingress evidence.
 The freeze job has no deployment credentials. The reusable target workflows own
 both qualification and deployment: the same tool setup, artifact transport,
 verification, environment credentials and concurrency lock run in both modes.
@@ -79,7 +82,7 @@ with the existing frozen SQL owner. Trial Workers bind to those temporary D1
 IDs; other resource bindings remain the candidate's.
 Nine temporary private Workers use isolated Worker/DO identities and service
 bindings within that temporary set. Public routes, Cron and Queue consumers are
-not installed. A tenth, token-guarded gateway allows only the five fixed read-only
+not installed. A tenth, token-guarded gateway allows only the six fixed read-only
 health/readiness/login paths, and checks each twice for application initialization and a
 subsequent request. Auth's signing-key bootstrap stays in temporary D1; Edge
 readiness also exercises the trial service graph and private rate-limit DO.
@@ -89,6 +92,20 @@ deleted only with matching transaction/version annotations; temporary D1 deletio
 requires the independently returned and observed creation ID. An unknown external
 version is retained for reconciliation and fails CI. Evidence lives in a private
 `ci-<commit>-<uuid>` directory under `RELEASE_JOURNAL_ROOT`.
+
+Both target readiness contracts come from `contracts/deployment/readiness.json`.
+Cloudflare checks the same Web-to-Edge `/api/worker-ready` JSON through the frozen
+local build, private cloud gateway and public CD; login SSR is checked separately.
+Server image boot and public CD reject HTML/degraded JSON from API/Auth `/ready`,
+while Web `/login` remains an SSR check. Before cloud upload, the existing release
+adapter also checks both frozen target profiles' public ingress using Cloudflare
+Request Trace (`skip_response=true`). The existing Cloudflare token needs account
+**Allow Request Tracer: Read** in addition to its existing permissions. These
+read-only checks catch BIC/WAF route mismatches even for first publication, without
+creating public trial routes. Public hostnames must already have DNS records:
+the API rejects an unregistered host even with `skip_response=true` (observed for
+`eddy-cf-api.smartipproxy.com` on 2026-09-10). Missing DNS fails Release CI rather
+than being accepted as an empty policy. They do not replace public business acceptance.
 
 This cloud rehearsal catches actual upload/startup failures such as beta run
 34373519437; a local Wrangler dry-run cannot substitute for it. It does not

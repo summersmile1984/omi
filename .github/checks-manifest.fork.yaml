@@ -54,7 +54,7 @@ checks:
 
   - id: fork-ci-diff-base
     command: ["bash", "-c", "python3 scripts/fork/test_ci_diff_base.py && python3 scripts/fork/test_release_prepare.py && python3 scripts/fork/test_release_ci.py && python3 scripts/fork/test_deploy_server.py && python3 scripts/fork/test_hosted_core.py && python3 scripts/fork/test_model_services.py"]
-    triggers: [".github/workflows/fork-*.yml", ".github/actions/fork-release-tools/**", ".github/checks-manifest.fork.yaml", "scripts/fork/**", "deploy/self-host/**", "contracts/deployment/core.py", "backend/fork/tests/**", "backend/tests/**"]
+    triggers: [".github/workflows/fork-*.yml", ".github/actions/fork-release-tools/**", ".github/checks-manifest.fork.yaml", "scripts/fork/**", "deploy/self-host/**", "contracts/deployment/core.py", "contracts/deployment/readiness.json", "backend/fork/tests/**", "backend/tests/**"]
     lanes: ["local", "ci"]
     reason: "The advertised manual Fork Checks entry emitted an empty diff base because workflow_dispatch has no event.before; execute that exact shell in real Git fixtures for PR, push and manual events. This tests the workflow consumer rather than duplicating the shared manifest selector."
 
@@ -84,7 +84,7 @@ checks:
 
   - id: fork-cloudflare-routes
     command: ["bash", "deploy/cloudflare/ci/routes.sh"]
-    triggers: ["backend/utils/memory/rejected_memory_feedback.py", "backend/utils/memory/canonical_consolidation.py", "backend/fork/consolidation_admission.py", "backend/fork/tests/fixtures/qwen_duplicate_create.json", "runtime/shared/**", "deploy/cloudflare/**", "backend/main.py", "backend/routers/**", "backend/models/action_item.py", "backend/models/task_intelligence.py", "backend/models/screen_frame.py", "backend/models/frame_request.py", "backend/utils/retrieval/frame_request_policy.py", "backend/utils/retrieval/frame_request_storage.py", "backend/utils/jit_rollout.py", "backend/utils/screen_frames/**", "backend/scripts/export_openapi.py", "backend/scripts/openapi_runner.sh", "backend/openapi-requirements.txt"]
+    triggers: ["contracts/deployment/readiness.json", "backend/utils/memory/rejected_memory_feedback.py", "backend/utils/memory/canonical_consolidation.py", "backend/fork/consolidation_admission.py", "backend/fork/tests/fixtures/qwen_duplicate_create.json", "runtime/shared/**", "deploy/cloudflare/**", "backend/main.py", "backend/routers/**", "backend/models/action_item.py", "backend/models/task_intelligence.py", "backend/models/screen_frame.py", "backend/models/frame_request.py", "backend/utils/retrieval/frame_request_policy.py", "backend/utils/retrieval/frame_request_storage.py", "backend/utils/jit_rollout.py", "backend/utils/screen_frames/**", "backend/scripts/export_openapi.py", "backend/scripts/openapi_runner.sh", "backend/openapi-requirements.txt"]
     lanes: ["local", "ci"]
     reason: "the merged M2 command invoked a removed upstream export surface, leaving 36 new route identities outside the inventory; exercise real FastAPI registrations and Core/Edge handlers before release"
 

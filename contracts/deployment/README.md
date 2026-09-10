@@ -1,5 +1,13 @@
 # Shared deployment product contracts
 
+`readiness.json` owns the two targets' readiness paths and response requirements.
+The Server image boot/public deploy owner and Cloudflare frozen local/private
+cloud/public deploy owners consume it; the public ingress simulation uses those
+same paths. API/Auth readiness requires HTTP 200 and `status: ready` JSON. The
+Server Web SSR login intentionally uses status-only verification. Unit tests run
+in the existing fork CI control and Cloudflare contract lanes, including when
+only this JSON changes.
+
 `core.py` executes the same HTTP cases against either real target: two public
 signups, opaque session restore and JWT exchange, protected admission,
 onboarding persistence, authenticated JIT tri-state rollout decisions, calendar capture-gap query/auth/disconnected admission, public invalid-email-link

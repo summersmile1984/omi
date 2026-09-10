@@ -75,6 +75,31 @@ version before deletion. This is an actual cloud integration qualification,
 separate from hermetic source CI tests, and catches the upload failure observed
 in beta CD 34373519437 before a release run can turn green.
 
+Readiness routes for both targets live in `contracts/deployment/readiness.json`.
+Cloudflare ready-JSON validation has one owner in `release-wrangler.mjs`,
+shared by private cloud qualification and public CD.
+The gateway exercises Edge `/ready` and Web `/api/worker-ready` twice through
+their actual service bindings; it separately checks Web `/login`. Local frozen
+product qualification also exercises Web binding readiness. A 200 HTML page,
+missing route or degraded dependency cannot pass readiness. This closes the
+specific gap in beta CD 34419433912: all nine uploads succeeded, while the old
+private probe checked login and missed the unimplemented CD readiness route.
+
+For custom domains, the same publish precondition now evaluates both frozen
+target profiles through the account Request Trace API with `skip_response=true`.
+It checks the exact CD readiness paths plus API, Auth and Web API paths before
+any temporary cloud upload or persistent publication. Trace requires the token's
+additional account permission **Allow Request Tracer: Read**; zone browser-check
+settings are read with the existing zone access. No deployment credential enters
+the simulated request and no browser UA is substituted. Both the zone default
+and matching configuration rules in evaluation order determine Browser Integrity
+Check. A remaining BIC requirement, blocking/challenge/redirect action, denied
+read or incomplete trace fails qualification. This works before a Worker domain
+exists. It caught the Web `/api/` omission from beta CD 34419433912.
+The trace is ingress-policy evidence only: Cloudflare documents unsupported
+products in [Trace limitations](https://developers.cloudflare.com/rules/trace-request/limitations/),
+and actual DNS/TLS/public business acceptance remains mandatory in CD.
+
 ## Local product regression
 
 After building and freezing all artifacts, `release.mjs prepare` now starts

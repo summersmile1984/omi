@@ -20,6 +20,7 @@ from urllib.request import urlopen
 from release_ci import sha256_file
 
 ROOT = Path(__file__).resolve().parents[2]
+READINESS = json.loads((ROOT / 'contracts/deployment/readiness.json').read_text())['self_hosted']
 sys.path.insert(0, str(ROOT / 'deploy/self-host'))
 from model_services import profile_for, image_keys
 
@@ -86,9 +87,9 @@ def write_environment(path, values):
 def wait_ready(metadata, *, open_url=urlopen, pause=time.sleep, now=time.monotonic, timeout=120):
     deadline = now() + timeout
     pending = {
-        metadata[key + '_origin'].rstrip('/') + path
-        for key, path in (('api', '/ready'), ('auth', '/ready'), ('web', '/login'))
-        if key + '_origin' in metadata
+        metadata[check['origin'] + '_origin'].rstrip('/') + check['path']: check['ready_json']
+        for check in READINESS.values()
+        if check['origin'] + '_origin' in metadata
     }
     while pending and now() < deadline:
         for url in list(pending):
@@ -97,8 +98,9 @@ def wait_ready(metadata, *, open_url=urlopen, pause=time.sleep, now=time.monoton
             try:
                 with open_url(url, timeout=min(5, max(0.1, deadline - now()))) as response:
                     if response.getcode() == 200 and response.geturl() == url:
-                        pending.remove(url)
-            except (URLError, TimeoutError, OSError):
+                        if not pending[url] or json.load(response).get('status') == 'ready':
+                            del pending[url]
+            except (URLError, TimeoutError, OSError, ValueError, AttributeError):
                 pass
         if pending:
             pause(min(2, max(0, deadline - now())))

@@ -24,10 +24,12 @@ export async function compileWorker(
   await writeFile(
     resolve(out, 'worker.ts'),
     `import './server.ts';
-import { fetchApp } from './worker-runtime.ts';
+import { fetchApp, workerReadiness } from './worker-runtime.ts';
 import { isShareProxyRequest, proxyPublicGet } from '../src/lib/fork/public-proxy.ts';
 export default {
   async fetch(request, env) {
+    const readiness = await workerReadiness(request, env.EDGE);
+    if (readiness) return readiness;
     if (request.method === 'GET' || request.method === 'HEAD') {
       const asset = await env.ASSETS.fetch(request);
       if (asset.status !== 404) return asset;

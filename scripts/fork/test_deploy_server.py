@@ -84,6 +84,7 @@ class ServerDeliveryTests(unittest.TestCase):
             response.__enter__.return_value = response
             response.getcode.return_value = 200
             response.geturl.return_value = url
+            response.read.return_value = b'{"status":"ready"}'
             return response
 
         metadata = {'api_origin': 'https://api.example.com'}
@@ -99,6 +100,39 @@ class ServerDeliveryTests(unittest.TestCase):
                 timeout=4,
             )
         self.assertEqual(clock[0], 4)
+
+    def test_readiness_rejects_html_and_degraded_json_even_when_http_is_200(self):
+        for payload in (b'<html>login</html>', b'{"status":"degraded"}', b'null', b'[]'):
+            with self.subTest(payload=payload):
+                clock = [0]
+
+                def pause(seconds):
+                    clock[0] += seconds
+
+                def request(url, timeout):
+                    response = MagicMock()
+                    response.__enter__.return_value = response
+                    response.getcode.return_value = 200
+                    response.geturl.return_value = url
+                    response.read.return_value = payload
+                    return response
+
+                with self.assertRaisesRegex(RuntimeError, 'deadline'):
+                    wait_ready(
+                        {'auth_origin': 'https://auth.example.com'},
+                        open_url=request,
+                        now=lambda: clock[0],
+                        pause=pause,
+                        timeout=2,
+                    )
+                # The existing SSR endpoint intentionally returns HTML.
+                wait_ready(
+                    {'web_origin': 'https://web.example.com'},
+                    open_url=request,
+                    now=lambda: clock[0],
+                    pause=pause,
+                    timeout=2,
+                )
 
     def test_accepted_content_addressed_images(self):
         verify_images(self.receipt, self.environment, self.inspect)
