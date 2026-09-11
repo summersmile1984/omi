@@ -174,10 +174,12 @@ jobs:
         with:
           persist-credentials: false
 
-      # Names and ids come from the retained candidate that published them
-      # (journal beta-f843a224...-candidate/candidate.json); the `web` Worker has
-      # no `-cf-` infix. The account comes from the same inventory the release
-      # prep reads, so a reset cannot be pointed at another account.
+      # The names, ids and hostname/service pairs below are the beta stage's, like
+      # the retained candidate that published them (journal
+      # beta-f843a224...-candidate/candidate.json); the `web` Worker has no `-cf-`
+      # infix, and `eddy-cf-beta-api` belongs to `edge`. The account comes from the
+      # same inventory the release prep reads, so a reset cannot be pointed at
+      # another account. All of it is deleted with the one-time reset tool.
       - name: Reset the stage
         if: ${{ inputs.reset_stage }}
         env:
@@ -187,6 +189,7 @@ jobs:
           account=$(python3 -c 'import json,os; print(json.loads(os.environ["CF_INVENTORY"])["account_id"])')
           python3 scripts/fork/reset_cloudflare_stage.py \
             --brand eddy --stage "${{ inputs.stage }}" --account "$account" \
+            --zone smartipproxy.com \
             --worker eddy-cf-auth-beta \
             --worker eddy-cf-rate-limit-beta \
             --worker eddy-cf-screen-frame-writer-beta \
@@ -196,6 +199,9 @@ jobs:
             --worker eddy-cf-jobs-beta \
             --worker eddy-cf-edge-beta \
             --worker eddy-web-beta \
+            --domain eddy-cf-beta.smartipproxy.com=eddy-web-beta \
+            --domain eddy-cf-beta-api.smartipproxy.com=eddy-cf-edge-beta \
+            --domain eddy-cf-beta-auth.smartipproxy.com=eddy-cf-auth-beta \
             --d1 app=42bbfb33-8d8d-4d66-8fae-c5a3face65e8 \
             --d1 auth=56f2ed9e-d766-4390-ae8f-b50455715753 \
             --confirm "${{ inputs.reset_confirm }}" --apply

@@ -51,17 +51,31 @@ class FakeCloud:
     order is exercised rather than assumed.
     """
 
-    def __init__(self, *, workers=(), queues=None, catalogues=None, delete_workers=True):
+    def __init__(self, *, workers=(), queues=None, catalogues=None, delete_workers=True,
+                 zones=('smartipproxy.com',), domains=(), deleted_domains=True):
         self.workers = set(workers)
         self.queues = {key: dict(value) for key, value in (queues or {}).items()}
         self.catalogues = {key: [dict(row) for row in value] for key, value in (catalogues or {}).items()}
         self.delete_workers = delete_workers
+        self.zones = list(zones)
+        # hostname -> service, the account's custom-domain attachments.
+        self.domains = {row['hostname']: row['service'] for row in domains}
+        # A real Worker delete takes its custom domains with it.
+        self.deleted_domains = deleted_domains
         self.calls = []
 
     # -- request seam ------------------------------------------------------
     def __call__(self, method, url, body, token):
         self.calls.append((method, url, body))
-        path = url.split('/client/v4/accounts/acct', 1)[1]
+        if '/accounts/acct' not in url:
+            path = url.split('/client/v4', 1)[1]
+        else:
+            path = url.split('/client/v4/accounts/acct', 1)[1]
+        if path.startswith('/zones?'):
+            name = path.split('name=', 1)[1].split('&', 1)[0]
+            return ok([{'id': 'zone1', 'name': zone} for zone in self.zones if zone == name])
+        if path.startswith('/workers/domains'):
+            return self.domains_request(method, path, body)
         if path.startswith('/workers/scripts/'):
             return self.workers_request(method, path)
         if path.startswith('/queues'):
@@ -69,6 +83,17 @@ class FakeCloud:
         if path.startswith('/d1/database/'):
             return self.d1_request(path, body)
         raise AssertionError(f'unexpected request: {method} {path}')
+
+    def domains_request(self, method, path, body):
+        if method == 'GET':
+            return ok([{'hostname': host, 'service': service, 'id': f'id-{host}'}
+                       for host, service in sorted(self.domains.items())])
+        if method == 'PUT':
+            if path != '/workers/domains':
+                raise AssertionError(f'unexpected domain path: {path}')
+            self.domains[body['hostname']] = body['service']
+            return ok({'hostname': body['hostname'], 'service': body['service'], 'zone_id': body['zone_id']})
+        raise AssertionError(f'unexpected domain method: {method}')
 
     def workers_request(self, method, path):
         name = path[len('/workers/scripts/'):].split('?', 1)[0]
@@ -85,6 +110,8 @@ class FakeCloud:
                 return {'success': False, 'errors': [{'code': 10064, 'message': 'Cannot delete this Worker as it is a consumer for a Queue.'}]}, 400
             if self.delete_workers:
                 self.workers.discard(name)
+                if self.deleted_domains:
+                    self.domains = {host: service for host, service in self.domains.items() if service != name}
             return ok({'id': name})
         raise AssertionError(f'unexpected worker method: {method}')
 
@@ -263,6 +290,43 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(module.delete_worker(api, 'eddy-cf-jobs-beta'), 'deleted eddy-cf-jobs-beta')
 
 
+class DomainTests(unittest.TestCase):
+    def test_attaching_a_domain_recreates_it_for_the_candidates_own_service(self):
+        # The Worker delete takes the custom domain (and therefore the DNS record
+        # `qualifyPublicIngress` requires) with it; the attach puts it back on the
+        # exact service name `preconditions` accepts.
+        fake = FakeCloud(workers=['eddy-web-beta'], domains=[
+            {'hostname': 'eddy-cf-beta.smartipproxy.com', 'service': 'eddy-web-beta'},
+        ])
+        module = load_module()
+        api = module.Api('token', 'acct', request=fake)
+        self.assertEqual(module.delete_worker(api, 'eddy-web-beta'), 'deleted eddy-web-beta')
+        self.assertEqual(fake.domains, {})
+        zone = module.zone_identifier(api, 'smartipproxy.com')
+        self.assertEqual(zone, 'zone1')
+        self.assertEqual(
+            module.attach_domains(api, zone, [('eddy-cf-beta.smartipproxy.com', 'eddy-web-beta')]),
+            ['eddy-cf-beta.smartipproxy.com -> eddy-web-beta'],
+        )
+        self.assertEqual(fake.domains, {'eddy-cf-beta.smartipproxy.com': 'eddy-web-beta'})
+        self.assertEqual(module.unowned_domains(api, [('eddy-cf-beta.smartipproxy.com', 'eddy-web-beta')]), [])
+
+    def test_a_zone_that_is_not_uniquely_owned_fails_closed(self):
+        fake = FakeCloud(zones=('smartipproxy.com', 'smartipproxy.com'))
+        module = load_module()
+        with self.assertRaises(module.Failure):
+            module.zone_identifier(module.Api('token', 'acct', request=fake), 'smartipproxy.com')
+
+    def test_a_domain_owned_by_another_service_is_reported(self):
+        fake = FakeCloud(domains=[{'hostname': 'eddy-cf-beta.smartipproxy.com', 'service': 'someone-else'}])
+        module = load_module()
+        api = module.Api('token', 'acct', request=fake)
+        self.assertEqual(
+            module.unowned_domains(api, [('eddy-cf-beta.smartipproxy.com', 'eddy-web-beta')]),
+            ["eddy-cf-beta.smartipproxy.com is 'someone-else', expected 'eddy-web-beta'"],
+        )
+
+
 class MainTests(unittest.TestCase):
     def invoke(self, module, argv, fake, token='token'):
         module.http_request = fake
@@ -283,8 +347,10 @@ class MainTests(unittest.TestCase):
 
     def base_argv(self):
         return [
-            '--brand', 'eddy', '--stage', 'beta', '--account', 'acct',
+            '--brand', 'eddy', '--stage', 'beta', '--account', 'acct', '--zone', 'smartipproxy.com',
             '--worker', 'eddy-cf-auth-beta', '--worker', 'eddy-web-beta',
+            '--domain', 'eddy-cf-beta.smartipproxy.com=eddy-web-beta',
+            '--domain', 'eddy-cf-beta-auth.smartipproxy.com=eddy-cf-auth-beta',
             '--d1', 'app=42bbfb33', '--d1', 'auth=56f2ed9e',
         ]
 
@@ -295,8 +361,51 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(fake.calls, [])
         self.assertIn('delete 2 Worker(s)', out)
+        self.assertIn('reattach 2 custom domain(s)', out)
         self.assertIn('empty 2 D1 authorit(ies)', out)
         self.assertIn('Plan only', out)
+
+    def test_apply_reattaches_the_stage_domains_and_verifies_them(self):
+        module = load_module()
+        fake = FakeCloud(
+            workers=['eddy-cf-auth-beta', 'eddy-web-beta'],
+            domains=[
+                {'hostname': 'eddy-cf-beta.smartipproxy.com', 'service': 'eddy-web-beta'},
+                {'hostname': 'eddy-cf-beta-auth.smartipproxy.com', 'service': 'eddy-cf-auth-beta'},
+            ],
+        )
+        code, out, err = self.invoke(module, [*self.base_argv(), '--apply', '--confirm', 'reset:eddy:beta'], fake)
+        self.assertEqual(code, 0, err)
+        attached = [body for method, url, body in fake.calls if method == 'PUT']
+        self.assertEqual(
+            sorted((row['hostname'], row['service'], row['zone_id']) for row in attached),
+            [
+                ('eddy-cf-beta-auth.smartipproxy.com', 'eddy-cf-auth-beta', 'zone1'),
+                ('eddy-cf-beta.smartipproxy.com', 'eddy-web-beta', 'zone1'),
+            ],
+        )
+        self.assertIn('attached custom domain', out)
+        self.assertIn('Reset complete', out)
+
+    def test_a_domain_owned_by_another_worker_fails_the_reset(self):
+        module = load_module()
+        fake = FakeCloud(
+            workers=['eddy-cf-auth-beta', 'eddy-web-beta'],
+            domains=[{'hostname': 'eddy-cf-beta.smartipproxy.com', 'service': 'someone-else'}],
+            delete_workers=False,
+        )
+        code, _, err = self.invoke(module, [*self.base_argv(), '--apply', '--confirm', 'reset:eddy:beta'], fake)
+        self.assertEqual(code, 1)
+        self.assertIn('RESET INCOMPLETE', err)
+
+    def test_a_domain_outside_the_zone_fails_closed(self):
+        module = load_module()
+        fake = FakeCloud()
+        argv = [*self.base_argv(), '--domain', 'eddy-cf-beta.example.com=eddy-web-beta']
+        code, _, err = self.invoke(module, argv, fake)
+        self.assertEqual(code, 2)
+        self.assertEqual(fake.calls, [])
+        self.assertIn('outside --zone', err)
 
     def test_apply_requires_the_exact_confirmation_token(self):
         module = load_module()
@@ -342,10 +451,11 @@ class MainTests(unittest.TestCase):
     def test_a_malformed_authority_fails_closed(self):
         module = load_module()
         fake = FakeCloud()
-        argv = ['--brand', 'eddy', '--stage', 'beta', '--account', 'acct', '--worker', 'w', '--d1', 'app42bbfb33']
+        argv = ['--brand', 'eddy', '--stage', 'beta', '--account', 'acct', '--zone', 'smartipproxy.com',
+                '--worker', 'w', '--domain', 'w.smartipproxy.com=w', '--d1', 'app42bbfb33']
         code, _, err = self.invoke(module, argv, fake)
         self.assertEqual(code, 2)
-        self.assertIn('NAME=ID', err)
+        self.assertIn('NAME=VALUE', err)
 
 
 if __name__ == '__main__':
