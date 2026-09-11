@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "FC-fork-seam-budget-from-pr-diff",
   "violated_contract": "An allowlisted fork seam's line budget belongs to its complete difference from upstream. The integration diff may contain upstream-authored growth and omit fork edits already present on the PR base; it cannot be used as the seam's budget measurement.",
-  "canonical_prevention": "Use the PR base-to-head diff only to select files for review, then measure each selected seam directly between the upstream tree and the candidate tree. Exercise a real upstream merge that preserves an existing seam and an incremental edit that exceeds the cumulative seam budget.",
+  "canonical_prevention": "Select the files to review from the complete divergence -- the guard's --aggregate base is merge-base(head, upstream), the upstream revision actually incorporated -- and measure each selected seam directly between the upstream tree and the candidate tree. Neither half may come from the event diff: a diff-scoped base both hides a violation that landed in an earlier commit and mis-measures a seam against its increment. An unavailable upstream ref is exit 2, never a pass. Exercise a real upstream merge that preserves an existing seam, an incremental edit that exceeds the cumulative seam budget, and a violation committed before the event base.",
   "canonical_prevention_artifact": [
     "scripts/fork/check-upstream-touch.py",
     "scripts/fork/test_check_upstream_touch.py"
