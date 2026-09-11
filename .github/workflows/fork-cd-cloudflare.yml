@@ -174,26 +174,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
-        if: ${{ inputs.reset_stage }}
-        with:
-          node-version: "22"
-
-      - name: Provision the pinned Wrangler
-        if: ${{ inputs.reset_stage }}
-        run: npm ci --prefix deploy/cloudflare --ignore-scripts --no-audit --no-fund
-
       # Names and ids come from the retained candidate that published them
       # (journal beta-f843a224...-candidate/candidate.json); the `web` Worker has
-      # no `-cf-` infix.
+      # no `-cf-` infix. The account comes from the same inventory the release
+      # prep reads, so a reset cannot be pointed at another account.
       - name: Reset the stage
         if: ${{ inputs.reset_stage }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_INVENTORY: ${{ inputs.stage == 'beta' && vars.CF_INVENTORY_BETA || vars.CF_INVENTORY_PRODUCTION }}
         run: |
+          account=$(python3 -c 'import json,os; print(json.loads(os.environ["CF_INVENTORY"])["account_id"])')
           python3 scripts/fork/reset_cloudflare_stage.py \
-            --brand eddy --stage "${{ inputs.stage }}" \
-            --wrangler deploy/cloudflare/node_modules/.bin/wrangler \
+            --brand eddy --stage "${{ inputs.stage }}" --account "$account" \
             --worker eddy-cf-auth-beta \
             --worker eddy-cf-rate-limit-beta \
             --worker eddy-cf-screen-frame-writer-beta \
