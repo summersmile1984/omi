@@ -191,6 +191,46 @@ class ServerDeliveryTests(unittest.TestCase):
             self.assertFalse(journal['release_ready'])
             self.assertEqual(journal['state'], 'failed-reconciliation-required')
 
+    def test_failure_reason_is_retained_and_redacted(self):
+        # The workflow's failure step reads this record, and the journal outlives
+        # the run, so the reason must name the failure without carrying a runtime
+        # secret into the summary or the artifact.
+        secret = 'supersecretvalue1234567890'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            delivery, destination = root / 'delivery', root / 'server'
+            delivery.mkdir()
+            destination.mkdir()
+            (delivery / 'server-images.tar').write_bytes(b'accepted image archive')
+            receipt = {
+                **self.receipt,
+                'stage': 'beta',
+                'brand': 'eddy',
+                'files': {'server-images.tar': sha256_file(delivery / 'server-images.tar')},
+            }
+            (delivery / 'delivery.json').write_text(json.dumps(receipt))
+            values = {**self.environment, 'SELF_HOST_STAGE': 'beta', 'MIMO_API_KEY': secret}
+            (destination / 'runtime.env').write_text(''.join(f'{key}={value}\n' for key, value in values.items()))
+
+            def execute(args, **kwargs):
+                return json.dumps([self.image]) if args[:3] == ['docker', 'image', 'inspect'] else ''
+
+            with patch('deploy_server.run', side_effect=execute), patch(
+                'deploy_server.boot_test',
+                side_effect=RuntimeError(f'backend readiness rejected Bearer {secret}'),
+            ):
+                with self.assertRaisesRegex(RuntimeError, 'backend readiness rejected'):
+                    deploy(delivery, destination, 'colima-eddy-server')
+
+            journal = json.loads((destination / 'releases' / receipt['commit'] / 'journal.json').read_text())
+            failure = journal['failure']
+            self.assertEqual(failure['target'], 'self_hosted')
+            self.assertEqual(failure['stage'], 'beta')
+            self.assertEqual(failure['error_name'], 'RuntimeError')
+            self.assertIn('backend readiness rejected Bearer', failure['reason'])
+            self.assertIn('***', failure['reason'])
+            self.assertNotIn(secret, json.dumps(journal))
+
     def test_release_ci_qualifies_the_actual_boot_owner_without_live_promotion(self):
         for healthy in [True, False]:
             with self.subTest(healthy=healthy), tempfile.TemporaryDirectory() as directory:

@@ -288,6 +288,29 @@ proof; these entry points fail closed until that proof exists. D1 migrations
 are never automatically reversed. `release.mjs recovery-plan` reports the
 observed candidate/journal recovery state.
 
+### Failure evidence contract
+
+A failed release must explain itself from the run page; reconstructing the cause
+by hand on the host is not an accepted recovery path. Both CD workflows run
+`scripts/fork/release_failure_summary.py` as an `if: failure()` step: it finds the
+journals that belong to the exact admitted source under the target's journal root,
+copies them into a `.fork-release-evidence` artifact, and writes a short markdown
+block into the job summary. It exits 0 in every case -- including a missing or
+malformed journal -- because the step must never replace the real failure with
+its own.
+
+The record comes from the transaction owner, not from the reporting step:
+`applyRelease` binds its `catch` and writes
+`journal.failure = {target, stage, at, error_name, reason}` before re-raising with
+the original error attached as `cause`, and `deploy_server.py` writes the same
+shape on its `failed-reconciliation-required` path. `reason` is redacted by value
+against the API token, the referenced secret values and the whole secret bundle
+(Cloudflare) or the stage's runtime environment (Server), and bounded to 2000
+characters. The journal is retained on the host and copied into the artifact, so
+redaction is the condition for recording a reason at all. A run that fails before
+the transaction starts has no `failure` block, and the report says so explicitly
+instead of implying the journal is complete.
+
 Server failures retain the previous pointer, accepted images, encrypted backup
 and failure journal for reconciliation. Automatic destructive data restore is
 not part of the deployment workflow. Use the existing `operations.sh`

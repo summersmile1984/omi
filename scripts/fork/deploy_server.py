@@ -78,6 +78,35 @@ def save(path, data):
     temporary.replace(path)
 
 
+def redact_reason(reason, values):
+    """Strip credential values before a failure reason is retained or printed.
+
+    The journal is durable and is copied into the run's failure evidence, and the
+    reason reaches the job log; either would otherwise be a place a runtime
+    secret could surface. Values shorter than 8 characters are left alone: they
+    are not credentials and replacing them would mangle ordinary identifiers.
+    """
+    text = reason if isinstance(reason, str) else repr(reason)
+    secrets = sorted(
+        (value for value in values.values() if isinstance(value, str) and len(value) >= 8),
+        key=len,
+        reverse=True,
+    )
+    for value in secrets:
+        text = text.replace(value, '***')
+    return text if len(text) <= 2000 else text[:2000] + '…'
+
+
+def failure_record(stage, error, values):
+    return {
+        'target': 'self_hosted',
+        'stage': stage,
+        'at': int(time.time()),
+        'error_name': type(error).__name__,
+        'reason': redact_reason(str(error), values),
+    }
+
+
 def write_environment(path, values):
     with open(path, 'x', opener=lambda name, flags: os.open(name, flags, 0o600)) as output:
         # Literal dotenv strings; neither a shell nor interpolation evaluates these.
@@ -308,8 +337,11 @@ def deploy(delivery, destination, docker_context, *, qualification=False):
             journal.update(state='deployed', release_ready=True, completed_at=int(time.time()))
             save(path, journal)
             save(destination / 'current.json', {'release': str(release), 'commit': receipt['commit']})
-        except Exception:
+        except Exception as error:
+            # Record why before re-raising: the workflow's failure step reads this
+            # from the journal, and the previous behaviour left only the state.
             journal['state'] = 'failed-reconciliation-required'
+            journal['failure'] = failure_record(receipt['stage'], error, values)
             save(path, journal)
             raise
 

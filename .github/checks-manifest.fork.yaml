@@ -112,6 +112,12 @@ checks:
     lanes: ["local", "ci"]
     reason: "A weekly sync must measure its real merge conflicts without altering main or reusing rerere; a clean import must be able to open one regular merge PR, while a conflict must stop before any branch is pushed."
 
+  - id: fork-release-failure-tests
+    command: ["python3", "scripts/fork/test_release_failure_summary.py"]
+    triggers: ["scripts/fork/release_failure_summary.py", "scripts/fork/test_release_failure_summary.py", ".github/workflows/fork-cd-cloudflare.yml", ".github/workflows/fork-cd-server.yml"]
+    lanes: ["local", "ci"]
+    reason: "The 2026-09-10 beta Cloudflare CD run uploaded all nine Workers and then failed readiness, leaving only 'release did not pass readiness; inspect recovery plan' plus a host path; the root cause had to be reconstructed by hand. The failure step runs on an already-failing job, so it must find only the admitted source's journals, survive a missing or malformed one, and exit 0."
+
   - id: fork-profile-tables
     command: ["python3", "scripts/profiles/check_tables.py"]
     triggers: ["backend/fork/model_contract.py", "deploy/profiles/**", "scripts/profiles/**", "brand/**", "scripts/brand/**", "app/lib/env/environment_profile.dart", "app/lib/env/fork/**", "desktop/macos/Desktop/Sources/Generated/**", "desktop/windows/src/shared/fork/**", "web/app/src/lib/fork/**", "backend/fork/deployment_profiles.generated.json"]

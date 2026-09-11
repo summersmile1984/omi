@@ -516,7 +516,13 @@ class ReusableDeliveryWorkflowTests(unittest.TestCase):
 
     def test_shared_execution_verifies_before_selecting_private_qualification_or_persistent_deploy(self):
         for target in ('cloudflare', 'server'):
-            step = self.workflow(target)['jobs']['deploy']['steps'][-1]
+            # Select by name, not by position: the deploy job now ends with the
+            # failure-evidence steps, which do not run on a successful release.
+            step = next(
+                entry
+                for entry in self.workflow(target)['jobs']['deploy']['steps']
+                if entry.get('name', '').startswith('Verify and execute')
+            )
             for qualification in (True, False):
                 for failure in (True, False):
                     env = {
