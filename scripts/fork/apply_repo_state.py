@@ -38,7 +38,14 @@ class Failure(Exception):
     """The repository could not be read or written; report exit 2."""
 
 
-def api(repository: str, path: str, *, method: str = 'GET', body: dict | None = None) -> dict | list | None:
+def api(
+    repository: str,
+    path: str,
+    *,
+    method: str = 'GET',
+    body: dict | None = None,
+    allow_not_found: bool = False,
+) -> dict | list | None:
     command = ['gh', 'api', '--method', method, f'repos/{repository}/{path}']
     payload = None
     if body is not None:
@@ -46,6 +53,11 @@ def api(repository: str, path: str, *, method: str = 'GET', body: dict | None = 
         payload = json.dumps(body)
     result = subprocess.run(command, input=payload, capture_output=True, text=True, check=False)
     if result.returncode != 0:
+        # GitHub answers 404 rather than an empty list for a resource that is
+        # legitimately absent -- an environment without a branch policy, for
+        # instance. Only the caller that asked for that reading gets it.
+        if allow_not_found and 'HTTP 404' in result.stderr:
+            return None
         raise Failure(result.stderr.strip() or f'{method} {path} failed')
     if not result.stdout.strip():
         return None
@@ -118,7 +130,11 @@ def live_environments(repository: str) -> dict[str, dict]:
 
 
 def live_environment_branches(repository: str, name: str) -> list[str]:
-    listing = api(repository, f'environments/{name}/deployment-branch-policies') or {}
+    # An environment with no custom branch policy answers 404 here; that is a
+    # real, comparable state (it allows every branch), not an error.
+    listing = api(
+        repository, f'environments/{name}/deployment-branch-policies', allow_not_found=True
+    ) or {}
     return sorted(entry.get('name') for entry in listing.get('branch_policies', []) if entry.get('name'))
 
 
@@ -177,6 +193,31 @@ def verify_report(policy: dict, repository: str) -> list[str]:
     environments = live_environments(repository)
     branches = {name: live_environment_branches(repository, name) for name in environments}
     return verify_state(policy, ruleset, environments, branches)
+
+
+def apply_steps(policy: dict, registered: dict[str, str], blocking: list[str]) -> tuple[list[str], list[str]]:
+    """Split the declaration into the work to do now and the work that must wait.
+
+    Only the ruleset waits: arming it while a required check is red would block
+    every merge on a check that was already failing, and the usual reaction to
+    that is to bypass the ruleset. Workflow states and environment protection are
+    independent of the checks, so they still apply.
+    """
+    ready: list[str] = []
+    for entry in policy['workflows']['keep']:
+        if registered.get(entry['file']) != 'active':
+            ready.append(f'enable workflow {entry["file"]}')
+    for entry in policy['workflows']['disable']:
+        if registered.get(entry['file']) != 'disabled_manually':
+            ready.append(f'disable workflow {entry["file"]}')
+    for entry in policy['environments']:
+        ready.append(f"set environment {entry['name']!r} to branches {entry['branches']}")
+    waiting: list[str] = []
+    if blocking:
+        waiting.append(f'ruleset {RULESET_NAME!r}: waiting on ' + ', '.join(blocking))
+    else:
+        ready.append(f'ruleset {RULESET_NAME!r} requiring: {", ".join(policy["required_checks"])}')
+    return ready, waiting
 
 
 def plan(policy: dict, registered: dict[str, str]) -> list[str]:
@@ -281,11 +322,9 @@ def main() -> int:
     except Failure as error:
         print(f'ERROR: cannot confirm the required checks are green: {error}', file=sys.stderr)
         return 2
-    if blocking:
-        print('FAIL: refusing to arm the ruleset while these required checks are failing on main:', file=sys.stderr)
-        for name in blocking:
-            print(f'  {name}', file=sys.stderr)
-        return 1
+    ready, waiting = apply_steps(policy, registered, blocking)
+    for step in waiting:
+        print(f'SKIPPED {step}', file=sys.stderr)
 
     try:
         for entry in policy['workflows']['keep']:
@@ -296,14 +335,15 @@ def main() -> int:
             if registered.get(entry['file']) != 'disabled_manually':
                 api(args.repository, f"actions/workflows/{entry['file']}/disable", method='PUT')
                 print(f"disabled {entry['file']}")
-        payload = ruleset_payload(policy)
-        existing = live_ruleset(args.repository)
-        if existing is None:
-            api(args.repository, 'rulesets', method='POST', body=payload)
-            print(f'created ruleset {RULESET_NAME}')
-        else:
-            api(args.repository, f"rulesets/{existing['id']}", method='PUT', body=payload)
-            print(f'updated ruleset {RULESET_NAME}')
+        if not blocking:
+            payload = ruleset_payload(policy)
+            existing = live_ruleset(args.repository)
+            if existing is None:
+                api(args.repository, 'rulesets', method='POST', body=payload)
+                print(f'created ruleset {RULESET_NAME}')
+            else:
+                api(args.repository, f"rulesets/{existing['id']}", method='PUT', body=payload)
+                print(f'updated ruleset {RULESET_NAME}')
         for entry in policy['environments']:
             body = {
                 'deployment_branch_policy': {'protected_branches': False, 'custom_branch_policies': True}
@@ -337,6 +377,8 @@ def main() -> int:
         print('FAIL: applied, but the repository still differs:')
         for error in errors:
             print(f'  {error}')
+        if waiting:
+            print('\nThe skipped steps above are why. Re-run --apply once the blocking checks pass.')
         return 1
     print(f'OK: {args.repository} now matches {args.policy}.')
     return 0

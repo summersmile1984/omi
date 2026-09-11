@@ -87,6 +87,47 @@ class PlanTests(unittest.TestCase):
         self.assertNotIn('enable workflow web-checks.yml', steps)
 
 
+class ApplyStepsTests(unittest.TestCase):
+    """Only the ruleset waits for the required checks; the rest is independent."""
+
+    def in_sync(self) -> dict:
+        return {'fork-checks.yml': 'active', 'web-checks.yml': 'active', 'gcp_backend.yml': 'disabled_manually'}
+
+    def test_a_blocked_ruleset_does_not_hold_back_the_other_work(self):
+        ready, waiting = load_module().apply_steps(policy(), self.in_sync(), ['Fork gate (failure)'])
+        self.assertEqual([step for step in ready if step.startswith('ruleset')], [])
+        self.assertEqual([step for step in ready if step.startswith('set environment')], [
+            "set environment 'cloudflare-beta' to branches ['main']",
+            "set environment 'cloudflare-production' to branches ['main']",
+        ])
+        self.assertEqual(waiting, ["ruleset 'fork-main-gate': waiting on Fork gate (failure)"])
+
+    def test_an_unblocked_ruleset_is_ready(self):
+        ready, waiting = load_module().apply_steps(policy(), self.in_sync(), [])
+        self.assertEqual(waiting, [])
+        self.assertIn("ruleset 'fork-main-gate' requiring: Fork gate, Frontend Lint", ready)
+
+
+class LiveEnvironmentBranchTests(unittest.TestCase):
+    def test_an_environment_without_a_branch_policy_reads_as_empty(self):
+        # GitHub answers 404 for this endpoint when no custom branch policy
+        # exists, which is a real state (every branch is allowed) and must be
+        # comparable rather than fatal.
+        module = load_module()
+        module.api = lambda repository, path, **kwargs: None
+        self.assertEqual(module.live_environment_branches('fixture/repo', 'development'), [])
+
+    def test_no_branch_policy_does_not_satisfy_a_main_only_declaration(self):
+        module = load_module()
+        errors = module.verify_state(
+            policy(),
+            module.ruleset_payload(policy()),
+            {'cloudflare-beta': environment_state(0), 'cloudflare-production': environment_state(1)},
+            {'cloudflare-beta': [], 'cloudflare-production': ['main']},
+        )
+        self.assertIn("environment 'cloudflare-beta' allows [], policy declares ['main']", errors)
+
+
 class VerifyStateTests(unittest.TestCase):
     def clean(self) -> tuple:
         module = load_module()
