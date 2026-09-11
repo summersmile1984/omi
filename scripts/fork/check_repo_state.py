@@ -269,7 +269,15 @@ def github(path: str, repository: str) -> dict:
         check=False,
     )
     if result.returncode != 0:
-        raise Failure(result.stderr.strip() or f'gh api {path} failed')
+        message = result.stderr.strip() or f'gh api {path} failed'
+        # `gh` without a token is the failure this check is most likely to hit in
+        # CI, and its own message does not say which end has to change.
+        if 'GH_TOKEN' in message:
+            message = (
+                f'{message}\n       The live lane needs a token in GH_TOKEN; '
+                'fork-checks.yml passes github.token, whose permissions block makes it read-only.'
+            )
+        raise Failure(message)
     try:
         return json.loads(result.stdout)
     except ValueError as error:

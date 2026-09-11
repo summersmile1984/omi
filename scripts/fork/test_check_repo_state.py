@@ -354,5 +354,35 @@ class LiveReportTests(unittest.TestCase):
         self.assertEqual(errors, ['ghost.yml: declared as keep or disable but not registered on GitHub'])
 
 
+class GithubErrorTests(unittest.TestCase):
+    """The live lane reads GitHub through `gh`, so its failures must be actionable."""
+
+    def call_with_stderr(self, stderr: str):
+        module = load_module()
+        original = module.subprocess.run
+        module.subprocess.run = lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[], returncode=1, stdout='', stderr=stderr
+        )
+        try:
+            with self.assertRaises(module.Failure) as caught:
+                module.github('actions/workflows?per_page=100', 'fixture/repo')
+        finally:
+            module.subprocess.run = original
+        return str(caught.exception)
+
+    def test_a_missing_token_names_the_workflow_fix(self):
+        # The exact failure the pull-request lane hit on 2026-09-11: the job
+        # granted `actions: read` but never put the token in the environment.
+        message = self.call_with_stderr(
+            'gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN environment variable.'
+        )
+        self.assertIn('GH_TOKEN', message)
+        self.assertIn('github.token', message)
+
+    def test_any_other_api_error_is_reported_verbatim(self):
+        message = self.call_with_stderr('gh: Resource not accessible by integration (HTTP 403)')
+        self.assertEqual(message, 'gh: Resource not accessible by integration (HTTP 403)')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
