@@ -85,6 +85,31 @@ def workflow_files(directory: Path) -> list[str]:
     return sorted(found)
 
 
+def reports_on_every_pull_request(path: Path) -> str | None:
+    """None when the workflow always reports a check on a pull request.
+
+    Required checks gate every pull request, so a required job's workflow has to
+    start for every pull request. A workflow with no `pull_request` trigger never
+    reports, and one that filters `pull_request` by `paths` does not start for
+    most diffs; either way GitHub holds the pull request at "Expected — waiting
+    for status to be reported" forever. The job itself may still be skipped by an
+    in-workflow gate, which GitHub records as a skipped check and treats as
+    satisfied.
+    """
+    try:
+        document = yaml.safe_load(path.read_text(encoding='utf-8'))
+    except (OSError, yaml.YAMLError) as error:
+        raise Failure(f'{path}: cannot be parsed ({error})')
+    # `on:` is YAML 1.1 boolean true once parsed, however it is spelled.
+    triggers = (document or {}).get('on', (document or {}).get(True)) or {}
+    if not isinstance(triggers, dict) or 'pull_request' not in triggers:
+        return 'does not trigger on pull_request'
+    pull_request = triggers.get('pull_request')
+    if isinstance(pull_request, dict) and ({'paths', 'paths-ignore'} & set(pull_request)):
+        return 'filters pull_request by paths, so it does not start for most diffs'
+    return None
+
+
 def brand_ids(root: Path) -> dict[str, Path]:
     found = {}
     for manifest in sorted((root / 'brand').glob('*/manifest.yaml')):
@@ -153,6 +178,11 @@ def static_report(policy: dict, root: Path) -> list[str]:
             errors.append(f'{filename}: advisory enforcement cannot declare required jobs')
         if not jobs or not workflow.is_file():
             continue
+        # A required check that cannot be reported on a pull request blocks every
+        # pull request forever, which is worse than not requiring it.
+        reason = reports_on_every_pull_request(workflow)
+        if reason is not None:
+            errors.append(f'{filename}: declared required but {reason}; a required check must be reportable on every pull request')
         names = workflow_check_names(workflow)
         for job in jobs:
             if not isinstance(job, str) or not job:

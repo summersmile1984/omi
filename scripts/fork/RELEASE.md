@@ -261,6 +261,16 @@ reach `main` through a pull request, forbids deletion and force-push, and grants
 the repository-admin role an `always` bypass as the break-glass hatch. The two
 production environments carry a required reviewer; the beta environments do not.
 
+A required check must be **reportable on every pull request**, so
+`check_repo_state.py` refuses a required job whose workflow has no
+`pull_request` trigger or filters it by `paths`. Neither case ever reports, and
+GitHub then holds every pull request at "Expected -- waiting for status to be
+reported" forever, which is strictly worse than not requiring the check. Jobs a
+workflow skips internally are fine: GitHub records a skipped check and treats it
+as satisfied. `openapi-contract.yml` and `release-eligibility.yml` stay enabled
+but advisory for this reason -- the first is path-scoped, the second only runs on
+push.
+
 ## Mac Studio Server owner
 
 The host uses the dedicated Colima profile/context `eddy-server` /
