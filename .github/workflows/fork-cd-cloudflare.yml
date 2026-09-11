@@ -142,7 +142,7 @@ jobs:
           python3 scripts/fork/release_failure_summary.py \
             --target cloudflare --stage "$RELEASE_STAGE" --sha "$RELEASE_SHA" \
             --journal-root "$RELEASE_JOURNAL_ROOT" \
-            --evidence-dir "$GITHUB_WORKSPACE/.fork-release-evidence" \
+            --evidence-dir "$GITHUB_WORKSPACE/fork-release-evidence" \
             --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the release failure evidence
@@ -150,6 +150,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cloudflare-release-failure-${{ needs.resolve.outputs.sha }}
-          path: .fork-release-evidence
+          path: fork-release-evidence
           if-no-files-found: ignore
           retention-days: 30

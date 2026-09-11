@@ -39,7 +39,7 @@ jobs:
       FORK_FULL_CHECKS: ${{ github.event_name == 'workflow_dispatch' }}
       # Only the complete lane writes one; it is uploaded below and read by the
       # release admission as proof that this job ran the whole manifest.
-      FORK_CI_ATTESTATION: ${{ github.workspace }}/.fork-ci-attestation.json
+      FORK_CI_ATTESTATION: ${{ github.workspace }}/fork-ci-attestation.json
       # `fork-repo-state` lists the repository's workflows and reads their
       # enabled/disabled state. `gh` needs a token in the environment; the job
       # permissions above keep it read-only, and a fork pull request gets a
@@ -237,7 +237,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fork-ci-attestation-linux-${{ github.sha }}
-          path: .fork-ci-attestation.json
+          path: fork-ci-attestation.json
           if-no-files-found: error
           retention-days: 30
 
@@ -249,7 +249,7 @@ jobs:
     timeout-minutes: 60
     env:
       FORK_FULL_CHECKS: ${{ github.event_name == 'workflow_dispatch' }}
-      FORK_CI_ATTESTATION: ${{ github.workspace }}/.fork-ci-attestation.json
+      FORK_CI_ATTESTATION: ${{ github.workspace }}/fork-ci-attestation.json
       DEVELOPER_DIR: ${{ github.event_name == 'pull_request' && '/Applications/Xcode_26.6.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
     steps:
       - uses: actions/checkout@v4
@@ -307,6 +307,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: fork-ci-attestation-macos-${{ github.sha }}
-          path: .fork-ci-attestation.json
+          path: fork-ci-attestation.json
           if-no-files-found: error
           retention-days: 30
