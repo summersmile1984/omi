@@ -76,6 +76,75 @@ class SelectionTests(unittest.TestCase):
             {'fork-macos-native-identity', 'fork-macos-native-compile'},
         )
 
+    def test_the_manifest_attestation_never_pollutes_the_runner_stdout(self):
+        # The workflow sets FORK_CI_ATTESTATION in the job environment, so the
+        # selector writes an attestation on every complete run. It must not add a
+        # line to stdout, which callers parse as the runner's `--output json`.
+        # This broke in CI and passed locally, where the variable is unset --
+        # which is exactly why the variable is set here.
+        with tempfile.TemporaryDirectory() as directory:
+            attestation = Path(directory) / 'fork-ci-attestation.json'
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / 'scripts/fork/run_checks.py'),
+                    '--lane',
+                    'ci',
+                    '--base',
+                    'HEAD',
+                    '--platform',
+                    'linux',
+                    '--output',
+                    'json',
+                ],
+                env={
+                    **os.environ,
+                    'FORK_FULL_CHECKS': 'true',
+                    'FORK_CI_ATTESTATION': str(attestation),
+                    'GITHUB_RUN_ID': '4242',
+                    'GITHUB_RUN_ATTEMPT': '3',
+                    'GITHUB_SHA': 'a' * 40,
+                },
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            selected = {check['id'] for check in json.loads(result.stdout)['checks']}
+            self.assertTrue(attestation.is_file(), 'the attestation was not written')
+            payload = json.loads(attestation.read_text())
+            self.assertEqual(payload['lane'], 'ci')
+            self.assertEqual(payload['platform'], 'linux')
+            self.assertEqual(payload['run_id'], 4242)
+            self.assertEqual(payload['run_attempt'], 3)
+            self.assertEqual(payload['sha'], 'a' * 40)
+            self.assertEqual(payload['manifest_sha256'], sha256(ROOT / '.github/checks-manifest.fork.yaml'))
+            self.assertEqual(sorted(selected), payload['check_ids'])
+
+    def test_a_diff_scoped_run_writes_no_attestation(self):
+        # Only the complete lane has a known selection; the diff lane's ids are
+        # decided by the upstream selector at run time.
+        with tempfile.TemporaryDirectory() as directory:
+            attestation = Path(directory) / 'fork-ci-attestation.json'
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / 'scripts/fork/run_checks.py'),
+                    '--lane',
+                    'ci',
+                    '--base',
+                    'HEAD',
+                    '--platform',
+                    'linux',
+                    '--output',
+                    'json',
+                ],
+                env={**os.environ, 'FORK_FULL_CHECKS': 'false', 'FORK_CI_ATTESTATION': str(attestation)},
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertFalse(attestation.exists())
+
 
 class PreparationTests(unittest.TestCase):
     def setUp(self):

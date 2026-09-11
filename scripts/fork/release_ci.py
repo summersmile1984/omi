@@ -63,6 +63,18 @@ def successful_run(run, path, sha=None):
     return run['head_sha']
 
 
+def manifest_path(manifest=ATTESTATION_MANIFEST):
+    """Resolve the manifest against the checked-out workspace, not the process cwd.
+
+    Both real callers run from the repository root, but CD loads this script from
+    `RUNNER_TEMP` and a future caller could run it from elsewhere; `verify_ci`
+    must compare against the manifest of the source it is admitting, and that is
+    the one in `GITHUB_WORKSPACE`.
+    """
+    workspace = os.environ.get('GITHUB_WORKSPACE')
+    return Path(workspace) / manifest if workspace else Path(manifest)
+
+
 def expected_ci_checks(manifest=ATTESTATION_MANIFEST):
     """Every check the `ci` lane declares in the manifest at the delivered source.
 
@@ -70,9 +82,9 @@ def expected_ci_checks(manifest=ATTESTATION_MANIFEST):
     portable and native lanes each attest to the ids they selected, and together
     they must account for the whole lane.
     """
-    path = Path(manifest)
+    path = manifest_path(manifest)
     if not path.is_file():
-        raise ValueError('the fork manifest is unavailable to the CI admission')
+        raise ValueError(f'the fork manifest is unavailable to the CI admission: {path}')
     document = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
     checks = document.get('checks')
     if not isinstance(checks, list):
@@ -117,7 +129,7 @@ def verify_attestations(payloads, run_id, attempt, sha, manifest=ATTESTATION_MAN
     the complete manifest, because the same two jobs also serve the diff-scoped
     push and pull-request lanes. This is that missing half.
     """
-    digest = sha256_file(manifest)
+    digest = sha256_file(manifest_path(manifest))
     expected = expected_ci_checks(manifest)
     covered = set()
     for payload in payloads:

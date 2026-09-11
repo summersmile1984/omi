@@ -63,7 +63,11 @@ def attestation(path: Path, lane: str, platform: str, check_ids: list[str]) -> N
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
-    print(f'manifest attestation: {len(check_ids)} check(s) -> {path}', flush=True)
+    # stderr, never stdout: the inner runner's stdout carries `--output json`,
+    # which callers parse. The CI job sets FORK_CI_ATTESTATION in the job env, so
+    # a line here broke `test_release_prepare.py` in the workflow while passing
+    # locally, where the variable is unset.
+    print(f'manifest attestation: {len(check_ids)} check(s) -> {path}', file=sys.stderr, flush=True)
 
 
 if __name__ == '__main__':
