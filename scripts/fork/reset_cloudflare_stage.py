@@ -202,6 +202,42 @@ def unresolvable(api: Api, zone_id: str, hostnames: list[str]) -> list[str]:
     return [hostname for hostname in hostnames if not zone_records(api, zone_id, hostname)]
 
 
+def attach_domain(api: Api, service: str, hostname: str) -> str:
+    """Attach one custom domain exactly as the pinned Wrangler does when CI runs it.
+
+    `publishCustomDomains` sends this body with both overrides set precisely
+    because `process.stdout.isTTY` is false in CI. The release aborts when this
+    call fails, so the reset reproduces it for a Worker that is still published
+    and reports the API's own error. The reset runs this before it deletes that
+    Worker: the only reason to keep the Worker is to learn whether the attach
+    takes the hostname over, and the delete would remove it either way.
+    """
+    if worker_versions(api, service) is None:
+        return f'{hostname} skipped: {service} is not published'
+    api.call('PUT', f'/workers/scripts/{service}/domains/records', {
+        'override_scope': True,
+        'override_existing_origin': True,
+        'override_existing_dns_record': True,
+        'origins': [{'hostname': hostname}],
+    })
+    return f'{hostname} -> {service}'
+
+
+def zone_routes(api: Api, zone_id: str, hostnames: list[str]) -> list[str]:
+    """Any Worker route naming a stage hostname is a second owner of that hostname.
+
+    A Custom Domain and a route for the same pattern cannot coexist, so the reset
+    reports them before it touches anything: a route left by an interrupted
+    release would explain a refused attach that has nothing to do with DNS.
+    """
+    result = api.call('GET', f'/zones/{zone_id}/workers/routes', absolute=True)
+    return sorted(
+        f"{row.get('pattern')} -> {row.get('script')}"
+        for row in result or []
+        if isinstance(row, dict) and any(host in str(row.get('pattern') or '') for host in hostnames)
+    )
+
+
 def objects_sql() -> str:
     names = ', '.join(f"'{name}'" for name in INTERNAL_OBJECTS)
     ordering = ' '.join(f"WHEN '{kind}' THEN {index}" for index, kind in enumerate(OBJECT_TYPES))
@@ -306,6 +342,8 @@ def main() -> int:
     parser.add_argument('--d1', action='append', default=[], required=True, metavar='NAME=ID', help='D1 authority and id; repeatable')
     parser.add_argument('--hostname', action='append', default=[], required=True,
                         help='public hostname whose DNS record the release needs; repeatable')
+    parser.add_argument('--attach', action='append', default=[], metavar='HOSTNAME=SERVICE',
+                        help='custom domain to attach to a Worker that is still published; repeatable')
     parser.add_argument('--zone', required=True, help='zone that owns every --hostname')
     parser.add_argument('--confirm', default='', help='exact token required with --apply')
     parser.add_argument('--apply', action='store_true', help='perform the reset (default prints the plan)')
@@ -313,6 +351,7 @@ def main() -> int:
 
     try:
         databases = parse_pairs(args.d1, '--d1')
+        attaches = parse_pairs(args.attach, '--attach')
     except Failure as error:
         print(f'ERROR: {error}', file=sys.stderr)
         return 2
@@ -325,6 +364,9 @@ def main() -> int:
     print(f'  delete {len(args.worker)} Worker(s) (and detach them from every queue):')
     for name in args.worker:
         print(f'    - {name}')
+    print(f'  attach {len(attaches)} domain(s) to still-published Workers, before deleting them:')
+    for hostname, service in attaches:
+        print(f'    - {hostname} -> {service}')
     print(f'  ensure {len(args.hostname)} hostname(s) in {args.zone} resolve (the release replaces the placeholder):')
     for hostname in args.hostname:
         print(f'    - {hostname}')
@@ -351,6 +393,13 @@ def main() -> int:
     for entry in detached:
         print(f'detached queue consumer {entry}')
 
+    for hostname, service in attaches:
+        try:
+            print(f'attach {attach_domain(api, service, hostname)}')
+        except Failure as error:
+            failures.append(f'attach {hostname}: {error}')
+            print(f'FAILED to attach {hostname}: {error}', file=sys.stderr)
+
     for name in args.worker:
         try:
             print(delete_worker(api, name))
@@ -362,6 +411,8 @@ def main() -> int:
         zone = zone_identifier(api, args.zone)
         for entry in (ensure_record(api, zone, hostname) for hostname in args.hostname):
             print(f'dns {entry}')
+        for route in zone_routes(api, zone, args.hostname):
+            print(f'route {route}')
         for hostname in unresolvable(api, zone, args.hostname):
             failures.append(f'dns: {hostname} still has no record')
     except Failure as error:
