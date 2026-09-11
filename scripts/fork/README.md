@@ -75,7 +75,10 @@ The explicitly selected live MiMo/Ollama lane remains documented in
 CI does not deploy Server OS or Cloudflare production targets.
 
 Manual runs now select the complete fork manifest, retaining each job's platform
-scope. `.github/workflows/fork-release-prepare.yml` reuses that workflow and
+scope, and publish a manifest attestation per job (the manifest digest, the run
+and attempt, the source commit and the selected check ids). Release admission
+requires the union of those ids to cover the whole `ci` lane, because the same
+two job names also serve the diff-scoped lanes. `.github/workflows/fork-release-prepare.yml` reuses that workflow and
 packages frozen Cloudflare candidates plus Linux Server images from one commit.
 See [delivery preparation and remaining promotion work](RELEASE.md) for inputs,
 artifact formats, local verification and the outstanding production owners.

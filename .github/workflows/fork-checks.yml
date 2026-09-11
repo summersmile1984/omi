@@ -37,6 +37,9 @@ jobs:
     timeout-minutes: 120
     env:
       FORK_FULL_CHECKS: ${{ github.event_name == 'workflow_dispatch' }}
+      # Only the complete lane writes one; it is uploaded below and read by the
+      # release admission as proof that this job ran the whole manifest.
+      FORK_CI_ATTESTATION: ${{ github.workspace }}/.fork-ci-attestation.json
     outputs:
       base: ${{ steps.base.outputs.ref }}
       macos: ${{ steps.platforms.outputs.macos }}
@@ -222,6 +225,17 @@ jobs:
             echo "upstream commits not yet merged here, so read it as a trend."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Published only by the complete lane, and only when every check passed:
+      # a run whose checks failed must not leave evidence a release can read.
+      - name: Upload the manifest attestation
+        if: ${{ env.FORK_FULL_CHECKS == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-ci-attestation-linux-${{ github.sha }}
+          path: .fork-ci-attestation.json
+          if-no-files-found: error
+          retention-days: 30
+
   fork-macos:
     name: Fork macOS native contracts
     needs: fork-gate
@@ -230,6 +244,7 @@ jobs:
     timeout-minutes: 60
     env:
       FORK_FULL_CHECKS: ${{ github.event_name == 'workflow_dispatch' }}
+      FORK_CI_ATTESTATION: ${{ github.workspace }}/.fork-ci-attestation.json
       DEVELOPER_DIR: ${{ github.event_name == 'pull_request' && '/Applications/Xcode_26.6.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
     steps:
       - uses: actions/checkout@v4
@@ -281,3 +296,12 @@ jobs:
         run: |
           python3 scripts/fork/run_checks.py \
             --lane ci --base "$DIFF_BASE" --platform macos --exclusive-platform
+
+      - name: Upload the manifest attestation
+        if: ${{ env.FORK_FULL_CHECKS == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-ci-attestation-macos-${{ github.sha }}
+          path: .fork-ci-attestation.json
+          if-no-files-found: error
+          retention-days: 30

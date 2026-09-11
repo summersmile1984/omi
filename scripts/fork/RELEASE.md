@@ -48,6 +48,20 @@ preparation runs, the older `Release ready` contract (including green run
 34415705069), skipped qualification and failed qualification are rejected.
 An older green run must requalify through the current workflow; it cannot supply
 the newly required public readiness and ingress evidence.
+
+The job names alone cannot prove the run executed the *complete* manifest: the
+same two jobs also serve the diff-scoped push and pull-request lanes, so a
+dispatch that quietly selected less would look identical. The complete lane
+therefore writes a manifest attestation per job (`.fork-ci-attestation.json`,
+published as `fork-ci-attestation-linux-<sha>` and
+`fork-ci-attestation-macos-<sha>`), recording the manifest digest, the run and
+attempt, the source commit and the check ids that job selected. Admission
+requires the union of those ids to account for every `ci`-lane check in the
+manifest at the delivered commit, and rejects a missing artifact, a different
+manifest digest, another run attempt, or a foreign lane. A run whose checks
+failed publishes nothing, because the attestation step only runs after every
+check passed.
+
 The freeze job has no deployment credentials. The reusable target workflows own
 both qualification and deployment: the same tool setup, artifact transport,
 verification, environment credentials and concurrency lock run in both modes.
