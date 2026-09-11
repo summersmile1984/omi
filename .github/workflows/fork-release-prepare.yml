@@ -1,16 +1,15 @@
 name: Fork Release CI
 
+# The deploy brand is a property of this repository, not a dispatch value: it is
+# declared in config/repo-state.fork.json and every deploy path reads the same
+# literal, which `fork-repo-state` checks. An operator typing it wrong used to
+# fail only at admission time, after a full freeze.
 on:
   workflow_dispatch:
     inputs:
       ci_run_id:
         description: Successful full Fork Checks run ID for this exact commit
         required: true
-        type: string
-      brand:
-        description: Repository brand ID
-        required: true
-        default: eddy
         type: string
       stage:
         description: Deployment profile stage
@@ -32,7 +31,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: fork-prepare-${{ github.ref }}-${{ inputs.brand }}-${{ inputs.stage }}
+  group: fork-prepare-${{ github.ref }}-eddy-${{ inputs.stage }}
   cancel-in-progress: false
 
 jobs:
@@ -42,7 +41,7 @@ jobs:
     runs-on: ${{ fromJSON('["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
     timeout-minutes: 180
     outputs:
-      artifact: delivery-${{ github.sha }}-${{ inputs.brand }}-${{ inputs.stage }}
+      artifact: delivery-${{ github.sha }}-eddy-${{ inputs.stage }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,7 +92,7 @@ jobs:
 
       - name: Freeze both deployment deliverables
         env:
-          RELEASE_BRAND: ${{ inputs.brand }}
+          RELEASE_BRAND: eddy
           RELEASE_STAGE: ${{ inputs.stage }}
           RELEASE_INVENTORY: ${{ inputs.inventory_json || (inputs.stage == 'beta' && vars.CF_INVENTORY_BETA || vars.CF_INVENTORY_PRODUCTION) }}
           RELEASE_CI_RUN_ID: ${{ inputs.ci_run_id }}
@@ -125,7 +124,7 @@ jobs:
       # Preserve hidden Worker modules and filesystem metadata inside the tar.
       - uses: actions/upload-artifact@v4
         with:
-          name: delivery-${{ github.sha }}-${{ inputs.brand }}-${{ inputs.stage }}
+          name: delivery-${{ github.sha }}-eddy-${{ inputs.stage }}
           path: |
             ${{ env.RELEASE_OUT }}/cloudflare.tar.gz
             ${{ env.RELEASE_OUT }}/server-images.tar

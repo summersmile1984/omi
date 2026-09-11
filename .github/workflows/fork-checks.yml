@@ -25,6 +25,9 @@ concurrency:
 
 permissions:
   contents: read
+  # `fork-repo-state` lists the repository's workflows and reads their
+  # enabled/disabled state; that needs the Actions API.
+  actions: read
 
 jobs:
   fork-gate:

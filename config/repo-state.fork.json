@@ -1,0 +1,436 @@
+{
+  "schema_version": 1,
+  "deploy_brand": "eddy",
+  "workflows": {
+    "keep": [
+      {
+        "file": "backend-checks.yml",
+        "enforcement": "required",
+        "reason": "Static backend contracts run against the backend the fork still ships.",
+        "required_jobs": [
+          "Static Contracts"
+        ]
+      },
+      {
+        "file": "backend-emulator-proofs.yml",
+        "enforcement": "advisory",
+        "reason": "Firebase emulator proofs, retained as an upstream signal."
+      },
+      {
+        "file": "backend-hermetic-e2e.yml",
+        "enforcement": "advisory",
+        "reason": "Valuable but long and service-heavy; kept enabled for signal, not required to merge."
+      },
+      {
+        "file": "backend-unit-tests.yml",
+        "enforcement": "advisory",
+        "reason": "Quarantined: origin/main carries an upstream baseline that is older than the fix upstream already shipped. See the quarantine entry."
+      },
+      {
+        "file": "desktop-backend-contracts.yml",
+        "enforcement": "advisory",
+        "reason": "Desktop backend contracts; kept enabled for signal."
+      },
+      {
+        "file": "desktop-checks.yml",
+        "enforcement": "required",
+        "reason": "Desktop core contracts on the shared desktop sources.",
+        "required_jobs": [
+          "Agent Runtime"
+        ]
+      },
+      {
+        "file": "desktop-swift-ci.yml",
+        "enforcement": "advisory",
+        "reason": "macOS Swift build and tests. 15-59 minutes per run and historically flaky, so it is not a merge gate; Fork Checks carries the fork-owned macOS contracts."
+      },
+      {
+        "file": "desktop-windows-ci.yml",
+        "enforcement": "required",
+        "reason": "Electron typecheck/lint/test. Its lint was red from 2026-09-09 to the unused-import fix in this branch, which is why it is required now.",
+        "required_jobs": [
+          "Typecheck \u00b7 Lint \u00b7 Test"
+        ]
+      },
+      {
+        "file": "fork-cd-cloudflare.yml",
+        "enforcement": "advisory",
+        "reason": "Cloudflare CD and qualification lane; manual or called by release preparation."
+      },
+      {
+        "file": "fork-cd-server.yml",
+        "enforcement": "advisory",
+        "reason": "Server OS CD and qualification lane; manual or called by release preparation."
+      },
+      {
+        "file": "fork-checks.yml",
+        "enforcement": "required",
+        "reason": "The fork's own gate. Both jobs must pass; the manual lane is the only run that can authorize a release.",
+        "required_jobs": [
+          "Fork gate (Server OS + Cloudflare)",
+          "Fork macOS native contracts"
+        ]
+      },
+      {
+        "file": "fork-release-prepare.yml",
+        "enforcement": "advisory",
+        "reason": "Freeze and qualify lane; manual only, gated by environment credentials."
+      },
+      {
+        "file": "fork-upstream-sync.yml",
+        "enforcement": "advisory",
+        "reason": "Weekly upstream sync; opens a pull request and never writes to main."
+      },
+      {
+        "file": "mobile-app-checks.yml",
+        "enforcement": "required",
+        "reason": "Flutter analyze and tests for the fork's app.",
+        "required_jobs": [
+          "Dart Analyze & Tests"
+        ]
+      },
+      {
+        "file": "openapi-contract.yml",
+        "enforcement": "required",
+        "reason": "The fork's clients consume this contract; a drift is a product break, not a style issue.",
+        "required_jobs": [
+          "Public Developer API contract"
+        ]
+      },
+      {
+        "file": "public-build-config-preflight.yml",
+        "enforcement": "advisory",
+        "reason": "Public build configuration preflight."
+      },
+      {
+        "file": "python-cli-ci.yml",
+        "enforcement": "advisory",
+        "reason": "Python CLI, retained as an upstream SDK surface."
+      },
+      {
+        "file": "release-eligibility.yml",
+        "enforcement": "required",
+        "reason": "Upstream's proof that a main commit passed every lane; the fork keeps it as the main-line releasability signal.",
+        "required_jobs": [
+          "Release Eligibility"
+        ]
+      },
+      {
+        "file": "repo-checks.yml",
+        "enforcement": "required",
+        "reason": "Upstream hygiene covers the fork's own diff: agents-md budget, manifests, lifecycle headers, docs.",
+        "required_jobs": [
+          "Hygiene"
+        ]
+      },
+      {
+        "file": "runtime_image_contracts.yml",
+        "enforcement": "advisory",
+        "reason": "Fails open when GCP credentials are absent; a signal for image contracts."
+      },
+      {
+        "file": "sdk-cpp.yml",
+        "enforcement": "advisory",
+        "reason": "C++ device SDK, retained as an upstream SDK surface."
+      },
+      {
+        "file": "web-checks.yml",
+        "enforcement": "required",
+        "reason": "Lint over web/app, which the fork builds for both targets.",
+        "required_jobs": [
+          "Frontend Lint"
+        ]
+      },
+      {
+        "file": "windows-preflight-portability.yml",
+        "enforcement": "advisory",
+        "reason": "Native Windows portability preflight."
+      }
+    ],
+    "disable": [
+      {
+        "file": "desktop_auto_release.yml",
+        "reason": "Upstream desktop release train: signs and publishes Omi-branded bundles with credentials the fork does not have."
+      },
+      {
+        "file": "desktop_backend_auto_dev.yml",
+        "reason": "Upstream development deploy of the desktop backend; the fork deploys its own targets."
+      },
+      {
+        "file": "desktop_backend_prod.yml",
+        "reason": "Upstream production desktop-backend deploy; the fork deploys its own targets."
+      },
+      {
+        "file": "desktop_beta_admission_control.yml",
+        "reason": "Upstream beta admission control for the Omi release train."
+      },
+      {
+        "file": "desktop_breakglass_rollout_beta.yml",
+        "reason": "Upstream break-glass beta rollout for the Omi release train."
+      },
+      {
+        "file": "desktop_codemagic_failure_recovery.yml",
+        "reason": "Upstream Codemagic recovery for the Omi release train."
+      },
+      {
+        "file": "desktop_promote_beta.yml",
+        "reason": "Upstream beta promotion for the Omi release train."
+      },
+      {
+        "file": "desktop_promote_prod.yml",
+        "reason": "Upstream stable promotion for the Omi release train."
+      },
+      {
+        "file": "desktop_publish_preview.yml",
+        "reason": "Upstream preview publication for the Omi release train."
+      },
+      {
+        "file": "desktop_recover_beta.yml",
+        "reason": "Upstream beta recovery for the Omi release train."
+      },
+      {
+        "file": "desktop_release_doctor.yml",
+        "reason": "Upstream release diagnostics for the Omi release train."
+      },
+      {
+        "file": "desktop_rollback_beta.yml",
+        "reason": "Upstream beta rollback for the Omi release train."
+      },
+      {
+        "file": "desktop_windows_release.yml",
+        "reason": "Upstream Windows release: signs and publishes Omi-branded artifacts."
+      },
+      {
+        "file": "firmware_release.yml",
+        "reason": "Upstream firmware signing and OTA publication; the fork has no MCUboot key or OTA channel."
+      },
+      {
+        "file": "gcp_admin.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_app.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_backend_auto_dev.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_backend_listen_helm.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_backend_pusher_auto_deploy.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_backend_pusher.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_backend.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_cloud_run_metrics_egress.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_daily_memory_sweep_job_auto_dev.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_daily_memory_sweep_job.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_day3_reengagement_email_job_auto_dev.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_day3_reengagement_email_job.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_diarizer.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_firestore_indexes.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_frame_request_retention_job.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_frontend.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_llm_gateway.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_memory_maintenance_job_auto_dev.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_memory_maintenance_job.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_models.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_nllb_translation.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_notifications_job.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_parakeet.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_personas.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_plugins.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "gcp_storage_lifecycle.yml",
+        "reason": "Upstream GCP deploy/admin: the fork has no upstream GCP project, credentials or environments, so the lane can only fail, and a fork merge must never be able to reach upstream infrastructure."
+      },
+      {
+        "file": "guardrail-baseline-pulse.yml",
+        "reason": "Upstream bot that commits guardrail history directly to main."
+      },
+      {
+        "file": "mobile_internal_build.yml",
+        "reason": "Upstream internal mobile builds distributed to Omi testers."
+      },
+      {
+        "file": "opentofu-development-wif-pilot-validate.yml",
+        "reason": "Upstream OpenTofu infrastructure for the Omi cloud; the fork has no such state."
+      },
+      {
+        "file": "parakeet_gpu_tests.yml",
+        "reason": "Requires the upstream GPU cluster; the fork runs its own inference profiles."
+      },
+      {
+        "file": "pr-declined-comment.yml",
+        "reason": "Runs on pull_request_target with write permissions; the fork does not need it and it is an avoidable privileged trigger."
+      },
+      {
+        "file": "repo-hygiene.yml",
+        "reason": "Upstream bot that opens failure-class retirement pull requests; the fork owns its own registry."
+      },
+      {
+        "file": "sync_ledger_fence_cutover.yml",
+        "reason": "Upstream one-time ledger cutover; already executed upstream."
+      },
+      {
+        "file": "sync-docs.yml",
+        "reason": "Upstream bot that regenerates SDK READMEs; a known weekly-conflict source and not the fork's documentation owner."
+      },
+      {
+        "file": "task-recommendation-live-eval.yml",
+        "reason": "Upstream live evaluation against upstream production data."
+      }
+    ],
+    "unregistered": [
+      {
+        "file": "desktop_backend_recover_prod.yml",
+        "reason": "On main but never registered by GitHub (the workflow API returns 404); it cannot run."
+      },
+      {
+        "file": "desktop_breakglass_credential_preflight.yml",
+        "reason": "On main but never registered by GitHub."
+      },
+      {
+        "file": "main.yml",
+        "reason": "Upstream GitHub issue sync; on main but never registered by GitHub."
+      },
+      {
+        "file": "onboarding_figma_sync.yml",
+        "reason": "On main but never registered by GitHub."
+      },
+      {
+        "file": "opentofu-development-wif-pilot.yml",
+        "reason": "On main but never registered by GitHub."
+      },
+      {
+        "file": "opentofu-foundation-validate.yml",
+        "reason": "On main but never registered by GitHub."
+      },
+      {
+        "file": "publish_omi_cli.yml",
+        "reason": "On main but never registered by GitHub."
+      },
+      {
+        "file": "sdk-rust.yml",
+        "reason": "On main but never registered by GitHub; the Rust SDK lane has never run in this fork."
+      }
+    ]
+  },
+  "quarantine": [
+    {
+      "file": "backend-unit-tests.yml",
+      "reason": "origin/main carries the pre-fix upstream pair: backend/utils/conversations/projection_payload.py imports models.client_processing at module scope, while backend/tests/unit/test_batch_upload_storage.py and test_merge_validation.py stub `models` without that submodule, so every run fails with ModuleNotFoundError. upstream/main already fixed both sides (the stub list includes models.client_processing and the import moved into the function). backend/** is a T2 never-modify path, so the remedy is the next upstream sync, not a fork edit.",
+      "tracking": "dev/unified-main/05-ci-matrix.md"
+    }
+  ],
+  "required_checks": [
+    "Agent Runtime",
+    "Dart Analyze & Tests",
+    "Fork gate (Server OS + Cloudflare)",
+    "Fork macOS native contracts",
+    "Frontend Lint",
+    "Hygiene",
+    "Public Developer API contract",
+    "Release Eligibility",
+    "Static Contracts",
+    "Typecheck \u00b7 Lint \u00b7 Test"
+  ],
+  "environments": [
+    {
+      "name": "cloudflare-beta",
+      "branches": [
+        "main"
+      ],
+      "reviewers": []
+    },
+    {
+      "name": "cloudflare-production",
+      "branches": [
+        "main"
+      ],
+      "reviewers": [
+        "summersmile1984"
+      ]
+    },
+    {
+      "name": "server-beta",
+      "branches": [
+        "main"
+      ],
+      "reviewers": []
+    },
+    {
+      "name": "server-production",
+      "branches": [
+        "main"
+      ],
+      "reviewers": [
+        "summersmile1984"
+      ]
+    }
+  ]
+}

@@ -3,7 +3,16 @@
 The active fork CI is `.github/workflows/fork-checks.yml` for
 `summersmile1984/omi`. Its check definitions live in
 `.github/checks-manifest.fork.yaml`; upstream workflow and manifest files stay
-unchanged. Upstream workflows have their own enabled/disabled repository state.
+unchanged.
+
+Which upstream workflows are enabled is repository state, not tree state, so it
+is declared in `config/repo-state.fork.json` alongside the checks that gate
+`main` and the deployment environment protection. `scripts/fork/check_repo_state.py`
+runs in every lane: offline it checks the declaration against the tree, and in
+GitHub Actions it also compares the registered workflows with their live
+enabled/disabled state. The ruleset and environment halves need an
+administration credential a `GITHUB_TOKEN` does not carry, so
+`scripts/fork/apply_repo_state.py --verify` owns them and an operator runs it.
 
 ## Running checks
 

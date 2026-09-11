@@ -12,6 +12,14 @@
 
 ## 2. 上游工作流处置（一次性，`gh workflow disable`）
 
+> **2026-09-11 取代说明**：下面这段一次性脚本已被 `config/repo-state.fork.json` +
+> `scripts/fork/check_repo_state.py` + `scripts/fork/apply_repo_state.py` 取代。
+> 保留它是因为它记录了当初的判断；**不要再手工执行**。要改启用集合，改 policy 文件，
+> 然后跑 `python3 scripts/fork/apply_repo_state.py --dry-run`。理由：手写脚本没有记录
+> "哪些该开"，于是每次上游同步带进新 workflow（默认启用）时都要靠人回忆；2026-09-10
+> 的同步就是这样手工关掉四个 `gcp_*` 文件的。现在 `fork-repo-state` 会在每个 lane 断言
+> 注册集合与启用状态，`--verify` 覆盖 CI 拿不到管理员凭据的那一半。
+
 ```bash
 # 在 fork 仓库执行一次；被禁用的工作流文件保留在树里，同步时零冲突
 for wf in gcp_admin gcp_app gcp_backend gcp_backend_auto_dev gcp_backend_listen_helm gcp_backend_pusher \
@@ -162,6 +170,17 @@ runs:
 已在 `origin/main` 的干净工作树上用同一条 `uv run` 命令复现，与 fork 改动无关。加上 `--with "fastapi==0.121.0"` 后脚本跑完全部导入。
 
 **fork 不修它**：`backend/**` 是 T2 禁改区（`upstream-touch-allowlist.yaml` 的 `forbidden_patterns`），`.github/checks-manifest.yaml` 与 `.github/workflows/**` 同样禁改，所以两个缺陷 fork 侧都没有合法修法。两条修复已进 `upstream-prs.md`（#13、#14）。在上游接受之前，带 `package.json` 的 fork PR 以此条为准判定该检查为**已知红**，不得为了变绿去改上游文件，也不得因此放宽 T2。
+
+### 7.2 已知红：`backend-unit-tests`（上游基线滞后，待下次同步）
+
+`origin/main` 上这一对文件来自不同的上游时间点：
+
+- `backend/utils/conversations/projection_payload.py` 在**模块作用域**执行 `from models.client_processing import PROJECTION_FAMILY_FIELDS`；
+- `backend/tests/unit/test_batch_upload_storage.py` 与 `test_merge_validation.py` 用 `stub_modules` 安装一个裸的 `models` 包，**没有** `models.client_processing` 这一项。
+
+裸 `ModuleType` 没有 `__path__`，所以子模块导入直接 `ModuleNotFoundError`。两个文件在 `upstream/main` 上都已修好（stub 列表补了 `models.client_processing`，导入移进函数体并附了原因注释），因此这不是 fork 缺陷，也不是上游缺陷，而是**同步滞后**：下一次 `fork-upstream-sync` 合并 `upstream/main` 后自动消失。
+
+**处置**：`backend/**` 是 T2 禁改区，`**/tests/**` 还是 `forbidden_patterns`，fork 侧没有合法修法，也不应为了让检查变绿去改上游测试或加一个 fork 的 `conftest.py` 掩盖基线不一致。登记在 `config/repo-state.fork.json` 的 `quarantine` 里：保持启用（信号还在），但不进入 `main` 的必选检查，并在同步后复查。`fork-repo-state` 会拒绝一个没有 tracking 指针、或仍然参与必选检查的隔离条目。
 
 ## 8. 落地 PR（对应 `07-pr-plan.md` 的 C 系列）
 

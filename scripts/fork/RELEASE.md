@@ -9,7 +9,7 @@ domains, environment credentials and serialization locks.
 | Workflow | Input | Effect |
 | --- | --- | --- |
 | Fork Checks (`fork-checks.yml`) | Manual run at the selected commit | Runs the complete portable and native check manifest. Push/PR runs remain diff-scoped. |
-| Fork Release CI (`fork-release-prepare.yml`) | Successful full `ci_run_id`, `brand`, `stage`, optional `inventory_json` and `continue_from` | Freezes once, downloads the actual GitHub artifact through the CD transport, qualifies all nine Workers in Cloudflare and boots the accepted Server images with disposable state. |
+| Fork Release CI (`fork-release-prepare.yml`) | Successful full `ci_run_id`, `stage`, optional `inventory_json` and `continue_from` | Freezes once, downloads the actual GitHub artifact through the CD transport, qualifies all nine Workers in Cloudflare and boots the accepted Server images with disposable state. |
 | Fork CD Cloudflare (`fork-cd-cloudflare.yml`) | Successful `delivery_run_id`, `stage` | Checks main ancestry and artifact hashes, then publishes the frozen nine-Worker candidate with qualified migrations and remote observations. |
 | Fork CD Server OS (`fork-cd-server.yml`) | Successful `delivery_run_id`, `stage` | Imports accepted Docker image IDs, boots them against disposable state, snapshots an existing deployment, migrates and starts the persistent service, then checks public HTTP contracts. |
 
@@ -23,8 +23,10 @@ and Wrangler/Docker business regression before freezing artifacts.
 
 ```sh
 # Select the exact commit with a successful manual full CI run.
+# The deploy brand is not an input: it is declared in
+# config/repo-state.fork.json and checked by `fork-repo-state`.
 gh workflow run fork-release-prepare.yml --ref main \
-  -f ci_run_id=CI_RUN_ID -f brand=eddy -f stage=beta
+  -f ci_run_id=CI_RUN_ID -f stage=beta
 
 # Use the successful Release CI run ID in either independent CD.
 gh workflow run fork-cd-cloudflare.yml --ref main \
@@ -208,6 +210,42 @@ reclassification and fork exceptions are refused. The standalone upstream
 checker only loads its own policy and consequently cannot classify fork CD
 settings. This limitation is tracked with the upstream preflight incompatibilities
 in `dev/unified-main/implementation-2026-09-05/fork-first-push-2026-09-09.md`.
+
+### Repository state policy
+
+`config/repo-state.fork.json` is the single declaration of the repository
+settings this pipeline depends on: the deploy brand, which workflows stay
+enabled and why, which of their jobs gate `main`, which known-red checks are
+quarantined, and the branch/reviewer protection of the four environments.
+
+`scripts/fork/check_repo_state.py` runs in every lane. Offline it requires the
+declaration to agree with the tree: every workflow file classified exactly once,
+every required job a literal job name inside its own workflow, every quarantine
+entry tracked and excluded from `main`'s checks, and every deploy path naming the
+declared brand. In GitHub Actions it additionally compares the registered
+workflows and their enabled/disabled state with the declaration, and fails closed
+when that API is unavailable.
+
+The ruleset and environment halves cannot be read with a `GITHUB_TOKEN`, so
+they are not claimed as CI-enforced:
+
+```sh
+# Print the changes the declaration implies; nothing is written.
+python3 scripts/fork/apply_repo_state.py
+
+# Apply them. Refuses to arm the ruleset while a required check is failing on
+# the latest run of its workflow on main -- arming it first would block every
+# merge on a check that was already red.
+python3 scripts/fork/apply_repo_state.py --apply
+
+# Read the repository back and report every difference.
+python3 scripts/fork/apply_repo_state.py --verify
+```
+
+The ruleset (`fork-main-gate`) requires the declared checks, requires changes to
+reach `main` through a pull request, forbids deletion and force-push, and grants
+the repository-admin role an `always` bypass as the break-glass hatch. The two
+production environments carry a required reviewer; the beta environments do not.
 
 ## Mac Studio Server owner
 
