@@ -32,7 +32,7 @@ RELEASE_JOBS = {
 # reader does not have to guess.
 ATTESTATION_PREFIX = 'fork-ci-attestation-'
 ATTESTATION_MANIFEST = '.github/checks-manifest.fork.yaml'
-ATTESTATION_FILENAME = '.fork-ci-attestation.json'
+ATTESTATION_FILENAME = 'fork-ci-attestation.json'
 
 
 def sha256_file(path):

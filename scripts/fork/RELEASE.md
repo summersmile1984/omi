@@ -52,7 +52,7 @@ the newly required public readiness and ingress evidence.
 The job names alone cannot prove the run executed the *complete* manifest: the
 same two jobs also serve the diff-scoped push and pull-request lanes, so a
 dispatch that quietly selected less would look identical. The complete lane
-therefore writes a manifest attestation per job (`.fork-ci-attestation.json`,
+therefore writes a manifest attestation per job (`fork-ci-attestation.json`,
 published as `fork-ci-attestation-linux-<sha>` and
 `fork-ci-attestation-macos-<sha>`), recording the manifest digest, the run and
 attempt, the source commit and the check ids that job selected. Admission
@@ -346,7 +346,7 @@ A failed release must explain itself from the run page; reconstructing the cause
 by hand on the host is not an accepted recovery path. Both CD workflows run
 `scripts/fork/release_failure_summary.py` as an `if: failure()` step: it finds the
 journals that belong to the exact admitted source under the target's journal root,
-copies them into a `.fork-release-evidence` artifact, and writes a short markdown
+copies them into a `fork-release-evidence` artifact, and writes a short markdown
 block into the job summary. It exits 0 in every case -- including a missing or
 malformed journal -- because the step must never replace the real failure with
 its own.
