@@ -26,10 +26,17 @@ Never allowlisted, whatever the reason: upstream tests, lockfiles and dependency
 manifests, generated output, bot-written files, upstream CI workflows, upstream
 `AGENTS.md`, and formatting-only changes.
 
-Enforced by `scripts/fork/check-upstream-touch.py` via
-`.github/checks-manifest.fork.yaml`. The per-platform techniques that replace an
-upstream edit are in
+Enforced by `scripts/fork/check-upstream-touch.py --aggregate` via
+`.github/checks-manifest.fork.yaml`. The audit covers the complete divergence
+from the upstream revision actually incorporated, not the event's commit range,
+and an unavailable `upstream/main` fails the lane instead of skipping. The
+per-platform techniques that replace an upstream edit are in
 [`dev/unified-main/00-upstream-touch-policy.md`](dev/unified-main/00-upstream-touch-policy.md).
+
+Which upstream workflows stay enabled, which checks gate `main`, and how the
+deployment environments are protected are declared in
+`config/repo-state.fork.json` and checked by `scripts/fork/check_repo_state.py`.
+Change the declaration, not the repository settings by hand.
 
 ## 2. Formatting: two opposite rules
 

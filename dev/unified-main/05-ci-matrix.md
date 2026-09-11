@@ -1,13 +1,51 @@
 # 05 · CI：上游工作流不动，fork 工作流走矩阵（品牌 × 部署目标）
 
+> **2026-09-11 取代说明（先读这段）**：本文是 2026-09-04 的**规划稿**，其中 §4（`deploy/matrix.json`）、§5 的 `fork-build-matrix.yml` / `fork-contract-*.yml` / 标签触发的四条 `fork-deploy-*` 工作流、§8 的 C2–C5 **从未实现**，也不会实现。实际落地的是"冻结一次 + 两个目标各自资格化与发布"的形态：本文 §3 的 `fork-checks.yml` + `checks-manifest.fork.yaml` 那条线，加上 `fork-release-prepare.yml`、`fork-cd-cloudflare.yml`、`fork-cd-server.yml`、`fork-upstream-sync.yml`。
+>
+> 实际设计（准入、失败证据、品牌契约、仓库状态声明）以
+> [`scripts/fork/RELEASE.md`](../../scripts/fork/RELEASE.md) 与
+> [`scripts/fork/README.md`](../../scripts/fork/README.md) 为准；本文只保留规划语境。
+> §1 的七条原则仍然有效，只是原则 4 的"矩阵是数据"由 `deploy/profiles/*.yaml` +
+> `brand/*/manifest.yaml` 承担，而不是一个 `deploy/matrix.json`。
+>
+> **本轮（2026-09-11）的设计修正**记录在 `decisions.md` 的 D14–D19：上游零改动改为
+> 状态审计且无法评估即失败；仓库状态（workflow 启停 / 必选检查 / 环境防护）由
+> `config/repo-state.fork.json` 声明并由 `fork-repo-state` 断言；发布品牌成为仓库常量；
+> CD 失败写脱敏根因；完整 lane 产出 manifest attestation 作为发布准入的一半。
+
 > 依据（main 现状）：`.github/scripts/run_checks.py` 支持 `--manifest <path>`（`:453`），但 `pr_preflight.py:61` 写死单一清单路径、`validate_manifest` 要求每条检查同时声明 `local` 与 `ci` 通道；`.github/actions/detect-changes` 输出 24 个 `has_*` 标志；`runtime_image_contracts.yml:36-58` 是仓库里唯一"无 GCP 密钥时优雅降级"的工作流；5 个工作流会把提交写回仓库（每周冲突源）。
+
+## 0. 实际实现的 lane 模型（2026-09-11）
+
+| lane | 触发 | runner | 选择范围 | 可授权发布 | 并发组 |
+|---|---|---|---|---|---|
+| pr | `pull_request → main` | `ubuntu-latest` / `macos-26` | diff（目标分支为 base） | 否 | `fork-checks-<ref>-pull_request` |
+| main-push | `push → main,codex/**,sync/**` | 自托管 Mac Studio | diff（`event.before` 为 base） | 否 | `fork-checks-<ref>-push` |
+| release | `workflow_dispatch`（仅 main） | 自托管 Mac Studio | **全量 manifest** + 产出 attestation | **是** | `fork-checks-<ref>-workflow_dispatch` |
+| freeze+qualify | `workflow_dispatch`（仅 main） | 自托管 Mac Studio | 复用 release lane 的 run（API 校验） | 否 | `fork-prepare-<ref>-eddy-<stage>` |
+| cd | `workflow_dispatch` / `workflow_call`（仅 main） | 自托管 Mac Studio | 冻结件 | — | `fork-cd-<target>-eddy-<stage>` |
+
+不变量与强制手段的对应关系：
+
+| 不变量 | 强制手段 |
+|---|---|
+| 上游文件零改动（白名单除外） | `fork-upstream-touch --aggregate`（完整分歧审计；缺 `upstream/main` → exit 2） |
+| 每条 fork 检查声明 `local`+`ci` | 上游 `run_checks.py validate_manifest` |
+| fork workflow 语法与 runner label 合法 | `fork-workflow-lint`（glob `fork-*.yml`） |
+| 只有跑完整份 manifest 的 run 可授权发布 | `fork-ci-attestation.json` + `release_ci.py` 的覆盖校验 |
+| 发布源已并入 main / 冻结件字节一致 | `release_ci.py` 的 `compare` 与 archive digest 校验 |
+| workflow 启停集合 = 声明集合 | `fork-repo-state`（live 模式，`actions: read`） |
+| `main` 必选检查、环境防护 | `config/repo-state.fork.json` + `apply_repo_state.py --verify`（operator，管理员凭据） |
+| 常红检查不得进入必选集 | policy 的 `quarantine`（必须带可解析 tracking） |
+| 发布失败留下脱敏根因 | `journal.failure` + `release_failure_summary.py` |
+
 
 ## 1. 原则
 
-1. **上游工作流一个字节不改**（改 = 每次同步冲突）。不需要的在 GitHub Actions 界面禁用（§2 给出 `gh` 脚本）。
+1. **上游工作流一个字节不改**（改 = 每次同步冲突）。不需要的在 GitHub Actions 界面禁用；启停集合现在声明在 `config/repo-state.fork.json` 并由 `fork-repo-state` 断言，不再靠一次性脚本（§2 的脚本已作废）。
 2. **fork 工作流一律新文件** `.github/workflows/fork-*.yml`；fork 检查一律进 `.github/checks-manifest.fork.yaml`，由 `run_checks.py --manifest` 显式执行，不改 `pr_preflight.py`（把"清单 include"作为可选 PR 回推上游，接受后再简化）。
 3. **没有密钥也必须绿**：所有需要密钥的 job 先跑一个 gate step 输出 `has_secrets`，后续 step 以 `if: steps.gate.outputs.has_secrets == 'true'` 跳过，照抄 `runtime_image_contracts.yml` 的做法（`secrets` 上下文不能直接用于 job 级 `if`）。
-4. **矩阵是数据**：`deploy/matrix.json` 声明 品牌 × 目标 × 组件，工作流用 `fromJSON` 读取；加品牌/加目标只改这个文件。
+4. **矩阵是数据**（原规划 `deploy/matrix.json` 未实现）：品牌 × 目标的实际数据源是 `deploy/profiles/*.yaml` + `brand/*/manifest.yaml`，由 `fork-profile-tables` 与 `fork-profile-boundary-tests` 断言一致；发布品牌另由 `config/repo-state.fork.json` 的 `deploy_brand` 声明。
 5. **标签命名空间隔离**：fork 发布标签统一前缀 `<brand>/…`（如 `mw/selfhost/v1.4.0`、`mw/cloudflare/v1.4.0`、`mw/macos/v0.13.0`、`mw/fw/cv1/v3.1.0`），并设置 `git config remote.upstream.tagOpt --no-tags`，避免上游数千个 `v*-macos`/`Omi_CV1_v*` 标签污染 fork 与触发误配。
 
 ## 2. 上游工作流处置（一次性，`gh workflow disable`）
@@ -94,7 +132,7 @@ python3 "$root/.github/scripts/run_checks.py" --manifest "$root/.github/checks-m
 
 `Makefile.fork`（不改上游 `Makefile`）：`preflight-fork`、`brand-apply BRAND=…`、`brand-check BRAND=…`、`selfhost-up`、`cf-dev`、`sync-upstream`。
 
-## 4. 矩阵定义 `deploy/matrix.json`
+## 4. 矩阵定义 `deploy/matrix.json`（未实现，被取代：实际由 `deploy/profiles/*.yaml` + `brand/*/manifest.yaml` 承担）
 
 ```json
 {
@@ -116,7 +154,7 @@ python3 "$root/.github/scripts/run_checks.py" --manifest "$root/.github/checks-m
 
 规则：`omi-upstream` 品牌只用于回归（证明 fork 未破坏上游等价性），不发布。每个 `brand × target` 交叉点必须能：① 生成品牌；② 以该目标的 profile 构建全部客户端；③ 对该目标后端跑契约套件。
 
-## 5. fork 工作流一览
+## 5. fork 工作流一览（规划稿，未实现；实际见 `scripts/fork/RELEASE.md` 与 §0）
 
 | 文件 | 触发 | 作用 | 密钥 |
 |---|---|---|---|
@@ -182,7 +220,7 @@ runs:
 
 **处置**：`backend/**` 是 T2 禁改区，`**/tests/**` 还是 `forbidden_patterns`，fork 侧没有合法修法，也不应为了让检查变绿去改上游测试或加一个 fork 的 `conftest.py` 掩盖基线不一致。登记在 `config/repo-state.fork.json` 的 `quarantine` 里：保持启用（信号还在），但不进入 `main` 的必选检查，并在同步后复查。`fork-repo-state` 会拒绝一个没有 tracking 指针、或仍然参与必选检查的隔离条目。
 
-## 8. 落地 PR（对应 `07-pr-plan.md` 的 C 系列）
+## 8. 落地 PR（对应 `07-pr-plan.md` 的 C 系列；C0/C1/C6 已落地，C2–C5 未实现且已被取代）
 
 | PR | 内容 | 验收 |
 |---|---|---|
