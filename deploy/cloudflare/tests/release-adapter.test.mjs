@@ -641,3 +641,67 @@ describe("locked Wrangler release adapter", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 });
+
+describe("release-owned ingress reservations", () => {
+  const hostname = "api.fixture.invalid";
+  function candidateWithRoute() {
+    const adapter = fixture();
+    adapter.candidate.resource_plan.configs = {
+      api: {
+        config: {
+          name: "fixture-api",
+          routes: [{ pattern: hostname, custom_domain: true }],
+        },
+      },
+    };
+    return adapter;
+  }
+  const zone = { id: "b".repeat(32), name: "fixture.invalid", account: { id: account } };
+  const zonesPage = ok([zone]);
+  const zonesList = { success: true, result: [zone], result_info: { total_pages: 1 } };
+  const record = (type, content) => ({ id: `record-${type}`, type, content });
+  it("deletes a hostname that carries nothing but the documented placeholder", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(zonesList))
+      .mockResolvedValueOnce(ok([record("A", "192.0.2.0")]))
+      .mockResolvedValueOnce(ok({ id: "record-A" }));
+    const adapter = candidateWithRoute();
+    adapter.fetch = fetchImpl;
+    await expect(adapter.releaseIngressPlaceholders()).resolves.toEqual([
+      `${hostname} A 192.0.2.0`,
+    ]);
+    expect(fetchImpl.mock.calls[2][0]).toContain(`/zones/${zone.id}/dns_records/record-A`);
+    expect(fetchImpl.mock.calls[2][1].method).toBe("DELETE");
+  });
+  it("leaves an operator's own record for the attach to refuse", async () => {
+    for (const rows of [
+      [record("A", "203.0.113.10")],
+      [record("A", "192.0.2.0"), record("TXT", "verification")],
+      [record("CNAME", "origin.example.com")],
+    ]) {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(Response.json(zonesList))
+        .mockResolvedValueOnce(ok(rows));
+      const adapter = candidateWithRoute();
+      adapter.fetch = fetchImpl;
+      await expect(adapter.releaseIngressPlaceholders()).resolves.toEqual([]);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    }
+  });
+  it("does nothing when the candidate declares no custom domain", async () => {
+    const adapter = fixture();
+    adapter.fetch = vi.fn();
+    await expect(adapter.releaseIngressPlaceholders()).resolves.toEqual([]);
+    expect(adapter.fetch).not.toHaveBeenCalled();
+  });
+  it("fails closed when the zone is not owned", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(
+      Response.json({ success: true, result: [{ ...zone, account: { id: "c".repeat(32) } }], result_info: { total_pages: 1 } })
+    );
+    const adapter = candidateWithRoute();
+    adapter.fetch = fetchImpl;
+    await expect(adapter.releaseIngressPlaceholders()).rejects.toThrow("zone is not owned");
+  });
+});

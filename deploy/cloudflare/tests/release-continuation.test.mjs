@@ -62,6 +62,7 @@ async function fixture() {
   const adapter = {
     observeWorker: vi.fn(async (name) => structuredClone(states[name])),
     observeResource: vi.fn(), preconditions: vi.fn(async () => {}),
+    releaseIngressPlaceholders: vi.fn(async () => []),
     migrationLedger: vi.fn(async () => [...ledger]),
     migrate: vi.fn(async () => { ledger = ["0001.sql"]; return { exit: 0 }; }),
     deploy: vi.fn(async (role, tag, message) => {

@@ -376,10 +376,14 @@ hostname the API cannot resolve ("the API rejects an unregistered host even with
 custom-domain API, because attaching one needs the Worker that will serve it
 ("This Worker does not exist on your account"), so the reset creates Cloudflare's
 documented originless placeholder instead -- a proxied `A 192.0.2.0`. The release
-then takes the hostname over: the pinned Wrangler's `publishCustomDomains` sets
-`override_existing_dns_record` whenever stdout is not a TTY, which is every CI
-run, so an existing record is replaced rather than refused. Hostnames that
-already have a record are left exactly as they are.
+then takes that reservation down immediately before it publishes and lets the
+attach create its own record; the operation is described in
+`deploy/cloudflare/release.md` and journaled as `adopt:ingress-placeholders`.
+Cloudflare refuses the takeover outright (`100117 "already has externally managed
+DNS records"`) and ignores the `override_existing_dns_record` option the pinned
+Wrangler sends, so an externally managed record must be deleted rather than
+replaced. Hostnames that already have a record of another shape are left exactly
+as they are, and the attach then fails closed.
 
 It uses the Cloudflare REST API directly, the way `release-wrangler.mjs` does.
 `wrangler delete` first lists the account's KV namespaces, so a token scoped for

@@ -100,6 +100,20 @@ The trace is ingress-policy evidence only: Cloudflare documents unsupported
 products in [Trace limitations](https://developers.cloudflare.com/rules/trace-request/limitations/),
 and actual DNS/TLS/public business acceptance remains mandatory in CD.
 
+The trace also requires the hostname to be registered in DNS, so a stage whose
+custom domains have never been published needs an operator-created reservation
+record first. That reservation cannot survive publication: Cloudflare answers
+`100117 "already has externally managed DNS records (A, CNAME, etc)"` for any
+record the Worker does not own, and ignores the `override_existing_dns_record`
+option the pinned Wrangler sends for exactly this case. Immediately before the
+first publish, `applyRelease` therefore records and takes down the reservation
+for every custom-domain hostname of the candidate -- but only when every record
+for that hostname is Cloudflare's documented originless placeholder (`A
+192.0.2.0` or `AAAA 100::`). Any other record, including the operator's own, is
+left standing and the attach fails closed as before. The recorded
+`adopt:ingress-placeholders` event mutates no Worker or resource ownership, so
+continuation reads past it the way it reads past a migration.
+
 ## Local product regression
 
 After building and freezing all artifacts, `release.mjs prepare` now starts
