@@ -362,10 +362,18 @@ The escape hatch is an operator reset. It is a pair of `reset_stage` /
 of any release lane: it runs `scripts/fork/reset_cloudflare_stage.py` inside the
 stage's own `cloudflare-<stage>` environment, under the same per-stage
 concurrency group as a release, prints the full plan, and requires the exact
-`reset:<brand>:<stage>` confirmation token. It deletes the stage's Workers and
-drops every table and view in each D1 authority (never `sqlite_*` or `_cf_KV`),
+`reset:<brand>:<stage>` confirmation token. It detaches the stage's Workers from
+every queue they consume, deletes them, and drops every trigger, view, index and
+table in each D1 authority (never `sqlite_*` or `_cf_KV`) in dependency order,
 then re-reads each authority to prove it is empty. The next release is then an
 ordinary first release with no `continue_from`.
+
+It uses the Cloudflare REST API directly, the way `release-wrangler.mjs` does.
+`wrangler delete` first lists the account's KV namespaces, so a token scoped for
+deployment fails every deletion with `Authentication error [code: 10000]`; the
+queue-consumer detach is needed because Cloudflare refuses to delete a Worker
+that still consumes a queue (code 10064), and `release.md` leaves that cleanup to
+separate ownership -- this reset is that owner.
 
 It lives in the CD workflow rather than one of its own for two enforced reasons:
 a new workflow binding a fork-classified deployment secret is an unclassified
