@@ -13,18 +13,46 @@ on:
         description: Frozen artifact from the calling Release CI; only private qualification runs
         type: string
         required: true
+      # Declared so the reusable path resolves them explicitly: release
+      # qualification always leaves them at these defaults and never resets.
+      reset_stage:
+        type: boolean
+        required: false
+        default: false
+      reset_confirm:
+        type: string
+        required: false
+        default: ''
   workflow_dispatch:
     inputs:
       delivery_run_id:
-        description: Successful Fork Release CI run ID with both artifact qualifications
+        description: Successful Fork Release CI run ID with both artifact qualifications (unused with reset_stage)
         type: string
-        required: true
+        required: false
       stage:
         description: Deployment stage
         type: choice
         options: [beta, production]
         default: beta
         required: true
+      # One-time recovery, not a release: a stage can be stuck between the
+      # continuation contract (already-published Workers must be byte-identical)
+      # and the first-release contract (Workers absent, D1 authorities empty), and
+      # the release owner implements neither an update nor a rollback for that
+      # state. It lives here rather than in its own workflow because this file
+      # already owns this stage's mutation surface -- and because a new workflow
+      # binding this secret would be an unclassified deployment binding that the
+      # upstream boundary check refuses and the fork cannot reclassify.
+      reset_stage:
+        description: Delete this stage's Workers and empty its D1 authorities
+        type: boolean
+        required: false
+        default: false
+      reset_confirm:
+        description: 'With reset_stage: type reset:eddy:<stage> to confirm'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -47,6 +75,8 @@ jobs:
         with:
           persist-credentials: false
       - id: delivery
+        # A reset dispatch has no delivery to resolve.
+        if: ${{ !inputs.reset_stage }}
         env:
           GH_TOKEN: ${{ github.token }}
           DELIVERY_RUN_ID: ${{ inputs.delivery_run_id }}
@@ -70,6 +100,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Require Cloudflare deployment credentials
+        if: ${{ !inputs.reset_stage }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           RELEASE_SECRETS_JSON: ${{ secrets.RELEASE_SECRETS_JSON }}
@@ -79,16 +110,20 @@ jobs:
             exit 1
           fi
       - uses: actions/checkout@v4
+        if: ${{ !inputs.reset_stage }}
         with:
           ref: ${{ needs.resolve.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/fork-release-tools
+        if: ${{ !inputs.reset_stage }}
       - name: Prepare Cloudflare HTTP contract Python
+        if: ${{ !inputs.reset_stage }}
         run: |
           uvx uv==0.12.3 venv --python 3.14 deploy/cloudflare/python/api-core/.venv
           deploy/cloudflare/python/api-core/.venv/bin/python contracts/deployment/core.py --help
       - name: Load release admission from workflow revision
+        if: ${{ !inputs.reset_stage }}
         run: |
           admission_dir="$RUNNER_TEMP/fork-release-admission"
           mkdir "$admission_dir"
@@ -97,6 +132,7 @@ jobs:
           done
           python3 "$admission_dir/release_ci.py" --help
       - name: Download complete frozen delivery
+        if: ${{ !inputs.reset_stage }}
         env:
           GH_TOKEN: ${{ github.token }}
           DELIVERY_RUN_ID: ${{ inputs.delivery_run_id }}
@@ -107,6 +143,7 @@ jobs:
             --run-id "$DELIVERY_RUN_ID" --artifact "$DELIVERY_ARTIFACT" \
             --directory "$DELIVERY_DIRECTORY"
       - name: Verify and execute frozen Cloudflare delivery
+        if: ${{ !inputs.reset_stage }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_STAGE: ${{ inputs.stage }}
@@ -127,11 +164,55 @@ jobs:
               --journal-root "$RELEASE_JOURNAL_ROOT"
           fi
 
+      # One-time recovery for a stage stuck between the continuation contract
+      # (already-published Workers must be byte-identical) and the first-release
+      # contract (Workers absent, D1 authorities empty). It is a step of this job,
+      # not a job of its own, because the release admission requires this
+      # reusable workflow's job names to be exactly the release job set.
+      - uses: actions/checkout@v4
+        if: ${{ inputs.reset_stage }}
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        if: ${{ inputs.reset_stage }}
+        with:
+          node-version: "22"
+
+      - name: Provision the pinned Wrangler
+        if: ${{ inputs.reset_stage }}
+        run: npm ci --prefix deploy/cloudflare --ignore-scripts --no-audit --no-fund
+
+      # Names and ids come from the retained candidate that published them
+      # (journal beta-f843a224...-candidate/candidate.json); the `web` Worker has
+      # no `-cf-` infix.
+      - name: Reset the stage
+        if: ${{ inputs.reset_stage }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          python3 scripts/fork/reset_cloudflare_stage.py \
+            --brand eddy --stage "${{ inputs.stage }}" \
+            --wrangler deploy/cloudflare/node_modules/.bin/wrangler \
+            --worker eddy-cf-auth-beta \
+            --worker eddy-cf-rate-limit-beta \
+            --worker eddy-cf-screen-frame-writer-beta \
+            --worker eddy-cf-api-core-beta \
+            --worker eddy-cf-api-ai-beta \
+            --worker eddy-cf-realtime-beta \
+            --worker eddy-cf-jobs-beta \
+            --worker eddy-cf-edge-beta \
+            --worker eddy-web-beta \
+            --d1 app=42bbfb33-8d8d-4d66-8fae-c5a3face65e8 \
+            --d1 auth=56f2ed9e-d766-4390-ae8f-b50455715753 \
+            --confirm "${{ inputs.reset_confirm }}" --apply
+
       # A failed release must explain itself from the run page. The journals are
       # retained on the host for recovery; this copies the ones that belong to
       # this exact source into the run's evidence. `failure.reason` is written
       # already redacted by the transaction owner, so no credential enters the
       # summary or the artifact.
+
       - name: Report the retained release journal
         if: failure()
         env:
