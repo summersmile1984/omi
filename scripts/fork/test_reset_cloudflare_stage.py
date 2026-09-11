@@ -52,7 +52,7 @@ class FakeCloud:
     """
 
     def __init__(self, *, workers=(), queues=None, catalogues=None, delete_workers=True,
-                 zones=('smartipproxy.com',), records=(), deleted_records=True):
+                 zones=('smartipproxy.com',), records=(), deleted_records=True, routes=None, attach=True):
         self.workers = set(workers)
         self.queues = {key: dict(value) for key, value in (queues or {}).items()}
         self.catalogues = {key: [dict(row) for row in value] for key, value in (catalogues or {}).items()}
@@ -60,6 +60,10 @@ class FakeCloud:
         self.zones = list(zones)
         # hostname -> DNS record type, the zone's public records.
         self.records = {row['name']: row.get('type', 'A') for row in records}
+        # pattern hostname -> script, the zone's Worker routes.
+        self.routes = dict(routes or {})
+        self.attach = attach
+        self.attached = []
         # Deleting a Worker also deletes the custom domain that created its record.
         self.deleted_records = deleted_records
         self.calls = []
@@ -74,8 +78,13 @@ class FakeCloud:
         if path.startswith('/zones?'):
             name = path.split('name=', 1)[1].split('&', 1)[0]
             return ok([{'id': 'zone1', 'name': zone} for zone in self.zones if zone == name])
+        if path.startswith('/zones/zone1/workers/routes'):
+            return ok([{'id': 'route-1', 'pattern': f'{host}/*', 'script': service}
+                       for host, service in sorted(self.routes.items())])
         if path.startswith('/zones/zone1/dns_records'):
             return self.dns_request(method, path, body)
+        if path.startswith('/workers/scripts/') and path.endswith('/domains/records'):
+            return self.attach_request(path, body)
         if path.startswith('/workers/scripts/'):
             return self.workers_request(method, path)
         if path.startswith('/queues'):
@@ -83,6 +92,17 @@ class FakeCloud:
         if path.startswith('/d1/database/'):
             return self.d1_request(path, body)
         raise AssertionError(f'unexpected request: {method} {path}')
+
+    def attach_request(self, path, body):
+        service = path.split('/')[3]
+        hostname = body['origins'][0]['hostname']
+        if service not in self.workers:
+            return {'success': False, 'errors': [{'code': 10007, 'message': 'This Worker does not exist on your account.'}]}, 404
+        self.attached.append((hostname, service, body.get('override_existing_dns_record')))
+        if not self.attach:
+            return {'success': False, 'errors': [{'code': 100117,
+                    'message': f"Hostname '{hostname}' already has externally managed DNS records (A, CNAME, etc)."}]}, 409
+        return ok({'hostname': hostname, 'service': service})
 
     def dns_request(self, method, path, body):
         if method == 'GET':
@@ -330,6 +350,44 @@ class DnsTests(unittest.TestCase):
         api = module.Api('token', 'acct', request=fake)
         self.assertEqual(module.unresolvable(api, 'zone1', ['eddy-cf-beta.smartipproxy.com']),
                          ['eddy-cf-beta.smartipproxy.com'])
+
+
+class AttachTests(unittest.TestCase):
+    def api(self, fake):
+        module = load_module()
+        return module, module.Api('token', 'acct', request=fake)
+
+    def test_an_unpublished_worker_is_skipped_without_calling_the_api(self):
+        module, api = self.api(FakeCloud())
+        self.assertEqual(
+            module.attach_domain(api, 'eddy-web-beta', 'eddy-cf-beta.smartipproxy.com'),
+            'eddy-cf-beta.smartipproxy.com skipped: eddy-web-beta is not published',
+        )
+
+    def test_a_published_worker_is_attached_with_both_overrides(self):
+        fake = FakeCloud(workers=['eddy-web-beta'])
+        module, api = self.api(fake)
+        self.assertEqual(
+            module.attach_domain(api, 'eddy-web-beta', 'eddy-cf-beta.smartipproxy.com'),
+            'eddy-cf-beta.smartipproxy.com -> eddy-web-beta',
+        )
+        self.assertEqual(fake.attached, [('eddy-cf-beta.smartipproxy.com', 'eddy-web-beta', True)])
+
+    def test_a_refused_attach_reports_the_api_error(self):
+        fake = FakeCloud(workers=['eddy-web-beta'], attach=False)
+        module, api = self.api(fake)
+        with self.assertRaises(module.Failure) as raised:
+            module.attach_domain(api, 'eddy-web-beta', 'eddy-cf-beta.smartipproxy.com')
+        self.assertIn('100117', str(raised.exception))
+
+    def test_a_route_naming_a_stage_hostname_is_reported(self):
+        fake = FakeCloud(routes={'eddy-cf-beta.smartipproxy.com': 'someone-else'})
+        module, api = self.api(fake)
+        self.assertEqual(
+            module.zone_routes(api, 'zone1', ['eddy-cf-beta.smartipproxy.com']),
+            ['eddy-cf-beta.smartipproxy.com/* -> someone-else'],
+        )
+        self.assertEqual(module.zone_routes(api, 'zone1', ['other.smartipproxy.com']), [])
 
 
 class MainTests(unittest.TestCase):

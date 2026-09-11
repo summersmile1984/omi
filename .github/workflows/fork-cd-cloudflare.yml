@@ -203,6 +203,9 @@ jobs:
             --hostname eddy-cf-beta.smartipproxy.com \
             --hostname eddy-cf-beta-api.smartipproxy.com \
             --hostname eddy-cf-beta-auth.smartipproxy.com \
+            --attach eddy-cf-beta.smartipproxy.com=eddy-web-beta \
+            --attach eddy-cf-beta-api.smartipproxy.com=eddy-cf-edge-beta \
+            --attach eddy-cf-beta-auth.smartipproxy.com=eddy-cf-auth-beta \
             --d1 app=42bbfb33-8d8d-4d66-8fae-c5a3face65e8 \
             --d1 auth=56f2ed9e-d766-4390-ae8f-b50455715753 \
             --confirm "${{ inputs.reset_confirm }}" --apply
