@@ -275,6 +275,17 @@ export async function applyRelease({
       },
     );
   }
+  // The ingress precondition demanded a DNS record the attach refuses to
+  // replace, so the release takes its own reservation down here, immediately
+  // before the first publish. Only the documented originless placeholder is
+  // adopted; anything else is left for the attach to refuse.
+  await mutate(
+    journal,
+    persist,
+    "adopt:ingress-placeholders",
+    () => adapter.releaseIngressPlaceholders(),
+    async (released) => ({ released }),
+  );
   journal.state = "deploying";
   record(journal, persist);
   for (const name of candidate.resource_plan.deploy_order) {

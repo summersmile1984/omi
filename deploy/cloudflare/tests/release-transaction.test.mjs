@@ -58,6 +58,7 @@ function fixture({ first = false } = {}) {
     observeResource: vi.fn(async () => ({ status: "present" })),
     policies: () => [],
     preconditions: vi.fn(async () => {}),
+    releaseIngressPlaceholders: vi.fn(async () => []),
     migrationLedger: vi.fn(async () => ledger),
     migrate: vi.fn(() => {
       history.push("migrate");
@@ -106,6 +107,33 @@ function fixture({ first = false } = {}) {
   };
 }
 describe("Cloudflare release transaction ownership", () => {
+  it("takes the ingress reservations down once, between the preconditions and the first publish", async () => {
+    const f = fixture();
+    f.adapter.releaseIngressPlaceholders = vi.fn(async () => {
+      f.history.push("adopt");
+      return ["fixture-api.invalid A 192.0.2.0"];
+    });
+    await applyRelease(f);
+    expect(f.history.indexOf("adopt")).toBeGreaterThan(
+      f.history.indexOf("migrate")
+    );
+    expect(f.history.indexOf("adopt")).toBeLessThan(
+      f.history.findIndex((entry) => entry.startsWith("deploy:"))
+    );
+    expect(
+      f.journal.events.find((event) => event.id === "adopt:ingress-placeholders")
+        .observation
+    ).toEqual({ released: ["fixture-api.invalid A 192.0.2.0"] });
+  });
+  it("fails closed when the ingress reservation cannot be observed", async () => {
+    const f = fixture();
+    f.adapter.releaseIngressPlaceholders = vi.fn(async () => {
+      throw new Error("ingress placeholder observation is incomplete");
+    });
+    await expect(applyRelease(f)).rejects.toThrow("reconciliation");
+    expect(f.adapter.deploy).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])(
     "creates a policy once and records its bounded observation outcome (ready=%s)",
     async (ready) => {

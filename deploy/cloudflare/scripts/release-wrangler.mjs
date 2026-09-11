@@ -7,6 +7,12 @@ import { qualifyPublicIngress } from "./release-ingress.mjs";
 
 export const WRANGLER_PROCESS_TIMEOUT_MS = 15 * 60 * 1000;
 
+// Cloudflare's documented originless placeholders
+// (developers.cloudflare.com/workers/configuration/routing/custom-domains/):
+// the DNS record an operator creates so the Request Trace ingress precondition
+// can evaluate a hostname the release has not published yet.
+const INGRESS_PLACEHOLDER_ADDRESSES = new Set(["192.0.2.0", "100::"]);
+
 // One route and response contract for the private cloud rehearsal and CD.
 export const DEPLOYMENT_READINESS = JSON.parse(readFileSync(
   new URL("../../../contracts/deployment/readiness.json", import.meta.url), "utf8",
@@ -421,6 +427,78 @@ export class WranglerReleaseAdapter {
       "created policy did not become observable within the deadline"
     );
   }
+  async zones() {
+    const zones = [];
+    for (let page = 1; ; page++) {
+      const observed = await this.api(
+        `/zones?account.id=${this.account}&status=active&per_page=50&page=${page}`
+      );
+      if (
+        !Array.isArray(observed.result) ||
+        !Number.isInteger(observed.result_info?.total_pages)
+      )
+        throw new Error("zone ownership observation is incomplete");
+      zones.push(...observed.result);
+      if (page >= observed.result_info.total_pages) break;
+      if (page >= 1000)
+        throw new Error("zone ownership exceeds bounded observation");
+    }
+    return zones.filter((zone) => zone.account?.id === this.account);
+  }
+  customDomainHostnames() {
+    const hostnames = new Set();
+    for (const { config } of Object.values(
+      this.candidate.resource_plan.configs ?? {}
+    ))
+      for (const route of config.routes ?? [])
+        if (route.custom_domain === true) hostnames.add(route.pattern);
+    return [...hostnames];
+  }
+  // The ingress precondition requires a DNS record for every public hostname,
+  // and the custom-domain attach then refuses to replace it: Cloudflare answers
+  // 100117 for any externally managed record and ignores
+  // `override_existing_dns_record` even though the pinned Wrangler sends it
+  // (workers-sdk#9878). Both sides are this fork's own contract, so the release
+  // takes its own reservation down immediately before it publishes. Only a
+  // hostname whose every record is the documented originless placeholder is
+  // adopted; an operator's other records are left alone and still fail the
+  // attach, which is the same fail-closed answer as before.
+  async releaseIngressPlaceholders() {
+    const hostnames = this.customDomainHostnames();
+    if (!hostnames.length) return [];
+    const zones = await this.zones();
+    const released = [];
+    for (const hostname of hostnames) {
+      const zone = zones
+        .filter(
+          ({ name }) => hostname === name || hostname.endsWith(`.${name}`)
+        )
+        .sort((left, right) => right.name.length - left.name.length)[0];
+      if (!zone || !/^[0-9a-f]{32}$/.test(zone.id))
+        throw new Error(`ingress placeholder zone is not owned: ${hostname}`);
+      const observed = await this.api(
+        `/zones/${zone.id}/dns_records?name=${encodeURIComponent(hostname)}`
+      );
+      if (!Array.isArray(observed.result))
+        throw new Error(`ingress placeholder observation is incomplete: ${hostname}`);
+      if (
+        !observed.result.length ||
+        !observed.result.every(
+          (record) =>
+            record.type !== "TXT" &&
+            INGRESS_PLACEHOLDER_ADDRESSES.has(record.content)
+        )
+      )
+        continue;
+      for (const record of observed.result) {
+        await this.api(`/zones/${zone.id}/dns_records/${record.id}`, {
+          method: "DELETE",
+        });
+        released.push(`${hostname} ${record.type} ${record.content}`);
+      }
+    }
+    return released;
+  }
   async preconditions() {
     for (const refs of Object.values(this.candidate.resource_plan.secrets))
       for (const reference of Object.values(refs))
@@ -445,21 +523,7 @@ export class WranglerReleaseAdapter {
       const response = await this.api("workers/domains");
       if (!Array.isArray(response.result))
         throw new Error("custom-domain ownership observation is incomplete");
-      const zones = [];
-      for (let page = 1; ; page++) {
-        const observed = await this.api(
-          `/zones?account.id=${this.account}&status=active&per_page=50&page=${page}`
-        );
-        if (
-          !Array.isArray(observed.result) ||
-          !Number.isInteger(observed.result_info?.total_pages)
-        )
-          throw new Error("zone ownership observation is incomplete");
-        zones.push(...observed.result);
-        if (page >= observed.result_info.total_pages) break;
-        if (page >= 1000)
-          throw new Error("zone ownership exceeds bounded observation");
-      }
+      const zones = await this.zones();
       for (const { config } of Object.values(
         this.candidate.resource_plan.configs
       ))
@@ -487,8 +551,7 @@ export class WranglerReleaseAdapter {
             );
         }
       const ingress = await qualifyPublicIngress(
-        this.candidate, zones.filter((zone) => zone.account?.id === this.account),
-        DEPLOYMENT_READINESS, this.api.bind(this),
+        this.candidate, zones, DEPLOYMENT_READINESS, this.api.bind(this),
       );
       return { observed: true, ingress };
     }

@@ -106,6 +106,12 @@ export function assertContinuationBasis(candidate, chain, observations) {
     const deployed = new Set();
     for (const event of journal.events) {
       if (event.id.startsWith("migrate:")) continue;
+      // The release takes down the operator's ingress reservation for its own
+      // custom domains before publishing (`releaseIngressPlaceholders`). It
+      // mutates a DNS record this fork's qualification required, never Worker or
+      // resource ownership, so continuation reads past it exactly like a
+      // migration.
+      if (event.id === "adopt:ingress-placeholders") continue;
       if (!event.id.startsWith("deploy:")) throw new Error("continuation cannot adopt recovery mutations");
       const role = event.id.slice("deploy:".length), worker = prior.workers[role];
       if (!worker || deployed.has(role)) throw new Error("continuation has ambiguous Worker mutations");
