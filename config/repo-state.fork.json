@@ -88,11 +88,8 @@
       },
       {
         "file": "openapi-contract.yml",
-        "enforcement": "required",
-        "reason": "The fork's clients consume this contract; a drift is a product break, not a style issue.",
-        "required_jobs": [
-          "Public Developer API contract"
-        ]
+        "enforcement": "advisory",
+        "reason": "Advisory: it cannot report on a pull request. openapi-contract.yml is path-scoped, so the workflow does not start for most diffs; release-eligibility.yml has no pull_request trigger at all and only runs on push to main. A required check that never reports leaves the pull request waiting for a status forever. Both stay enabled for their push-lane signal."
       },
       {
         "file": "public-build-config-preflight.yml",
@@ -106,11 +103,8 @@
       },
       {
         "file": "release-eligibility.yml",
-        "enforcement": "required",
-        "reason": "Upstream's proof that a main commit passed every lane; the fork keeps it as the main-line releasability signal.",
-        "required_jobs": [
-          "Release Eligibility"
-        ]
+        "enforcement": "advisory",
+        "reason": "Advisory: it cannot report on a pull request. openapi-contract.yml is path-scoped, so the workflow does not start for most diffs; release-eligibility.yml has no pull_request trigger at all and only runs on push to main. A required check that never reports leaves the pull request waiting for a status forever. Both stay enabled for their push-lane signal."
       },
       {
         "file": "repo-checks.yml",
@@ -396,8 +390,6 @@
     "Fork macOS native contracts",
     "Frontend Lint",
     "Hygiene",
-    "Public Developer API contract",
-    "Release Eligibility",
     "Static Contracts"
   ],
   "environments": [

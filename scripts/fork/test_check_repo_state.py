@@ -44,6 +44,7 @@ jobs:
 FORK_CHECKS = """\
 name: Fork Checks
 on:
+  pull_request:
   workflow_dispatch:
 jobs:
   gate:
@@ -271,6 +272,39 @@ class StaticReportTests(unittest.TestCase):
         harness = self.harness()
         harness.policy['environments'][0]['branches'] = ['*']
         self.assertFails(harness, "deployment branch policy must be exactly ['main']")
+
+
+    def test_a_required_workflow_must_report_on_pull_request(self):
+        # A required check whose workflow has no pull_request trigger is never
+        # reported, so GitHub holds every pull request at "Expected" forever.
+        harness = self.harness()
+        (harness.root / '.github' / 'workflows' / 'fork-checks.yml').write_text(
+            FORK_CHECKS.replace('  pull_request:\n', ''), encoding='utf-8'
+        )
+        self.assertFails(harness, 'does not trigger on pull_request')
+
+    def test_a_path_filtered_required_workflow_is_refused(self):
+        harness = self.harness()
+        (harness.root / '.github' / 'workflows' / 'fork-checks.yml').write_text(
+            FORK_CHECKS.replace('  pull_request:\n', '  pull_request:\n    paths: ["backend/**"]\n'),
+            encoding='utf-8',
+        )
+        self.assertFails(harness, 'filters pull_request by paths')
+
+    def test_skipped_required_jobs_are_still_reportable(self):
+        # The upstream jobs are gated inside the workflow, which GitHub records
+        # as a skipped check and treats as satisfied; only the workflow-level
+        # trigger decides whether a check is reported at all.
+        harness = self.harness()
+        (harness.root / '.github' / 'workflows' / 'fork-checks.yml').write_text(
+            FORK_CHECKS.replace(
+                '  gate:\n',
+                '  gate:\n    if: github.event_name == \'push\'\n',
+            ),
+            encoding='utf-8',
+        )
+        result = self.check(harness)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class LiveReportTests(unittest.TestCase):
