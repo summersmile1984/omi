@@ -10,9 +10,8 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
-
-import yaml
 
 from release_archive import unpack_candidate
 
@@ -75,6 +74,23 @@ def manifest_path(manifest=ATTESTATION_MANIFEST):
     return Path(workspace) / manifest if workspace else Path(manifest)
 
 
+def load_manifest(path):
+    """Parse the fork manifest with the repository's own stdlib-only loader.
+
+    PyYAML is not available where this runs first: the prepare job checks its CI
+    run before it provisions the backend environment, on purpose, and that step
+    only has the runner's system Python. `.github/scripts/run_checks.py` already
+    owns a dependency-free parser for this exact file, so reuse it rather than
+    adding a second reader or a dependency.
+    """
+    scripts = Path(os.environ.get('GITHUB_WORKSPACE') or Path.cwd()) / '.github' / 'scripts'
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    from run_checks import load_manifest as load
+
+    return load(path)
+
+
 def expected_ci_checks(manifest=ATTESTATION_MANIFEST):
     """Every check the `ci` lane declares in the manifest at the delivered source.
 
@@ -85,23 +101,33 @@ def expected_ci_checks(manifest=ATTESTATION_MANIFEST):
     path = manifest_path(manifest)
     if not path.is_file():
         raise ValueError(f'the fork manifest is unavailable to the CI admission: {path}')
-    document = yaml.safe_load(path.read_text(encoding='utf-8')) or {}
-    checks = document.get('checks')
-    if not isinstance(checks, list):
+    checks = load_manifest(path).checks
+    if not checks:
         raise ValueError('the fork manifest declares no checks')
-    return {str(entry['id']) for entry in checks if 'ci' in (entry.get('lanes') or [])}
+    return {str(check.id) for check in checks if 'ci' in check.lanes}
 
 
-def download_attestations(run_id, attempt, sha, api=github):
-    """Fetch the manifest attestations the CI run published for this source."""
-    artifacts = api(f'actions/runs/{int(run_id)}/attempts/{int(attempt)}/artifacts?per_page=100')['artifacts']
-    selected = [
+def list_attestations(run_id, sha, api=github):
+    """The unexpired manifest attestations this run published for this source.
+
+    `actions/runs/{id}/artifacts` is the only listing endpoint: the
+    `/attempts/{n}/artifacts` form returns 404, which is how the first real run of
+    this admission path failed. The attempt is still bound by the payload, which
+    carries the run id and attempt and is checked against the selected attempt.
+    """
+    artifacts = api(f'actions/runs/{int(run_id)}/artifacts?per_page=100')['artifacts']
+    return [
         item
         for item in artifacts
         if item.get('name', '').startswith(ATTESTATION_PREFIX)
         and item['name'].endswith(f'-{sha}')
         and not item.get('expired')
     ]
+
+
+def download_attestations(run_id, attempt, sha, api=github):
+    """Fetch the manifest attestations the CI run published for this source."""
+    selected = list_attestations(run_id, sha, api)
     if not selected:
         raise ValueError('the CI run published no manifest attestation for this source')
     payloads = []
