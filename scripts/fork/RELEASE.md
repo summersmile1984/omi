@@ -363,22 +363,23 @@ of any release lane: it runs `scripts/fork/reset_cloudflare_stage.py` inside the
 stage's own `cloudflare-<stage>` environment, under the same per-stage
 concurrency group as a release, prints the full plan, and requires the exact
 `reset:<brand>:<stage>` confirmation token. It detaches the stage's Workers from
-every queue they consume, deletes them, reattaches the stage's custom domains to
-the candidate's own service names, and drops every trigger, view, index and table
-in each D1 authority (never `sqlite_*` or `_cf_KV`) in dependency order, then
-re-reads each authority to prove it is empty. The next release is then an
-ordinary first release with no `continue_from`.
+every queue they consume, deletes them, restores the stage's public hostnames,
+and drops every trigger, view, index and table in each D1 authority (never
+`sqlite_*` or `_cf_KV`) in dependency order, then re-reads each authority to prove
+it is empty. The next release is then an ordinary first release with no
+`continue_from`.
 
-Deleting a Worker also deletes the custom domains that published it, and those
-records are the stage's DNS records: `qualifyPublicIngress` fails closed on a
+Deleting a Worker also deletes the custom domain that published it, and that
+domain held the stage's DNS record: `qualifyPublicIngress` fails closed on a
 hostname the API cannot resolve ("the API rejects an unregistered host even with
-`skip_response=true`"). Reattaching the domain to the name the candidate will
-publish is what puts the record back, and it is the state
-`WranglerReleaseAdapter.preconditions` already accepts -- it rejects a domain
-whose `service` differs from the Worker being published, not one that is waiting
-for it. Do not create plain DNS records instead: a hostname carrying an
-externally-managed record is refused by the release's own custom-domain attach
-("Hostname ... already has externally managed DNS records ... [code: 100117]").
+`skip_response=true`"). The record cannot be put back through the Workers
+custom-domain API, because attaching one needs the Worker that will serve it
+("This Worker does not exist on your account"), so the reset creates Cloudflare's
+documented originless placeholder instead -- a proxied `A 192.0.2.0`. The release
+then takes the hostname over: the pinned Wrangler's `publishCustomDomains` sets
+`override_existing_dns_record` whenever stdout is not a TTY, which is every CI
+run, so an existing record is replaced rather than refused. Hostnames that
+already have a record are left exactly as they are.
 
 It uses the Cloudflare REST API directly, the way `release-wrangler.mjs` does.
 `wrangler delete` first lists the account's KV namespaces, so a token scoped for

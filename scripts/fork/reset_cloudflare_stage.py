@@ -55,6 +55,14 @@ OBJECT_KEYWORD = {'trigger': 'TRIGGER', 'view': 'VIEW', 'index': 'INDEX', 'table
 WORKER_NOT_FOUND = 10007
 PASSES = 4
 
+# Cloudflare's documented placeholder for a proxied, originless hostname
+# (developers.cloudflare.com/workers/configuration/routing/custom-domains/).
+# The release replaces it with its own Worker record: the pinned Wrangler's
+# `publishCustomDomains` sets `override_existing_dns_record` whenever stdout is
+# not a TTY, which is every CI run, so a hostname that already carries a record
+# is adopted rather than refused.
+PLACEHOLDER_ADDRESS = '192.0.2.0'
+
 
 class Failure(Exception):
     """A remote call failed in a way the operator has to see."""
@@ -164,33 +172,34 @@ def zone_identifier(api: Api, zone_name: str) -> str:
     return matches[0]['id']
 
 
-def attached_domains(api: Api) -> list[dict]:
-    result = api.call('GET', '/workers/domains')
+def zone_records(api: Api, zone_id: str, hostname: str) -> list[dict]:
+    result = api.call('GET', f'/zones/{zone_id}/dns_records?name={hostname}', absolute=True)
     return [row for row in result or [] if isinstance(row, dict)]
 
 
-def attach_domains(api: Api, zone_id: str, pairs: list[tuple[str, str]]) -> list[str]:
-    """(Re)attach the stage's custom domains, which is what creates its DNS records.
+def ensure_record(api: Api, zone_id: str, hostname: str) -> str:
+    """Give the hostname the DNS record the ingress precondition requires.
 
-    Deleting a Worker also deletes the custom domains that published it, and
-    `qualifyPublicIngress` refuses a hostname with no DNS record ("the API
-    rejects an unregistered host even with skip_response=true"). Attaching the
-    domain to the candidate's own service name is exactly the state
-    `WranglerReleaseAdapter.preconditions` accepts -- it rejects only a domain
-    whose `service` differs from the Worker being published -- so the first
-    release finds its hostname already routed to itself.
+    `qualifyPublicIngress` rejects a hostname the Request Trace API cannot
+    resolve, and deleting a Worker took the custom domain -- and therefore the
+    record -- with it. A record cannot be created through the Workers custom
+    domain API either: attaching one needs the Worker that will serve it
+    ("This Worker does not exist on your account"). So the reset restores the
+    documented originless placeholder, which the release's own custom-domain
+    attach then overrides.
     """
-    attached = []
-    for hostname, service in pairs:
-        api.call('PUT', '/workers/domains', {'hostname': hostname, 'service': service, 'zone_id': zone_id})
-        attached.append(f'{hostname} -> {service}')
-    return attached
+    existing = zone_records(api, zone_id, hostname)
+    if existing:
+        kinds = '/'.join(sorted({str(row.get('type') or '?') for row in existing}))
+        return f'{hostname} already has a {kinds} record'
+    api.call('POST', f'/zones/{zone_id}/dns_records',
+             {'type': 'A', 'name': hostname, 'content': PLACEHOLDER_ADDRESS, 'proxied': True, 'ttl': 1},
+             absolute=True)
+    return f'{hostname} -> proxied A {PLACEHOLDER_ADDRESS}'
 
 
-def unowned_domains(api: Api, pairs: list[tuple[str, str]]) -> list[str]:
-    observed = {row.get('hostname'): row.get('service') for row in attached_domains(api)}
-    return [f'{hostname} is {observed.get(hostname)!r}, expected {service!r}'
-            for hostname, service in pairs if observed.get(hostname) != service]
+def unresolvable(api: Api, zone_id: str, hostnames: list[str]) -> list[str]:
+    return [hostname for hostname in hostnames if not zone_records(api, zone_id, hostname)]
 
 
 def objects_sql() -> str:
@@ -295,31 +304,30 @@ def main() -> int:
     parser.add_argument('--account', required=True, help='Cloudflare account id that owns the stage')
     parser.add_argument('--worker', action='append', default=[], required=True, help='Worker name to delete; repeatable')
     parser.add_argument('--d1', action='append', default=[], required=True, metavar='NAME=ID', help='D1 authority and id; repeatable')
-    parser.add_argument('--domain', action='append', default=[], required=True, metavar='HOSTNAME=SERVICE',
-                        help="custom domain to (re)attach after the Worker delete; repeatable")
-    parser.add_argument('--zone', required=True, help='zone that owns every --domain hostname')
+    parser.add_argument('--hostname', action='append', default=[], required=True,
+                        help='public hostname whose DNS record the release needs; repeatable')
+    parser.add_argument('--zone', required=True, help='zone that owns every --hostname')
     parser.add_argument('--confirm', default='', help='exact token required with --apply')
     parser.add_argument('--apply', action='store_true', help='perform the reset (default prints the plan)')
     args = parser.parse_args()
 
     try:
         databases = parse_pairs(args.d1, '--d1')
-        domains = parse_pairs(args.domain, '--domain')
     except Failure as error:
         print(f'ERROR: {error}', file=sys.stderr)
         return 2
-    for hostname, _ in domains:
+    for hostname in args.hostname:
         if not hostname.endswith(f'.{args.zone}') and hostname != args.zone:
-            print(f'ERROR: --domain {hostname} is outside --zone {args.zone}', file=sys.stderr)
+            print(f'ERROR: --hostname {hostname} is outside --zone {args.zone}', file=sys.stderr)
             return 2
 
     print(f'Cloudflare stage reset plan: brand={args.brand} stage={args.stage} account={args.account}')
     print(f'  delete {len(args.worker)} Worker(s) (and detach them from every queue):')
     for name in args.worker:
         print(f'    - {name}')
-    print(f'  reattach {len(domains)} custom domain(s) in {args.zone} (this is what recreates the stage DNS records):')
-    for hostname, service in domains:
-        print(f'    - {hostname} -> {service}')
+    print(f'  ensure {len(args.hostname)} hostname(s) in {args.zone} resolve (the release replaces the placeholder):')
+    for hostname in args.hostname:
+        print(f'    - {hostname}')
     print(f'  empty {len(databases)} D1 authorit(ies) (drop every trigger, view, index and table):')
     for name, identifier in databases:
         print(f'    - {name} ({identifier})')
@@ -352,16 +360,13 @@ def main() -> int:
 
     try:
         zone = zone_identifier(api, args.zone)
-        observed = {row.get('hostname'): row.get('service') for row in attached_domains(api)}
-        for hostname, service in domains:
-            print(f'observed domain {hostname} -> {observed.get(hostname) or "absent"}')
-        for entry in attach_domains(api, zone, domains):
-            print(f'attached custom domain {entry}')
-        for problem in unowned_domains(api, domains):
-            failures.append(f'domain: {problem}')
+        for entry in (ensure_record(api, zone, hostname) for hostname in args.hostname):
+            print(f'dns {entry}')
+        for hostname in unresolvable(api, zone, args.hostname):
+            failures.append(f'dns: {hostname} still has no record')
     except Failure as error:
-        failures.append(f'domains: {error}')
-        print(f'FAILED to reattach the stage domains: {error}', file=sys.stderr)
+        failures.append(f'dns: {error}')
+        print(f'FAILED to restore the stage DNS records: {error}', file=sys.stderr)
 
     for name, identifier in databases:
         try:
@@ -378,8 +383,8 @@ def main() -> int:
         for failure in failures:
             print(f'  {failure}', file=sys.stderr)
         return 1
-    print('\nReset complete: the stage has no Workers, its domains are routed to the candidate\'s own')
-    print('service names, and its D1 authorities are empty.')
+    print('\nReset complete: the stage has no Workers, every public hostname has a DNS record the')
+    print('next release will take ownership of, and its D1 authorities are empty.')
     return 0
 
 
