@@ -71,6 +71,13 @@ packages frozen Cloudflare candidates plus Linux Server images from one commit.
 See [delivery preparation and remaining promotion work](RELEASE.md) for inputs,
 artifact formats, local verification and the outstanding production owners.
 
+The three lanes are the three events, and each gets its own concurrency group
+(`fork-checks-<ref>-<event_name>`). A manual full run and the post-merge push run
+both resolve to `refs/heads/main`; a shared group let the release lane cancel the
+merge commit's own record, so a run can now only supersede a run of its own lane.
+The workflow declares no `workflow_call` trigger: nothing calls it, and release
+preparation validates the CI run through the API instead.
+
 PRs compare against their fetched target branch. Existing-branch pushes use the
 event's `before` commit. First pushes and manual feature-branch runs compare the
 whole branch with `origin/main`; on `main` itself, manual runs inspect the current
@@ -87,10 +94,19 @@ incorporated in that head. Later upstream changes cannot create false fork edits
 or hide a forbidden fork edit. The CI checkout and upstream fetch retain history
 so this ancestor can be resolved. A history without a shared ancestor fails.
 
+The invariant is a state, not a diff, so the manifest runs the guard in
+`--aggregate` mode: the files it examines are the complete divergence from that
+ancestor, not the event's commit range. A diff-scoped base would inspect only the
+commits inside its range, so a violation that landed in an earlier commit would
+stay invisible to every later run. `--aggregate` needs `upstream/main` fetched
+locally; when the ref is unavailable the guard exits 2 and prints the fetch
+command, because a run that cannot apply the policy must not report success.
+
 The existing allowlist budgets and forbidden upstream paths still apply. CI runs
 this manifest check before provisioning expensive dependencies. Its tests cover
-both an upstream tip advancing after a clean sync and upstream independently
-adopting a still-unmerged fork edit.
+an upstream tip advancing after a clean sync, upstream independently adopting a
+still-unmerged fork edit, a violation committed before the event base, and a
+missing upstream ref.
 
 Weekly synchronization is separately owned by `upstream_sync_plan.py` and
 `fork-upstream-sync.yml`; it must produce a regular merge, never squash or reuse

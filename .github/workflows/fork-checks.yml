@@ -3,16 +3,24 @@ name: Fork Checks
 # Fork-owned CI for summersmile1984/omi. Trusted branch pushes and manual runs
 # use Mac Studio; pull requests use disposable GitHub-hosted runners.
 # Upstream workflow files remain unchanged and keep their own repository settings.
+#
+# Three lanes share this file; the lane is the event, and it decides both the
+# selection scope and whether the run can authorize a release:
+#   pull_request       hosted runners, diff against the target branch, no release
+#   push               Mac Studio,    diff against the event's `before`, no release
+#   workflow_dispatch  Mac Studio,    the complete manifest, the release lane
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main, "codex/**", "sync/**"]
   workflow_dispatch:
-  workflow_call:
 
+# Keyed by lane as well as ref: a manual full run and the post-merge push run
+# both resolve to refs/heads/main, and a shared group let the release lane cancel
+# the merge commit's own record. Same-lane runs still supersede each other.
 concurrency:
-  group: fork-checks-${{ github.ref }}
+  group: fork-checks-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:

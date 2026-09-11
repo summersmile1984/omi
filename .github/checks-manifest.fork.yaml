@@ -95,10 +95,10 @@ checks:
     reason: "Executes the profile/session/realtime boundary missing from main at the 2026-09-04 audit: fork callers retained Firebase credentials and direct Gemini controls despite their selected capability policy."
 
   - id: fork-upstream-touch
-    command: ["python3", "scripts/fork/check-upstream-touch.py", "--base", "{base}"]
+    command: ["python3", "scripts/fork/check-upstream-touch.py", "--aggregate"]
     triggers: ["all"]
     lanes: ["local", "ci"]
-    reason: "every upstream file this fork edits is a future merge conflict; the default is zero and exceptions are budgeted in dev/unified-main/upstream-touch-allowlist.yaml"
+    reason: "Every upstream file this fork edits is a future merge conflict, and the invariant is a state, not a diff: --aggregate audits the whole divergence against merge-base(HEAD, upstream/main), so a violation that landed in an earlier commit cannot hide. Requires upstream/main to be fetched; a missing ref fails (exit 2) instead of skipping. Exceptions are budgeted in dev/unified-main/upstream-touch-allowlist.yaml."
 
   - id: fork-upstream-touch-tests
     command: ["python3", "scripts/fork/test_check_upstream_touch.py"]

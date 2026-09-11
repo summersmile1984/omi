@@ -19,7 +19,7 @@ preflight-fork:
 	@scripts/fork/preflight --base $(BASE)
 
 upstream-touch:
-	@python3 scripts/fork/check-upstream-touch.py --base $(BASE)
+	@python3 scripts/fork/check-upstream-touch.py --aggregate
 
 sync-probe:
 	@git fetch upstream --prune -q || true

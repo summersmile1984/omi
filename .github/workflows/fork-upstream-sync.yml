@@ -16,6 +16,9 @@ permissions:
 
 jobs:
   open-sync-pr:
+    # Every fork workflow is repository-guarded: this one pushes branches and
+    # opens pull requests, so a downstream fork's schedule must not run it.
+    if: github.repository == 'summersmile1984/omi'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -95,7 +98,7 @@ jobs:
         run: |
           python3 scripts/brand/apply.py --brand omi-upstream --check-clean
           python3 scripts/brand/check.py --brand omi-upstream
-          python3 scripts/fork/check-upstream-touch.py --base origin/main --head HEAD
+          python3 scripts/fork/check-upstream-touch.py --aggregate --head HEAD
           git diff --check origin/main...HEAD
 
       - name: Push branch and open pull request
@@ -117,10 +120,12 @@ jobs:
 
           - \`scripts/brand/apply.py --brand omi-upstream --check-clean\`
           - \`scripts/brand/check.py --brand omi-upstream\`
-          - \`scripts/fork/check-upstream-touch.py --base origin/main --head HEAD\`
+          - \`scripts/fork/check-upstream-touch.py --aggregate --head HEAD\` (complete divergence audit, not the merge diff)
           - \`git diff --check origin/main...HEAD\`
 
-          The Fork Checks workflow runs the full diff-selected contract suite before review.
+          Merge disposal and the fork boundary are already checked above. Fork Checks
+          then runs the complete manifest on this branch (dispatched below) and the
+          diff-scoped suite on this pull request.
           EOF
           git push -u origin "$BRANCH"
           gh workflow run fork-checks.yml --ref "$BRANCH"
