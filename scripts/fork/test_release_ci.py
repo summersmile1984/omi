@@ -23,6 +23,7 @@ from release_ci import (
     RELEASE_JOBS,
     REPOSITORY,
     expected_ci_checks,
+    list_attestations,
     manifest_path,
     resolve_delivery,
     sha256_file,
@@ -35,6 +36,16 @@ from workflow_lint import resolve_constant_runners
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+
+def load_module_release_ci():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location('release_ci', Path(__file__).resolve().parent / 'release_ci.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class WorkflowRunnerLabelsTests(unittest.TestCase):
@@ -781,6 +792,29 @@ class ReleaseAuthorityTests(unittest.TestCase):
                     directory, self.sha, 'beta', 'self_hosted', self.api,
                     self.reader(self.attestation_payloads()),
                 )
+
+
+    def test_attestations_are_listed_from_the_run_not_an_attempt(self):
+        # `/attempts/{n}/artifacts` does not exist and returns 404; the first real
+        # run of this admission path failed there. The per-attempt binding comes
+        # from the payload, not from the listing URL.
+        module = load_module_release_ci()
+        requested = []
+
+        def api(path):
+            requested.append(path)
+            return {
+                'artifacts': [
+                    {'name': f'fork-ci-attestation-linux-{self.sha}', 'expired': False},
+                    {'name': f'fork-ci-attestation-macos-{self.sha}', 'expired': True},
+                    {'name': f'fork-ci-attestation-linux-{"b" * 40}', 'expired': False},
+                    {'name': f'delivery-{self.sha}-eddy-beta', 'expired': False},
+                ]
+            }
+
+        selected = module.list_attestations(7, self.sha, api)
+        self.assertEqual(requested, ['actions/runs/7/artifacts?per_page=100'])
+        self.assertEqual([item['name'] for item in selected], [f'fork-ci-attestation-linux-{self.sha}'])
 
 
 if __name__ == '__main__':
