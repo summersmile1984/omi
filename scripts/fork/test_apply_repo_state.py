@@ -48,7 +48,11 @@ def policy() -> dict:
 
 
 def environment_state(reviewers: int = 0) -> dict:
-    return {'name': 'cloudflare-beta', 'reviewers': [{'type': 'User', 'id': 1}] * reviewers}
+    """The real response shape: reviewers live inside protection_rules."""
+    rules = [{'type': 'branch_policy'}]
+    if reviewers:
+        rules.append({'type': 'required_reviewers', 'reviewers': [{'type': 'User', 'id': 1}] * reviewers})
+    return {'name': 'cloudflare-beta', 'protection_rules': rules}
 
 
 class RulesetPayloadTests(unittest.TestCase):
@@ -206,6 +210,19 @@ class VerifyStateTests(unittest.TestCase):
         module, ruleset = self.clean()
         errors = module.verify_state(policy(), ruleset, {}, {})
         self.assertIn("environment 'cloudflare-beta' is missing from the repository", errors)
+
+    def test_reviewers_are_read_from_the_protection_rules(self):
+        # The environment response has no top-level `reviewers` field; reading
+        # one reports zero for an environment that has them, which is how the
+        # first real `--apply` looked like it had failed.
+        module = load_module()
+        self.assertEqual(module.required_reviewers({'protection_rules': [{'type': 'branch_policy'}]}), [])
+        reviewers = module.required_reviewers(
+            {'protection_rules': [{'type': 'required_reviewers', 'reviewers': [{'id': 7}]}]}
+        )
+        self.assertEqual(reviewers, [{'id': 7}])
+        # A top-level field that GitHub does not send must not be believed.
+        self.assertEqual(module.required_reviewers({'reviewers': [{'id': 7}]}), [])
 
 
 class ArmableTests(unittest.TestCase):

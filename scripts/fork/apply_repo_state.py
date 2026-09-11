@@ -138,6 +138,20 @@ def live_environment_branches(repository: str, name: str) -> list[str]:
     return sorted(entry.get('name') for entry in listing.get('branch_policies', []) if entry.get('name'))
 
 
+def required_reviewers(environment: dict) -> list[dict]:
+    """Read required reviewers out of an environment's protection rules.
+
+    The environment response has no top-level `reviewers` field; the readers live
+    in a `required_reviewers` entry of `protection_rules`, next to the
+    `branch_policy` entry. Reading the wrong place reports zero reviewers for an
+    environment that has them, which is what the first `--apply` did.
+    """
+    for rule in environment.get('protection_rules') or []:
+        if rule.get('type') == 'required_reviewers':
+            return list(rule.get('reviewers') or [])
+    return []
+
+
 def verify_state(
     policy: dict,
     ruleset: dict | None,
@@ -179,7 +193,7 @@ def verify_state(
         allowed = branches.get(name, [])
         if allowed != sorted(entry['branches']):
             errors.append(f"environment {name!r} allows {allowed}, policy declares {sorted(entry['branches'])}")
-        reviewers = live.get('reviewers') or []
+        reviewers = required_reviewers(live)
         if bool(reviewers) != bool(entry['reviewers']):
             errors.append(
                 f"environment {name!r} has {len(reviewers)} required reviewer(s), "
