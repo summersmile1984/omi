@@ -316,7 +316,11 @@ class UpstreamTouchGuardTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 2)
         self.assertIn("exact paths", proc.stderr)
 
-    def test_missing_upstream_ref_skips_instead_of_passing_silently(self):
+    def test_missing_upstream_ref_fails_instead_of_skipping_silently(self):
+        # Without the upstream ref there is no definition of "upstream file", so
+        # the guard has nothing to evaluate. That is exit 2 ("could not
+        # evaluate"), never 0: a run that cannot apply the policy must not read
+        # as if it had applied it.
         h = self.harness()
         h.commit("backend/service.py", "VALUE = 2\n")
         proc = subprocess.run(
@@ -338,10 +342,34 @@ class UpstreamTouchGuardTests(unittest.TestCase):
             text=True,
         )
         payload = json.loads(proc.stdout)
-        self.assertEqual(proc.returncode, 0)
-        # ok is null, not true: an unevaluated check must not read as a pass.
-        self.assertIsNone(payload["ok"])
-        self.assertIn("git fetch upstream", payload["skipped"])
+        self.assertEqual(proc.returncode, 2)
+        # ok is False, not null and not absent: the report says the policy was
+        # not applied, and the message says how to make it applicable.
+        self.assertIs(payload["ok"], False)
+        self.assertIn("git fetch upstream", payload["error"])
+
+    def test_aggregate_finds_a_violation_committed_before_the_event_base(self):
+        # The policy is a state, not a diff: a violation that landed in an
+        # earlier commit is still present in the tree. A diff-scoped base cannot
+        # see it, which is exactly how a fork edit could survive every later run.
+        h = self.harness()
+        h.commit("backend/service.py", "VALUE = 2\n", "modify an upstream file")
+        git(h.root, "branch", "-f", "base", "HEAD")
+        h.commit("deploy/notes.md", "fork-owned\n", "unrelated fork work")
+
+        rc, out = h.run()
+        self.assertEqual(rc, 0)
+        self.assertEqual(out["upstream_files_changed"], 0)
+
+        rc, out = h.run("--aggregate")
+        self.assertEqual(rc, 1)
+        self.assertEqual(
+            [(v["path"], v["kind"]) for v in out["violations"]],
+            [("backend/service.py", "not-allowlisted")],
+        )
+        # The audit base is the incorporated upstream revision, resolved by the
+        # guard itself rather than supplied by the event.
+        self.assertEqual(out["base"], git(h.root, "rev-parse", "refs/remotes/upstream/main").strip())
 
 
 if __name__ == "__main__":

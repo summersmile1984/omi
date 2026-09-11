@@ -125,7 +125,7 @@ shim 分支上那 164 个测试改动的等价断言，全部落到 fork 模式�
 
 ## 6. 守卫与度量
 
-- `scripts/fork/check-upstream-touch.py --base upstream/main --allowlist dev/unified-main/upstream-touch-allowlist.yaml`：对 PR diff 中存在于 `upstream/main` 树的每个文件——不在白名单 → 失败；在白名单但超行数 → 失败；命中 T2 类别 → 失败，并输出对应的 T0 做法提示。进 `checks-manifest.fork.yaml`（`fork-upstream-touch`）。
+- `scripts/fork/check-upstream-touch.py --aggregate --allowlist dev/unified-main/upstream-touch-allowlist.yaml`：对**完整分歧**（`merge-base(HEAD, upstream/main)` 起）中存在于 `upstream/main` 树的每个文件——不在白名单 → 失败；在白名单但超行数 → 失败；命中 T2 类别 → 失败，并输出对应的 T0 做法提示。`upstream/main` 缺失时 exit 2（无法评估不等于通过）。进 `checks-manifest.fork.yaml`（`fork-upstream-touch`，`triggers: all`）。
 - 每次上游同步 PR 自动评论"被 fork 修改的上游文件总数"（`comm -12 <(git log --no-merges --name-only --format= upstream/main..main | sort -u) <(git ls-tree -r --name-only upstream/main | sort)`），目标 = 白名单条目数（≤ 12），趋势只降不升。
 - 上游 PR 队列记录在 `dev/unified-main/upstream-prs.md`：每接受一个，删一条白名单。
 

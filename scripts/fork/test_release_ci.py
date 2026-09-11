@@ -16,7 +16,19 @@ import unittest
 
 import yaml
 
-from release_ci import CI_PATH, PREPARE_PATH, RELEASE_JOBS, REPOSITORY, resolve_delivery, verify_ci, verify_delivery
+from release_ci import (
+    ATTESTATION_MANIFEST,
+    CI_PATH,
+    PREPARE_PATH,
+    RELEASE_JOBS,
+    REPOSITORY,
+    expected_ci_checks,
+    manifest_path,
+    resolve_delivery,
+    sha256_file,
+    verify_ci,
+    verify_delivery,
+)
 from release_archive import pack_candidate, unpack_candidate
 from download_delivery import download, FILES as DELIVERY_FILES, ATTEMPTS
 from workflow_lint import resolve_constant_runners
@@ -516,7 +528,13 @@ class ReusableDeliveryWorkflowTests(unittest.TestCase):
 
     def test_shared_execution_verifies_before_selecting_private_qualification_or_persistent_deploy(self):
         for target in ('cloudflare', 'server'):
-            step = self.workflow(target)['jobs']['deploy']['steps'][-1]
+            # Select by name, not by position: the deploy job now ends with the
+            # failure-evidence steps, which do not run on a successful release.
+            step = next(
+                entry
+                for entry in self.workflow(target)['jobs']['deploy']['steps']
+                if entry.get('name', '').startswith('Verify and execute')
+            )
             for qualification in (True, False):
                 for failure in (True, False):
                     env = {
@@ -566,6 +584,31 @@ class ReleaseAuthorityTests(unittest.TestCase):
         ]
         self.artifact = {'name': f'delivery-{self.sha}-eddy-beta', 'expired': False}
 
+    def attestation_payloads(self, *, run_id=1, attempt=1, sha=None, check_ids=None, manifest_sha256=None):
+        """Two jobs' worth of manifest attestations, split like the real lanes."""
+        sha = sha or self.sha
+        identifiers = sorted(expected_ci_checks(ATTESTATION_MANIFEST) if check_ids is None else check_ids)
+        half = (len(identifiers) + 1) // 2
+        groups = [group for group in (identifiers[:half], identifiers[half:]) if group]
+        if not groups:
+            groups = [[]]
+        return [
+            {
+                'schema_version': 1,
+                'lane': 'ci',
+                'platform': platform,
+                'check_ids': group,
+                'manifest_sha256': manifest_sha256 or sha256_file(manifest_path(ATTESTATION_MANIFEST)),
+                'run_id': run_id,
+                'run_attempt': attempt,
+                'sha': sha,
+            }
+            for platform, group in zip(('linux', 'macos'), groups)
+        ]
+
+    def reader(self, payloads):
+        return lambda run_id, attempt, sha, api: payloads
+
     def api(self, path):
         if '/jobs?' in path:
             return {'jobs': self.jobs}
@@ -576,7 +619,9 @@ class ReleaseAuthorityTests(unittest.TestCase):
         return self.run
 
     def test_full_same_source_ci_passes(self):
-        self.assertEqual(verify_ci(1, self.sha, self.api)['commit'], self.sha)
+        self.assertEqual(
+            verify_ci(1, self.sha, self.api, self.reader(self.attestation_payloads()))['commit'], self.sha
+        )
 
     def test_partial_foreign_failed_or_stale_run_refused(self):
         for field, value in [
@@ -589,11 +634,46 @@ class ReleaseAuthorityTests(unittest.TestCase):
                 original = self.run[field]
                 self.run[field] = value
                 with self.assertRaises(ValueError):
-                    verify_ci(1, self.sha, self.api)
+                    verify_ci(1, self.sha, self.api, self.reader(self.attestation_payloads()))
                 self.run[field] = original
         self.jobs[1]['conclusion'] = 'skipped'
         with self.assertRaises(ValueError):
-            verify_ci(1, self.sha, self.api)
+            verify_ci(1, self.sha, self.api, self.reader(self.attestation_payloads()))
+
+    def test_a_run_that_did_not_execute_the_whole_manifest_is_refused(self):
+        # Job names alone cannot prove coverage: the same two jobs also serve the
+        # diff-scoped push and pull-request lanes.
+        complete = sorted(expected_ci_checks(ATTESTATION_MANIFEST))
+        cases = {
+            'a check is missing': (complete[:-1], None),
+            'no attestation was published': ([], None),
+            'the manifest digest differs': (complete, 'f' * 64),
+        }
+        for label, (identifiers, digest) in cases.items():
+            with self.subTest(label=label):
+                payloads = self.attestation_payloads(check_ids=identifiers, manifest_sha256=digest)
+                with self.assertRaises(ValueError):
+                    verify_ci(1, self.sha, self.api, self.reader(payloads))
+
+    def test_an_attestation_from_another_run_or_lane_is_refused(self):
+        for label, overrides in (
+            ('another attempt', {'attempt': 2}),
+            ('another source', {'sha': 'c' * 40}),
+            ('another run', {'run_id': 99}),
+        ):
+            with self.subTest(label=label):
+                payloads = self.attestation_payloads(**overrides)
+                with self.assertRaises(ValueError):
+                    verify_ci(1, self.sha, self.api, self.reader(payloads))
+        payloads = self.attestation_payloads()
+        for payload in payloads:
+            payload['lane'] = 'push'
+        with self.assertRaises(ValueError):
+            verify_ci(1, self.sha, self.api, self.reader(payloads))
+        for payload in self.attestation_payloads():
+            payload['schema_version'] = 2
+        with self.assertRaises(ValueError):
+            verify_ci(1, self.sha, self.api, self.reader(self.attestation_payloads()[:1] + [{'schema_version': 2}]))
 
     def test_delivery_run_must_have_correct_stage_artifact(self):
         self.run['path'] = PREPARE_PATH
@@ -691,10 +771,16 @@ class ReleaseAuthorityTests(unittest.TestCase):
                 files={'server-images.tar': hashlib.sha256(archive.read_bytes()).hexdigest()},
             )
             (directory / 'delivery.json').write_text(json.dumps(receipt))
-            verify_delivery(directory, self.sha, 'beta', 'self_hosted', self.api)
+            verify_delivery(
+                directory, self.sha, 'beta', 'self_hosted', self.api,
+                self.reader(self.attestation_payloads()),
+            )
             archive.write_bytes(b'different images')
             with self.assertRaises(ValueError):
-                verify_delivery(directory, self.sha, 'beta', 'self_hosted', self.api)
+                verify_delivery(
+                    directory, self.sha, 'beta', 'self_hosted', self.api,
+                    self.reader(self.attestation_payloads()),
+                )
 
 
 if __name__ == '__main__':

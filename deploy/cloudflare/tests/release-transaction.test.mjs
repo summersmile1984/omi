@@ -136,6 +136,34 @@ describe("Cloudflare release transaction ownership", () => {
       expect(f.adapter.addPolicy).toHaveBeenCalledOnce();
     }
   );
+  it("records a redacted reason when readiness fails instead of discarding it", async () => {
+    const f = fixture();
+    const token = "cf-token-".repeat(6);
+    const previous = process.env.CLOUDFLARE_API_TOKEN;
+    process.env.CLOUDFLARE_API_TOKEN = token;
+    try {
+      f.adapter.readiness = vi.fn(async () => {
+        throw new Error(`readiness probe rejected the request (${token})`);
+      });
+      await expect(applyRelease(f)).rejects.toThrow("did not pass readiness");
+      expect(f.journal.state).toBe("recovery_required");
+      expect(f.journal.failure).toMatchObject({
+        target: "cloudflare",
+        stage: "beta",
+        error_name: "Error",
+      });
+      expect(f.journal.failure.reason).toContain(
+        "readiness probe rejected the request"
+      );
+      expect(f.journal.failure.reason).not.toContain(token);
+      expect(f.journal.failure.reason).toContain("***");
+      // The durable save is what the run's failure step reads back.
+      expect(f.saved.at(-1).failure).toEqual(f.journal.failure);
+    } finally {
+      if (previous === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
+      else process.env.CLOUDFLARE_API_TOKEN = previous;
+    }
+  });
   it("qualifies before writes, journals intent, applies SQL before dependencies, and confirms versions after health", async () => {
     const f = fixture();
     await applyRelease(f);

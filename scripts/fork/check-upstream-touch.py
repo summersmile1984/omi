@@ -15,7 +15,15 @@ Rationale and the per-platform techniques that replace an upstream edit:
 Usage:
     scripts/fork/check-upstream-touch.py [--base REF] [--head REF]
                                          [--upstream-ref REF] [--allowlist PATH]
-                                         [--json]
+                                         [--aggregate] [--json]
+
+`--base`/`--head` decide which files are *examined*, which is a property of the
+event, not of the policy: a diff-scoped base inspects only the commits in that
+range, so a violation that landed in an earlier commit stays invisible forever.
+`--aggregate` replaces the base with `merge-base(<head>, <upstream-ref>)` -- the
+upstream revision actually incorporated into this head -- so the audit covers
+every fork divergence in the tree. The invariant is a state, so the aggregate
+form is the one the CI check runs.
 
 Exit codes: 0 clean, 1 violations found, 2 could not evaluate.
 """
@@ -338,23 +346,42 @@ def main() -> int:
         help=f"upstream history whose shared ancestor defines the baseline (default: {DEFAULT_UPSTREAM_REF})",
     )
     parser.add_argument("--allowlist", default=str(DEFAULT_ALLOWLIST))
+    parser.add_argument(
+        "--aggregate",
+        action="store_true",
+        help="audit the whole fork divergence: use merge-base(<head>, <upstream-ref>) as the base",
+    )
     parser.add_argument("--json", action="store_true", help="emit machine-readable output")
     args = parser.parse_args()
 
     try:
         run_git(["rev-parse", "--verify", args.upstream_ref])
     except RuntimeError:
-        # Without the upstream ref there is no definition of "upstream file";
-        # skip rather than pass silently, so a missing remote cannot look clean.
+        # Without the upstream ref there is no definition of "upstream file", so
+        # this guard cannot evaluate. "Could not evaluate" is exit 2, per the
+        # module contract: a missing or unfetched remote must fail the lane.
+        # Exit 0 here would let every run of the zero-touch policy silently
+        # skip, which is the one outcome the policy exists to prevent.
         message = (
-            f"SKIP: {args.upstream_ref} is not available; cannot classify upstream files.\n"
-            "      Run: git remote add upstream https://github.com/BasedHardware/omi.git && git fetch upstream main"
+            f"ERROR: {args.upstream_ref} is not available; cannot classify upstream files.\n"
+            "       Run: git remote add upstream https://github.com/BasedHardware/omi.git && git fetch upstream main"
         )
-        print(json.dumps({"ok": None, "skipped": message}) if args.json else message)
-        return 0
+        if args.json:
+            print(json.dumps({"ok": False, "error": message}))
+        else:
+            print(message, file=sys.stderr)
+        return 2
+
+    base = args.base
+    if args.aggregate:
+        try:
+            base = run_git(["merge-base", args.head, args.upstream_ref]).strip()
+        except RuntimeError as error:
+            print(f"ERROR: cannot resolve the upstream merge base: {error}", file=sys.stderr)
+            return 2
 
     try:
-        result = evaluate(args.base, args.head, args.upstream_ref, Path(args.allowlist))
+        result = evaluate(base, args.head, args.upstream_ref, Path(args.allowlist))
     except RuntimeError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
@@ -364,6 +391,8 @@ def main() -> int:
             json.dumps(
                 {
                     "ok": not result.violations,
+                    "base": base,
+                    "head": args.head,
                     "upstream_files_changed": result.checked,
                     "allowed": result.allowed,
                     "violations": [v.__dict__ for v in result.violations],

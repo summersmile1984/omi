@@ -3,20 +3,31 @@ name: Fork Checks
 # Fork-owned CI for summersmile1984/omi. Trusted branch pushes and manual runs
 # use Mac Studio; pull requests use disposable GitHub-hosted runners.
 # Upstream workflow files remain unchanged and keep their own repository settings.
+#
+# Three lanes share this file; the lane is the event, and it decides both the
+# selection scope and whether the run can authorize a release:
+#   pull_request       hosted runners, diff against the target branch, no release
+#   push               Mac Studio,    diff against the event's `before`, no release
+#   workflow_dispatch  Mac Studio,    the complete manifest, the release lane
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main, "codex/**", "sync/**"]
   workflow_dispatch:
-  workflow_call:
 
+# Keyed by lane as well as ref: a manual full run and the post-merge push run
+# both resolve to refs/heads/main, and a shared group let the release lane cancel
+# the merge commit's own record. Same-lane runs still supersede each other.
 concurrency:
-  group: fork-checks-${{ github.ref }}
+  group: fork-checks-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
   contents: read
+  # `fork-repo-state` lists the repository's workflows and reads their
+  # enabled/disabled state; that needs the Actions API.
+  actions: read
 
 jobs:
   fork-gate:
@@ -26,6 +37,14 @@ jobs:
     timeout-minutes: 120
     env:
       FORK_FULL_CHECKS: ${{ github.event_name == 'workflow_dispatch' }}
+      # Only the complete lane writes one; it is uploaded below and read by the
+      # release admission as proof that this job ran the whole manifest.
+      FORK_CI_ATTESTATION: ${{ github.workspace }}/.fork-ci-attestation.json
+      # `fork-repo-state` lists the repository's workflows and reads their
+      # enabled/disabled state. `gh` needs a token in the environment; the job
+      # permissions above keep it read-only, and a fork pull request gets a
+      # read-only token from GitHub regardless.
+      GH_TOKEN: ${{ github.token }}
     outputs:
       base: ${{ steps.base.outputs.ref }}
       macos: ${{ steps.platforms.outputs.macos }}
@@ -211,6 +230,17 @@ jobs:
             echo "upstream commits not yet merged here, so read it as a trend."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Published only by the complete lane, and only when every check passed:
+      # a run whose checks failed must not leave evidence a release can read.
+      - name: Upload the manifest attestation
+        if: ${{ env.FORK_FULL_CHECKS == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-ci-attestation-linux-${{ github.sha }}
+          path: .fork-ci-attestation.json
+          if-no-files-found: error
+          retention-days: 30
+
   fork-macos:
     name: Fork macOS native contracts
     needs: fork-gate
@@ -219,6 +249,7 @@ jobs:
     timeout-minutes: 60
     env:
       FORK_FULL_CHECKS: ${{ github.event_name == 'workflow_dispatch' }}
+      FORK_CI_ATTESTATION: ${{ github.workspace }}/.fork-ci-attestation.json
       DEVELOPER_DIR: ${{ github.event_name == 'pull_request' && '/Applications/Xcode_26.6.app/Contents/Developer' || '/Applications/Xcode.app/Contents/Developer' }}
     steps:
       - uses: actions/checkout@v4
@@ -270,3 +301,12 @@ jobs:
         run: |
           python3 scripts/fork/run_checks.py \
             --lane ci --base "$DIFF_BASE" --platform macos --exclusive-platform
+
+      - name: Upload the manifest attestation
+        if: ${{ env.FORK_FULL_CHECKS == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-ci-attestation-macos-${{ github.sha }}
+          path: .fork-ci-attestation.json
+          if-no-files-found: error
+          retention-days: 30

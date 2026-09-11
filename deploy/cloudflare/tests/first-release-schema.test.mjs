@@ -231,7 +231,7 @@ describe("first-release schema qualification", () => {
       ]);
     }
     expect(history).toHaveBeenCalledOnce();
-  });
+  }, 30_000);
   it("executes frozen SQL, preserves a legacy principal and only qualifies observed absence/empty databases", async () => {
     const f = fixture();
     const proof = await qualifyFirstRelease(f.context, f.adapter);

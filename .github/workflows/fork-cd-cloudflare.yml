@@ -126,3 +126,30 @@ jobs:
             node scripts/fork/deploy-cloudflare.mjs --delivery "$RELEASE_DIRECTORY" \
               --journal-root "$RELEASE_JOURNAL_ROOT"
           fi
+
+      # A failed release must explain itself from the run page. The journals are
+      # retained on the host for recovery; this copies the ones that belong to
+      # this exact source into the run's evidence. `failure.reason` is written
+      # already redacted by the transaction owner, so no credential enters the
+      # summary or the artifact.
+      - name: Report the retained release journal
+        if: failure()
+        env:
+          RELEASE_STAGE: ${{ inputs.stage }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+          RELEASE_JOURNAL_ROOT: ${{ vars.RELEASE_JOURNAL_ROOT }}
+        run: |
+          python3 scripts/fork/release_failure_summary.py \
+            --target cloudflare --stage "$RELEASE_STAGE" --sha "$RELEASE_SHA" \
+            --journal-root "$RELEASE_JOURNAL_ROOT" \
+            --evidence-dir "$GITHUB_WORKSPACE/.fork-release-evidence" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the release failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflare-release-failure-${{ needs.resolve.outputs.sha }}
+          path: .fork-release-evidence
+          if-no-files-found: ignore
+          retention-days: 30

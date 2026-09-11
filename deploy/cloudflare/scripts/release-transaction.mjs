@@ -179,6 +179,51 @@ export async function observeReleaseCandidate(candidate, adapter, continuation) 
   return before;
 }
 
+// The journal is retained on the host and copied into the run's failure
+// evidence, so a recorded reason must not carry a credential. Redact by value
+// rather than by key: the referenced secret values, the API token and the whole
+// bundle (which also covers an unparseable bundle, redacted as one value).
+function redactableValues(candidate) {
+  const values = new Set();
+  const add = (value) => {
+    if (typeof value === "string" && value.length >= 8) values.add(value);
+  };
+  add(process.env.CLOUDFLARE_API_TOKEN);
+  add(process.env.RELEASE_SECRETS_JSON);
+  try {
+    for (const value of Object.values(
+      JSON.parse(process.env.RELEASE_SECRETS_JSON || "{}"),
+    ))
+      add(value);
+  } catch {
+    // An unparseable bundle cannot be decomposed; it is redacted whole above.
+  }
+  for (const refs of Object.values(candidate?.resource_plan?.secrets ?? {}))
+    for (const reference of Object.values(refs ?? {}))
+      add(process.env[reference]);
+  // Longest first: a value containing another must be replaced as a whole.
+  return [...values].sort((left, right) => right.length - left.length);
+}
+
+export function redactReason(reason, values) {
+  let text = String(reason ?? "");
+  for (const value of values) text = text.split(value).join("***");
+  return text.length > 2000 ? `${text.slice(0, 2000)}…` : text;
+}
+
+export function releaseFailure(candidate, error) {
+  return {
+    target: "cloudflare",
+    stage: candidate.stage,
+    at: stamp(),
+    error_name: error instanceof Error ? error.name : typeof error,
+    reason: redactReason(
+      error instanceof Error ? error.message : error,
+      redactableValues(candidate),
+    ),
+  };
+}
+
 export async function applyRelease({
   candidate,
   journal,
@@ -326,10 +371,22 @@ export async function applyRelease({
     journal.state = "completed";
     journal.release_ready = true;
     record(journal, persist);
-  } catch {
+  } catch (error) {
+    // Binding the error is the point: the previous `catch {}` discarded the one
+    // record of which contract failed, so every readiness failure needed manual
+    // archaeology on the host. The reason is redacted, then kept in the journal
+    // and echoed to the job log, and the original error stays attached as the
+    // cause for a stack trace.
     journal.state = "recovery_required";
+    journal.failure = releaseFailure(candidate, error);
     record(journal, persist);
-    throw new Error("release did not pass readiness; inspect recovery plan");
+    console.error(
+      `release failure evidence: ${JSON.stringify(journal.failure)}`,
+    );
+    throw new Error(
+      `release did not pass readiness: ${journal.failure.reason} (inspect recovery plan)`,
+      { cause: error },
+    );
   }
   return journal;
 }

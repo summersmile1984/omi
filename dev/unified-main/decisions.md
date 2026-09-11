@@ -12,6 +12,12 @@
 |---|---|---|
 | **D10** | 上游文件禁改清单（T2）成为 fork 纪律并由守卫强制 | [PR #3](https://github.com/summersmile1984/omi/pull/3) 已合并：`scripts/fork/check-upstream-touch.py` + `.github/checks-manifest.fork.yaml`，7 项测试，端到端验证三类违规均被拦下 |
 | **D11** | 上游文件零改动为默认（T0）；T1 白名单单点 ≤3 行、只减不增；`backend/**` 与上游测试/锁文件/生成文件/CI 为 0 条 | 同上。首次同步实测已把"在 `AGENTS.md` 加一行指针"这条 T1 作废（上游把该文件维护在预算天花板上，加一行即触发 `agents-md-lean` 失败） |
+| **D14** | 上游零改动是**状态**不变量，按 `merge-base(HEAD, upstream/main)` 完整审计；无法评估（缺 `upstream/main`）时 exit 2，不静默通过 | `fork-upstream-touch` 改为 `--aggregate`；`test_check_upstream_touch.py` 新增"违规早于事件 base 也必须失败"与"缺 ref = exit 2"两条回归，共 17 项通过 |
+| **D15** | 上游 workflow 的启用集合、`main` 的必选检查、部署环境的保护策略由 `config/repo-state.fork.json` 声明；CI 断言 workflow 状态，规则集与环境由 operator 用 `apply_repo_state.py --verify` 断言 | `fork-repo-state` + `fork-repo-state-tests` 进 fork 清单两 lane；`GITHUB_TOKEN` 无 `administration` 权限，因此不假装 CI 能验规则集 |
+| **D16** | 常红检查不得进入必选集；隔离条目必须带可解析的 tracking 指针 | `backend-unit-tests` 隔离，理由是 `origin/main` 的上游基线滞后（见 `05-ci-matrix.md` §7.2），下次同步自动消失；`fork-repo-state` 拒绝无 tracking 或仍参与必选的隔离条目 |
+| **D17** | 发布品牌是仓库属性，不是 dispatch 入参；所有部署路径读同一字面量并由守卫断言 | `fork-release-prepare.yml` 删除 `brand` 入参；`check_repo_state.py` 对两条 CD 并发组、prepare 的 artifact 名与 `release_ci.py` 做品牌一致性断言 |
+| **D18** | CD 失败必须留下可脱敏的根因，并出现在 job summary 与 artifact 里 | `release-transaction.mjs` 与 `deploy_server.py` 写 `journal.failure`；两条 CD workflow 的 `if: failure()` 步骤跑 `release_failure_summary.py`（5 + 20 项测试通过） |
+| **D19** | 三条 lane 各自一把并发锁（ref + event），手动全量不再取消 main push 的记录 | `fork-checks.yml` 并发组改为 `fork-checks-<ref>-<event_name>`；`fork-workflow-lint` 改为 glob `fork-*.yml` |
 
 这两条不必再讨论，除非你想放宽——放宽的代价是回到每周十几个冲突。
 

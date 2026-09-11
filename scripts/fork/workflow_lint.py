@@ -9,7 +9,9 @@ import sys
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOWS = ['fork-checks.yml', 'fork-release-prepare.yml', 'fork-cd-cloudflare.yml', 'fork-cd-server.yml']
+# Glob rather than enumerate: a hardcoded list silently exempted every workflow
+# added after it was written (fork-upstream-sync.yml was never linted).
+WORKFLOWS = '.github/workflows/fork-*.yml'
 CONSTANT_RUNNER = re.compile(r"\$\{\{ *fromJSON\('([^'\n]*)'\) *\}\}")
 
 
@@ -50,5 +52,10 @@ def check(path):
 
 
 if __name__ == '__main__':
-    paths = [Path(path) for path in sys.argv[1:]] or [ROOT / '.github/workflows' / name for name in WORKFLOWS]
+    paths = [Path(path) for path in sys.argv[1:]] or sorted(ROOT.glob(WORKFLOWS))
+    # An empty selection means the catalog silently stopped covering anything;
+    # report that as a failure rather than as a vacuous pass.
+    if not paths:
+        print(f'FAIL: no fork workflow matched {WORKFLOWS}', file=sys.stderr)
+        sys.exit(2)
     sys.exit(max(check(path) for path in paths))
