@@ -53,7 +53,7 @@ checks:
     reason: "The audit B1 native package replaces complete Swift app owners: leaf tests cannot prove those adapters compile into the real consumer. Execute the same staged debug build locally and on the existing fork CI macOS route; no additional auth policy or release pipeline is introduced."
 
   - id: fork-ci-diff-base
-    command: ["bash", "-c", "python3 scripts/fork/test_ci_diff_base.py && python3 scripts/fork/test_release_prepare.py && python3 scripts/fork/test_release_ci.py && python3 scripts/fork/test_deploy_server.py && python3 scripts/fork/test_hosted_core.py && python3 scripts/fork/test_model_services.py"]
+    command: ["bash", "-c", "python3 scripts/fork/test_ci_diff_base.py && python3 scripts/fork/test_release_prepare.py && python3 scripts/fork/test_release_ci.py && python3 scripts/fork/test_deploy_server.py && python3 scripts/fork/test_hosted_core.py && python3 scripts/fork/test_model_services.py && python3 scripts/fork/test_reset_cloudflare_stage.py"]
     triggers: [".github/workflows/fork-*.yml", ".github/actions/fork-release-tools/**", ".github/checks-manifest.fork.yaml", "scripts/fork/**", "deploy/self-host/**", "contracts/deployment/core.py", "contracts/deployment/readiness.json", "backend/fork/tests/**", "backend/tests/**"]
     lanes: ["local", "ci"]
     reason: "The advertised manual Fork Checks entry emitted an empty diff base because workflow_dispatch has no event.before; execute that exact shell in real Git fixtures for PR, push and manual events. This tests the workflow consumer rather than duplicating the shared manifest selector."

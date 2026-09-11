@@ -314,6 +314,22 @@ def github(path: str, repository: str) -> dict:
         raise Failure(f'gh api {path} returned non-JSON output ({error})')
 
 
+def published_workflow_files(repository: str) -> set[str] | None:
+    """Workflow files on the default branch today, or None when that is unknown.
+
+    Unknown stays strict on purpose: the caller must keep reporting a declared
+    workflow that is not registered, and only skip the ones it can positively see
+    are not on the default branch yet.
+    """
+    try:
+        listing = github('contents/.github/workflows', repository)
+    except Failure:
+        return None
+    if not isinstance(listing, list):
+        return None
+    return {item.get('name') for item in listing if isinstance(item, dict) and item.get('name')}
+
+
 def live_report(policy: dict, root: Path, repository: str) -> list[str]:
     errors: list[str] = []
     workflows = policy['workflows']
@@ -327,9 +343,17 @@ def live_report(policy: dict, root: Path, repository: str) -> list[str]:
     expected_registered = {
         entry['file'] for entry in workflows['keep'] + workflows['disable']
     }
+    # GitHub registers a workflow when its file reaches the default branch, so a
+    # file that this change adds is legitimately absent from the listing until it
+    # lands. Reading the default branch's own directory keeps the assertion for
+    # everything else -- a declared workflow that silently vanished -- instead of
+    # failing every pull request that adds one.
+    published = published_workflow_files(repository)
     for filename in sorted(set(registered) - expected_registered):
         errors.append(f'{filename}: registered on GitHub but not declared as keep or disable')
     for filename in sorted(expected_registered - set(registered)):
+        if published is not None and filename not in published:
+            continue
         errors.append(f'{filename}: declared as keep or disable but not registered on GitHub')
 
     for entry in workflows['keep']:

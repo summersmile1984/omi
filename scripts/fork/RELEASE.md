@@ -344,6 +344,41 @@ The continuation intent is part of the immutable `delivery.json`. Cloudflare
 CD consumes that qualified intent directly; operators cannot substitute a
 different journal in the CD dispatch inputs.
 
+### Resetting a stage stuck between the two contracts
+
+A stage can end up in a state neither contract accepts: an interrupted first
+release has published some Workers and run the migration authorities, and the
+next candidate changes one of those already-published Workers. Continuation is
+refused ("continuation must preserve every already published artifact") and a
+fresh first release is refused (Workers present, D1 authorities non-empty). The
+release owner is explicit that this is out of scope -- "this narrow operation does
+not implement arbitrary upgrade or rollback compatibility" -- and automatic
+rollback is refused too, because a first release has no previous version to
+restore and recovery may not delete unowned Worker, queue, domain or Durable
+Object state.
+
+The escape hatch is an operator reset. It is a pair of `reset_stage` /
+`reset_confirm` dispatch inputs on the Cloudflare CD workflow, and it is NOT part
+of any release lane: it runs `scripts/fork/reset_cloudflare_stage.py` inside the
+stage's own `cloudflare-<stage>` environment, under the same per-stage
+concurrency group as a release, prints the full plan, and requires the exact
+`reset:<brand>:<stage>` confirmation token. It deletes the stage's Workers and
+drops every table and view in each D1 authority (never `sqlite_*` or `_cf_KV`),
+then re-reads each authority to prove it is empty. The next release is then an
+ordinary first release with no `continue_from`.
+
+It lives in the CD workflow rather than one of its own for two enforced reasons:
+a new workflow binding a fork-classified deployment secret is an unclassified
+binding that the upstream secret-boundary check refuses, and the release
+admission requires this reusable workflow's job names to be exactly the release
+job set -- so the reset is steps gated by `if: ${{ inputs.reset_stage }}` inside
+the existing `deploy` job, never a job of its own.
+
+The reset deletes remote state and exists only because the two contracts do not
+meet. Delete the reset inputs, their steps and
+`scripts/fork/reset_cloudflare_stage.py` once the stage is released, and record
+the episode against the release owner that should have handled it.
+
 An update with changed retained Worker artifacts, arbitrary schema migration,
 or rollback must provide the separate prior-version/new-schema compatibility
 proof; these entry points fail closed until that proof exists. D1 migrations

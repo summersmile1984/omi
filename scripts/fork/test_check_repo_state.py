@@ -313,15 +313,71 @@ class LiveReportTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         return RepoStateHarness(Path(tmp.name))
 
-    def live(self, harness: RepoStateHarness, states: dict[str, str]) -> list[str]:
+    def live(self, harness: RepoStateHarness, states: dict[str, str], *, published=None) -> list[str]:
         module = load_module()
-        module.github = lambda path, repository: {
-            'workflows': [
-                {'path': f'.github/workflows/{name}', 'state': state}
-                for name, state in sorted(states.items())
-            ]
-        }
+        on_default_branch = list(states) if published is None else list(published)
+
+        def github(path, repository):
+            if path.startswith('contents/'):
+                return [{'name': name} for name in on_default_branch]
+            return {
+                'workflows': [
+                    {'path': f'.github/workflows/{name}', 'state': state}
+                    for name, state in sorted(states.items())
+                ]
+            }
+
+        module.github = github
         return module.live_report(harness.policy, harness.root, 'fixture/repo')
+
+    def test_a_workflow_this_change_adds_is_not_reported_as_missing(self):
+        # GitHub registers a workflow only once its file reaches the default
+        # branch, so a pull request that adds one would fail its own drift check
+        # without this distinction.
+        harness = self.harness()
+        policy = copy.deepcopy(harness.policy)
+        policy['workflows']['keep'].append(
+            {'file': 'new-tool.yml', 'enforcement': 'advisory', 'reason': 'one-time tool'}
+        )
+        states = {
+            'fork-checks.yml': 'active',
+            'fork-release-prepare.yml': 'active',
+            'fork-cd-cloudflare.yml': 'active',
+            'fork-cd-server.yml': 'active',
+            'upstream.yml': 'disabled_manually',
+        }
+        module = load_module()
+        module.github = lambda path, repository: (
+            [{'name': name} for name in states]
+            if path.startswith('contents/')
+            else {'workflows': [{'path': f'.github/workflows/{n}', 'state': s} for n, s in sorted(states.items())]}
+        )
+        self.assertEqual(module.live_report(policy, harness.root, 'fixture/repo'), [])
+
+    def test_a_declared_workflow_missing_from_the_default_branch_is_still_reported(self):
+        harness = self.harness()
+        policy = copy.deepcopy(harness.policy)
+        policy['workflows']['keep'].append(
+            {'file': 'vanished.yml', 'enforcement': 'advisory', 'reason': 'x'}
+        )
+        (harness.root / '.github' / 'workflows' / 'vanished.yml').write_text(
+            'name: V\non:\n  workflow_dispatch:\n', encoding='utf-8'
+        )
+        states = {
+            'fork-checks.yml': 'active',
+            'fork-release-prepare.yml': 'active',
+            'fork-cd-cloudflare.yml': 'active',
+            'fork-cd-server.yml': 'active',
+            'upstream.yml': 'disabled_manually',
+        }
+        module = load_module()
+        module.github = lambda path, repository: (
+            [{'name': name} for name in [*states, 'vanished.yml']]
+            if path.startswith('contents/')
+            else {'workflows': [{'path': f'.github/workflows/{n}', 'state': s} for n, s in sorted(states.items())]}
+        )
+        errors = module.live_report(policy, harness.root, 'fixture/repo')
+        self.assertEqual(errors, ['vanished.yml: declared as keep or disable but not registered on GitHub'])
 
     def test_matching_state_passes(self):
         harness = self.harness()
