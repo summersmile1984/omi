@@ -1,5 +1,5 @@
 import ts from 'typescript'
-import { readFileSync, writeFileSync, readdirSync, existsSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs'
 import { resolve, relative, dirname, join } from 'node:path'
 import { applyBrandPresentation } from './brand-stage.mjs'
 import { applyAssetConsumers } from './assets-stage.mjs'
