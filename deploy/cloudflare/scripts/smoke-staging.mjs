@@ -587,7 +587,14 @@ export async function runSmoke({
     `${base}/v1/mcp/memories`,
     { headers: { authorization: `Bearer omi_mcp_${"f".repeat(32)}` } },
   );
-  expectStatus("MCP data invalid key", mcpDataInvalidKey, 403);
+  // A key this authority does not hold is unauthenticated, not forbidden:
+  // RFC 9110 15.5.2 gives 401 to a request without valid credentials and
+  // reserves 403 for a principal that authenticated without the permission, the
+  // self-hosted target already answers 401 for the same input
+  // (`invalid_mcp_auth_exception`), and the deployed product qualification's
+  // revoked-key case asserts 401 (`hosted-product.mjs`). The Developer API key
+  // below keeps its own 403 answer: that helper is a separate contract.
+  expectStatus("MCP data invalid key", mcpDataInvalidKey, 401);
   const developerDataInvalidKey = await request(
     fetchImpl,
     `${base}/v1/dev/user/memories`,
