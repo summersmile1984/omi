@@ -137,6 +137,28 @@ describe("Cloudflare MCP transport", () => {
     expect(apiCore).toHaveBeenCalledTimes(1);
   });
 
+  it("answers a revoked API key like a missing one", async () => {
+    // api-core cannot hold a key that was revoked, and answers 401. This
+    // transport owns the client shape, so a revoked key must not be readable as
+    // "forbidden": the product qualification deletes a key and requires that
+    // bearer to be unauthenticated (hosted-product.mjs).
+    const apiCore = vi.fn(async () =>
+      Response.json({ detail: "Invalid MCP API key" }, { status: 401 }),
+    );
+    const env = environment({ apiCore });
+    const response = await handleMcpTransport(
+      request("tools/list"),
+      env,
+    );
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toContain(
+      'resource_metadata="https://edge.test/.well-known/oauth-protected-resource/v1/mcp/sse"',
+    );
+    expect(await jsonRpc(response)).toMatchObject({
+      error: { code: -32000, message: "Authorization required" },
+    });
+  });
+
   it("converts a scoped tool call to the API Core REST contract", async () => {
     const apiCore = vi.fn(async (incoming: Request) => {
       const url = new URL(incoming.url);
