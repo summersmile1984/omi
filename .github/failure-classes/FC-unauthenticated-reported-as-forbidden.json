@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "id": "FC-unauthenticated-reported-as-forbidden",
+  "violated_contract": "A request whose credentials did not authenticate a principal must be refused as unauthenticated (401), never as forbidden (403). 403 tells the caller it is recognised and merely lacks permission, so a client holding a revoked or mistyped key never re-authenticates, and an acceptance contract that asserts the unauthenticated answer fails against a deployment that answered 'forbidden'.",
+  "canonical_prevention": "Decide the denial once at the credential authority: anything that does not produce a principal -- malformed bearer, unknown key, revoked key -- is a single 401 helper, and 403 is reserved for a principal that authenticated without the required scope. The transport that owns the client-facing shape re-renders that 401 with its own discovery header instead of passing an authority-specific body through.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/python/api-core/src/mcp_routes.py",
+    "deploy/cloudflare/python/api-core/tests/test_mcp_routes.py",
+    "deploy/cloudflare/workers/edge/mcp-transport.ts",
+    "deploy/cloudflare/tests/mcp-transport.test.ts"
+  ],
+  "evidence_prs": [
+    33
+  ],
+  "scope_hints": [
+    "deploy/cloudflare/python/api-core/src/mcp_routes.py",
+    "deploy/cloudflare/python/api-core/src/developer_routes.py",
+    "deploy/cloudflare/workers/edge/mcp-transport.ts",
+    "backend/routers/mcp_sse.py"
+  ],
+  "status": "open"
+}
