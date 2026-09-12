@@ -194,7 +194,8 @@ function creatorPaymentBoundary(
     return new Response(null, { status: init?.method === "POST" ? 422 : 200 });
   }
   if (url.endsWith("/v1/mcp/memories")) {
-    return new Response(null, { status: 403 });
+    // A key the Cloudflare authority does not hold is unauthenticated.
+    return new Response(null, { status: 401 });
   }
   if (url.endsWith("/v1/dev/keys/cf-smoke-missing-key")) {
     return new Response(null, { status: 204 });
@@ -641,7 +642,7 @@ describe("staging smoke helpers", () => {
       stripeSupportedCountriesBoundary: 503,
       stripeReturnMissing: 404,
       stripeBrowserRefreshBoundary: 403,
-      mcpDataInvalidKey: 403,
+      mcpDataInvalidKey: 401,
       developerDataInvalidKey: 403,
       developerMemoryWriteInvalidKey: 403,
       developerActionItemWriteInvalidKey: 403,
