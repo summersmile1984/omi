@@ -250,7 +250,8 @@ def test_mcp_key_auth_is_exact_scoped_and_fenced_to_active_cloudflare_accounts()
     missing = run(get_memories(FakeRequest(env, authorization=None)))
     assert missing.status_code == 401
     malformed = run(get_memories(FakeRequest(env, authorization=f"Bearer omi_mcp_{'A' * 32}")))
-    assert malformed.status_code == 403
+    assert malformed.status_code == 401
+    assert response_body(malformed)["detail"] == "Invalid MCP API key"
 
     db.connection.execute("UPDATE cf_mcp_api_keys SET scopes_json = '[\"memories.read\"]'")
     db.connection.commit()
@@ -262,6 +263,17 @@ def test_mcp_key_auth_is_exact_scoped_and_fenced_to_active_cloudflare_accounts()
     db.connection.commit()
     corrupt = run(get_memories(FakeRequest(env)))
     assert corrupt.status_code == 503
+
+    # Revocation is deletion, not permission. The deployed product
+    # qualification deletes an MCP key and then requires that bearer to be
+    # unauthenticated; beta CD 34662282058 got 403 and failed the release. A key
+    # this authority no longer holds must answer 401, while a key that
+    # authenticates without the required scope still answers 403 above.
+    db.connection.execute("DELETE FROM cf_mcp_api_keys")
+    db.connection.commit()
+    revoked = run(get_memories(FakeRequest(env)))
+    assert revoked.status_code == 401
+    assert response_body(revoked)["detail"] == "Invalid MCP API key"
 
     _, legacy_env = environment(state="legacy")
     inactive = run(get_memories(FakeRequest(legacy_env)))

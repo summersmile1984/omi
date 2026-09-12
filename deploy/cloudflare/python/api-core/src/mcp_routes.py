@@ -148,6 +148,19 @@ class McpActionItemUpdate(BaseModel):
     due_at: datetime | None = None
 
 
+def _unauthenticated() -> JSONResponse:
+    """The one denial for an API key that does not authenticate a principal.
+
+    Both a malformed bearer and a well-formed key this authority does not hold
+    (revoked, or never issued) mean "no valid credentials were presented", so
+    the answer is 401 for every consumer of `_authenticate`: the MCP transport,
+    the developer routes and the internal principal lookup. The transport owner
+    (`workers/edge/mcp-transport.ts`) replaces this body with its JSON-RPC 401
+    and `WWW-Authenticate` discovery header, so clients still get the OAuth hint.
+    """
+    return _detail("Invalid MCP API key", 401)
+
+
 def _detail(message: str, status: int) -> JSONResponse:
     return JSONResponse({"detail": message}, status_code=status)
 
@@ -362,7 +375,7 @@ async def _authenticate(
             return None, _detail("Missing or invalid Authorization header. Must be 'Bearer API_KEY'", 401)
         match = MCP_KEY_PATTERN.fullmatch(authorization)
         if match is None:
-            return None, _detail("Invalid MCP API key", 403)
+            return None, _unauthenticated()
 
         secret = match.group(1)
         digest = hashlib.sha256(secret.encode()).hexdigest()
@@ -377,7 +390,14 @@ async def _authenticate(
                 .first()
             )
             if not isinstance(row, dict):
-                return None, _detail("Invalid MCP API key", 403)
+                # A key that is not in the authority (never issued, or revoked by
+                # a delete) is unauthenticated, not forbidden. RFC 9110 15.5.2
+                # reserves 403 for a principal that authenticated without the
+                # permission, which is the `required_scope` branch below; the
+                # self-hosted target answers the same way
+                # (`invalid_mcp_auth_exception`) and the deployed product
+                # qualification asserts it (`hosted-product.mjs`, revoked key).
+                return None, _unauthenticated()
             uid = row.get("uid")
             key_id = row.get("key_id")
             if (

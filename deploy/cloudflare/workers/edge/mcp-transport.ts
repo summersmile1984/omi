@@ -223,6 +223,13 @@ async function corePrincipal(
     const response = await env.API_CORE.fetch(
       new Request(`https://api-core.internal${path}`, { headers }),
     );
+    // api-core answers 401 for a key it does not hold (revoked or never
+    // issued). This transport owns the client-facing unauthenticated shape --
+    // the same JSON-RPC body and `WWW-Authenticate` discovery header it returns
+    // when no bearer is presented -- so a revoked key and a missing key cannot
+    // answer differently. Every other denial (insufficient scope, unavailable
+    // authority) is passed through unchanged.
+    if (response.status === 401) return { denial: jsonRpcAuthDenial(env) };
     if (!response.ok) return { denial: response };
     const verified = validPrincipal(await response.json());
     if (
