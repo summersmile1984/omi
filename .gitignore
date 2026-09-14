@@ -283,6 +283,9 @@ htmlcov/
 
 # Local dev env (contains dev-only secrets)
 dev/.env.dev
+# Machine-local port allocation for the cloud-neutral local stack
+# (dev/local.sh — committed example lives at dev/local.env.example)
+dev/local.env
 
 # Local agent/tooling state (LoopX goals, editor configs, pilots) — not product code
 .codex/

@@ -1,0 +1,49 @@
+# Fork-owned make targets.
+#
+# The upstream Makefile is deliberately left untouched: every edit there is a
+# guaranteed conflict on the next upstream sync. Local dev for the
+# cloud-neutral stack therefore lives here:
+#
+#   make -f Makefile.fork local-up
+#
+# `dev/local.sh <command>` is the same thing without make.
+
+SHELL := bash
+
+.PHONY: help local-up local-status local-verify local-restart local-logs local-down local-reset local-selftest
+
+help:
+	@echo "make -f Makefile.fork local-up        # start the local dev stack (stage 1: compile + run)"
+	@echo "make -f Makefile.fork local-status    # what is running, on which ports"
+	@echo "make -f Makefile.fork local-verify    # end-to-end proof + JSON evidence"
+	@echo "make -f Makefile.fork local-restart   # restart backend / worker / auth-server"
+	@echo "make -f Makefile.fork local-logs      # tail stack logs (SERVICE=<name> for one)"
+	@echo "make -f Makefile.fork local-down      # stop everything (keeps data)"
+	@echo "make -f Makefile.fork local-reset     # stop and delete local data"
+	@echo "make -f Makefile.fork local-selftest  # hermetic tests for dev/local.sh"
+	@echo ""
+	@echo "Equivalent: dev/local.sh help"
+
+local-up:
+	@bash dev/local.sh up
+
+local-status:
+	@bash dev/local.sh status
+
+local-verify:
+	@bash dev/local.sh verify
+
+local-restart:
+	@bash dev/local.sh restart
+
+local-logs:
+	@bash dev/local.sh logs $(SERVICE)
+
+local-down:
+	@bash dev/local.sh down
+
+local-reset:
+	@bash dev/local.sh reset
+
+local-selftest:
+	@python3 dev/tests/test_local_sh.py
