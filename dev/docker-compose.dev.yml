@@ -1,9 +1,12 @@
-version: "3.9"
-
 # Omi cloud-neutral local dev stack:
 #   - Firebase emulator suite (Firestore 8080 + Auth 9099 + Storage 9199)
-#   - PostgreSQL 17 for the firestore-pg shim (production target)
+#   - PostgreSQL 16 for the firestore-pg shim (same shape as production)
 #   - Redis for the backend's queue/cache needs
+#   - MinIO for object storage (replaces GCS: STORAGE_BACKEND=minio)
+#
+# Every published host port is overridable through dev/local.env (see
+# dev/local.env.example). Local dev must not require stopping another project's
+# containers: run `dev/local.sh ports` to see the resolved allocation.
 
 services:
   firebase-emulators:
@@ -11,54 +14,67 @@ services:
       context: .
       dockerfile: emulators.Dockerfile
     image: "omi-emulators:local"
-    container_name: omi-emulators
+    container_name: ${DEV_FIREBASE_CONTAINER_NAME:-omi-emulators}
     working_dir: /srv/firebase
-    command: ["firebase", "emulators:start", "--only", "firestore,auth,storage", "--project", "demo-omi-local"]
     ports:
-      - "8080:8080"
-      - "9099:9099"
-      - "9199:9199"
+      - "${FIRESTORE_EMULATOR_PORT:-8080}:8080"
+      - "${FIREBASE_AUTH_EMULATOR_PORT:-9099}:9099"
+      - "${FIREBASE_STORAGE_EMULATOR_PORT:-9199}:9199"
     volumes:
       - ./firebase.json:/srv/firebase/firebase.json:ro
       - emulator-data:/root/.cache/firebase
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
 
   postgres:
     image: "postgres:16-alpine"
-    container_name: omi-postgres
+    container_name: ${DEV_POSTGRES_CONTAINER_NAME:-omi-postgres}
     environment:
-      POSTGRES_USER: omi
-      POSTGRES_PASSWORD: omi-dev-password
-      POSTGRES_DB: omi
+      POSTGRES_USER: ${DEV_POSTGRES_USER:-omi}
+      POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:-omi-dev-password}
+      POSTGRES_DB: ${DEV_POSTGRES_DB:-omi}
     ports:
-      - "5434:5432"
+      # Host ports are overridable from dev/local.env: a machine that already
+      # runs another Postgres (another project, another compose stack) must not
+      # force the local stack to be stopped. See dev/local.env.example.
+      - "${DEV_POSTGRES_PORT:-5434}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U omi"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 3s
       retries: 10
 
   redis:
     image: "redis:7-alpine"
-    container_name: omi-redis
+    container_name: ${DEV_REDIS_CONTAINER_NAME:-omi-redis}
     ports:
-      - "6379:6379"
+      - "${DEV_REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # MinIO: S3-compatible object storage replacing GCS for local dev
   # (backend utils/other/storage.py with STORAGE_BACKEND=minio)
   minio:
     image: "minio/minio:latest"
-    container_name: omi-minio
+    container_name: ${DEV_MINIO_CONTAINER_NAME:-omi-minio}
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${DEV_MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${DEV_MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${DEV_MINIO_API_PORT:-9000}:9000"
+      - "${DEV_MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/data
     healthcheck:

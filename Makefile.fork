@@ -3,13 +3,21 @@
 BASE ?= origin/main
 BRAND ?= omi-upstream
 
-.PHONY: help setup-fork preflight-fork upstream-touch sync-probe dev-shadow-diff run-canonical-promotion
+.PHONY: help setup-fork preflight-fork upstream-touch sync-probe dev-shadow-diff run-canonical-promotion \
+	local-up local-status local-verify local-restart local-logs local-down local-reset local-selftest
 
 help:
 	@echo "make -f Makefile.fork setup-fork       # fork-local git config (no upstream tags)"
 	@echo "make -f Makefile.fork preflight-fork   # upstream gate + fork gate"
 	@echo "make -f Makefile.fork upstream-touch   # zero-upstream-touch guard only"
 	@echo "make -f Makefile.fork sync-probe       # real conflict count against upstream/main"
+	@echo ""
+	@echo "make -f Makefile.fork local-up         # stage 1: start the cloud-neutral local stack"
+	@echo "make -f Makefile.fork local-verify     # stage 1: end-to-end proof + JSON evidence"
+	@echo "make -f Makefile.fork local-status     # what is running, on which ports"
+	@echo "make -f Makefile.fork local-down       # stop the stack (keeps data)"
+	@echo "make -f Makefile.fork local-reset      # stop and delete local data"
+	@echo "make -f Makefile.fork local-selftest   # hermetic tests for dev/local.sh"
 
 setup-fork:
 	@git config remote.upstream.tagOpt --no-tags && \
@@ -33,3 +41,27 @@ dev-shadow-diff:
 
 run-canonical-promotion:
 	@python3 scripts/dev-harness/run-canonical-promotion.py "$(PROMOTION_USER)"
+
+local-up:
+	@bash dev/local.sh up
+
+local-status:
+	@bash dev/local.sh status
+
+local-verify:
+	@bash dev/local.sh verify
+
+local-restart:
+	@bash dev/local.sh restart
+
+local-logs:
+	@bash dev/local.sh logs $(SERVICE)
+
+local-down:
+	@bash dev/local.sh down
+
+local-reset:
+	@bash dev/local.sh reset
+
+local-selftest:
+	@python3 dev/tests/test_local_sh.py
