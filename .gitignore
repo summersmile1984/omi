@@ -285,11 +285,14 @@ htmlcov/
 # (dev/local.sh — committed example lives at dev/local.env.example)
 dev/local.env
 
-# Local agent/tooling state (LoopX goals, editor configs, pilots) — not product code
+# Local agent/tooling state (LoopX goals, editor configs, pilots, spec-kit) —
+# not product code. Tracked on no branch, but an untracked directory here makes
+# the self-host contract check refuse to run ("requires a clean source tree").
 .codex/
 .loopx/
 .opencode/
 .pilot/
+.specify/
 
 # `bunx shadcn` shells out to pnpm and drops these at the repo root. This repo
 # is Bun-only, so they are byproducts, never inputs — ignored so a shadcn run
