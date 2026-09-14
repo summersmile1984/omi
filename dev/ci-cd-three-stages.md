@@ -320,11 +320,33 @@ dev/local-client.sh stop web
 
 | 目标 | CI lane | 运行位置 | 状态 |
 |---|---|---|---|
-| Server OS | `fork-selfhost-product-core` → `deploy/self-host/ci/product.sh` | PR: `ubuntu-latest`(原生 amd64);push/manual: Mac Studio(arm64 模拟) | ❌ 红(既有);**PR 那次 143s 是真实失败,不是构建超时** |
+| Server OS | `fork-selfhost-product-core` → `deploy/self-host/ci/product.sh` | PR: `ubuntu-latest`(原生 amd64);push/manual: Mac Studio(arm64 模拟) | ✅ 2026-09-14 起绿(PR lane 180s,16 个 product case 全过);根因见下 |
 | Cloudflare | `fork-cloudflare-product-core` → `deploy/cloudflare/ci/product.sh` | 同上 | ✅ 本机 exit 0 |
 | Web | `deploy/web/ci.sh` | — | ✅ 本机 exit 0 |
 | 桌面 / 移动 | `desktop-swift-ci` / `mobile-app-checks` | macos-26 / hosted | 需按 profile 构建 |
 
+**Server OS lane 变绿的三步**(2026-09-14,PR #43/#47 实测):
+
+1. `command-09.log` 之前只存在于 runner 的临时目录 —— 先把它 pin 成 artifact(#43),才看见真实错误。
+2. 真实错误是 **MinIO 的 Docker Hub 仓库已下线**:`pull access denied for minio/minio`。
+   同一 release 在 Quay 上 manifest digest 逐字节相同,所以只换 registry 前缀;
+   本地 `dev/docker-compose.dev.yml` 同步改成与生产**同 release 同 digest**(它此前是 `:latest`)。
+   这不只是 CI 问题:自托管部署本身也起不来。
+3. fixture 随后跑通 15/16,最后一个是契约过严:Server OS 的 JIT envelope 多一个**上游的可选字段**
+   `budget_contract_version`(route 没开 `response_model_exclude_none`,所以总是以 null 出现)。
+   `contracts/deployment/**` 是 fork 自有,按"允许新增可选响应字段"放宽,并把失败信息改成
+   打印 missing/unexpected(原来只说 "wire fields differ",这次为此多花了两次定位)。
+
 **可用的 x86 runner**:`turing-agents-MotherBoard-Series`(Linux X64,labels `omi,linux-x64`)已注册在线,
-但**没有任何工作流引用它** —— `fork-selfhost-product-core` 的 amd64 工作可以路由到它,替代在 arm64 Mac Studio
-上做模拟构建。
+但**没有任何工作流引用它**。`fork-selfhost-product-core` 需要真实 Docker(它 build 镜像、起 compose);
+PR lane 的 `ubuntu-latest` 本来就是原生 amd64,所以收益在 push/manual(release 授权)车道,
+而那台 x86 机器是否有 Docker 尚未验证 —— 属"改发布授权车道的 runner",需要一次明确决定后再动。
+
+**新的头号缺口(阶段 2)**:`dead-code-ratchet`(属上游 Hygiene)在 `main` 上就是红的,
+只要某个 diff 碰到 `backend/**/*.py` 就会被选中并卡住合并 —— 也就是说**这个 fork 目前无法修改任何
+backend Python 文件**。判定依据是 7 个 `app/lib/fork/identity/*.dart`(只被 staged overlay 引用,
+上游分析器看不到)加 1 个 `desktop/windows/src/shared/fork/deploymentProfiles.generated.ts`
+(render.py 产出、Electron 侧没有任何消费者)。checker 提示的补救(写 allowlist / `--update-baseline`)
+都在 `.github/scripts/**`,是 fork 不修改的上游路径,所以只能改 staging 设计:
+把 Flutter identity 也做成 overlay 输入(`*.dart.txt`,由 `prepare.py` 落盘),以及让 Electron 消费
+那份 profile 或让 render 合同不再产出它。两条都是设计选择,单独一个 PR 做。
