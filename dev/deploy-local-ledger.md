@@ -2,12 +2,22 @@
 
 日期: 2026-08-09 · 分支: feature/cloud-neutral-shim · 目标: 4C8G 自托管部署就绪度
 
+> **2026-09-14 更新**:入口已统一为 `dev/local.sh`(`up` / `status` / `verify` / `logs` / `down` / `reset`),
+> 端口从 `dev/local.env` 读取(本机 5434/9000/9001 被无关容器占用,改用 5442/9100/9101)。
+> `up` 现在自动跑 Better Auth 迁移与 `firestore_pg` 迁移,并在启动后检查 queue worker 存活。
+> 下列台账是当时的手工验证记录,结论仍然成立;新的自证入口是 `dev/local.sh verify`。
+
 ## 一键部署
 
 ```bash
-dev/deploy-local.sh            # 全栈:容器 + auth-server + worker + backend
-dev/deploy-local.sh --no-backend  # 仅容器
-dev/deploy-local.sh --stop     # 全部拆除
+dev/local.sh up                  # 全栈:容器 + 迁移 + auth-server + worker + backend
+dev/local.sh up --no-backend     # 仅数据面 + auth-server
+dev/local.sh verify              # 端到端自证(6 项)+ JSON 证据
+dev/local.sh down                # 停止(保留数据卷)
+dev/local.sh reset               # 停止并删除本地数据
+
+# 兼容旧写法(等价转发到 dev/local.sh)
+dev/deploy-local.sh [--no-backend|--stop]
 ```
 
 启动组件: PG(firestore_pg shim)+ Redis + MinIO + emulators(dev 认证)+
