@@ -1,0 +1,14 @@
+# The backend image already contains the selected brand/target/stage profile.
+ARG BACKEND_IMAGE
+FROM ${BACKEND_IMAGE} AS settings
+RUN python -m fork.llm_runtime /app/fork/deployment_profiles.generated.json > /tmp/llm-runtime.env
+
+FROM ollama/ollama@sha256:57a73f11f75b32b97b59b003f351445c9c2a8af4b9d586ecdc928dee6150ef26
+ARG OMI_SOURCE_GIT_COMMIT=unattributed
+ARG OMI_SOURCE_GIT_TREE=unattributed
+LABEL com.omi.source.git-commit="${OMI_SOURCE_GIT_COMMIT}" \
+      com.omi.source.git-tree="${OMI_SOURCE_GIT_TREE}"
+COPY --from=settings /tmp/llm-runtime.env /etc/llm-runtime.env
+COPY --chmod=755 deploy/self-host/llm-entrypoint.sh /usr/local/bin/llm-entrypoint
+ENTRYPOINT ["/usr/local/bin/llm-entrypoint"]
+CMD ["serve"]

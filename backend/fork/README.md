@@ -139,3 +139,21 @@ The startup lane also executes the older fork-owned cloud-neutral storage/queue
 fixture. MinIO fixtures declare internal/public origins, credentials and region
 explicitly and check both transfer and signer cache refresh; inherited ambient
 configuration is never a substitute for the current runtime contract.
+
+
+`local_llm.py`, `local_llm_chat.py` and `patches/llm.py` bind every admitted
+text feature to the profile-selected Ollama artifact and retain the upstream
+user-scoped chat/tool loop. Startup and each generation verify the exact runtime,
+manifest, GGUF source, native context and capabilities. The serving context/output
+limits remain distinct from artifact metadata. Requests are byte-bounded, disable
+implicit truncation/context shifting, and fail typed rather than yielding empty
+success. `llm_http.py` bounds socket operations with one deadline; it does not
+claim to interrupt standard-library DNS lookup. `llm_usage.py` delegates completed
+native token counts to the existing usage owner and never charges failed streams.
+
+`llm_runtime.py` compiles the generated profile into the thin Ollama image's
+precision, context and concurrency settings. The same owner projects model,
+chat and worker budgets before imports; four CPU threads and one generation
+are the admitted reference. The memory feature uses the unchanged upstream
+`WorkingObservationBatch` schema through the canonical/captured route-options
+factory, so native structured output and the production parser agree.

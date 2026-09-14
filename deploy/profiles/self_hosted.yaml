@@ -63,6 +63,21 @@ embedding:
   dimension: 1024
   context_length: 8192
 
+# A separate admitted text model; its context/output limits belong to this row.
+llm:
+  provider: ollama
+  model: qwen3:1.7b
+  manifest_digest: sha256:8f68893c685c3ddff2aa3fffce2aa60a30bb2da65ca488b61fff134a4d1730e7
+  artifact_digest: sha256:3d0b790534fe4b79525fc3692950408dca41171676ed7e21db57af5c65ef6ab6
+  context_length: 40960
+  context_window: 8192
+  max_output_tokens: 2048
+  runtime_version: 0.33.3
+  kv_cache_type: q8_0
+  cpu_threads: 4
+  parallel_requests: 1
+  request_timeout_seconds: 300
+
 # One licensed, content-addressed CPU bundle; capabilities derive from it.
 # Omitting this bundle explicitly disables STT/TTS at their real consumers.
 speech:

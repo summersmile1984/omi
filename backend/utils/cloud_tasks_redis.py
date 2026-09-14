@@ -171,7 +171,7 @@ def _worker(queue_name: str) -> None:
                 handler_url,
                 json=item["payload"],
                 headers={"X-Omi-Queue-Secret": worker_secret, 'X-Omi-Queue-Retry-Count': str(retry_count)},
-                timeout=30.0,
+                timeout=queue.request_timeout(),
             )
             logger.info("task %s -> %s status=%s", item.get("task_id"), handler_url, resp.status_code)
             # Finalization 409 means a held lease or completion conflict. A

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise both runtime Docker context filters with an actual offline build.
+"""Exercise runtime Docker context filters with an actual offline build.
 
 LIFECYCLE: permanent
 The 2026-09-04 image builds copied the local OpenAPI environment and test scratch
@@ -16,28 +16,33 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
-FILTERS = ("backend/Dockerfile.dockerignore", "deploy/self-host/Dockerfile.dockerignore")
 RUNTIME_FILES = ("backend/fork/model_contract.py", "backend/firestore_pg/migrations.py")
+FILTERS = {
+    "backend/Dockerfile.dockerignore": RUNTIME_FILES,
+    "deploy/self-host/Dockerfile.dockerignore": RUNTIME_FILES,
+    "deploy/self-host/Dockerfile.llm.dockerignore": ("deploy/self-host/llm-entrypoint.sh",),
+}
 CACHE_FILES = (
     "backend/.openapi-venv/lib/local-only.py",
     "backend/_temp/probe-response.json",
     "backend/.venv/lib/local-only.py",
     "backend/fork/__pycache__/local-only.pyc",
     "backend/.env",
+    "deploy/self-host/.env.production",
 )
 
 
 class RuntimeBuildContext(unittest.TestCase):
     def test_actual_docker_filters_keep_runtime_sources_and_exclude_local_validation_state(self):
-        for relative in FILTERS:
+        for relative, runtime_files in FILTERS.items():
             with self.subTest(context_filter=relative), tempfile.TemporaryDirectory(prefix="fork-context-") as temp:
                 directory = Path(temp)
                 source, output = directory / "source", directory / "output"
                 dockerfile = source / relative.removesuffix(".dockerignore")
                 dockerfile.parent.mkdir(parents=True)
-                dockerfile.write_text("FROM scratch\nCOPY backend/ /backend/\n")
+                dockerfile.write_text("FROM scratch\nCOPY . /\n")
                 shutil.copyfile(ROOT / relative, source / relative)
-                for name in RUNTIME_FILES:
+                for name in runtime_files:
                     destination = source / name
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(ROOT / name, destination)
@@ -63,7 +68,7 @@ class RuntimeBuildContext(unittest.TestCase):
                     timeout=60,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr[-3000:])
-                for name in RUNTIME_FILES:
+                for name in runtime_files:
                     self.assertEqual((output / name).read_bytes(), (ROOT / name).read_bytes())
                 for name in CACHE_FILES:
                     self.assertFalse((output / name).exists(), f"{relative} shipped local state: {name}")
