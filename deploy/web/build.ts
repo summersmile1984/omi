@@ -63,6 +63,15 @@ export async function buildWeb(options: {
     if (!overlays.files?.[required])
       throw new Error(`Missing required Web auth overlay: ${required}`);
   }
+  if (!overlays.files?.['src/app/api/proxy/public/[...path]/route.ts'])
+    throw new Error('Missing required public share proxy overlay');
+  for (const required of [
+    'src/app/(public)/chat/[token]/page.tsx',
+    'src/app/(public)/tasks/[token]/page.tsx',
+  ]) {
+    if (!overlays.additions?.[required])
+      throw new Error(`Missing required public share route: ${required}`);
+  }
   const output = await emptyOutput(options.output, webRoot);
   const source = resolve(output, 'source');
   const applied = await stageSources(webRoot, source, overlays);
@@ -159,6 +168,7 @@ export async function buildWeb(options: {
     transforms: [
       'SettingsPage.mcpServerUrl -> profile MCP origin',
       'HomePage/useGeminiLive -> direct-model capability',
+      'public Chat/Tasks share routes -> controlled preview and authenticated acceptance',
       'allowlisted public environment',
     ],
     routes: manifest.routes.map((route: { path: string }) => route.path),
@@ -166,8 +176,8 @@ export async function buildWeb(options: {
     entry: options.target === 'cloudflare' ? 'wrangler.json' : 'start.js',
     release_ready: false,
     pending_qualification: [
-      'AUTH-1/CLIENT-1/CF-2 browser contracts',
-      'brand assets and complete rendered-string qualification',
+      'full dual-target browser and previous-schema qualification',
+      'complete brand assets and remote custom-domain qualification',
     ],
   };
   await writeFile(

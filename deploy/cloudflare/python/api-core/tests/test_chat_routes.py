@@ -82,6 +82,8 @@ class FakeRequest:
             env.BRAND_RUNTIME_JSON = json.dumps(
                 {"brand_id": "omi-upstream", "display_name": "Omi", "ai_persona_name": "Omi"}
             )
+        if not hasattr(env, "PUBLIC_SHARE_BASE_URL"):
+            env.PUBLIC_SHARE_BASE_URL = "https://h.omi.me"
         self.scope = {"env": env}
         self.headers = headers or {}
         self.query_params = query or {}
@@ -379,6 +381,37 @@ def test_chat_share_rejects_missing_duplicate_unauthorized_and_expired_paths():
         ).fetchone()[0]
         == 0
     )
+
+
+def test_chat_share_uses_the_manifest_profile_origin_and_rejects_invalid_origins_before_storage():
+    secret = "chat-secret"
+    db = FakeDb()
+    db.connection.execute(
+        "INSERT INTO cf_chat_messages (uid, id, created_at, message_json) VALUES (?, ?, 1, ?)",
+        ("chat-user", "m1", json.dumps({"id": "m1", "text": "Private", "sender": "human"})),
+    )
+    db.connection.commit()
+    env = type(
+        "Env",
+        (),
+        {
+            "APP_DB": db,
+            "INTERNAL_ASSERTION_SECRET": secret,
+            "PUBLIC_SHARE_BASE_URL": "https://share.atlas.example.invalid",
+        },
+    )()
+    shared = asyncio.run(share_chat_messages(FakeRequest(env, signed_headers(secret), body={"message_ids": ["m1"]})))
+    assert shared["url"] == f"https://share.atlas.example.invalid/chat/{shared['token']}"
+
+    before = db.connection.execute("SELECT COUNT(*) FROM cf_chat_shares").fetchone()[0]
+    for invalid in [None, True, "", "https://share.example.invalid/path", "https://user@share.example.invalid"]:
+        env.PUBLIC_SHARE_BASE_URL = invalid
+        response = asyncio.run(
+            share_chat_messages(FakeRequest(env, signed_headers(secret), body={"message_ids": ["m1"]}))
+        )
+        assert response.status_code == 503
+        assert json.loads(response.body) == {"error": "public share identity is not configured"}
+        assert db.connection.execute("SELECT COUNT(*) FROM cf_chat_shares").fetchone()[0] == before
 
 
 def test_explicit_target_owns_read_and_clear_even_when_query_app_disagrees():

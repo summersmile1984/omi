@@ -52,6 +52,6 @@ stages:
     auth_base_url: http://127.0.0.1:8788
     web_base_url: http://127.0.0.1:8789
     mcp_base_url: http://127.0.0.1:8787
-    share_base_url: http://127.0.0.1:8787
+    share_base_url: http://127.0.0.1:8789
     objects_base_url: http://127.0.0.1:8787
     auth_callback_scheme: "{scheme}-dev"

@@ -12,6 +12,7 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from brand_runtime import BrandRuntime, load_brand_runtime, load_support_email
 from internal_auth import decode_context
 
 router = APIRouter()
@@ -58,22 +59,22 @@ def _percentage(milliseconds: int, limit: int) -> float:
     return round(milliseconds / limit * 100, 1) if limit > 0 else 0.0
 
 
-def _message(stage: str, case_ref: str = "") -> str:
+def _message(brand: BrandRuntime, support_email: str, stage: str, case_ref: str = "") -> str:
     ref_note = f" Your case reference is {case_ref}." if case_ref else ""
     messages = {
         "none": "Your usage is within normal limits.",
         "warning": (
-            "Your usage is higher than typical. Omi is designed for personal conversations. "
+            f"Your usage is higher than typical. {brand.display_name} is designed for personal conversations. "
             f"If non-personal content transcription continues, your service may be adjusted.{ref_note}"
         ),
         "throttle": (
             "Your transcription quality has been temporarily reduced due to high non-personal usage. "
-            "This will reset automatically. Contact support at team@basedhardware.com if you believe this is an error. "
+            f"This will reset automatically. Contact support at {support_email} if you believe this is an error. "
             f"Please quote your case reference when contacting support.{ref_note}"
         ),
         "restrict": (
             "Your cloud transcription is temporarily limited. On-device transcription continues normally. "
-            "Contact support at team@basedhardware.com to discuss your usage and resolve this. "
+            f"Contact support at {support_email} to discuss your usage and resolve this. "
             f"Please quote your case reference when contacting support.{ref_note}"
         ),
     }
@@ -173,7 +174,7 @@ async def _rolling_usage(env: object, uid: str, now: int) -> dict[str, int]:
     return {key: max(0, int(row.get(key) or 0)) for key in ("daily_ms", "three_day_ms", "weekly_ms")}
 
 
-async def _projection(env: object, uid: str, now: int) -> dict[str, object]:
+async def _projection(env: object, brand: BrandRuntime, support_email: str, uid: str, now: int) -> dict[str, object]:
     state = (
         await env.APP_DB.prepare(
             "SELECT stage, last_case_ref, throttle_until, restrict_until " "FROM cf_fair_use_states WHERE uid = ?"
@@ -247,7 +248,7 @@ async def _projection(env: object, uid: str, now: int) -> dict[str, object]:
             "exhausted": used_dg_ms >= RESTRICT_DAILY_DG_MS,
             "resets_at": next_midnight.isoformat().replace("+00:00", "Z"),
         },
-        "message": _message(stage, case_ref),
+        "message": _message(brand, support_email, stage, case_ref),
     }
 
 
@@ -257,7 +258,12 @@ async def get_fair_use_status(request: Request):
     if not context:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
-        return await _projection(request.scope["env"], str(context["uid"]), int(time.time()))
+        brand = load_brand_runtime(request.scope["env"])
+        support_email = load_support_email(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand identity or support contact is not configured"}, status_code=503)
+    try:
+        return await _projection(request.scope["env"], brand, support_email, str(context["uid"]), int(time.time()))
     except Exception:
         return JSONResponse({"error": "fair use status unavailable"}, status_code=503)
 
@@ -278,6 +284,11 @@ async def get_public_case_status(case_ref: str, request: Request):
         return JSONResponse({"detail": "Case not found"}, status_code=404)
     env = request.scope["env"]
     now = int(time.time())
+    try:
+        brand = load_brand_runtime(request.scope["env"])
+        support_email = load_support_email(request.scope["env"])
+    except ValueError:
+        return JSONResponse({"error": "brand identity or support contact is not configured"}, status_code=503)
     try:
         row = (
             await env.APP_DB.prepare(
@@ -306,10 +317,10 @@ async def get_public_case_status(case_ref: str, request: Request):
     return {
         "case_ref": normalized,
         "stage": stage,
-        "message": _message(stage, normalized),
+        "message": _message(brand, support_email, stage, normalized),
         "created_at": created_at,
         "updated_at": _timestamp(row.get("resolved_at")) or created_at,
-        "support_email": "team@basedhardware.com",
+        "support_email": support_email,
     }
 
 

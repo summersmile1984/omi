@@ -92,18 +92,31 @@ describe('the shared Web build boundary', () => {
       await mkdir(resolve(web, 'node_modules'));
       await writeFile(resolve(web, 'src/firebase.ts'), 'old Firebase source');
       await writeFile(resolve(web, 'fork/firebase.ts'), 'new Better Auth facade');
+      await writeFile(resolve(web, 'fork/share.ts'), 'new public share route');
       await writeFile(resolve(web, '.env.local'), 'PRIVATE=do-not-copy');
       const rows = await stageSources(web, stage, {
         schema_version: 1,
         files: { 'src/firebase.ts': 'fork/firebase.ts' },
+        additions: { 'src/app/share.ts': 'fork/share.ts' },
       });
-      expect(rows).toHaveLength(1);
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row) => row.mode)).toEqual(['replace', 'add']);
       expect(await readFile(resolve(stage, 'src/firebase.ts'), 'utf8')).toBe(
         'new Better Auth facade',
       );
       expect(await readFile(resolve(web, 'src/firebase.ts'), 'utf8')).toBe(
         'old Firebase source',
       );
+      expect(await readFile(resolve(stage, 'src/app/share.ts'), 'utf8')).toBe(
+        'new public share route',
+      );
+      await expect(
+        stageSources(web, resolve(temp, 'collision-stage'), {
+          schema_version: 1,
+          files: {},
+          additions: { 'src/firebase.ts': 'fork/share.ts' },
+        }),
+      ).rejects.toThrow('replace an existing source');
       expect(await Bun.file(resolve(stage, '.env.local')).exists()).toBe(false);
       expect(() => confinedPath(web, '../escape.ts')).toThrow('inside its source root');
       await symlink(web, resolve(temp, 'alias'));

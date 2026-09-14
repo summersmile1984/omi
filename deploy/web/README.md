@@ -27,7 +27,7 @@ lock. The build does not create Cloudflare resources or deploy anything.
 
 Only `artifact/` is the portable runtime payload. `source/` is the isolated
 build workspace; it is not a deployable context. `build-manifest.json` records
-the selected profile, source commit and dirty state, exact replacement hashes and all 26 current
+the selected profile, source commit and dirty state, exact replacement hashes and all current
 routes. The Builder deliberately declares `release_ready: false` until joint
 identity/realtime and brand qualification is recorded by the delivery owner.
 
@@ -66,6 +66,14 @@ pages use the same upstream route/renderer code on both targets.
   run separately, since they assert the original identity implementation. `.env*`
   files and source symlinks are not copied. The MCP rewrite uses the TypeScript
   AST to replace exactly the known initializer and preserve `use client`.
+- The same overlay manifest adds `/chat/:token` and `/tasks/:token` only to the
+  isolated fork build. Both pages use the rendered profile's API and Auth
+  origins, the existing Better Auth context and the rendered brand name. The
+  public proxy admits only exact share-token paths, validates and reduces the
+  upstream response to display fields, and returns capability content with
+  `private, no-store` and `no-referrer`. Task acceptance uses the authenticated
+  `/api/proxy` bearer path; it does not create another cookie, identity or brand
+  authority.
 - The same stage applies CLIENT-1 realtime capability transforms to HomePage and
   useGeminiLive before production typechecking. Disabled direct model providers
   hide live conversation and prevent token/client/socket creation while preserving

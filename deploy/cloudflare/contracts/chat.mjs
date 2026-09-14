@@ -67,7 +67,9 @@ async function request(
   trace.push({
     service,
     method,
-    route: path.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, ":id"),
+    route: path
+      .replace(/\/shared\/[^/?]+/g, "/shared/:token")
+      .replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, ":id"),
     status: response.status,
     expected: status,
   });
@@ -152,7 +154,9 @@ try {
     trace.push({
       service: "upstream-client",
       method: init?.method ?? "GET",
-      route: path.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, ":id"),
+      route: path
+        .replace(/\/shared\/[^/?]+/g, "/shared/:token")
+        .replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, ":id"),
       status: response.status,
     });
     return response;
@@ -251,6 +255,90 @@ try {
   );
   await request("api", `/v1/goals/${goal.id}/advice`, 404, { bearer: other });
   pass("configured-app-platform-and-goal-chat-persona");
+  const overage = (
+    await request("api", "/v1/payments/overage-info", 200, { bearer: owner })
+  ).data;
+  assert(
+    overage.explainer_body.includes(
+      `${fixture.brand_runtime.display_name} is free`,
+    ),
+  );
+  const task = (
+    await request("api", "/v1/action-items", 200, {
+      bearer: owner,
+      method: "POST",
+      body: { description: "Omi shared task stays literal" },
+    })
+  ).data;
+  const share = (
+    await request("api", "/v1/action-items/share", 200, {
+      bearer: owner,
+      method: "POST",
+      body: { task_ids: [task.id] },
+    })
+  ).data;
+  const preview = (
+    await request("api", `/v1/action-items/shared/${share.token}`, 200)
+  ).data;
+  assert.equal(
+    preview.sender_name,
+    `${fixture.brand_runtime.display_name} user`,
+  );
+  assert.equal(preview.tasks[0].description, "Omi shared task stays literal");
+  const accepted = (
+    await request("api", "/v1/action-items/accept", 200, {
+      bearer: other,
+      method: "POST",
+      body: { token: share.token },
+    })
+  ).data;
+  const copied = (
+    await request("api", `/v1/action-items/${accepted.created[0]}`, 200, {
+      bearer: other,
+    })
+  ).data;
+  assert.equal(copied.shared_from.sender_name, preview.sender_name);
+  assert.equal(copied.description, "Omi shared task stays literal");
+  // Read only this fixture's private generated admin credential. HTTP traces
+  // record route/status only; no credential is exported or printed.
+  const adminVars = readFileSync(
+    resolve(dirname(values.metadata), "configs/api-core/.dev.vars"),
+    "utf8",
+  );
+  const adminKey = /^FAIR_USE_ADMIN_KEY=([0-9a-f]{64})$/m.exec(adminVars)?.[1];
+  assert(Boolean(adminKey), "fixture has no owned fair-use admin credential");
+  const ownerUid = JSON.parse(
+    Buffer.from(owner.split(".")[1], "base64url"),
+  ).sub;
+  assert.equal(typeof ownerUid, "string");
+  const adminPath = `/v1/admin/fair-use/user/${encodeURIComponent(ownerUid)}`;
+  try {
+    for (const stage of ["warning", "restrict"]) {
+      await request("api", `${adminPath}/set-stage?stage=${stage}`, 200, {
+        bearer: owner,
+        method: "POST",
+        extraHeaders: { "x-admin-key": adminKey },
+      });
+      const status = (
+        await request("api", "/v1/fair-use/status", 200, { bearer: owner })
+      ).data;
+      assert.equal(status.stage, stage);
+      assert(
+        status.message.includes(
+          stage === "warning"
+            ? `${fixture.brand_runtime.display_name} is designed`
+            : fixture.support_email,
+        ),
+      );
+    }
+  } finally {
+    await request("api", `${adminPath}/reset`, 200, {
+      bearer: owner,
+      method: "POST",
+      extraHeaders: { "x-admin-key": adminKey },
+    });
+  }
+  pass("configured-usage-support-and-task-share-presentation");
   await send("Synthetic B private question", B);
   const again = await send("Synthetic A follow-up", A, {
     appId: "must-not-override-selected-app",

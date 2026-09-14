@@ -189,6 +189,17 @@ brand fallback for an unconfigured Cloudflare deployment: regenerate the resourc
 plan/rebuild the Worker before use. An otherwise valid configuration retains the
 existing provider and storage error classification.
 
+`BRAND_SUPPORT_EMAIL` is a separate public scalar projected only from the same
+manifest's existing `brand.support_email`; it does not extend the three-field
+identity JSON or introduce an operator naming input. CF3 requires a plain email
+address, writes it only to Core, and hashes it with the generated configuration.
+The direct template uses `omi-upstream`'s declared `help@omi.me`; the local runner
+records its explicit synthetic contact. Missing/invalid contact makes both
+fair-use status and public case presentation return503. Fair-use warning/support
+text, the public case contact field, overage product names and unnamed task-share
+sender/provenance use the brand projection. Existing fee calculations, thresholds,
+user names and task descriptions are preserved; this change sends no email.
+
 This covers default text chat identity, not every white-label product surface.
 Share URL routing, OAuth/email templates
 and the remaining CF4 route capabilities require their own owner verification.
@@ -2640,6 +2651,18 @@ account-deletion fences; Jobs includes it in purge/residual checks. Explicit
 `POST /v1/conversations/:id/finalize` retains the existing Queue/Jobs/Core owner.
 Silence/disconnect auto-finalization, continuous-capture rotation, every missing
 route and remote provider qualification remain separate unfinished CF-4 work.
+
+Chat and task sharing now mint `/chat/:token` and `/tasks/:token` capabilities
+from `PUBLIC_SHARE_BASE_URL`, projected from the same validated profile used by
+all clients. The share custom domain belongs to the existing Web Worker; Edge
+and Auth trust its exact origin alongside the Web origin. The fork Web build
+adds the two pages and a strict public proxy that validates and reduces previews
+before returning `private, no-store` responses. Task acceptance reuses the
+existing Better Auth session/JWT and authenticated API proxy. Missing brand/share
+configuration fails before D1 mutation. Unit and local product contracts cover
+owner isolation, expired/locked/invalid capabilities, self and duplicate
+acceptance, malformed responses and a real recipient copy. This local evidence
+does not qualify remote routes or authorize a deployment.
 
 `bash deploy/cloudflare/ci/product.sh` builds an isolated actual seven-Worker target,
 applies all normal migrations, runs the shared identity/onboarding/Tasks suite and
