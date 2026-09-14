@@ -241,3 +241,46 @@ gh workflow run fork-cd-server.yml     --ref main -f delivery_run_id=<RELEASE_RU
 | `dev/docker-compose.dev.yml` | Redis/MinIO 端口参数化 + Redis healthcheck |
 | `Makefile.fork` | fork 自有 make 目标(不动上游 Makefile) |
 | `.gitignore` | 忽略 `dev/local.env` |
+
+---
+
+## 1.4 本地环境 ↔ 生产环境 对照(2026-09-14 实测)
+
+| # | 生产目标 | 本地对应环境 | 命令 | 实测结果 |
+|---|---|---|---|---|
+| 1 | **Server OS 自托管** | 数据面 + core-only 自托管后端 | `dev/local.sh up` ; `dev/selfhost-local.sh up` | ✅ `verify` 5/5;业务接口 401 → 200 `[]` |
+| 2 | **Cloudflare** | 本地 target(workers + 本地绑定 + Provider 替身) | `npm run dev:product -- --output <dir>` | ✅ `/health` `/v1/health` `/` = 200;业务路由 401 |
+| 3 | **客户端** | 各自 fork stage 在构建时解析 `<target>.local` 并注入端点 | 见下 | web ✅;desktop 已接线未构建;flutter 阻塞在 SDK 版本 |
+
+### 客户端(第三条)的真实状态
+
+端点注入**已经实现**,分别在各自的 fork stage 里:
+
+| 客户端 | 本地/CI 入口 | profile 注入点 | 本机状态 |
+|---|---|---|---|
+| Web | `deploy/web/ci.sh`;`bun deploy/web/build.ts --target <t> --stage <s> --output <dir>` | `deploy/web/profile_input.py`(→ `scripts/profiles/render.py`) | ✅ `ci.sh` exit 0(8/8);`--target self_hosted --stage local` → `Built 28 routes for self_hosted.local`,产物含 `127.0.0.1:8100/3000/3001` |
+| macOS desktop | `desktop/macos/fork/{compile,build,test}.sh` | `desktop/macos/fork/prepare.py:149` 解析 `<target>.local`,第 296-299 行 `setenv OMI_PYTHON_API_URL / OMI_DESKTOP_API_URL / OMI_AUTH_API_URL / OMI_SHARE_BASE_URL`;`build.py` 写 `ForkDeploymentProfile` 进 Info.plist | 接线已在;本机未构建验证(xcodebuild 有,.build 缓存 1.6G) |
+| Flutter | `app/fork/test.sh` | `app/fork/prepare.py:82` 解析 `<target>.local`,并替换上游 `env/environment_profile.dart` 的导入(所以 `environment_profile.dart` 里那份硬编码枚举不影响 staged 构建) | ❌ 本机 Flutter 3.38.9,仓库钉 **3.44.5** |
+
+注意:仓库里**提交的**四份生成表(`app/lib/env/fork/*.g.dart`、macOS/Windows/Web 的 generated)是
+`omi_cloud` 默认渲染;fork stage 会在构建时按 target/stage 重新解析,所以"表里没有 self_hosted 行"
+不等于客户端连不上本地后端。
+
+### 三个本地环境的共同点
+
+后端两条各自实现(`backend/` 10k py vs `deploy/cloudflare/` 2.2k py + 176 ts),
+**客户端只认 profile**:`self_hosted.local` 的 `api_base_url` 就是 `http://127.0.0.1:8100/`,
+与本地后端一致。所以"环境对得上"靠的是 profile,不是共享代码。
+
+### CI 侧对应
+
+| 目标 | CI lane | 运行位置 | 状态 |
+|---|---|---|---|
+| Server OS | `fork-selfhost-product-core` → `deploy/self-host/ci/product.sh` | PR: `ubuntu-latest`(原生 amd64);push/manual: Mac Studio(arm64 模拟) | ❌ 红(既有);**PR 那次 143s 是真实失败,不是构建超时** |
+| Cloudflare | `fork-cloudflare-product-core` → `deploy/cloudflare/ci/product.sh` | 同上 | ✅ 本机 exit 0 |
+| Web | `deploy/web/ci.sh` | — | ✅ 本机 exit 0 |
+| 桌面 / 移动 | `desktop-swift-ci` / `mobile-app-checks` | macos-26 / hosted | 需按 profile 构建 |
+
+**可用的 x86 runner**:`turing-agents-MotherBoard-Series`(Linux X64,labels `omi,linux-x64`)已注册在线,
+但**没有任何工作流引用它** —— `fork-selfhost-product-core` 的 amd64 工作可以路由到它,替代在 arm64 Mac Studio
+上做模拟构建。
