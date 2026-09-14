@@ -211,9 +211,26 @@ jobs:
       # Portable contracts run on either host; macOS-only checks run below.
       # Server OS still executes in Linux Docker containers on Mac Studio.
       - name: Fork manifest (ci lane)
+        env:
+          # The self-host fixture writes per-command logs; pin them to a stable path
+          # so they outlive the run. They used to sit in a mktemp directory that no
+          # lane could read, and the job log truncates before the failing command
+          # (fork-selfhost-product-core reported "inspect command-09.log" for days
+          # with nothing diagnosable anywhere).
+          SELF_HOST_CI_REPORT_DIR: ${{ runner.temp }}/selfhost-fixture-report
         run: |
           python3 scripts/fork/run_checks.py \
             --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux
+
+      - name: Upload the self-host fixture report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fork-selfhost-fixture-report-${{ github.sha }}
+          overwrite: true
+          path: ${{ runner.temp }}/selfhost-fixture-report
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Report upstream divergence
         if: always()
