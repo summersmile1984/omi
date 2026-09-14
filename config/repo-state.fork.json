@@ -92,6 +92,11 @@
         "reason": "Advisory: it cannot report on a pull request. openapi-contract.yml is path-scoped, so the workflow does not start for most diffs; release-eligibility.yml has no pull_request trigger at all and only runs on push to main. A required check that never reports leaves the pull request waiting for a status forever. Both stay enabled for their push-lane signal."
       },
       {
+        "file": "opentofu-foundation-validate.yml",
+        "enforcement": "advisory",
+        "reason": "Upstream OpenTofu foundation validation. It is hermetic config validation that already runs green on this fork, so it is kept as an upstream infrastructure signal; it gates nothing because the fork's deployment state is self-host and Cloudflare, not upstream's cloud."
+      },
+      {
         "file": "public-build-config-preflight.yml",
         "enforcement": "advisory",
         "reason": "Public build configuration preflight."
@@ -123,6 +128,11 @@
         "file": "sdk-cpp.yml",
         "enforcement": "advisory",
         "reason": "C++ device SDK, retained as an upstream SDK surface."
+      },
+      {
+        "file": "sdk-rust.yml",
+        "enforcement": "advisory",
+        "reason": "Rust SDK, retained as an upstream SDK surface alongside sdk-cpp.yml and python-cli-ci.yml."
       },
       {
         "file": "web-checks.yml",
@@ -304,6 +314,18 @@
         "reason": "Upstream bot that commits guardrail history directly to main."
       },
       {
+        "file": "jit_qa_cloud_run.yml",
+        "reason": "Manual-only lane that operates an isolated upstream JIT QA data plane on Cloud Run; the fork has no such plane, so a run can only fail or reach upstream infrastructure."
+      },
+      {
+        "file": "jit_qa_manual_operator.yml",
+        "reason": "Manual-only lane that operates an isolated upstream JIT QA data plane; the fork has no such plane, so a run can only fail or reach upstream infrastructure."
+      },
+      {
+        "file": "jit_qa_typesense_projection.yml",
+        "reason": "Manual-only lane that drives the upstream hosted Typesense lexical projection; the fork runs its own Typesense instance, so a run can only fail or reach upstream infrastructure."
+      },
+      {
         "file": "mobile_internal_build.yml",
         "reason": "Upstream internal mobile builds distributed to Omi testers."
       },
@@ -358,16 +380,8 @@
         "reason": "On main but never registered by GitHub."
       },
       {
-        "file": "opentofu-foundation-validate.yml",
-        "reason": "On main but never registered by GitHub."
-      },
-      {
         "file": "publish_omi_cli.yml",
         "reason": "On main but never registered by GitHub."
-      },
-      {
-        "file": "sdk-rust.yml",
-        "reason": "On main but never registered by GitHub; the Rust SDK lane has never run in this fork."
       }
     ]
   },
