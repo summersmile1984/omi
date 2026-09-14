@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "FC-fork-stage-stops-at-first-stale-owner",
+  "violated_contract": "Each fork client stage verifies its recorded upstream source-owner digests against the current tree and stops at the first mismatch, so one upstream import that touches several owners costs one slow native or Flutter build per owner, and the reviewer never sees the list before starting. The contract those registries depend on is that every registry a stage verifies is audited in one place, and that the audit is selected for every diff which can stale an owner it covers. When a registry, or the inputs that can change it, are left out, the reviewer learns about one stale owner per CI round trip from a check that does not own that contract -- and a fix that is correct for the owner it was told about still fails on the next one.",
+  "canonical_prevention": "Audit every registry the fork verifies -- app/fork/source-owners.json (Flutter), desktop/macos/fork/source-owners.json (Swift owners, declarations and marker-bounded regions), desktop/windows/fork/source-owners.json (Electron whole-file owners) -- up front in one pass that prints all stale and unresolvable owners, and select that audit for every diff that can change an owner it covers, including the audit's own sources. Re-record a digest only after reviewing what upstream changed in that owner against the fork replacement: a semantic change is a code fix, not a digest edit.",
+  "canonical_prevention_artifact": [
+    "scripts/fork/check-overlay-owners.py",
+    "scripts/fork/test_overlay_owner_audit.py",
+    ".github/checks-manifest.fork.yaml"
+  ],
+  "evidence_prs": [40, 44],
+  "scope_hints": [
+    "scripts/fork/check-overlay-owners.py",
+    "scripts/fork/test_overlay_owner_audit.py",
+    "app/fork/source-owners.json",
+    "desktop/macos/fork/source-owners.json",
+    "desktop/windows/fork/source-owners.json"
+  ],
+  "status": "open"
+}

@@ -130,6 +130,25 @@ profile(speech/LLM 模型库:`prepare-speech.py` 目前因上游 TTS 归档 dige
   在 CI 对应 `backend/scripts/run-unit-ci.sh`、`bash backend/test.sh`、`app/test.sh`、`web/app/test.sh`。
 - 新增检查一律进清单,不写进 workflow YAML;本地先用 `scripts/fork/preflight --fork-only` 跑一遍。
 
+### 2.4 上游同步后先跑 owner 审计,别让门禁一次只报一个
+
+三个客户端 stage 在构建时各自校验"上游 source owner"摘要,而且**遇到第一个不匹配就停**
+(`desktop/macos/fork/swift_overlay.py`、`app/fork/prepare.py`、`desktop/windows/fork/prepare.py` 都是这个形状)。
+一次上游同步可能同时让多个 owner 失效 —— v0.12.348 一次弄脏 8 个;Electron 这次 5 个。
+若靠门禁逐个报,每个 owner 要付一轮 CI。
+
+所以 `fork-overlay-owner-audit` 在评审开始前一次性列出**全部**陈旧 owner:
+
+```bash
+python3 scripts/fork/check-overlay-owners.py   # flutter 85 / desktop 26 / electron 161
+```
+
+三条不变量(由 `scripts/fork/test_overlay_owner_audit.py` 断言):
+
+1. **每个 stage 校验的注册表都被审计**(flutter、macOS/Swift、Electron 三份 `source-owners.json`);
+2. **任何能让被覆盖 owner 失效的 diff 都会选中这条审计** —— 含 `desktop/windows/**`,以及审计自身的源码;
+3. 重录摘要前必须先看"上游改了什么":语义变化要改 fork 替换代码,不是改摘要。
+
 ---
 
 ## 3. 阶段 3 —— CD(两条车道 × 两个 stage)
