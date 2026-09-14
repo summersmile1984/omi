@@ -19,7 +19,10 @@ import zipfile
 
 from release_ci import REPOSITORY, github, sha256_file
 
-FILES = {'delivery.json', 'cloudflare.tar.gz', 'server-images.tar', 'source.tar.gz'}
+TARGET_FILES = {
+    'cloudflare': {'delivery.json', 'cloudflare.tar.gz'},
+    'self_hosted': {'delivery.json', 'server-images.tar'},
+}
 ATTEMPTS = 5
 
 
@@ -86,14 +89,15 @@ def transfer(url, destination):
     return result.returncode == 0
 
 
-def unpack_delivery(archive, destination):
+def unpack_delivery(archive, destination, target):
+    files = TARGET_FILES[target]
     destination = Path(destination).absolute()
     if os.path.lexists(destination):
         raise ValueError('download destination already exists')
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive) as bundle, tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
-        members = [member for member in bundle.infolist() if member.filename in FILES]
-        if len(members) != len(FILES) or {member.filename for member in members} != FILES:
+        members = bundle.infolist()
+        if len(members) != len(files) or {member.filename for member in members} != files:
             raise ValueError('artifact ZIP must contain each delivery file exactly once')
         for member in members:
             kind = stat.S_IFMT(member.external_attr >> 16)
@@ -106,7 +110,9 @@ def unpack_delivery(archive, destination):
         os.rename(temporary, destination)
 
 
-def download(run_id, name, destination, cache_root=None, api=github, locate=signed_url, fetch=transfer):
+def download(run_id, name, destination, cache_root=None, *, target, api=github, locate=signed_url, fetch=transfer):
+    if target not in TARGET_FILES:
+        raise ValueError('select the delivery target before downloading')
     artifacts = api(f'actions/runs/{int(run_id)}/artifacts?per_page=100')['artifacts']
     matches = [row for row in artifacts if row['name'] == name and not row['expired']]
     if len(matches) != 1:
@@ -152,7 +158,7 @@ def download(run_id, name, destination, cache_root=None, api=github, locate=sign
             partial.rename(archive)
         if archive.stat().st_size != artifact['size_in_bytes'] or sha256_file(archive) != expected:
             raise ValueError('cached artifact ZIP differs from the current GitHub metadata')
-        unpack_delivery(archive, destination)
+        unpack_delivery(archive, destination, target)
     print(json.dumps({'artifact_id': artifact['id'], 'zip_sha256': expected, 'download_verified': True}))
 
 
@@ -161,5 +167,6 @@ if __name__ == '__main__':
     parser.add_argument('--run-id', required=True, type=int)
     parser.add_argument('--artifact', required=True)
     parser.add_argument('--directory', required=True, type=Path)
+    parser.add_argument('--target', required=True, choices=TARGET_FILES)
     args = parser.parse_args()
-    download(args.run_id, args.artifact, args.directory)
+    download(args.run_id, args.artifact, args.directory, target=args.target)

@@ -3,6 +3,8 @@ import { qualifyProduct } from "../contracts/qualify-product.mjs";
 import { qualifyDualTarget } from "../../../contracts/deployment/qualify-dual-target.mjs";
 import { hostedOrigins } from "../contracts/hosted-product.mjs";
 
+import { requiredHostedCloudflareCases } from '../../../contracts/deployment/product-cases.mjs';
+
 function context(phase) {
   return {
     root: "/source",
@@ -18,13 +20,13 @@ function context(phase) {
 describe("release product execution", () => {
   it("executes hosted business checks only for observed deployment and binds evidence", async () => {
     const local = vi.fn(async () => ["core:passed"]),
-      hosted = vi.fn(async () => ["hosted:passed"]);
+      hosted = vi.fn(async () => requiredHostedCloudflareCases());
     const input = context("deployed");
     const proof = await qualifyProduct(input, { local, hosted });
     expect(local).not.toHaveBeenCalled();
     expect(hosted).toHaveBeenCalledWith(input);
     expect(proof.candidate_digest).toBe(input.candidate.candidate_digest);
-    expect(proof.cases).toEqual([{ id: "hosted:passed", result: "pass" }]);
+    expect(proof.cases).toEqual(requiredHostedCloudflareCases().map(id => ({id, result: "pass"})));
     expect(proof.observation_digest).toMatch(/^[a-f0-9]{64}$/);
   });
   it("propagates a real suite failure without returning a passing proof", async () => {
@@ -45,7 +47,7 @@ describe("release product execution", () => {
           server: async () => ["memory.owner"],
           hosted: () => ["memory.different"],
         })
-      ).rejects.toThrow("identical");
+      ).rejects.toThrow("incomplete evidence");
       await expect(
         qualifyDualTarget(context("candidate"), {
           spawn: () => ({ status: 1 }),

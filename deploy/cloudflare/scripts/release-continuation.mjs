@@ -11,7 +11,9 @@ const infrastructure = [
 const absent = () => ({ status: "absent" });
 
 export function deliveryContinuation(journalRoot, receipt) {
-  const previous = receipt.cloudflare_continue_from;
+  if (receipt.cloudflare_continue_from && receipt.cloudflare_update_from)
+    throw new Error('select continuation or same-schema update, never both');
+  const previous = receipt.cloudflare_update_from || receipt.cloudflare_continue_from;
   if (previous === undefined || previous === "") return undefined;
   if (typeof previous !== "string" || basename(previous) !== previous ||
       !/^(beta|production)-[0-9a-f]{40}-[0-9a-f-]{36}$/.test(previous) ||
@@ -43,6 +45,8 @@ export function uploadedArtifactDigest(candidate, role) {
 // exact-source CI/product qualification. The failed run 34373519437 owns the
 // motivating partial first release: full SQL, three Workers, failed Core upload.
 export function readContinuation(reference, { root, candidate }) {
+  if (![undefined, 'continue', 'update-code'].includes(reference.operation))
+    throw new Error('unknown retained release operation');
   const chain = [], seen = new Set();
   let next = reference;
   while (next) {
@@ -66,8 +70,9 @@ export function readContinuation(reference, { root, candidate }) {
     if (
       prior.candidate_digest !== next.candidate_digest ||
       journal.journal_digest !== next.journal_digest ||
-      journal.phase !== "apply" || journal.release_ready !== false ||
-      !["qualifying", "deploying", "reconciliation_required", "recovery_required"].includes(journal.state)
+      journal.phase !== "apply" ||
+      !(journal.release_ready === false && ["qualifying", "deploying", "reconciliation_required", "recovery_required"].includes(journal.state) ||
+        next.operation === 'update-code' && journal.release_ready === true && journal.state === 'completed')
     ) throw new Error("continuation requires unchanged incomplete release history");
     const qualifiedBefore = Object.fromEntries(
       Object.entries(journal.before).filter(([key]) => !key.startsWith("sql:")),
@@ -77,6 +82,16 @@ export function readContinuation(reference, { root, candidate }) {
         proof.candidate_digest === prior.candidate_digest &&
         proof.observation_digest === digest(qualifiedBefore))))
       throw new Error("retained release did not complete its original admission");
+    if (journal.release_ready) {
+      const deployed = { ...journal.before, release_phase: 'deployed', prior_versions: Object.fromEntries(
+        Object.values(prior.workers).map(({name}) => [name, journal.before[name]])) };
+      for (const event of journal.events.filter(row => row.id.startsWith('deploy:') && row.state === 'confirmed'))
+        deployed[event.observation.name] = version(event.observation);
+      if (['CF-4', 'CI-1', 'prior-schema'].some(id =>
+        !journal.deployed_qualification?.some(proof => proof.id === id && proof.exit === 0 &&
+          proof.candidate_digest === prior.candidate_digest && proof.observation_digest === digest(deployed))))
+        throw new Error('completed release is missing its executed deployed qualification');
+    }
     if (["brand", "stage", "account_id"].some((key) => prior[key] !== candidate[key]) ||
         digest(prior.inventory) !== digest(candidate.inventory) ||
         infrastructure.some((key) => digest(prior.resource_plan[key]) !== digest(candidate.resource_plan[key])) ||
@@ -90,6 +105,7 @@ export function readContinuation(reference, { root, candidate }) {
     next = journal.before.continuation;
   }
   if (!chain.length) throw new Error("continuation history is empty");
+  chain.operation = reference.operation ?? 'continue';
   if (chain[0].candidate.resource_plan.migrations.some(({ authority }) =>
     digest(chain[0].journal.before[`sql:${authority}`]) !== digest([])))
     throw new Error("continuation must originate in the observed empty migration authorities");
@@ -133,17 +149,25 @@ export function assertContinuationBasis(candidate, chain, observations) {
   for (const [role, { name }] of Object.entries(candidate.workers)) {
     if (digest(observations[name]) !== digest(states[name]))
       throw new Error("Worker changed outside the retained release owner");
-    if (states[name].status === "present" && owners[name] !== uploadedArtifactDigest(candidate, role))
-      throw new Error("continuation must preserve every already published artifact");
+    if (states[name].status === "present" && owners[name] !== uploadedArtifactDigest(candidate, role)) {
+      if (chain.operation !== 'update-code')
+        throw new Error("continuation must preserve every already published artifact");
+      const previous = [...chain].reverse().find(entry => entry.journal.events.some(event =>
+        event.id === `deploy:${role}` && event.state === 'confirmed'));
+      const path = `${role}/wrangler.json`;
+      if (!previous || previous.candidate.artifact_files.workers[path] !== candidate.artifact_files.workers[path])
+        throw new Error('code update must preserve published runtime configuration and infrastructure');
+    }
   }
 }
 
-export function continuationContext(root, candidate, journalDirectory) {
+export function continuationContext(root, candidate, journalDirectory, operation = 'continue') {
   const journal = readJson(resolve(journalDirectory, "journal.json"));
   const reference = {
     journal_directory: resolve(journalDirectory),
     journal_digest: journal.journal_digest,
     candidate_digest: journal.candidate_digest,
+    operation,
   };
   const chain = readContinuation(reference, { root, candidate });
   return {

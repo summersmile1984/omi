@@ -236,6 +236,30 @@ class ManifestTests(unittest.TestCase):
                     else:
                         self.assertFalse((root / 'github-path').exists())
 
+    def test_runtime_input_changes_select_their_actual_consumers(self):
+        import runpy
+        sys.path.insert(0, str(ROOT / '.github/scripts'))
+        owner = runpy.run_path(str(ROOT / '.github/scripts/run_checks.py'))
+        manifest = owner['load_manifest'](ROOT / '.github/checks-manifest.fork.yaml')
+        web = {'fork-web-build-contracts'}
+        targets = web | {'fork-cloudflare-product-core', 'fork-selfhost-product-core'}
+        inputs = {
+            'deploy/web/Dockerfile': web,
+            'deploy/web/compile-worker.ts': web | {'fork-cloudflare-product-core'},
+            'deploy/web/worker-runtime.ts': web | {'fork-cloudflare-product-core'},
+            'scripts/fork/server_gateway.py': web | {'fork-selfhost-product-core'},
+            '.github/actions/fork-release-tools/action.yml': targets,
+            'brand/eddy/manifest.yaml': targets | {'fork-macos-native-identity', 'fork-flutter-native-identity', 'fork-electron-native-identity'},
+            'web/app/src/app/login/page.tsx': web,
+        }
+        for lane in ('local', 'ci'):
+            for path, expected in inputs.items():
+                with self.subTest(lane=lane, path=path):
+                    selected = {entry.check.id for platform in ('linux', 'macos') for entry in owner['resolve_check_selections'](manifest, [path], lane, platform=platform)}
+                    self.assertTrue(expected <= selected, str(expected - selected))
+        unrelated = {entry.check.id for entry in owner['resolve_check_selections'](manifest, ['docs/notes.md'], 'ci')}
+        self.assertFalse(targets & unrelated)
+
     def test_actual_fork_manifest_resolves_after_backend_test_moves(self) -> None:
         # 6d9b046eec moved storage/queue tests into backend/fork/tests while the
         # manifest kept their old path. Execute the real CI selector/validator.

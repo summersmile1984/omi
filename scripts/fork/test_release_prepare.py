@@ -112,6 +112,8 @@ class PreparationTests(unittest.TestCase):
                     {
                         'source': {'commit': self.plan['commit'], 'tree': self.plan['tree']},
                         'candidate_digest': 'c' * 64,
+                        'account_id': 'e' * 32,
+                        'profiles': {'cloudflare': {}, 'self_hosted': {}},
                         'pending': ['deployed qualification'],
                     }
                 )
@@ -120,8 +122,6 @@ class PreparationTests(unittest.TestCase):
             raise subprocess.CalledProcessError(1, arguments)
         if arguments[:3] == ['docker', 'image', 'save']:
             (self.output / 'server-images.tar').write_bytes(b'image archive')
-        if arguments[:2] == ['git', 'archive']:
-            (self.output / 'source.tar.gz').write_bytes(b'source archive')
         if arguments[1:3] == ['scripts/fork/release_archive.py', 'pack']:
             (self.output / 'cloudflare.tar.gz').write_bytes(b'frozen candidate archive')
         if arguments[:3] == ['docker', 'image', 'inspect']:

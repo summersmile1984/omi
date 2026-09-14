@@ -9,6 +9,7 @@ import {
   runCloudflareRegression,
 } from "../../deploy/cloudflare/contracts/product-regression.mjs";
 import { qualificationContext } from "../../deploy/cloudflare/contracts/qualification-context.mjs";
+import { assertProductCases, assertCloudflareCases } from './product-cases.mjs';
 
 import {
   verifyCandidate,
@@ -52,6 +53,7 @@ export async function runServerRegression(context) {
     return readProductReport(resolve(output, "target/core-results.json"), {
       target: "self_hosted",
       brand: context.candidate.brand,
+      suite: 'core', surface: 'source',
     });
   } finally {
     closeSync(fd);
@@ -78,6 +80,8 @@ export async function regressCandidate(
   const [cf, os] = results.map((result) => result.value);
   if (!cf.length || !os.length)
     throw new Error("deployment target returned no executed cases");
+  assertCloudflareCases(cf);
+  assertProductCases(os, 'core', { surface: 'source' });
   if (
     JSON.stringify(
       cf

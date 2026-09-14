@@ -18,6 +18,8 @@ import time
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from product_cases import CONTRACT_SHA256, complete_cases
+from http_transport import transport_origin
 
 
 class ContractFailure(RuntimeError):
@@ -86,7 +88,8 @@ class ProductContract:
         self.cleanup_accounts = []
 
     def request(self, service, method, path, expected, *, bearer='', body=None, as_text=False):
-        headers = {'Accept': 'text/html' if as_text else 'application/json', 'X-App-Platform': 'web'}
+        origin, transport_headers = transport_origin(self.metadata, service)
+        headers = {**transport_headers, 'Accept': 'text/html' if as_text else 'application/json', 'X-App-Platform': 'web'}
         if service == 'auth':
             headers['Origin'] = self.auth_public_origin
         if bearer:
@@ -94,7 +97,7 @@ class ProductContract:
         if body is not None:
             headers['Content-Type'] = 'application/json'
         request = Request(
-            self.metadata[f'{service}_origin'].rstrip('/') + path,
+            origin + path,
             method=method,
             headers=headers,
             data=None if body is None else json.dumps(body).encode(),
@@ -560,7 +563,7 @@ class ProductContract:
         self.case('auth.refresh-logout-revocation', refresh_logout)
         return self.report()
 
-    def report(self):
+    def report(self, suite='core'):
         if self.remote and self.cleanup_accounts:
             accounts, self.cleanup_accounts = self.cleanup_accounts, []
             for index, credentials in enumerate(accounts):
@@ -579,7 +582,8 @@ class ProductContract:
             'target': self.metadata['target'],
             'brand_id': self.metadata['brand_id'],
             'cases': self.cases,
-            'passed': bool(self.cases) and all(case['result'] == 'pass' for case in self.cases),
+            'contract_sha256': CONTRACT_SHA256,
+            'passed': complete_cases(self.cases, suite, self.remote),
             'release_qualified': False,
         }
         (self.trace_dir / 'core-results.json').write_text(json.dumps(report, indent=2) + '\n')

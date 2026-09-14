@@ -10,7 +10,10 @@ import sys
 from urllib.parse import urlsplit
 
 
-def gateway_config(profile, nginx_image, web_image, port):
+NGINX_IMAGE = 'nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236'
+
+
+def gateway_config(profile, nginx_image, web_image, port, *, tls=False):
     if not re.fullmatch(r'nginx:[\w.-]+@sha256:[a-f0-9]{64}', nginx_image):
         raise ValueError('gateway requires a pinned official nginx image')
     if not re.fullmatch(r'sha256:[a-f0-9]{64}', web_image) or not 1024 <= port <= 65535:
@@ -35,6 +38,10 @@ def gateway_config(profile, nginx_image, web_image, port):
     if len(set(hosts.values())) != 4:
         raise ValueError('Server gateway surfaces must have distinct hostnames')
     blocks = []
+    tls_listener = '''
+    listen 443 ssl;
+    ssl_certificate /etc/nginx/tls/server.crt;
+    ssl_certificate_key /etc/nginx/tls/server.key;''' if tls else ''
     for key, upstream in {
         'api': 'backend:8080',
         'auth': 'auth-server:3000',
@@ -43,11 +50,12 @@ def gateway_config(profile, nginx_image, web_image, port):
     }.items():
         blocks.append(f'''
   server {{
-    listen 8080; server_name {hosts[key]};
+    listen 8080; server_name {hosts[key]};{tls_listener}
     client_max_body_size 100m;
     location ^~ /internal/ {{ return 404; }}
     location / {{
-      proxy_pass http://{upstream};
+      set $upstream_target {upstream};
+      proxy_pass http://$upstream_target;
       proxy_http_version 1.1;
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-Host $host;
@@ -62,6 +70,7 @@ def gateway_config(profile, nginx_image, web_image, port):
   }}''')
     nginx = '''events { worker_connections 1024; }
 http {
+  resolver 127.0.0.11 valid=5s ipv6=off;
   access_log off;
   map $http_upgrade $connection_upgrade { default upgrade; '' close; }
   server { listen 8080 default_server; server_name _; return 404; }
@@ -78,6 +87,40 @@ http {
         }
     }
     return nginx, compose, hosts
+
+
+def qualification_gateway(directory, profile, nginx_image, web_image, port):
+    """Use the real gateway with private DNS/TLS inside the disposable network."""
+    import certifi
+
+    nginx, compose, hosts = gateway_config(profile, nginx_image, web_image, port, tls=True)
+    certificate, key = directory / 'server.crt', directory / 'server.key'
+    subprocess.run([
+        'openssl', 'req', '-x509', '-nodes', '-newkey', 'rsa:2048', '-days', '1',
+        '-subj', '/CN=Release qualification', '-addext',
+        'subjectAltName=' + ','.join('DNS:' + host for host in hosts.values()),
+        '-keyout', str(key), '-out', str(certificate),
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    key.chmod(0o600)
+    ca = directory / 'ca-bundle.pem'
+    ca.write_bytes(Path(certifi.where()).read_bytes() + b'\n' + certificate.read_bytes())
+    ca.chmod(0o644)
+    gateway = compose['services']['gateway']
+    gateway['networks'] = {'default': {'aliases': list(hosts.values())}}
+    gateway['volumes'] = [f'{directory / "nginx.conf"}:/etc/nginx/nginx.conf:ro',
+                          f'{certificate}:/etc/nginx/tls/server.crt:ro', f'{key}:/etc/nginx/tls/server.key:ro']
+    for service in ('backend', 'auth-server', 'queue-worker', 'memory-maintenance-worker', 'web'):
+        target = compose['services'].setdefault(service, {})
+        target.setdefault('environment', {}).update({name: '/etc/ssl/release-ca.pem' for name in
+            ('SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS')})
+        target.setdefault('volumes', []).append(f'{ca}:/etc/ssl/release-ca.pem:ro')
+    (directory / 'nginx.conf').write_text(nginx)
+    path = directory / 'gateway-compose.json'
+    path.write_text(json.dumps(compose))
+    return path, {
+        'gateway_origin': f'http://127.0.0.1:{port}',
+        **{f'{role}_origin': 'https://' + hosts[role] for role in ('api', 'auth', 'web')},
+    }
 
 
 def main():

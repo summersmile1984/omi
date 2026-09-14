@@ -32,7 +32,7 @@ export function hostedOrigins(candidate, target = "cloudflare") {
 
 export function runHostedCore(
   context,
-  { target = "cloudflare", spawn = spawnSync } = {}
+  { target = "cloudflare", spawn = spawnSync, transport } = {}
 ) {
   const origins = hostedOrigins(context.candidate, target);
   const output = mkdtempSync(resolve(tmpdir(), "eddy-hosted-core-"));
@@ -42,6 +42,7 @@ export function runHostedCore(
     trace_dir: output,
     api_origin: origins.api,
     auth_origin: origins.auth,
+    ...(transport?.metadata ?? {}),
   };
   const path = resolve(output, "metadata.json");
   writeFileSync(path, JSON.stringify(metadata), { mode: 0o600 });
@@ -65,17 +66,19 @@ export function runHostedCore(
   return readProductReport(resolve(output, "core-results.json"), {
     target,
     brand: context.candidate.brand,
+    suite: 'core', surface: 'frozen', remote: true,
   });
 }
 
 export async function runHostedCloudflare(
   context,
-  { fetchImpl = fetch, smoke = runSmoke } = {}
+  { fetchImpl = fetch, smoke = runSmoke, transport } = {}
 ) {
   context.verify();
   require(context.observations.release_phase ===
     "deployed", "hosted checks require observed deployed versions");
   const origins = hostedOrigins(context.candidate);
+  fetchImpl = transport?.fetch ?? fetchImpl;
   const cases = [],
     accounts = [];
   async function request(
@@ -138,7 +141,7 @@ export async function runHostedCloudflare(
     require(result.nativeTts === 200 &&
       result.webProxyWorkersAiChat ===
         200, "hosted qualification must execute native TTS and Web streamed model chat");
-    cases.push(...Object.keys(result).map((key) => `hosted.routes.${key}`));
+    cases.push("hosted.routes.complete-route-smoke", "hosted.providers.web-workers-ai-chat");
 
     const bytes = Buffer.from(`owned synthetic release object ${randomUUID()}`);
     const asset = `/v1/cf/assets/release-${randomUUID()}.txt`;
@@ -196,13 +199,14 @@ export async function runHostedCloudflare(
 
     for (const native of [true, false]) {
       const path = native ? "/v4/listen" : "/v4/web/listen";
-      const socket = new WebSocket(
+      const socketArguments = [
         `${origins.api.replace(
           "https:",
           "wss:"
         )}${path}?codec=pcm16&sample_rate=16000&language=en&client_conversation_id=${randomUUID()}`,
         native ? { headers: { Authorization: `Bearer ${owner.token}` } } : {}
-      );
+      ];
+      const socket = new WebSocket(...(transport ? transport.socket(...socketArguments) : socketArguments));
       try {
         await new Promise((accept, reject) => {
           const timeout = setTimeout(
@@ -259,10 +263,52 @@ export async function runHostedCloudflare(
       transcript.text.trim().length > 0 &&
       !transcript.error, "native ASR returned no transcript");
     cases.push("hosted.providers.tts-to-asr");
+    const decoded = spawnSync('ffmpeg', ['-v','error','-i','pipe:0','-f','s16le','-ac','1','-ar','16000','pipe:1'], {
+      input: audio, timeout:30000, maxBuffer:8*1024*1024,
+    });
+    require(decoded.status === 0 && decoded.stdout.length > 32000, 'recording fixture PCM conversion failed');
+    const recordingId = randomUUID();
+    const socketArgs = [`${origins.api.replace('https:', 'wss:')}/v4/listen?codec=pcm16&sample_rate=16000&language=en&client_conversation_id=${recordingId}`,
+      { headers: { Authorization: `Bearer ${owner.token}` } }];
+    const recording = new WebSocket(...(transport ? transport.socket(...socketArgs) : socketArgs));
+    try {
+      await new Promise((accept, reject) => {
+        const timer = setTimeout(() => finish(new Error('recording transcript deadline exceeded')), 90000);
+        let sent = false, done = false;
+        const finish = error => { if (done) return; done = true; clearTimeout(timer); error ? reject(error) : accept(); };
+        recording.once('error', () => finish(new Error('recording audio transport failed')));
+        recording.once('close', () => finish(new Error('recording closed before persisted transcript')));
+        recording.on('message', raw => {
+          try {
+            const frame = JSON.parse(raw.toString());
+            if (frame.type === 'conversation_session' && !sent) {
+              sent = true;
+              // A single bounded synthetic utterance, followed by silence to
+              // let the real provider close its final transcription segment.
+              recording.send(Buffer.concat([decoded.stdout, Buffer.alloc(32000)]));
+            }
+            if (Array.isArray(frame) && frame.some(row => typeof row.text === 'string' && row.text.trim())) finish();
+            if (frame.type === 'error') finish(new Error('recording provider rejected audio'));
+          } catch { finish(new Error('recording returned an invalid transcript frame')); }
+        });
+      });
+    } finally { recording.terminate(); }
+    const persisted = await (await request('api', `/v1/conversations/${recordingId}`, 200, {token:owner.token})).json();
+    require(persisted.transcript_segments?.some(row => row.text?.trim()), 'recording transcript was not persisted before broadcast');
+    await request('api', `/v1/conversations/${recordingId}/finalize`, 200, {method:'POST',token:owner.token,body:{}});
+    const deadline = Date.now() + 180000;
+    for (;;) {
+      const stored = await (await request('api', `/v1/conversations/${recordingId}`, 200, {token:owner.token})).json();
+      if (stored.status === 'completed') break;
+      require(stored.status !== 'failed' && Date.now() < deadline, 'real Queue/provider finalization did not complete');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    await request('api', `/v1/conversations/${recordingId}`, 404, {token:other.token});
+    cases.push('hosted.recording.audio-persistence-queue-finalization');
   } finally {
     // Only accounts created by this invocation are eligible for deletion.
     const failures = [];
-    for (const account of accounts) {
+    for (const [index, account] of accounts.entries()) {
       try {
         const token =
           account.token ||
@@ -278,6 +324,7 @@ export async function runHostedCloudflare(
           token,
           body: {},
         });
+        cases.push(`hosted.cleanup.synthetic-account-${index}`);
       } catch {
         failures.push(account);
       }

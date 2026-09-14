@@ -45,6 +45,8 @@ try {
       journal: { type: "string" },
       authorize: { type: "string" },
       "continue-from": { type: "string" },
+      "update-from": { type: "string" },
+      "ci-run-id": { type: "string" },
     },
   });
   if (positionals.length !== 1)
@@ -52,14 +54,16 @@ try {
       "select prepare, check, dry-run, provision, apply, recovery-plan or restore"
     );
   const [action] = positionals;
-  if (values["continue-from"] && action !== "apply")
+  if (values['continue-from'] && values['update-from']) throw new Error('select continuation or update');
+  if ((values["continue-from"] || values['update-from']) && action !== "apply")
     throw new Error("--continue-from is only valid for an apply transaction");
+  if (values["ci-run-id"] && action !== "prepare") throw new Error("CI reuse only applies to source checks during preparation");
   if (action === "prepare") {
     if (!values.output || !values.inventory)
       throw new Error(
         "prepare requires --stage --inventory --output and --brand or --manifest"
       );
-    const result = prepareRelease({ root, ...values });
+    const result = prepareRelease({ root, ...values, ciRunId: values["ci-run-id"] });
     const context = qualificationContext(root, {
       candidate_directory: resolve(values.output),
       candidate: result,
@@ -152,8 +156,8 @@ try {
       const qualify = async (observations) =>
         runReleaseQualifiers(root, candidate, observations, { directory });
       const verify = () => verifyCandidate(directory, root);
-      const continuation = values["continue-from"]
-        ? continuationContext(root, candidate, resolve(values["continue-from"]))
+      const continuation = values['update-from'] || values["continue-from"]
+        ? continuationContext(root, candidate, resolve(values['update-from'] || values["continue-from"]), values['update-from'] ? 'update-code' : 'continue')
         : undefined;
       if (action === "recovery-plan") {
         console.log(

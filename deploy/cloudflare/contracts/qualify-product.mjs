@@ -7,6 +7,7 @@ import {
 } from "./qualification-context.mjs";
 import { runCloudflareRegression } from "./product-regression.mjs";
 import { runHostedCloudflare } from "./hosted-product.mjs";
+import { assertQualificationCases } from '../../../contracts/deployment/product-cases.mjs';
 
 export async function qualifyProduct(
   context,
@@ -20,6 +21,7 @@ export async function qualifyProduct(
     ? local(context)
     : hosted(context));
   if (!cases.length) throw new Error("no product cases executed");
+  assertQualificationCases(cases, 'CF-4', context.observations);
   context.verify();
   return qualificationProof(context.candidate, context.observations, cases);
 }

@@ -216,7 +216,7 @@ export async function qualifyFirstRelease(
   context.verify();
   return {
     ...qualificationProof(candidate, observations, cases),
-    scope: "first-release-only",
+    scope: continuation?.operation === "update-code" ? "same-schema-owned-code-update" : "first-release-only",
   };
 }
 

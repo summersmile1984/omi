@@ -7,8 +7,13 @@ import { readJson, verifyCandidate, writeJson } from "./release-files.mjs";
 import { digest, WORKERS } from "./resource-input.mjs";
 import { WranglerReleaseAdapter, RELEASE_READINESS, isReleaseReady } from "./release-wrangler.mjs";
 import { observeReleaseCandidate } from "./release-transaction.mjs";
-import { continuationContext, deliveryContinuation } from "./release-continuation.mjs";
+import { continuationContext, deliveryContinuation, readContinuation } from "./release-continuation.mjs";
 import { qualifyFirstRelease, executeFrozenSchema, querySchema, comparableSchemaCatalog, SCHEMA_QUERY } from "../contracts/qualify-prior-schema.mjs";
+import { createProbeResources, privateResourceBindings, cleanupProbeResource } from './release-probe-resources.mjs';
+import { hostedOrigins, runHostedCloudflare, runHostedCore } from '../contracts/hosted-product.mjs';
+import { beginRetainedBusiness } from '../contracts/retained-business.mjs';
+import { probeTransport } from '../contracts/probe-transport.mjs';
+import { assertQualificationCases, assertProductCases } from '../../../contracts/deployment/product-cases.mjs';
 import { qualificationContext } from "../contracts/qualification-context.mjs";
 
 const HEALTH = {
@@ -21,15 +26,30 @@ const HEALTH = {
 };
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const PROBE_SECRET = "CF_RELEASE_PROBE_TOKEN";
-const gatewaySource = `export default {
+export function gatewaySource(origins, buckets) { return `export default {
   async fetch(request, env) {
-    const paths = ${JSON.stringify(HEALTH)};
-    const role = new URL(request.url).pathname.slice(1);
-    if (request.method !== "GET" || request.headers.get("x-release-probe") !== env.PROBE_TOKEN || !Object.hasOwn(paths, role))
-      return new Response(null, {status: 404});
-    return env[paths[role].role.replaceAll("-", "_")].fetch("https://release-ci.internal" + paths[role].path);
+    if (request.headers.get("x-release-probe") !== env.PROBE_TOKEN) return new Response(null, {status: 404});
+    const url = new URL(request.url), paths = ${JSON.stringify(HEALTH)}, origins = ${JSON.stringify(origins)};
+    const cleanup = url.pathname.match(/^\\/__cleanup\\/(\\d+)$/);
+    if (cleanup && request.method === 'POST') {
+      const binding = ${JSON.stringify(buckets)}[Number(cleanup[1])];
+      if (!binding) return new Response(null, {status: 404});
+      const page = await env[binding].list({ limit: 500 });
+      if (page.objects.length) await env[binding].delete(page.objects.map(row => row.key));
+      return Response.json({ done: !page.truncated });
+    }
+    const match = url.pathname.match(/^\\/__service\\/(api|auth|web)(\\/.*)$/);
+    if (match) {
+      const target = match[1] === 'api' ? 'edge' : match[1];
+      const forwarded = new Request(origins[match[1]] + match[2] + url.search, request);
+      forwarded.headers.delete('x-release-probe');
+      return env[target].fetch(forwarded);
+    }
+    const role = url.pathname.slice(1);
+    if (request.method !== 'GET' || !Object.hasOwn(paths, role)) return new Response(null, {status: 404});
+    return env[paths[role].role.replaceAll('-', '_')].fetch('https://release-ci.internal' + paths[role].path);
   }
-};\n`;
+};\n`; }
 
 // This is a rehearsal of the existing frozen publisher, not a second builder.
 // Cloudflare beta run 34373519437 uploaded three Workers before Core's actual
@@ -45,8 +65,6 @@ export function probeConfiguration(config, names, directory) {
   result.workers_dev = false;
   result.preview_urls = false;
   result.routes = [];
-  result.triggers = { crons: [] };
-  if (result.queues) result.queues.consumers = [];
   if (result.tail_consumers?.length || result.workflows?.length)
     throw new Error("probe cannot install live event consumers");
   for (const service of result.services ?? []) {
@@ -83,6 +101,10 @@ export async function qualifyCloudRuntime(context, {
   frozenSchema = executeFrozenSchema,
   continuation,
   env = process.env,
+  hosted = runHostedCloudflare,
+  core = runHostedCore,
+  retainedHistory = readContinuation,
+  upgrade = beginRetainedBusiness,
 } = {}) {
   const { root, directory, candidate, verify } = context;
   verify();
@@ -101,7 +123,7 @@ export async function qualifyCloudRuntime(context, {
   const token = randomBytes(32).toString("hex");
   const gateway = `${prefix}-probe`;
   const gatewayFile = resolve(journalDirectory, "probe.js");
-  writeFileSync(gatewayFile, gatewaySource, { mode: 0o600 });
+  writeFileSync(gatewayFile, gatewaySource(hostedOrigins(candidate), []), { mode: 0o600 });
   const gatewayConfig = resolve(journalDirectory, "probe.json");
   writeFileSync(gatewayConfig, JSON.stringify({
     name: gateway, account_id: candidate.account_id,
@@ -116,12 +138,12 @@ export async function qualifyCloudRuntime(context, {
   const journal = {
     schema_version: 1, transaction, candidate_digest: candidate.candidate_digest,
     commit: candidate.source.commit, state: "observing", artifact_qualified: false,
-    release_ready: false, workers: [], databases: [], cases: [], cleanup: [],
+    release_ready: false, workers: [], databases: [], resources: [], cases: [], cleanup: [],
   };
   const persist = () => writeJson(journalDirectory, "journal.json", journal);
   persist();
   const before = {};
-  let failure;
+  let failure, gatewayOrigin, gatewayUploaded = false;
   try {
     const preconditions = await original.preconditions();
     journal.cases.push(...(preconditions?.ingress ?? []));
@@ -178,8 +200,9 @@ export async function qualifyCloudRuntime(context, {
       persist();
     }
     if (databaseIds.size !== 2) throw new Error("cloud qualification requires both SQL authorities");
+    await createProbeResources(adapter, candidate, probe, prefix, journal, persist);
     for (const worker of Object.values(probe.workers)) {
-      const config = readJson(worker.config);
+      const config = privateResourceBindings(readJson(worker.config), journal.resources);
       for (const binding of config.d1_databases ?? []) {
         const database = databaseIds.get(binding.database_id);
         if (!database) throw new Error("probe cannot bind to a serving D1 database");
@@ -188,20 +211,25 @@ export async function qualifyCloudRuntime(context, {
       }
       writeFileSync(worker.config, JSON.stringify(config), { mode: 0o600 });
     }
+    const buckets = journal.resources.filter(row => row.resource.kind === 'r2');
+    const gatewaySettings = readJson(gatewayConfig);
+    gatewaySettings.r2_buckets = buckets.map((row, index) => ({ binding: `BUCKET_${index}`, bucket_name: row.resource.name }));
+    writeFileSync(gatewayConfig, JSON.stringify(gatewaySettings), { mode: 0o600 });
+    writeFileSync(gatewayFile, gatewaySource(hostedOrigins(candidate), buckets.map((_, index) => `BUCKET_${index}`)), { mode: 0o600 });
     journal.state = "uploading";
     persist();
     const roles = candidate.resource_plan.deploy_order.map((name) =>
       Object.keys(candidate.workers).find((role) => candidate.workers[role].name === name));
     if (roles.length !== WORKERS.length || new Set(roles).size !== WORKERS.length || roles.includes(undefined))
       throw new Error("probe requires the candidate's complete deployment order");
-    for (const role of [...roles, "probe"]) {
+    const publish = async (selected, publisher, role, generation = 'candidate') => {
       verify();
-      const worker = probe.workers[role];
-      const event = { role, name: worker.name, tag: `${transaction}:${role}`, message: `release-ci=${candidate.candidate_digest}`, state: "in_flight" };
+      const worker = selected.workers[role];
+      const event = { role, name: worker.name, tag: `${transaction}:${generation}:${role}`, message: `release-ci=${selected.candidate_digest}`, state: "in_flight" };
       journal.workers.push(event);
       persist();
-      const process = adapter.deploy(role, event.tag, event.message);
-      const observed = await adapter.observeWorker(worker.name);
+      const process = publisher.deploy(role, event.tag, event.message);
+      const observed = await publisher.observeWorker(worker.name);
       if (observed.status === "present" && observed.tag === event.tag && observed.message === event.message) {
         event.version = observed.version;
         event.state = "uploaded";
@@ -209,11 +237,42 @@ export async function qualifyCloudRuntime(context, {
       }
       if (process.exit !== 0 || event.state !== "uploaded")
         throw new Error(`cloud runtime upload did not qualify: ${role}`);
-      if (role !== "probe") journal.cases.push({ id: `cloud.upload.${role}`, result: "pass" });
-    }
+      if (role !== "probe" && generation === "candidate") journal.cases.push({ id: `cloud.upload.${role}`, result: "pass" });
+    };
     const subdomain = (await adapter.api("workers/subdomain")).result?.subdomain;
     if (typeof subdomain !== "string" || !/^[a-z0-9-]+$/.test(subdomain))
       throw new Error("cloud probe account subdomain is unavailable");
+    gatewayOrigin = `https://${gateway}.${subdomain}.workers.dev`;
+    const transport = probeTransport(hostedOrigins(candidate), gatewayOrigin, token, fetchProbe);
+    let verifyUpgrade;
+    if (continuation?.reference.operation === 'update-code') {
+      const history = retainedHistory(continuation.reference, context), previous = history.at(-1);
+      if (roles.some(role => !previous.journal.events.some(event => event.id === `deploy:${role}` && event.state === 'confirmed')))
+        throw new Error('code update requires a fully uploaded retained graph; partial releases need exact-payload continuation');
+      const older = structuredClone(probe);
+      older.candidate_digest = previous.candidate.candidate_digest;
+      for (const role of roles) {
+        const frozen = resolve(previous.directory + '-candidate', previous.candidate.workers[role].config);
+        const path = stageProbeWorker(frozen, names, resolve(journalDirectory, 'prior', role));
+        const config = privateResourceBindings(readJson(path), journal.resources);
+        for (const binding of config.d1_databases ?? []) {
+          const database = databaseIds.get(binding.database_id);
+          if (!database) throw new Error('retained graph cannot bind to serving SQL');
+          binding.database_id = database.id;
+          if (binding.database_name) binding.database_name = database.name;
+        }
+        writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
+        older.workers[role] = { ...probe.workers[role], config: path };
+      }
+      const publisher = adapterFactory({ root, directory: journalDirectory, candidate: older, env: { ...env, [PROBE_SECRET]: token } });
+      for (const role of roles) await publish(older, publisher, role, 'retained');
+      await publish(probe, adapter, 'probe');
+      gatewayUploaded = true;
+      verifyUpgrade = await upgrade(context, transport);
+    }
+    for (const role of roles) await publish(probe, adapter, role);
+    if (!gatewayUploaded) await publish(probe, adapter, 'probe');
+    gatewayUploaded = true;
     for (const role of Object.keys(HEALTH)) {
       // Two actual requests exercise the Python cold application import and its
       // subsequent request, through a separate token-guarded service gateway.
@@ -228,6 +287,21 @@ export async function qualifyCloudRuntime(context, {
       journal.cases.push({ id: `cloud.cold-and-warm.${role}`, result: "pass" });
       persist();
     }
+    if (verifyUpgrade) {
+      const cases = await verifyUpgrade();
+      if (JSON.stringify(cases) !== JSON.stringify(['cloud.upgrade.retained-session-memory-and-task'])) throw new Error('retained business execution is incomplete');
+      journal.cases.push(...cases.map(id => ({id,result:'pass'})));
+      persist();
+    }
+    const hostedContext = { ...context, observations: { ...observations, release_phase: 'deployed' } };
+    const commonCases = await core(hostedContext, { transport });
+    assertProductCases(commonCases, 'core', { surface: 'frozen', remote: true });
+    journal.cases.push(...commonCases.map(id => ({ id: `cloud.core:${id}`, result: 'pass' })));
+    persist();
+    const hostedCases = await hosted(hostedContext, { transport });
+    assertQualificationCases(hostedCases, 'CF-4', hostedContext.observations);
+    journal.cases.push(...hostedCases.map(id => ({ id: `cloud.${id}`, result: 'pass' })));
+    persist();
     verify();
     for (const worker of Object.values(candidate.workers))
       if (digest(await original.observeWorker(worker.name)) !== digest(before[worker.name]))
@@ -237,7 +311,7 @@ export async function qualifyCloudRuntime(context, {
   } finally {
     // A failed upload has an unknown outcome. Reobserve the exact generated
     // name and transaction annotation before deleting any exclusively owned probe.
-    for (const event of [...journal.workers].reverse()) {
+    const removeWorker = async (event) => {
       try {
         const observed = await adapter.observeWorker(event.name);
         if (observed.status === "present") {
@@ -256,7 +330,33 @@ export async function qualifyCloudRuntime(context, {
         failure ??= new Error("cloud probe cleanup requires reconciliation");
       }
       persist();
+    };
+    for (const event of [...journal.workers].reverse().filter(row => row.role !== 'probe')) await removeWorker(event);
+    for (const event of [...journal.resources].reverse()) {
+      try {
+        await cleanupProbeResource(adapter, event, {
+          workerNames: journal.workers.map(row => row.name),
+          purgeBucket: async name => {
+            if (!gatewayUploaded) return; // No business execution occurred before the gateway was published.
+            const index = journal.resources.filter(row => row.resource.kind === 'r2').findIndex(row => row.resource.name === name);
+            for (let page = 0; page < 1000; page++) {
+              const response = await fetchProbe(`${gatewayOrigin}/__cleanup/${index}`, {
+                method: 'POST', headers: { 'x-release-probe': token }, redirect: 'manual', signal: AbortSignal.timeout(30000),
+              });
+              if (response.status !== 200) throw new Error('private bucket cleanup failed');
+              if ((await response.json()).done === true) return;
+            }
+            throw new Error('private bucket cleanup exceeded its bound');
+          },
+        });
+        journal.cleanup.push({ name: event.resource.name, result: 'pass' });
+      } catch {
+        journal.cleanup.push({ name: event.resource.name, result: 'reconciliation-required' });
+        failure ??= new Error('cloud resource cleanup requires reconciliation');
+      }
+      persist();
     }
+    for (const event of journal.workers.filter(row => row.role === 'probe')) await removeWorker(event);
     for (const event of [...journal.databases].reverse()) {
       try {
         const observed = await adapter.observeResource(event.resource);
@@ -308,7 +408,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     mkdirSync(journalRoot, { recursive: true, mode: 0o700 });
     journalDirectory = resolve(journalRoot, `ci-${candidate.source.commit}-${randomUUID()}`);
     const previous = deliveryContinuation(journalRoot, receipt);
-    const continuation = previous ? continuationContext(root, candidate, previous) : undefined;
+    const continuation = previous ? continuationContext(root, candidate, previous, receipt.cloudflare_update_from ? 'update-code' : 'continue') : undefined;
     const context = qualificationContext(root, { candidate_directory: directory, candidate, observations: { release_phase: "candidate" } });
     const result = await qualifyCloudRuntime(context, { journalDirectory, env, continuation });
     console.log(JSON.stringify({ state: result.state, artifact_qualified: result.artifact_qualified, cases: result.cases.length, journal: journalDirectory }));

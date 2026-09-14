@@ -15,6 +15,18 @@ import base64
 
 
 class ServerDeliveryTests(unittest.TestCase):
+    def test_gateway_transport_preserves_public_authority_without_a_remote_override(self):
+        from http_transport import transport_origin
+
+        metadata = {'api_origin': 'https://api.example.com', 'gateway_origin': 'http://127.0.0.1:34801'}
+        self.assertEqual(transport_origin(metadata, 'api'), ('http://127.0.0.1:34801', {'Host': 'api.example.com'}))
+        with self.assertRaises(ValueError):
+            transport_origin({**metadata, 'gateway_origin': 'https://external.example.com'}, 'api')
+        probe = {'api_origin':'https://api.example.com','probe_origin':'https://eddy-ci-b-12345678-probe.fixture.workers.dev','probe_token':'a'*64}
+        self.assertEqual(transport_origin(probe,'api'), (probe['probe_origin']+'/__service/api', {'x-release-probe':'a'*64}))
+        with self.assertRaises(ValueError):
+            transport_origin({**probe,'probe_origin':'https://serving.workers.dev'},'api')
+
     def test_public_ai_requires_a_completed_payload_and_recognized_audio(self):
         terminal = base64.b64encode(json.dumps({'text': 'Synthetic answer'}).encode()).decode()
         self.assertEqual(verify_chat_stream('data: Synthetic answer\n\ndone: ' + terminal)['text'], 'Synthetic answer')
@@ -87,9 +99,9 @@ class ServerDeliveryTests(unittest.TestCase):
             response.read.return_value = b'{"status":"ready"}'
             return response
 
-        metadata = {'api_origin': 'https://api.example.com'}
+        metadata = {f'{role}_origin': f'https://{role}.example.com' for role in ('api', 'auth', 'web')}
         wait_ready(metadata, open_url=request, now=lambda: clock[0], pause=pause, timeout=4)
-        self.assertEqual(attempts, ['https://api.example.com/ready'] * 2)
+        self.assertEqual(attempts, ['https://api.example.com/ready', 'https://auth.example.com/ready', 'https://web.example.com/login', 'https://api.example.com/ready'])
         clock[0] = 0
         with self.assertRaisesRegex(RuntimeError, 'deadline'):
             wait_ready(
@@ -114,25 +126,27 @@ class ServerDeliveryTests(unittest.TestCase):
                     response.__enter__.return_value = response
                     response.getcode.return_value = 200
                     response.geturl.return_value = url
-                    response.read.return_value = payload
+                    response.read.return_value = payload if '/login' not in url else b'<html>login</html>'
                     return response
 
                 with self.assertRaisesRegex(RuntimeError, 'deadline'):
                     wait_ready(
-                        {'auth_origin': 'https://auth.example.com'},
+                        {f'{role}_origin': f'https://{role}.example.com' for role in ('api', 'auth', 'web')},
                         open_url=request,
                         now=lambda: clock[0],
                         pause=pause,
                         timeout=2,
                     )
-                # The existing SSR endpoint intentionally returns HTML.
-                wait_ready(
-                    {'web_origin': 'https://web.example.com'},
-                    open_url=request,
-                    now=lambda: clock[0],
-                    pause=pause,
-                    timeout=2,
-                )
+    def test_readiness_requires_every_surface_before_any_request(self):
+        complete = {f'{role}_origin': f'https://{role}.example.com' for role in ('api', 'auth', 'web')}
+        variants = [{}, *[{key: value for key, value in complete.items() if key != missing} for missing in complete]]
+        variants += [{**complete, 'web_origin': value} for value in ('', None, 'not-an-origin', 'https://user:secret@example.com')]
+        for metadata in variants:
+            with self.subTest(metadata=metadata):
+                request = MagicMock()
+                with self.assertRaisesRegex(ValueError, 'readiness requires'):
+                    wait_ready(metadata, open_url=request)
+                request.assert_not_called()
 
     def test_accepted_content_addressed_images(self):
         verify_images(self.receipt, self.environment, self.inspect)

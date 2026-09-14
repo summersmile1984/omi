@@ -15,7 +15,8 @@ import sys
 import time
 import uuid
 from urllib.error import URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
 
 from release_ci import sha256_file
 
@@ -23,6 +24,9 @@ ROOT = Path(__file__).resolve().parents[2]
 READINESS = json.loads((ROOT / 'contracts/deployment/readiness.json').read_text())['self_hosted']
 sys.path.insert(0, str(ROOT / 'deploy/self-host'))
 from model_services import profile_for, image_keys
+sys.path.insert(0, str(ROOT / 'contracts/deployment'))
+from http_transport import transport_origin
+from server_gateway import qualification_gateway
 
 
 def accepted_image_keys(receipt):
@@ -85,27 +89,40 @@ def write_environment(path, values):
 
 
 def wait_ready(metadata, *, open_url=urlopen, pause=time.sleep, now=time.monotonic, timeout=120):
+    required = {check['origin'] + '_origin' for check in READINESS.values()}
+    for key in sorted(required):
+        value = metadata.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f'readiness requires {key}')
+        origin = urlsplit(value)
+        if (
+            origin.scheme not in {'http', 'https'} or not origin.hostname
+            or origin.username or origin.password or origin.query or origin.fragment
+            or origin.path not in ('', '/')
+        ):
+            raise ValueError(f'readiness requires an explicit origin: {key}')
     deadline = now() + timeout
-    pending = {
-        metadata[check['origin'] + '_origin'].rstrip('/') + check['path']: check['ready_json']
-        for check in READINESS.values()
-        if check['origin'] + '_origin' in metadata
-    }
+    pending = {}
+    for role, check in READINESS.items():
+        origin, headers = transport_origin(metadata, check['origin'])
+        url = origin + check['path']
+        pending[role] = (Request(url, headers=headers) if headers else url, url, check['ready_json'])
     while pending and now() < deadline:
-        for url in list(pending):
+        for role in list(pending):
             if now() >= deadline:
                 break
             try:
-                with open_url(url, timeout=min(5, max(0.1, deadline - now()))) as response:
+                request, url, ready_json = pending[role]
+                with open_url(request, timeout=min(5, max(0.1, deadline - now()))) as response:
                     if response.getcode() == 200 and response.geturl() == url:
-                        if not pending[url] or json.load(response).get('status') == 'ready':
-                            del pending[url]
+                        if not ready_json or json.load(response).get('status') == 'ready':
+                            del pending[role]
             except (URLError, TimeoutError, OSError, ValueError, AttributeError):
                 pass
         if pending:
             pause(min(2, max(0, deadline - now())))
     if pending:
-        raise RuntimeError('deployment origins did not become ready before the acceptance deadline')
+        raise RuntimeError('readiness deadline exceeded: ' + ', '.join(pending))
 
 
 def boot_test(release, values, env):
@@ -115,7 +132,7 @@ def boot_test(release, values, env):
     ports = {}
     reservations = []
     try:
-        for key in ('BACKEND_PORT', 'AUTH_SERVER_PORT', 'MINIO_API_PORT', 'MINIO_CONSOLE_PORT'):
+        for key in ('BACKEND_PORT', 'AUTH_SERVER_PORT', 'MINIO_API_PORT', 'MINIO_CONSOLE_PORT', 'GATEWAY_PORT'):
             connection = socket.socket()
             connection.bind(('127.0.0.1', 0))
             reservations.append(connection)
@@ -123,25 +140,31 @@ def boot_test(release, values, env):
     finally:
         for connection in reservations:
             connection.close()
-    auth_origin = 'http://127.0.0.1:' + ports['AUTH_SERVER_PORT']
     testing = {**values, **ports, 'SELF_HOST_BIND_ADDRESS': '127.0.0.1'}
     runtime = directory / 'runtime.env'
     write_environment(runtime, testing)
     project = 'eddy-boot-' + uuid.uuid4().hex[:12]
     source = release / 'source'
+    receipt = json.loads((release / 'delivery.json').read_text())
+    settings = json.loads((release.parent.parent / 'gateway.json').read_text())
+    profile = profile_for(values, root=source)
+    overlay, origins = qualification_gateway(directory, profile, settings['nginx_image'],
+                                             receipt['images']['web']['image_id'], int(ports['GATEWAY_PORT']))
     test_env = {**env, 'SELF_HOST_ENV': str(runtime), 'SELF_HOST_PROJECT': project}
     metadata = {
         'target': 'self_hosted',
         'brand_id': 'eddy',
         'trace_dir': str(directory),
-        'api_origin': 'http://127.0.0.1:' + ports['BACKEND_PORT'],
-        'api_public_origin': values['PUBLIC_BACKEND_URL'],
-        'auth_origin': auth_origin,
-        'auth_public_origin': values['PUBLIC_AUTH_URL'],
+        **origins,
     }
+    compose = ['bash', str(source / 'deploy/self-host/compose-clean-env.sh'), str(runtime),
+               str(source / 'deploy/self-host/compose.production.yml'), '--project-name', project, '--file', str(overlay)]
     save(directory / 'metadata.json', metadata)
     try:
         run(['bash', str(source / 'deploy/self-host/operations.sh'), 'deploy-images'], env=test_env)
+        run([*compose, 'up', '--detach', '--no-build', '--wait', 'backend', 'auth-server',
+             'queue-worker', 'memory-maintenance-worker', 'web', 'gateway'], env=test_env)
+        run([*compose, 'exec', '-T', 'gateway', 'nginx', '-t'], env=test_env)
         wait_ready(metadata)
         run(
             [
@@ -149,24 +172,19 @@ def boot_test(release, values, env):
                 str(source / 'contracts/deployment/core.py'),
                 '--metadata',
                 str(directory / 'metadata.json'),
+                '--remote',
             ],
             env=test_env,
         )
+        run([sys.executable, str(source / 'scripts/fork/server_ai_acceptance.py'), '--metadata',
+             str(directory / 'metadata.json')], env=test_env)
+        run([*compose, 'exec', '-T', 'backend', 'python', '-c',
+             'from fork.embedding import build; vector=build().embed_query("Synthetic release embedding"); assert len(vector)==1024; print("Embedding inference passed: 1024 dimensions")'], env=test_env)
     finally:
         # This invocation creates the unique project and exclusively owns its
         # volumes. Persistent eddy-server-* projects are never selected here.
         run(
-            [
-                'bash',
-                str(source / 'deploy/self-host/compose-clean-env.sh'),
-                str(runtime),
-                str(source / 'deploy/self-host/compose.production.yml'),
-                '--project-name',
-                project,
-                'down',
-                '--volumes',
-                '--remove-orphans',
-            ],
+            [*compose, 'down', '--volumes', '--remove-orphans'],
             env=env,
         )
 

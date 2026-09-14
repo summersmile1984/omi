@@ -15,6 +15,7 @@ import httpx
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'contracts/deployment'))
 from core import ProductContract, require
+from http_transport import transport_origin
 
 
 def verify_chat_stream(text):
@@ -47,11 +48,12 @@ def run(metadata):
     contract = ProductContract(metadata, remote=True)
     try:
         owner = contract.signup()
+        origin, transport_headers = transport_origin(metadata, 'api')
         with httpx.Client(
-            base_url=metadata['api_origin'],
+            base_url=origin,
             follow_redirects=False,
             timeout=180,
-            headers={'Authorization': 'Bearer ' + owner.jwt, 'X-App-Platform': 'web'},
+            headers={**transport_headers, 'Authorization': 'Bearer ' + owner.jwt, 'X-App-Platform': 'web'},
         ) as client:
 
             def request(method, path, **kwargs):
@@ -119,7 +121,7 @@ def run(metadata):
 
             contract.case('ai.public-tts-to-upload-asr', speech_upload)
     finally:
-        report = contract.report()
+        report = contract.report(suite='server_ai')
         report['scope'] = 'public-chat-history-and-tts-asr-roundtrip'
         (Path(metadata['trace_dir']) / 'ai-results.json').write_text(json.dumps(report, indent=2) + '\n')
     require(report['passed'], 'Server public AI acceptance failed; inspect the private ai-results.json')

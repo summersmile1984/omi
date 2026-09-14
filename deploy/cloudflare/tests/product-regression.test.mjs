@@ -1,3 +1,4 @@
+import { PRODUCT_CONTRACT, requiredProductCases, requiredCloudflareCases } from '../../../contracts/deployment/product-cases.mjs';
 import {
   mkdtempSync,
   mkdirSync,
@@ -76,12 +77,13 @@ it("reports recording failures after their last passed case without leaking arbi
     { id: "chat.status", status: "api POST expected 200, received 503" },
   ]);
 });
-const report = (id) => ({
+const report = (suite) => ({
+  contract_sha256: PRODUCT_CONTRACT,
   schema_version: 1,
   brand_id: "eddy",
   target: "cloudflare",
   passed: true,
-  cases: [{ id, result: "pass" }],
+  cases: requiredProductCases(suite, { surface: 'frozen' }).map(id => ({ id, result: "pass" })),
 });
 describe("candidate product regression", () => {
   it("runs all existing suites on frozen bytes and closes the target", async () => {
@@ -102,7 +104,7 @@ describe("candidate product regression", () => {
     };
     const start = vi.fn(async () => target);
     expect(await runCloudflareRegression(ctx, { output, start })).toEqual(
-      PRODUCT_SUITES.map((id) => `${id}:${id}`)
+      requiredCloudflareCases()
     );
     expect(start).toHaveBeenCalledWith({
       output: resolve(output, "target"),
@@ -134,6 +136,10 @@ describe("candidate product regression", () => {
   it.each([
     {},
     { passed: false },
+    { contract_sha256: undefined },
+    { contract_sha256: "0".repeat(64) },
+    { cases: [{ id: "only-one-synthetic-case", result: "pass" }] },
+    { cases: requiredProductCases("core", { surface: "frozen" }).slice(1).map(id => ({ id, result: "pass" })) },
     { cases: [] },
     { brand_id: "other" },
     { target: "self_hosted" },
@@ -149,44 +155,41 @@ describe("candidate product regression", () => {
     writeFileSync(
       path,
       JSON.stringify(
-        Object.keys(patch).length ? { ...report("case"), ...patch } : {}
+        Object.keys(patch).length ? { ...report("core"), ...patch } : {}
       )
     );
     expect(() =>
-      readProductReport(path, { target: "cloudflare", brand: "eddy" })
+      readProductReport(path, { target: "cloudflare", brand: "eddy", suite: "core", surface: "frozen" })
     ).toThrow("incomplete evidence");
   });
   it("refuses report symlinks", () => {
     const dir = directory(),
       original = resolve(dir, "source.json"),
       link = resolve(dir, "report.json");
-    writeFileSync(original, JSON.stringify(report("case")));
+    writeFileSync(original, JSON.stringify(report("core")));
     symlinkSync(original, link);
     expect(() =>
-      readProductReport(link, { target: "cloudflare", brand: "eddy" })
+      readProductReport(link, { target: "cloudflare", brand: "eddy", suite: "core", surface: "frozen" })
     ).toThrow("ordinary file");
   });
   it("requires matching cases from both targets and waits for both teardowns", async () => {
     const ctx = context();
     expect(
       await regressCandidate(ctx, {
-        cloudflare: async () => ["core:case"],
-        server: async () => ["case"],
+        cloudflare: async () => requiredCloudflareCases(),
+        server: async () => requiredProductCases("core", { surface: "source" }),
       })
     ).toMatchObject({
       passed: true,
       release_qualified: false,
-      cases: [
-        { id: "cloudflare:core:case", result: "pass" },
-        { id: "server:case", result: "pass" },
-      ],
+      cases: [...requiredCloudflareCases().map(id => ({ id: `cloudflare:${id}`, result: "pass" })), ...requiredProductCases("core", { surface: "source" }).map(id => ({ id: `server:${id}`, result: "pass" }))],
     });
     await expect(
       regressCandidate(ctx, {
-        cloudflare: async () => ["core:case"],
+        cloudflare: async () => requiredCloudflareCases(),
         server: async () => ["different"],
       })
-    ).rejects.toThrow("same HTTP cases");
+    ).rejects.toThrow("incomplete evidence");
     let cleaned = false;
     await expect(
       regressCandidate(ctx, {
@@ -201,6 +204,13 @@ describe("candidate product regression", () => {
       })
     ).rejects.toThrow("CF failed");
     expect(cleaned).toBe(true);
+  });
+  it("rejects both targets omitting the same mandatory core case", async () => {
+    const missing = requiredProductCases('core', { surface: 'source' })[0];
+    await expect(regressCandidate(context(), {
+      cloudflare: async () => requiredCloudflareCases().filter(id => id !== `core:${missing}`),
+      server: async () => requiredProductCases('core', { surface: 'source' }).filter(id => id !== missing),
+    })).rejects.toThrow('incomplete evidence');
   });
   it("does not treat deployed observations or empty suites as local proof", async () => {
     await expect(regressCandidate(context("deployed"))).rejects.toThrow(

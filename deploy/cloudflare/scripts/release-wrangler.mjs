@@ -77,6 +77,44 @@ function lifecyclePrefix(conditions) {
 
 // This is the only release process/API owner. Subprocess and HTTP are injectable
 // for fault tests; the CLI always constructs this adapter with locked tools.
+export async function cloudflareAccountRequest({ account, token, fetchImpl = fetch }, path, { method = 'GET', body, absentWorker = false } = {}) {
+  if (!/^[0-9a-f]{32}$/i.test(account)) throw new Error('invalid release account');
+    if (!token)
+      throw new Error("Cloudflare API credential is unavailable");
+    let response, json;
+    try {
+      response = await fetchImpl(
+        `https://api.cloudflare.com/client/v4${
+          path.startsWith("/") ? path : `/accounts/${account}/${path}`
+        }`,
+        {
+          method,
+          redirect: "error",
+          signal: AbortSignal.timeout(30_000),
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        }
+      );
+      json = await response.json();
+    } catch {
+      throw new Error("Cloudflare observation outcome is unknown");
+    }
+    if (
+      absentWorker &&
+      response.status === 404 &&
+      json.errors?.some((error) => error.code === 10007)
+    )
+      return null;
+    if (!response.ok || json.success !== true)
+      throw new Error(
+        `Cloudflare observation failed (HTTP ${response.status})`
+      );
+    return json;
+}
+
 export class WranglerReleaseAdapter {
   constructor({
     root,
@@ -126,41 +164,8 @@ export class WranglerReleaseAdapter {
     // enters the release journal. A failed process has an unknown remote result.
     return { exit: result.status ?? null, signal: result.signal ?? null };
   }
-  async api(path, { method = "GET", body, absentWorker = false } = {}) {
-    if (!this.env.CLOUDFLARE_API_TOKEN)
-      throw new Error("Cloudflare API credential is unavailable");
-    let response, json;
-    try {
-      response = await this.fetch(
-        `https://api.cloudflare.com/client/v4${
-          path.startsWith("/") ? path : `/accounts/${this.account}/${path}`
-        }`,
-        {
-          method,
-          redirect: "error",
-          signal: AbortSignal.timeout(30_000),
-          headers: {
-            Authorization: `Bearer ${this.env.CLOUDFLARE_API_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-          ...(body ? { body: JSON.stringify(body) } : {}),
-        }
-      );
-      json = await response.json();
-    } catch {
-      throw new Error("Cloudflare observation outcome is unknown");
-    }
-    if (
-      absentWorker &&
-      response.status === 404 &&
-      json.errors?.some((error) => error.code === 10007)
-    )
-      return null;
-    if (!response.ok || json.success !== true)
-      throw new Error(
-        `Cloudflare observation failed (HTTP ${response.status})`
-      );
-    return json;
+  api(path, options) {
+    return cloudflareAccountRequest({ account: this.account, token: this.env.CLOUDFLARE_API_TOKEN, fetchImpl: this.fetch }, path, options);
   }
   async list(kind) {
     const paths = {
@@ -604,17 +609,25 @@ export class WranglerReleaseAdapter {
       throw new Error("readiness attempts must be positive");
     for (const [role, { origin, path }] of Object.entries(RELEASE_READINESS)) {
       const url = `${origins[origin]}${path}`;
+      let status = null;
       for (let attempt = 1; attempt <= attempts; attempt++) {
         let ready = false;
+        status = null;
         try {
-          ready = await isReleaseReady(await this.fetch(url, {
+          const response = await this.fetch(url, {
             signal: AbortSignal.timeout(15_000),
             redirect: "error",
-          }));
+          });
+          status = response.status;
+          ready = await isReleaseReady(response);
         } catch {}
         if (ready) break;
-        if (attempt === attempts)
-          throw new Error(`release readiness did not report ready JSON: ${role}`);
+        if (attempt === attempts) {
+          const error = new Error(`release readiness did not report ready JSON: ${role} (HTTP ${status ?? 'unreachable'})`);
+          error.failure = { phase: 'deployed', operation: 'readiness', service: role, path, status,
+            reason: status === null ? 'unreachable' : status !== 200 ? 'http_status' : 'invalid_ready_body' };
+          throw error;
+        }
         await sleep(retryDelayMs);
       }
     }

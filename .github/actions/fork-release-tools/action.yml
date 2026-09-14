@@ -34,3 +34,4 @@ runs:
         npm ci --prefix deploy/cloudflare --ignore-scripts --no-audit --no-fund
         npm ci --prefix scripts/brand/raster --ignore-scripts --no-audit --no-fund
         (cd web/app && bun install --frozen-lockfile)
+        command -v ffmpeg >/dev/null || { echo 'Release audio acceptance requires ffmpeg on the runner'; exit 1; }

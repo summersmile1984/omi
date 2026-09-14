@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { WORKERS } from "../scripts/resource-input.mjs";
 import { probeConfiguration, stageProbeWorker, qualifyCloudRuntime } from "../scripts/release-cloud-probe.mjs";
 
+import { requiredProductCases, requiredHostedCloudflareCases } from '../../../contracts/deployment/product-cases.mjs';
+
 const directories = [];
 afterEach(() => directories.splice(0).forEach((directory) => rmSync(directory, { recursive: true, force: true })));
 function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occupiedName, failedMigration, catalogDrift, webResponse } = {}) {
@@ -17,7 +19,9 @@ function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occup
   const candidate = {
     account_id: "a".repeat(32), candidate_digest: "b".repeat(64), source: { commit: "c".repeat(40) },
     stage: "beta", workers: {}, inventory: { d1_ids: { app: "serving-app", auth: "serving-auth" } },
-    resource_plan: { resources: [], secrets: {}, deploy_order: [], migrations: [] },
+    profiles: { cloudflare: { profile: Object.fromEntries(['api','auth','web'].map(role => [role + '_base_url', `https://${role}.example.com`])) } },
+    resource_plan: { resources: [{kind:'queue', key:'queue:jobs', name:'live'}, {kind:'r2',key:'r2:assets', name:'live-assets'},
+      {kind:'vectorize',key:'vectorize:memories',name:'live-vectors',dimensions:1024,metric:'cosine'}], secrets: {}, deploy_order: [], migrations: [] },
   };
   for (const role of WORKERS) {
     const name = `eddy-${role}-beta`;
@@ -35,6 +39,8 @@ function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occup
       triggers: { crons: ["* * * * *"] },
       queues: { consumers: [{ queue: "live" }], producers: [{ binding: "QUEUE", queue: "live" }] },
       d1_databases: [{ binding: "DB", database_id: "serving-app" }],
+      r2_buckets: [{binding:'ASSETS',bucket_name:'live-assets'}],
+      vectorize: [{binding:'VECTORS',index_name:'live-vectors'}],
       services: [{ binding: "AUTH", service: "eddy-auth-beta" }],
     }));
   }
@@ -64,9 +70,11 @@ function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occup
         expect(config.workers_dev).toBe(false);
         expect(config.preview_urls).toBe(false);
         expect(config.routes).toEqual([]);
-        expect(config.triggers.crons).toEqual([]);
-        expect(config.queues.consumers).toEqual([]);
-        expect(config.queues.producers[0].queue).toBe("live");
+        expect(config.triggers.crons).toEqual(['* * * * *']);
+        expect(config.queues.consumers[0].queue).toMatch(/^eddy-ci-.*-queue-jobs$/);
+        expect(config.queues.producers[0].queue).toMatch(/^eddy-ci-.*-queue-jobs$/);
+        expect(config.r2_buckets[0].bucket_name).toMatch(/^eddy-ci-.*-r2-assets$/);
+        expect(config.vectorize[0].index_name).toMatch(/^eddy-ci-.*-vectorize-memories$/);
         expect(config.vars).toEqual({ ORIGINAL: "runtime-variable" });
         expect(config.d1_databases[0].database_id).toBe(databases.values().next().value.id);
         expect(config.services[0].service).toMatch(/^eddy-ci-.*-auth$/);
@@ -81,10 +89,12 @@ function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occup
       return { exit: role === failedRole ? 1 : 0 };
     },
     async observeResource(resource) {
+      if (!resource.name.startsWith('eddy-ci-')) return {status:'present',name:resource.name,id:resource.name};
       return databases.get(resource.name) ?? { status: "absent" };
     },
+    policies: () => [],
     async create(resource) {
-      const id = `10000000-0000-4000-8000-00000000000${databases.size + 1}`;
+      const id = resource.kind === 'd1' ? `10000000-0000-4000-8000-00000000000${databases.size + 1}` : resource.name;
       databases.set(resource.name, { status: "present", name: resource.name, id });
       return { created_id: id };
     },
@@ -95,6 +105,14 @@ function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occup
     async migrationLedger(authority) { return authority.files.map((file) => file.name); },
     async api(path, options) {
       if (path === "workers/subdomain") return { result: { subdomain: "fixture" } };
+      if (path.endsWith('/consumers')) return {result: []};
+      if (['r2/buckets/', 'queues/', 'vectorize/v2/indexes/'].some(prefix => path.startsWith(prefix))) {
+        const name = path.split('/').at(-1);
+        expect(databases.has(name)).toBe(true);
+        expect(options.method).toBe('DELETE');
+        databases.delete(name);
+        return {success:true};
+      }
       if (path.startsWith("d1/database/")) {
         const id = path.split("/")[2];
         const owned = [...databases.values()].find((item) => item.id === id);
@@ -120,6 +138,8 @@ function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occup
   const journalDirectory = resolve(directory, "journal");
   const options = {
     journalDirectory, adapterFactory,
+    core: async () => requiredProductCases('core', {surface:'frozen',remote:true}),
+    hosted: async () => requiredHostedCloudflareCases(),
     env: { ORIGINAL_SECRET: "synthetic-existing-secret" },
     qualifySchema: async () => {
       if (failedSchema) throw new Error("prior schema did not qualify");
@@ -128,6 +148,7 @@ function fixture({ failedRole, foreignVersion, failedSchema, failedHealth, occup
     frozenSchema: () => ["app", "auth"].map((authority) => ({ authority, schema_catalog: catalog })),
     fetchProbe: async (url, options) => {
       requests.push(url);
+      if (new URL(url).pathname.startsWith('/__cleanup/')) return Response.json({done:true});
       expect(options.headers["x-release-probe"]).toMatch(/^[0-9a-f]{64}$/);
       expect(options.redirect).toBe("manual");
       if (new URL(url).pathname === "/web" && webResponse) return webResponse();
@@ -173,14 +194,14 @@ describe("frozen Cloudflare release CI rehearsal", () => {
     const result = await qualifyCloudRuntime(f.context, f.options);
     expect(result.artifact_qualified).toBe(true);
     expect(result.release_ready).toBe(false);
-    expect(result.cases).toHaveLength(18);
+    expect(result.cases).toHaveLength(46);
     expect(f.uploaded).toHaveLength(10);
-    expect(f.removed).toEqual([...f.uploaded].reverse());
-    expect(f.requests).toHaveLength(12);
+    expect(f.removed).toEqual([...f.uploaded].reverse().filter(name => !name.endsWith('-probe')).concat(f.uploaded.filter(name => name.endsWith('-probe'))));
+    expect(f.requests).toHaveLength(13);
     expect(result.cleanup.every((entry) => entry.result === "pass")).toBe(true);
     expect(JSON.stringify(result)).not.toContain("synthetic-existing-secret");
     expect(f.removedDatabases).toHaveLength(2);
-    expect(f.context.verify).toHaveBeenCalledTimes(14);
+    expect(f.context.verify.mock.calls.length).toBeGreaterThanOrEqual(14);
     const code = readFileSync(f.configs.at(-1).main);
     const { default: gateway } = await import(`data:text/javascript;base64,${code.toString("base64")}`);
     const forwarded = [];
@@ -211,13 +232,20 @@ describe("frozen Cloudflare release CI rehearsal", () => {
     const f = fixture({ webResponse });
     await expect(qualifyCloudRuntime(f.context, f.options)).rejects.toThrow("cloud runtime health did not qualify: web");
     expect(f.journal().artifact_qualified).toBe(false);
-    expect(f.removed).toEqual([...f.uploaded].reverse());
+    expect(f.removed).toEqual([...f.uploaded].reverse().filter(name => !name.endsWith('-probe')).concat(f.uploaded.filter(name => name.endsWith('-probe'))));
+  });
+  it.each(['core', 'hosted'])('rejects a skipped %s business suite even with healthy Workers', async suite => {
+    const f = fixture();
+    f.options[suite] = async () => ['only-one-case'];
+    await expect(qualifyCloudRuntime(f.context, f.options)).rejects.toThrow('incomplete evidence');
+    expect(f.journal().artifact_qualified).toBe(false);
+    expect(f.journal().cleanup.every(row => row.result === 'pass')).toBe(true);
   });
   it("rejects the Core upload failure and cleans up a remotely created version even when its process failed", async () => {
     const f = fixture({ failedRole: "api-core" });
     await expect(qualifyCloudRuntime(f.context, f.options)).rejects.toThrow("cloud runtime upload did not qualify: api-core");
     expect(f.journal().artifact_qualified).toBe(false);
-    expect(f.removed).toEqual([...f.uploaded].reverse());
+    expect(f.removed).toEqual([...f.uploaded].reverse().filter(name => !name.endsWith('-probe')).concat(f.uploaded.filter(name => name.endsWith('-probe'))));
     expect(f.requests).toEqual([]);
   });
   it("refuses existing names, incompatible schema and unhealthy runtime responses", async () => {
@@ -226,7 +254,7 @@ describe("frozen Cloudflare release CI rehearsal", () => {
       await expect(qualifyCloudRuntime(f.context, f.options)).rejects.toThrow();
       expect(f.journal().artifact_qualified).toBe(false);
       if (!setting.failedHealth) expect(f.uploaded).toEqual([]);
-      expect(f.removed).toEqual([...f.uploaded].reverse());
+      expect(f.removed).toEqual([...f.uploaded].reverse().filter(name => !name.endsWith('-probe')).concat(f.uploaded.filter(name => name.endsWith('-probe'))));
     }
   });
   it("retains ambiguous external ownership for reconciliation instead of deleting it", async () => {

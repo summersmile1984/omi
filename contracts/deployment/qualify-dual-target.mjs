@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { regressCandidate, runServerRegression } from "./regress.mjs";
 import { runHostedCore } from "../../deploy/cloudflare/contracts/hosted-product.mjs";
+import { assertProductCases } from './product-cases.mjs';
 import {
   qualificationContext,
   qualificationProof,
@@ -42,6 +43,8 @@ export async function qualifyDualTarget(
   } else if (context.observations.release_phase === "deployed") {
     const os = await server(context),
       cf = hosted(context).filter((id) => !id.startsWith("cleanup."));
+    assertProductCases(os, 'core', { surface: 'source' });
+    assertProductCases(cf, 'core', { surface: 'frozen' });
     if (JSON.stringify([...os].sort()) !== JSON.stringify([...cf].sort()))
       throw new Error(
         "deployed Cloudflare and Server did not pass identical common business cases"

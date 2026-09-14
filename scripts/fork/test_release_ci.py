@@ -18,7 +18,8 @@ import yaml
 
 from release_ci import CI_PATH, PREPARE_PATH, RELEASE_JOBS, REPOSITORY, resolve_delivery, verify_ci, verify_delivery
 from release_archive import pack_candidate, unpack_candidate
-from download_delivery import download, FILES as DELIVERY_FILES, ATTEMPTS
+from download_delivery import download, TARGET_FILES, ATTEMPTS
+DELIVERY_FILES = TARGET_FILES['cloudflare']
 from workflow_lint import resolve_constant_runners
 import zipfile
 
@@ -294,6 +295,7 @@ class DeliveryDownloadTests(unittest.TestCase):
             'selected',
             destination,
             self.cache,
+            target='cloudflare',
             api=self.api,
             locate=lambda value: f'https://artifact.example/{value}',
             fetch=fetch,
@@ -375,7 +377,8 @@ class CloudflareQualificationToolsTests(unittest.TestCase):
             directory = Path(work)
             probe = directory / 'contracts/deployment/core.py'
             probe.parent.mkdir(parents=True)
-            shutil.copyfile(ROOT / 'contracts/deployment/core.py', probe)
+            for name in ('core.py', 'product_cases.py', 'product-cases.json', 'http_transport.py'):
+                shutil.copyfile(ROOT / 'contracts/deployment' / name, probe.parent / name)
             interpreter = directory / 'deploy/cloudflare/python/api-core/.venv/bin/python'
             self.assertFalse(interpreter.exists())
             bin_dir = directory / 'bin'
@@ -495,24 +498,25 @@ class ReusableDeliveryWorkflowTests(unittest.TestCase):
         sha = 'a' * 40
         for target in ('cloudflare', 'server'):
             step = self.workflow(target)['jobs']['resolve']['steps'][-1]
+            deployment_target = 'self_hosted' if target == 'server' else target
             env = {
                 'GITHUB_SHA': sha,
                 'GITHUB_RUN_ID': '12',
                 'DELIVERY_RUN_ID': '12',
                 'RELEASE_STAGE': 'beta',
-                'QUALIFICATION_ARTIFACT': f'delivery-{sha}-eddy-beta',
+                'QUALIFICATION_ARTIFACT': f'delivery-{sha}-eddy-beta-{deployment_target}',
             }
             result, commands, output = self.execute(step, env)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(commands, [])
-            self.assertEqual(output, f'sha={sha}\nartifact=delivery-{sha}-eddy-beta\n')
+            self.assertEqual(output, f'sha={sha}\nartifact=delivery-{sha}-eddy-beta-{deployment_target}\n')
             for changed in [{'DELIVERY_RUN_ID': '11'}, {'QUALIFICATION_ARTIFACT': f'delivery-{sha}-eddy-production'}]:
                 result, commands, _ = self.execute(step, {**env, **changed})
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(commands, [])
             result, commands, _ = self.execute(step, {**env, 'QUALIFICATION_ARTIFACT': ''})
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(commands, [['scripts/fork/release_ci.py', 'resolve', '--run-id', '12', '--stage', 'beta']])
+            self.assertEqual(commands, [['scripts/fork/release_ci.py', 'resolve', '--run-id', '12', '--stage', 'beta', '--target', deployment_target]])
 
     def test_shared_execution_verifies_before_selecting_private_qualification_or_persistent_deploy(self):
         for target in ('cloudflare', 'server'):
@@ -531,7 +535,7 @@ class ReusableDeliveryWorkflowTests(unittest.TestCase):
                     result, commands, _ = self.execute(step, env, fail_verify=failure)
                     self.assertEqual(result.returncode, 47 if failure else 0, result.stderr)
                     self.assertIn('verify', commands[0])
-                    self.assertEqual(len(commands), 1 if failure else 2)
+                    self.assertEqual(len(commands), 1 if failure else 3 if target == 'server' else 2)
                     if not failure and target == 'cloudflare':
                         self.assertEqual(
                             commands[1][0],
@@ -543,7 +547,7 @@ class ReusableDeliveryWorkflowTests(unittest.TestCase):
                         )
                     elif not failure:
                         self.assertEqual(
-                            commands[1][:2], ['scripts/fork/deploy_server.py', 'qualify' if qualification else 'deploy']
+                            commands[2][:2], ['scripts/fork/deploy_server.py', 'qualify' if qualification else 'deploy']
                         )
 
 
@@ -564,7 +568,7 @@ class ReleaseAuthorityTests(unittest.TestCase):
             {'name': name, 'conclusion': 'success'}
             for name in ('Fork gate (Server OS + Cloudflare)', 'Fork macOS native contracts')
         ]
-        self.artifact = {'name': f'delivery-{self.sha}-eddy-beta', 'expired': False}
+        self.artifact = {'name': f'delivery-{self.sha}-eddy-beta-cloudflare', 'expired': False}
 
     def api(self, path):
         if '/jobs?' in path:
@@ -598,9 +602,21 @@ class ReleaseAuthorityTests(unittest.TestCase):
     def test_delivery_run_must_have_correct_stage_artifact(self):
         self.run['path'] = PREPARE_PATH
         self.jobs = [{'name': name, 'conclusion': 'success'} for name in RELEASE_JOBS]
-        self.assertEqual(resolve_delivery(2, 'beta', self.api)['sha'], self.sha)
+        self.assertEqual(resolve_delivery(2, 'beta', 'cloudflare', self.api)['sha'], self.sha)
         with self.assertRaises(ValueError):
-            resolve_delivery(2, 'production', self.api)
+            resolve_delivery(2, 'production', 'cloudflare', self.api)
+
+    def test_each_target_requires_its_own_proof_even_when_the_other_target_fails(self):
+        self.run.update(path=PREPARE_PATH, conclusion='failure')
+        for target, other in [('cloudflare', 'Server'), ('self_hosted', 'Cloudflare')]:
+            self.artifact['name'] = f'delivery-{self.sha}-eddy-beta-{target}'
+            self.jobs = [{'name': name, 'conclusion': 'failure' if name.startswith(other) or name.startswith('Release ready') else 'success'} for name in RELEASE_JOBS]
+            self.assertEqual(resolve_delivery(2, 'beta', target, self.api)['sha'], self.sha)
+            ready = next(job for job in self.jobs if job['name'].endswith('(contract v2)') and not job['name'].startswith(other))
+            for outcome in ('skipped', 'failure', 'cancelled'):
+                ready['conclusion'] = outcome
+                with self.assertRaisesRegex(ValueError, 'release CI must qualify'):
+                    resolve_delivery(2, 'beta', target, self.api)
 
     def test_legacy_build_only_runs_and_incomplete_artifact_qualification_cannot_authorize_cd(self):
         self.run['path'] = PREPARE_PATH
@@ -621,7 +637,7 @@ class ReleaseAuthorityTests(unittest.TestCase):
                 {
                     'name': name,
                     'conclusion': (
-                        'failure' if name == 'Server image qualification / Execute accepted delivery' else 'success'
+                        'failure' if name == 'Cloudflare artifact qualification / Execute accepted delivery' else 'success'
                     ),
                 }
                 for name in RELEASE_JOBS
@@ -630,7 +646,7 @@ class ReleaseAuthorityTests(unittest.TestCase):
             with self.subTest(jobs=jobs):
                 self.jobs = jobs
                 with self.assertRaisesRegex(ValueError, 'release CI must qualify'):
-                    resolve_delivery(2, 'beta', self.api)
+                    resolve_delivery(2, 'beta', 'cloudflare', self.api)
 
     def test_historical_green_release_without_runtime_and_ingress_contract_cannot_authorize_cd(self):
         # Run 34415705069 passed its old six jobs, then CD 34419433912
@@ -648,9 +664,10 @@ class ReleaseAuthorityTests(unittest.TestCase):
             ]
         ]
         with self.assertRaisesRegex(ValueError, 'runtime readiness and public ingress'):
-            resolve_delivery(34415705069, 'beta', self.api)
+            resolve_delivery(34415705069, 'beta', 'cloudflare', self.api)
         self.jobs[-1]['name'] = 'Release ready (runtime and public ingress)'
-        self.assertEqual(resolve_delivery(2, 'beta', self.api)['sha'], self.sha)
+        self.jobs.append({'name': 'Cloudflare ready (contract v2)', 'conclusion': 'success'})
+        self.assertEqual(resolve_delivery(2, 'beta', 'cloudflare', self.api)['sha'], self.sha)
 
     def test_release_ready_executes_the_workflow_gate_for_success_failure_and_skipped_jobs(self):
         workflow = yaml.safe_load((ROOT / PREPARE_PATH).read_text())

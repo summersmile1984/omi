@@ -1,0 +1,93 @@
+{
+  "version": 2,
+  "suites": {
+    "core": [
+      "auth.signup-opaque-restore-jwt",
+      "auth.protected-admission",
+      "jit.authenticated-tristate-rollout-decision",
+      "onboarding.persist-and-isolate",
+      "calendar.capture-gap-query-and-disconnected-admission",
+      "email.public-invalid-token-is-neutral",
+      "csat.config-and-wire-validation",
+      "csat.create-once-and-isolate",
+      "memories.edit-state-isolate-and-delete",
+      "memories.batch-intake-starts-short-term",
+      "tasks.create-and-reread",
+      "tasks.cross-account-denial",
+      "tasks.complete-and-reread",
+      "tasks.invalid-body-422",
+      "referral.capture-once-and-publish-trial",
+      "auth.refresh-logout-revocation"
+    ],
+    "recording": [
+      "recording.native-upgrade-bearer-pcm-persistence",
+      "recording.auth-session-commit-before-broadcast",
+      "recording.reconnect-fences-stale-writer",
+      "recording.actual-queue-finalization-memory-and-tasks",
+      "recording.completed-generation-never-reopened",
+      "recording.revoked-session-denied",
+      "recording.realtime-usage-idempotent-cost-and-export",
+      "referral.branded-link-atomic-trial-and-export",
+      "recording.desktop-daily-usage-concurrent-maxima",
+      "recording.daily-recap-from-persisted-recording",
+      "recording.memory-product-fields-share-canonical-history",
+      "recording.memory-vector-search-fences-old-revisions",
+      "email.scanner-safe-token-opt-out-and-export",
+      "recording.export-restored-recording-memory-task-and-profile",
+      "recording.private-r2-integrity-and-account-isolation",
+      "recording.cascade-delete-retracts-derived-memory-and-tasks",
+      "recording.public-memory-delete-waits-for-provider-cleanup",
+      "recording.account-deletion-initializes-unused-native-account",
+      "recording.account-deletion-fences-and-completes-from-queue",
+      "recording.account-deletion-zero-persisted-residual"
+    ],
+    "chat": [
+      "manifest-brand-greeting-and-model-prompt",
+      "upstream-web-sse-utf8-persisted-pair",
+      "configured-app-platform-and-goal-chat-persona",
+      "configured-usage-support-and-task-share-presentation",
+      "selected-history-and-app-authority",
+      "cross-uid-read-write-clear-denied",
+      "compat-replay-and-context-respect-selected-target",
+      "actual-model-rpc-failure-no-partial-history",
+      "explicit-clear-preserves-session-delete-stays-terminal",
+      "first-model-io-visible-owner-clear-delete-reject-late-result",
+      "failed-first-model-leaves-an-empty-publicly-clearable-session"
+    ],
+    "share": [
+      "task-preview-owner-recipient-and-idempotent-acceptance",
+      "chat-preview-only-exposes-selected-owner-message"
+    ],
+    "server_ai": [
+      "ai.public-streamed-chat-and-history",
+      "ai.public-tts-to-pcm-asr",
+      "ai.public-tts-to-upload-asr"
+    ]
+  },
+  "frozen_web": [
+    "frozen-web-static-assets-served-with-exact-bytes",
+    "frozen-web-task-share-service-binding-and-missing-link",
+    "frozen-web-selected-chat-share-service-binding-and-missing-link"
+  ],
+  "remote_cleanup": {
+    "core": [
+      "cleanup.synthetic-account-0",
+      "cleanup.synthetic-account-1"
+    ],
+    "server_ai": [
+      "cleanup.synthetic-account-0"
+    ]
+  },
+  "hosted_cloudflare": [
+    "hosted.routes.complete-route-smoke",
+    "hosted.providers.web-workers-ai-chat",
+    "hosted.r2.write-read-owner-isolation",
+    "hosted.mcp.tools-and-revocation",
+    "hosted.recording.native-authenticated-session",
+    "hosted.recording.web-authenticated-session",
+    "hosted.providers.tts-to-asr",
+    "hosted.recording.audio-persistence-queue-finalization",
+    "hosted.cleanup.synthetic-account-0",
+    "hosted.cleanup.synthetic-account-1"
+  ]
+}

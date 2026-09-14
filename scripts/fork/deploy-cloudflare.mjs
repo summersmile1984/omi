@@ -81,7 +81,7 @@ try {
       journal,
       "--authorize",
       candidate.candidate_digest,
-      ...(previous ? ["--continue-from", previous] : []),
+      ...(previous ? [receipt.cloudflare_update_from ? '--update-from' : "--continue-from", previous] : []),
     ],
     { env, stdio: "inherit", timeout: 150 * 60 * 1000 }
   );

@@ -83,8 +83,8 @@ async function fixture() {
   git("add", "source.txt");
   git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "repair");
   const next = candidate("repaired-core"), nextDirectory = retain(next, "next");
-  const execute = async (value = next, directory = nextDirectory, predecessor = previousDirectory) => {
-    const continuation = continuationContext(root, value, predecessor);
+  const execute = async (value = next, directory = nextDirectory, predecessor = previousDirectory, operation = "continue") => {
+    const continuation = continuationContext(root, value, predecessor, operation);
     const journal = createJournal(value, "apply"), qualification = qualify(value);
     const options = {
       candidate: value, journal, adapter, qualify: qualification, verify: vi.fn(), continuation,
@@ -117,6 +117,33 @@ describe("observed first-release continuation", () => {
     const next = f.candidate("another-core-repair"), directory = f.retain(next, "third");
     f.succeed();
     const result = await f.execute(next, directory, f.nextDirectory);
+    expect(result.journal.release_ready).toBe(true);
+    expect(f.adapter.migrate).toHaveBeenCalledTimes(1);
+  });
+  it("updates an owned completed release without replaying SQL", async () => {
+    const f = await fixture();
+    f.succeed();
+    await f.execute();
+    const previousVersion = f.states['fixture-core'].version;
+    const newer = f.candidate('next-code-version');
+    const directory = f.retain(newer, 'code-update');
+    const result = await f.execute(newer, directory, f.nextDirectory, 'update-code');
+    expect(result.journal.release_ready).toBe(true);
+    expect(f.states['fixture-core'].version).not.toBe(previousVersion);
+    expect(f.adapter.migrate).toHaveBeenCalledTimes(1);
+    expect(result.qualify).toHaveBeenCalledTimes(2);
+  });
+  it("requires explicit update intent to replace an already published payload", async () => {
+    const f = await fixture();
+    const worker = resolve(f.nextDirectory + '-candidate', 'workers/auth');
+    writeFileSync(resolve(worker, 'modules/index.js'), 'repaired-published-auth');
+    f.next.workers.auth.sha256 = digest(fileTree(worker));
+    f.next.artifact_files.workers = fileTree(resolve(f.nextDirectory + '-candidate', 'workers'));
+    seal(f.next, 'candidate_digest');
+    writeJson(f.nextDirectory + '-candidate', 'candidate.json', f.next);
+    f.succeed();
+    await expect(f.execute()).rejects.toThrow('preserve every already published');
+    const result = await f.execute(f.next, f.nextDirectory, f.previousDirectory, 'update-code');
     expect(result.journal.release_ready).toBe(true);
     expect(f.adapter.migrate).toHaveBeenCalledTimes(1);
   });

@@ -117,7 +117,6 @@ def build_plan(root: Path, output: Path, inventory: Path, brand: str, stage: str
             str(output / 'server-images.tar'),
             *[image for role, image in images.items() if role != 'runtime'],
         ],
-        ['git', 'archive', '--format=tar.gz', f'--output={output / "source.tar.gz"}', commit],
         [
             sys.executable,
             'scripts/fork/release_archive.py',
@@ -188,9 +187,11 @@ def prepare(plan: dict, root: Path, output: Path, run=execute) -> dict:
     receipt.update(
         {
             'candidate_digest': candidate['candidate_digest'],
+            'cloudflare_account_id': candidate['account_id'],
+            'profiles': candidate['profiles'],
             'images': identities,
             'files': {
-                name: sha256(output / name) for name in ('cloudflare.tar.gz', 'server-images.tar', 'source.tar.gz')
+                name: sha256(output / name) for name in ('cloudflare.tar.gz', 'server-images.tar')
             },
             'scope': 'frozen-workers-and-linux-images; deployment-and-image-boot-qualification-pending',
             'pending': [*candidate['pending'], 'Server accepted-image boot and public deployment acceptance'],
@@ -211,7 +212,12 @@ def main() -> None:
         '--ci-run-id', type=int, help='reuse a successful complete Fork Checks run at this exact commit'
     )
     parser.add_argument('--continue-from', default='', help='bind the Cloudflare continuation intent to this delivery')
+    parser.add_argument('--update-from', default='', help='bind an owned same-schema Cloudflare code update')
     args = parser.parse_args()
+    if args.continue_from and args.update_from:
+        parser.error('select continuation or update')
+    if args.update_from and not re.fullmatch(re.escape(args.stage) + r'-[0-9a-f]{40}-[0-9a-f-]{36}', args.update_from):
+        parser.error('update must name a retained journal in the selected stage')
     if args.continue_from and not re.fullmatch(
         re.escape(args.stage) + r'-[0-9a-f]{40}-[0-9a-f-]{36}', args.continue_from
     ):
@@ -231,11 +237,13 @@ def main() -> None:
         from release_ci import verify_ci
 
         ci = verify_ci(args.ci_run_id, plan['commit'])
+        plan['commands'][0].extend(['--ci-run-id', str(args.ci_run_id)])
     result = plan if args.plan else prepare(plan, ROOT, output)
     if not args.plan:
         if ci:
             result.update(ci)
         result['cloudflare_continue_from'] = args.continue_from
+        result['cloudflare_update_from'] = args.update_from
         (output / 'delivery.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, indent=2))
 

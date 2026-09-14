@@ -2,21 +2,33 @@
 // requires the hostname's DNS record to exist. Missing DNS fails qualification.
 // skip_response never calls the origin; this is not application health evidence.
 // Contract: https://developers.cloudflare.com/rules/trace-request/
-export function publicIngressRequests(candidate, readiness) {
+export function publicIngressRequests(candidate, readiness, selectedTarget = 'cloudflare') {
+  if (!['cloudflare', 'self_hosted'].includes(selectedTarget)) throw new Error('select an ingress target');
   const requests = [];
-  for (const target of ["cloudflare", "self_hosted"]) {
+  for (const target of [selectedTarget]) {
     const profile = candidate.profiles?.[target]?.profile;
     if (profile?.target !== target || profile.stage !== candidate.stage)
-      throw new Error("ingress qualification requires both frozen target profiles");
-    const add = (id, base, path, userAgent = "node") => {
+      throw new Error("ingress qualification requires the selected frozen target profile");
+    const add = (id, base, path, userAgent = "node", method = 'GET', headers = {}) => {
       const origin = new URL(base);
       if (origin.protocol !== "https:" || origin.username || origin.password || origin.search || origin.hash)
         throw new Error("ingress qualification requires public HTTPS profiles");
-      requests.push({ id: `${target}.${id}`, url: `${base.replace(/\/+$/, "")}${path}`, userAgent });
+      requests.push({ id: `${target}.${id}`, url: `${base.replace(/\/+$/, "")}${path}`, userAgent, method, headers });
     };
     add("api", profile.api_base_url, "/v2/messages?limit=1");
     add("auth", profile.auth_base_url, "/api/auth/get-session");
     add("web-api", profile.web_base_url, "/api/proxy/v2/messages?limit=1");
+    add('chat-post', profile.api_base_url, '/v2/messages', 'node', 'POST', { 'Content-Type': 'application/json' });
+    add('auth-post', profile.auth_base_url, '/api/auth/sign-in/email', 'node', 'POST', { 'Content-Type': 'application/json', Origin: profile.web_base_url });
+    add('upload-post', profile.api_base_url, '/v2/voice-message/transcribe', 'node', 'POST', { 'Content-Type': 'multipart/form-data; boundary=release-probe' });
+    add('cors-options', profile.api_base_url, '/v2/messages', 'node', 'OPTIONS', {
+      Origin: profile.web_base_url, 'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'authorization,content-type',
+    });
+    add('recording-upgrade', profile.api_base_url, '/v4/listen', 'node', 'GET', {
+      Upgrade: 'websocket', Connection: 'Upgrade', 'Sec-WebSocket-Version': '13',
+      'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+    });
     const origins = { api: profile.api_base_url, auth: profile.auth_base_url, web: profile.web_base_url };
     for (const [role, { origin, path }] of Object.entries(readiness[target]))
       // Match each CD client's actual UA; never disguise probes as a browser.
@@ -48,9 +60,9 @@ export function assertIngressTrace(result, browserCheck) {
   if (bic) throw new Error("browser integrity policy does not admit the API/deploy client");
 }
 
-export async function qualifyPublicIngress(candidate, zones, readiness, api) {
+export async function qualifyPublicIngress(candidate, zones, readiness, api, target = 'cloudflare') {
   const settings = new Map(), cases = [];
-  for (const request of publicIngressRequests(candidate, readiness)) {
+  for (const request of publicIngressRequests(candidate, readiness, target)) {
     const host = new URL(request.url).hostname;
     const zone = zones.filter(({ name }) => host === name || host.endsWith(`.${name}`))
       .sort((a, b) => b.name.length - a.name.length)[0];
@@ -59,7 +71,7 @@ export async function qualifyPublicIngress(candidate, zones, readiness, api) {
       if (!settings.has(zone.id)) settings.set(zone.id,
         (await api(`/zones/${zone.id}/settings/browser_check`)).result?.value);
       const response = await api("request-tracer/trace", { method: "POST", body: {
-        url: request.url, method: "GET", headers: { "User-Agent": request.userAgent }, skip_response: true,
+        url: request.url, method: request.method, headers: { ...request.headers, "User-Agent": request.userAgent }, skip_response: true,
       } });
       assertIngressTrace(response.result, settings.get(zone.id));
     } catch (error) {

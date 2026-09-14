@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       delivery_run_id:
-        description: Successful Fork Release CI run ID with both artifact qualifications
+        description: Successful Fork Release CI run ID with this target qualified
         type: string
         required: true
       stage:
@@ -55,11 +55,11 @@ jobs:
         run: |
           if [ -n "$QUALIFICATION_ARTIFACT" ]; then
             test "$DELIVERY_RUN_ID" = "$GITHUB_RUN_ID"
-            test "$QUALIFICATION_ARTIFACT" = "delivery-$GITHUB_SHA-eddy-$RELEASE_STAGE"
+            test "$QUALIFICATION_ARTIFACT" = "delivery-$GITHUB_SHA-eddy-$RELEASE_STAGE-cloudflare"
             echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
             echo "artifact=$QUALIFICATION_ARTIFACT" >> "$GITHUB_OUTPUT"
           else
-            python3 scripts/fork/release_ci.py resolve --run-id "$DELIVERY_RUN_ID" --stage "$RELEASE_STAGE"
+            python3 scripts/fork/release_ci.py resolve --run-id "$DELIVERY_RUN_ID" --stage "$RELEASE_STAGE" --target cloudflare
           fi
 
   deploy:
@@ -105,7 +105,7 @@ jobs:
         run: |
           python3 "$RUNNER_TEMP/fork-release-admission/download_delivery.py" \
             --run-id "$DELIVERY_RUN_ID" --artifact "$DELIVERY_ARTIFACT" \
-            --directory "$DELIVERY_DIRECTORY"
+            --directory "$DELIVERY_DIRECTORY" --target cloudflare
       - name: Verify and execute frozen Cloudflare delivery
         env:
           GH_TOKEN: ${{ github.token }}

@@ -1,3 +1,4 @@
+import { completeProductReport } from '../../../contracts/deployment/product-cases.mjs';
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -537,7 +538,7 @@ try {
   }
   writeFileSync(
     resolve(metadata.trace_dir, "chat-results.json"),
-    JSON.stringify(report, null, 2) + "\n",
+    JSON.stringify(completeProductReport(report, 'chat', { surface: metadata.web_origin ? 'frozen' : 'source' }), null, 2) + "\n",
     { mode: 0o600 },
   );
   writeFileSync(

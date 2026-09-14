@@ -36,7 +36,7 @@ describe("public ingress qualification before publication", () => {
       expect(() => assertIngressTrace(result, "on")).toThrow();
     expect(() => assertIngressTrace(trace([]), undefined)).toThrow();
   });
-  it("runs both frozen profiles without origin traffic, credentials or browser impersonation", async () => {
+  it("qualifies each target independently with required HTTP methods and upgrade headers", async () => {
     const requests = [];
     const api = async (path, options) => {
       requests.push({ path, options });
@@ -44,23 +44,34 @@ describe("public ingress qualification before publication", () => {
       expect(path).toBe("request-tracer/trace");
       expect(options.body.skip_response).toBe(true);
       expect(options.body.context).toBeUndefined();
-      expect(Object.keys(options.body.headers)).toEqual(["User-Agent"]);
+      expect(options.body.headers.Authorization).toBeUndefined();
+      expect(options.body.headers["User-Agent"]).toBeDefined();
       return { result: trace([rule(true, false)]) };
     };
     const result = await qualifyPublicIngress(candidate, [zone], DEPLOYMENT_READINESS, api);
-    expect(result).toHaveLength(11);
+    expect(result).toHaveLength(10);
     expect(requests.filter(({ path }) => path.endsWith("/browser_check"))).toHaveLength(1);
     const urls = requests.filter(({ options }) => options).map(({ options }) => options.body.url);
     expect(urls).toContain("https://cloudflare-web.fixture.invalid/api/worker-ready");
-    expect(urls).toContain("https://self_hosted-web.fixture.invalid/api/proxy/v2/messages?limit=1");
+    expect(urls.some(url => url.includes('self_hosted'))).toBe(false);
+    expect(new Set(requests.filter(row => row.options).map(row => row.options.body.method))).toEqual(new Set(['GET', 'POST', 'OPTIONS']));
+    expect(requests.some(row => row.options?.body.headers.Upgrade === 'websocket')).toBe(true);
+    const server = await qualifyPublicIngress(candidate, [zone], DEPLOYMENT_READINESS, api, 'self_hosted');
+    expect(server).toHaveLength(11);
     expect(requests.at(-1).options.body.headers["User-Agent"]).toBe("Python-urllib/3.12");
+  });
+  it("rejects a POST-only block before publication", async () => {
+    const api = async (path, options) => path.endsWith('/browser_check')
+      ? { result: { value: 'off' } }
+      : { result: trace(options.body.method === 'POST' ? [{ matched: true, action: 'block' }] : []) };
+    await expect(qualifyPublicIngress(candidate, [zone], DEPLOYMENT_READINESS, api)).rejects.toThrow('cloudflare.chat-post');
   });
   it("fails closed for existing profiles when their policy or required read permission is missing", async () => {
     const api = async (path) => path.endsWith("/browser_check")
       ? { result: { value: "on" } } : { result: trace([rule(false, false)]) };
     await expect(qualifyPublicIngress(candidate, [zone], DEPLOYMENT_READINESS, api)).rejects.toThrow("public ingress did not qualify");
     await expect(qualifyPublicIngress(candidate, [zone], DEPLOYMENT_READINESS, async () => { throw Error("permission denied"); })).rejects.toThrow("public ingress did not qualify");
-    expect(() => publicIngressRequests({ stage: "beta" }, DEPLOYMENT_READINESS)).toThrow("both frozen");
+    expect(() => publicIngressRequests({ stage: "beta" }, DEPLOYMENT_READINESS)).toThrow("selected frozen");
   });
   it("executes ingress checks in the actual CD precondition owner before Worker domain associations exist", async () => {
     const paths = [];
@@ -76,7 +87,7 @@ describe("public ingress qualification before publication", () => {
         return { result: trace([rule(true, false)]) };
       },
     });
-    expect((await adapter.preconditions()).ingress).toHaveLength(11);
-    expect(paths.filter((path) => path === "request-tracer/trace")).toHaveLength(11);
+    expect((await adapter.preconditions()).ingress).toHaveLength(10);
+    expect(paths.filter((path) => path === "request-tracer/trace")).toHaveLength(10);
   });
 });

@@ -1,3 +1,4 @@
+import { completeProductReport } from '../../../contracts/deployment/product-cases.mjs';
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -937,7 +938,7 @@ try {
   mkdirSync(metadata.trace_dir, { recursive: true, mode: 0o700 });
   writeFileSync(
     resolve(metadata.trace_dir, "recording-results.json"),
-    JSON.stringify(report, null, 2) + "\n",
+    JSON.stringify(completeProductReport(report, 'recording', { surface: metadata.web_origin ? 'frozen' : 'source' }), null, 2) + "\n",
     { mode: 0o600 },
   );
   writeFileSync(

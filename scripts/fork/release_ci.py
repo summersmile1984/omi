@@ -23,6 +23,15 @@ RELEASE_JOBS = {
     'Server image qualification / Resolve delivery',
     'Server image qualification / Execute accepted delivery',
     'Release ready (runtime and public ingress)',
+    'Cloudflare ready (contract v2)',
+    'Server ready (contract v2)',
+}
+TARGET_JOBS = {
+    target: {'Freeze delivery artifacts', f'{label} / Resolve delivery', f'{label} / Execute accepted delivery', ready}
+    for target, label, ready in (
+        ('cloudflare', 'Cloudflare artifact qualification', 'Cloudflare ready (contract v2)'),
+        ('self_hosted', 'Server image qualification', 'Server ready (contract v2)'),
+    )
 }
 
 
@@ -39,14 +48,14 @@ def github(path):
     return json.loads(result.stdout)
 
 
-def successful_run(run, path, sha=None):
+def successful_run(run, path, sha=None, *, conclusions=('success',)):
     if (
         run.get('repository', {}).get('full_name') != REPOSITORY
         or run.get('head_repository', {}).get('full_name') != REPOSITORY
         or run.get('path') != path
         or run.get('event') != 'workflow_dispatch'
         or run.get('status') != 'completed'
-        or run.get('conclusion') != 'success'
+        or run.get('conclusion') not in conclusions
         or not re.fullmatch(r'[0-9a-f]{40}', run.get('head_sha', ''))
         or (sha and run['head_sha'] != sha)
     ):
@@ -64,16 +73,20 @@ def verify_ci(run_id, sha, api=github):
     return {'ci_run_id': int(run_id), 'ci_run_attempt': run['run_attempt'], 'commit': sha}
 
 
-def resolve_delivery(run_id, stage, api=github):
+def resolve_delivery(run_id, stage, target, api=github):
+    if target not in TARGET_JOBS:
+        raise ValueError('select the deployment target')
     run = api(f'actions/runs/{int(run_id)}')
-    sha = successful_run(run, PREPARE_PATH)
+    sha = successful_run(run, PREPARE_PATH, conclusions=('success', 'failure'))
     jobs = api(f'actions/runs/{int(run_id)}/attempts/{run["run_attempt"]}/jobs?per_page=100')['jobs']
-    if {job['name'] for job in jobs} != RELEASE_JOBS or any(job['conclusion'] != 'success' for job in jobs):
+    required = TARGET_JOBS[target]
+    selected = [job for job in jobs if job['name'] in required]
+    if len(selected) != len(required) or {job['name'] for job in selected} != required or any(job['conclusion'] != 'success' for job in selected):
         raise ValueError('release CI must qualify transported artifacts, actual runtime readiness and public ingress')
     comparison = api(f'compare/{sha}...main')
     if comparison.get('status') not in {'ahead', 'identical'}:
         raise ValueError('deployment source must be integrated into main')
-    name = f'delivery-{sha}-eddy-{stage}'
+    name = f'delivery-{sha}-eddy-{stage}-{target}'
     artifacts = api(f'actions/runs/{int(run_id)}/artifacts?per_page=100')['artifacts']
     matches = [item for item in artifacts if item['name'] == name and not item['expired']]
     if len(matches) != 1:
@@ -82,6 +95,8 @@ def resolve_delivery(run_id, stage, api=github):
 
 
 def verify_delivery(directory, sha, stage, target, api=github):
+    if target not in ('cloudflare', 'self_hosted'):
+        raise ValueError('delivery verification requires an explicit deployment target')
     directory = Path(directory).resolve()
     receipt_path = directory / 'delivery.json'
     if receipt_path.is_symlink() or receipt_path.stat().st_size > 1024 * 1024:
@@ -114,7 +129,7 @@ def main():
     if args.operation == 'ci':
         result = verify_ci(args.run_id, args.sha)
     elif args.operation == 'resolve':
-        result = resolve_delivery(args.run_id, args.stage)
+        result = resolve_delivery(args.run_id, args.stage, args.target)
     else:
         result = verify_delivery(args.directory, args.sha, args.stage, args.target)
     if args.operation == 'resolve' and os.environ.get('GITHUB_OUTPUT'):

@@ -1,3 +1,4 @@
+import { completeProductReport } from '../../../contracts/deployment/product-cases.mjs';
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -290,7 +291,7 @@ try {
   );
   writeFileSync(
     resolve(metadata.trace_dir, "share-results.json"),
-    JSON.stringify(report, null, 2) + "\n",
+    JSON.stringify(completeProductReport(report, 'share', { surface: metadata.web_origin ? 'frozen' : 'source' }), null, 2) + "\n",
     { mode: 0o600 },
   );
 }

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { digest } from "./resource-input.mjs";
 import { runReleaseProcess } from "./release-wrangler.mjs";
+import { PRODUCT_CONTRACT, assertQualificationCases } from '../../../contracts/deployment/product-cases.mjs';
 
 export const QUALIFIER_PROCESS_TIMEOUT_MS = 15 * 60 * 1000;
 
@@ -60,10 +61,12 @@ export function runReleaseQualifiers(
     if (
       result.status !== 0 ||
       proof.schema_version !== 1 ||
+      proof.contract_sha256 !== PRODUCT_CONTRACT ||
       proof.candidate_digest !== candidate.candidate_digest ||
       proof.observation_digest !== observationDigest ||
       !Array.isArray(proof.cases) ||
       !proof.cases.length ||
+      new Set(proof.cases.map(item => item.id)).size !== proof.cases.length ||
       proof.cases.some(
         (item) =>
           typeof item.id !== "string" ||
@@ -74,6 +77,7 @@ export function runReleaseQualifiers(
       throw new Error(
         `${entry.id} failed or produced stale/incomplete evidence`
       );
+    assertQualificationCases(proof.cases.map(row => row.id), entry.id, observations);
     return {
       id: entry.id,
       command: ["node", entry.path],
@@ -82,6 +86,7 @@ export function runReleaseQualifiers(
       candidate_digest: candidate.candidate_digest,
       observation_digest: observationDigest,
       proof_sha256: digest(proof),
+      contract_sha256: PRODUCT_CONTRACT,
       cases: proof.cases.map(({ id, result }) => ({ id, result })),
     };
   });

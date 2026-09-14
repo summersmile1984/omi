@@ -54,6 +54,7 @@ export default {
       'async_hooks',
       'util',
       'buffer',
+      'cloudflare:workers',
     ],
     define: {
       'import.meta.dir': JSON.stringify('/app/.moonshine'),
@@ -72,6 +73,22 @@ export default {
       ...shared,
       entrypoints: [resolve(out, '.build/server.ts')],
       outdir: resolve(out, 'dist'),
+      plugins: [{
+        name: 'fork-worker-api-binding',
+        setup(build) {
+          build.onLoad({ filter: /\/src\/app\/api\/proxy\/\[\.\.\.path\]\/route\.ts$/ }, async ({ path }) => {
+            const source = await readFile(path, 'utf8');
+            const call = 'await fetch(url, fetchOptions)';
+            if (source.split(call).length !== 2)
+              throw new Error('Review the upstream API proxy transport before compiling its Worker adapter');
+            return {
+              loader: 'ts',
+              contents: `import { env as workerBindings } from 'cloudflare:workers';\n` +
+                source.replace(call, 'await workerBindings.EDGE.fetch(url, fetchOptions)'),
+            };
+          });
+        },
+      }],
     }),
   );
   await refreshBundleIntegrity(out);

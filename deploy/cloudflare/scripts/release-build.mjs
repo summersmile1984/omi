@@ -49,7 +49,18 @@ export function runLocal(root, command, args, { input, log, cwd = root } = {}) {
   return result.stdout;
 }
 
-export function qualifyLocal(root, output) {
+export function qualifyLocal(root, output, ciRunId) {
+  if (ciRunId !== undefined) {
+    if (!/^[0-9]+$/.test(ciRunId)) throw new Error('full CI reuse requires an exact run ID');
+    const source = sourceIdentity(root);
+    if (source.working_diff_sha256 !== digest('')) throw new Error('full CI reuse requires clean committed source');
+    const command = [resolve(root, 'backend/.venv/bin/python'), 'scripts/fork/release_ci.py', 'ci', '--run-id', ciRunId, '--sha', source.commit];
+    const log = 'logs/exact-source-ci.log';
+    const proof = JSON.parse(runLocal(root, command[0], command.slice(1), {log: resolve(output, log)}));
+    if (proof.commit !== source.commit || String(proof.ci_run_id) !== ciRunId)
+      throw new Error('full CI reuse returned different source evidence');
+    return [{id:'exact-source-full-ci',command:command.slice(1),exit:0,log,log_sha256:digest(readFileSync(resolve(output,log))),ci_run_id:proof.ci_run_id}];
+  }
   const cf = resolve(root, "deploy/cloudflare");
   const commands = [
     ["routes", "npm", ["run", "validate:backend-routes"], cf],
@@ -168,6 +179,7 @@ export function prepareRelease({
   brand,
   manifest,
   stage,
+  ciRunId,
 }) {
   root = resolve(root);
   output = resolve(output);
@@ -187,7 +199,7 @@ export function prepareRelease({
   assertInstalledRuntime(cf);
   mkdirSync(resolve(output, "logs"), { recursive: true });
   writeJson(output, "inputs/inventory.json", input);
-  const checks = qualifyLocal(root, output);
+  const checks = qualifyLocal(root, output, ciRunId);
   if (manifest) {
     cpSync(resolve(manifest), resolve(output, "inputs/manifest.json"));
     const projectedAssets = JSON.parse(

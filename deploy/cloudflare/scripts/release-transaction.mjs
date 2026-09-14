@@ -1,6 +1,19 @@
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { digest } from "./resource-input.mjs";
 import { assertPlanIntegrity } from "./resource-bundle.mjs";
+
+const readinessContract = JSON.parse(readFileSync(new URL('../../../contracts/deployment/readiness.json', import.meta.url))).cloudflare;
+
+export function releaseFailure(error) {
+  const detail = error?.failure;
+  const readiness = detail?.operation === 'readiness' && Object.hasOwn(readinessContract, detail.service ?? '') &&
+    readinessContract[detail.service].path === detail.path;
+  if (readiness) return { phase: 'deployed', operation: 'readiness', service: detail.service, path: detail.path,
+    status: Number.isInteger(detail.status) && detail.status >= 100 && detail.status <= 599 ? detail.status : null,
+    reason: ['http_status', 'invalid_ready_body', 'unreachable'].includes(detail.reason) ? detail.reason : 'unreachable' };
+  return { phase: 'deployed', operation: 'qualification', reason: 'deployed_contract_failed' };
+}
 
 export function assertMigrationPrefix(authority, ledger) {
   const expected = authority.files.map((file) => file.name);
@@ -326,10 +339,14 @@ export async function applyRelease({
     journal.state = "completed";
     journal.release_ready = true;
     record(journal, persist);
-  } catch {
+  } catch (error) {
     journal.state = "recovery_required";
+    // Keep structured owner-generated diagnostics, never arbitrary exception text
+    // or provider bodies, which may contain credentials and private user data.
+    journal.failure = releaseFailure(error);
     record(journal, persist);
-    throw new Error("release did not pass readiness; inspect recovery plan");
+    const detail = journal.failure;
+    throw new Error(`release did not pass readiness; inspect recovery plan (${detail.operation}${detail.operation === 'readiness' ? `: ${detail.service}, HTTP ${detail.status ?? 'unreachable'}` : ''})`, { cause: error });
   }
   return journal;
 }

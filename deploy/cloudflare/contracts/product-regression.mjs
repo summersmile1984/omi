@@ -2,6 +2,7 @@ import { mkdtempSync, lstatSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { startLocalTarget } from "./local-target.mjs";
+import { PRODUCT_CONTRACT, assertProductCases } from '../../../contracts/deployment/product-cases.mjs';
 
 export const PRODUCT_SUITES = Object.freeze([
   "core",
@@ -10,13 +11,14 @@ export const PRODUCT_SUITES = Object.freeze([
   "share",
 ]);
 
-export function readProductReport(path, { target, brand }) {
+export function readProductReport(path, { target, brand, suite, surface, remote = false }) {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024)
     throw new Error("product report must be a bounded ordinary file");
   const report = JSON.parse(readFileSync(path, "utf8"));
   if (
     report.schema_version !== 1 ||
+    report.contract_sha256 !== PRODUCT_CONTRACT ||
     report.passed !== true ||
     report.target !== target ||
     report.brand_id !== brand ||
@@ -33,7 +35,9 @@ export function readProductReport(path, { target, brand }) {
     throw new Error(
       "product regression failed or returned incomplete evidence"
     );
-  return report.cases.map((row) => row.id);
+  const ids = report.cases.map((row) => row.id);
+  assertProductCases(ids, suite, { surface, remote });
+  return ids;
 }
 
 export async function runCloudflareRegression(
@@ -70,7 +74,7 @@ export async function runCloudflareRegression(
       );
       const ids = readProductReport(
         resolve(target.metadata.trace_dir, `${suite}-results.json`),
-        { target: "cloudflare", brand: context.candidate.brand }
+        { target: "cloudflare", brand: context.candidate.brand, suite, surface: 'frozen' }
       );
       cases.push(...ids.map((id) => `${suite}:${id}`));
     }

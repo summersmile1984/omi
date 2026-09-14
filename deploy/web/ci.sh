@@ -12,3 +12,4 @@ fi
 npm ci --prefix scripts/brand/raster --ignore-scripts --no-audit --no-fund
 web/app/node_modules/.bin/tsc --project deploy/web/tsconfig.json
 bun test deploy/web/build.test.ts
+node deploy/web/runtime-ci.mjs

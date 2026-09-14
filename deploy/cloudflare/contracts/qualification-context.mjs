@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { verifyCandidate } from "../scripts/release-files.mjs";
 import { digest } from "../scripts/resource-input.mjs";
+import { PRODUCT_CONTRACT } from '../../../contracts/deployment/product-cases.mjs';
 
 export async function readQualificationInput(stream = process.stdin) {
   const chunks = [];
@@ -37,6 +38,7 @@ export function qualificationContext(root, input) {
 export function qualificationProof(candidate, observations, cases) {
   return {
     schema_version: 1,
+    contract_sha256: PRODUCT_CONTRACT,
     candidate_digest: candidate.candidate_digest,
     observation_digest: digest(observations),
     cases: cases.map((id) => ({ id, result: "pass" })),

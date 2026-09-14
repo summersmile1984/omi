@@ -5,9 +5,11 @@ import io
 import json
 from pathlib import Path
 import runpy
+import sys
 import tempfile
 import unittest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'contracts/deployment'))
 CORE = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'contracts/deployment/core.py'))
 
 
@@ -86,7 +88,8 @@ class HostedCoreTests(unittest.TestCase):
                 contract.opener.open = open_request
                 contract.signup()
                 report = contract.report()
-                self.assertEqual(report['passed'], deletion_status == 200)
+                self.assertFalse(report['passed'])  # Cleanup alone cannot qualify the core suite.
+                self.assertEqual(report['cases'][-1]['result'], 'pass' if deletion_status == 200 else 'fail')
                 self.assertEqual(sum(method == 'DELETE' for method, _, _ in requests), 1)
                 contract.report()
                 self.assertEqual(sum(method == 'DELETE' for method, _, _ in requests), 1)

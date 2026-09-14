@@ -26,6 +26,10 @@ on:
         description: Retained incomplete Cloudflare first-release journal to qualify
         required: false
         type: string
+      update_from:
+        description: Owned Cloudflare journal to replace code with unchanged schema and runtime configuration
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -98,6 +102,7 @@ jobs:
           RELEASE_INVENTORY: ${{ inputs.inventory_json || (inputs.stage == 'beta' && vars.CF_INVENTORY_BETA || vars.CF_INVENTORY_PRODUCTION) }}
           RELEASE_CI_RUN_ID: ${{ inputs.ci_run_id }}
           RELEASE_CONTINUE_FROM: ${{ inputs.continue_from }}
+          RELEASE_UPDATE_FROM: ${{ inputs.update_from }}
           GH_TOKEN: ${{ github.token }}
         run: |
           work=$(mktemp -d "$RUNNER_TEMP/fork-delivery.XXXXXX")
@@ -112,7 +117,7 @@ jobs:
           unset RELEASE_INVENTORY
           python3 scripts/fork/prepare_release.py --brand "$RELEASE_BRAND" --stage "$RELEASE_STAGE" \
             --inventory "$work/inventory.json" --output "$work/delivery" --ci-run-id "$RELEASE_CI_RUN_ID" \
-            --continue-from "$RELEASE_CONTINUE_FROM"
+            --continue-from "$RELEASE_CONTINUE_FROM" --update-from "$RELEASE_UPDATE_FROM"
           echo "RELEASE_OUT=$work/delivery" >> "$GITHUB_ENV"
           {
             echo '### Prepared deployment artifacts'
@@ -122,14 +127,21 @@ jobs:
             echo 'delivery.json binds source, image IDs, archive hashes and Cloudflare continuation intent. Artifact qualification runs next.'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Preserve hidden Worker modules and filesystem metadata inside the tar.
+      # Each immutable archive contains only the target's consumed payload.
       - uses: actions/upload-artifact@v4
         with:
-          name: delivery-${{ github.sha }}-${{ inputs.brand }}-${{ inputs.stage }}
+          name: delivery-${{ github.sha }}-${{ inputs.brand }}-${{ inputs.stage }}-cloudflare
           path: |
             ${{ env.RELEASE_OUT }}/cloudflare.tar.gz
+            ${{ env.RELEASE_OUT }}/delivery.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        with:
+          name: delivery-${{ github.sha }}-${{ inputs.brand }}-${{ inputs.stage }}-self_hosted
+          path: |
             ${{ env.RELEASE_OUT }}/server-images.tar
-            ${{ env.RELEASE_OUT }}/source.tar.gz
             ${{ env.RELEASE_OUT }}/delivery.json
           if-no-files-found: error
           compression-level: 0
@@ -143,16 +155,47 @@ jobs:
     with:
       delivery_run_id: ${{ format('{0}', github.run_id) }}
       stage: ${{ inputs.stage }}
-      qualification_artifact: ${{ needs.prepare.outputs.artifact }}
+      qualification_artifact: ${{ needs.prepare.outputs.artifact }}-cloudflare
 
   server:
     name: Server image qualification
     needs: prepare
     uses: ./.github/workflows/fork-cd-server.yml
+    secrets: inherit
     with:
       delivery_run_id: ${{ format('{0}', github.run_id) }}
       stage: ${{ inputs.stage }}
-      qualification_artifact: ${{ needs.prepare.outputs.artifact }}
+      qualification_artifact: ${{ needs.prepare.outputs.artifact }}-self_hosted
+
+  cloudflare-ready:
+    name: Cloudflare ready (contract v2)
+    if: always()
+    needs: [prepare, cloudflare]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require target artifact and complete runtime qualification
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          TARGET_RESULT: ${{ needs.cloudflare.result }}
+        run: |
+          test "$PREPARE_RESULT" = success
+          test "$TARGET_RESULT" = success
+          echo 'Cloudflare: complete target qualification passed (contract v2).' >> "$GITHUB_STEP_SUMMARY"
+
+  server-ready:
+    name: Server ready (contract v2)
+    if: always()
+    needs: [prepare, server]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require target artifact and complete runtime qualification
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          TARGET_RESULT: ${{ needs.server.result }}
+        run: |
+          test "$PREPARE_RESULT" = success
+          test "$TARGET_RESULT" = success
+          echo 'Server: complete target qualification passed (contract v2).' >> "$GITHUB_STEP_SUMMARY"
 
   ready:
     name: Release ready (runtime and public ingress)
