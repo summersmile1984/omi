@@ -53,12 +53,16 @@ services:
   redis:
     image: "redis:7-alpine"
     container_name: ${DEV_REDIS_CONTAINER_NAME:-omi-redis}
+    # The self-hosted runtime requires REDIS_DB_PASSWORD (backend/fork/bootstrap.py
+    # demands it for the API and worker roles), so the local server authenticates
+    # too instead of silently dropping the AUTH the client sends.
+    command: ["redis-server", "--requirepass", "${DEV_REDIS_PASSWORD:-omi-local-redis-password}"]
     ports:
       - "${DEV_REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$${DEV_REDIS_PASSWORD:-omi-local-redis-password}\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10

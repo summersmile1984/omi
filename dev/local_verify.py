@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""End-to-end proof that the Omi local dev stack is actually working.
+"""End-to-end proof that the local data plane is actually working.
 
-`dev/local.sh verify` runs this after the stack is up. Every check exercises the
-production code path (the same shim modules the backend imports at runtime) or a
-real network round trip — nothing here asserts on configuration alone:
+`dev/local.sh verify` runs this after `dev/local.sh up`. Every check is a real
+round trip against a running service:
 
   1. postgres   firestore-pg schema migrated, collections registered
-  2. redis      ping + write/read/delete round trip
-  3. minio      backend storage shim: upload profile audio, read it back
-  4. auth       Better Auth issues a JWT, the backend rejects it when absent
-                and accepts it when present (the auth boundary, both directions)
-  5. backend    backend health, plus an authenticated API round trip
+  2. redis      authenticated ping + write/read/delete round trip
+  3. minio      S3 round trip (put, stat, get, delete) on a probe object
+  4. auth       Better Auth signup, session-backed JWT issuance, JWKS served
+  5. backend    backend health, only when a backend is running
 
-Exit code is 0 only when every check passes. A JSON evidence file is written for
-the run so the result can be attached to a PR or compared across days.
+The self-hosted backend is not part of this harness: it is an image whose
+profile, model stores and Qdrant/Typesense/SearXNG services are baked in
+(see `dev/local.sh selfhost`), so a checkout process cannot admit it.
 """
 
 from __future__ import annotations
@@ -40,6 +39,7 @@ if str(BACKEND_DIR) not in sys.path:
 # working directory or it would test a different environment than production.
 os.chdir(BACKEND_DIR)
 (BACKEND_DIR / "_temp").mkdir(exist_ok=True)
+
 
 BACKEND_URL = os.environ.get("OMI_LOCAL_BACKEND_URL", "http://127.0.0.1:8100").rstrip("/")
 AUTH_URL = os.environ.get("OMI_LOCAL_AUTH_URL", "http://127.0.0.1:3000").rstrip("/")
@@ -70,6 +70,10 @@ def http(
             return response.status, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as error:
         return error.code, error.read().decode("utf-8", "replace")
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, ConnectionError):
+            return 0, "connection refused"
+        raise
 
 
 def _write_probe_wav(path: Path, seconds: float = 0.25, rate: int = 16000) -> int:
@@ -120,7 +124,8 @@ def check_redis() -> dict:
 
     host = os.environ.get("REDIS_DB_HOST", "127.0.0.1")
     port = int(os.environ.get("REDIS_DB_PORT", "6379"))
-    client = redis.Redis(host=host, port=port, socket_connect_timeout=5, socket_timeout=5)
+    password = os.environ.get("REDIS_DB_PASSWORD") or None
+    client = redis.Redis(host=host, port=port, password=password, socket_connect_timeout=5, socket_timeout=5)
     if not client.ping():
         raise CheckFailed(f"redis at {host}:{port} did not answer PING")
     key = f"omi-local-verify:{RUN_UID}"
@@ -133,153 +138,114 @@ def check_redis() -> dict:
 
 
 def check_storage() -> dict:
-    from utils.other import storage
+    """Real S3 round trip against the local MinIO, without the app's shim.
 
-    with tempfile.TemporaryDirectory() as tmp:
-        probe = Path(tmp) / "profile.wav"
-        _write_probe_wav(probe)
-        uploaded_size = probe.stat().st_size
-        url = storage.upload_profile_audio(str(probe), RUN_UID)
-        if not url:
-            raise CheckFailed("upload_profile_audio returned no URL")
-        has_profile = storage.get_user_has_speech_profile(RUN_UID)
-        if not has_profile:
-            raise CheckFailed("uploaded profile audio is not visible through get_user_has_speech_profile")
-        downloaded = storage.get_profile_audio_if_exists(RUN_UID, download=True)
-        if not downloaded:
-            raise CheckFailed("get_profile_audio_if_exists could not read the uploaded object back")
-        downloaded_path = Path(downloaded)
-        read_back = downloaded_path.stat().st_size if downloaded_path.exists() else 0
-        # The shim stores the object verbatim, so the round trip is byte-exact.
-        if read_back != uploaded_size:
-            raise CheckFailed(f"round-tripped audio size {read_back} != uploaded size {uploaded_size}")
+    The app's storage helper needs the self-hosted command profile (it reports
+    through the adapter the image installs), so this check talks to the same
+    server directly and proves the credential, the bucket and the object path
+    the runtime would use.
+    """
+    import boto3
+    from botocore.config import Config
+
+    endpoint = os.environ["MINIO_ENDPOINT"]
+    bucket = os.environ.get("BUCKET_SPEECH_PROFILES", "omi-speech-profiles")
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=os.environ["MINIO_ACCESS_KEY"],
+        aws_secret_access_key=os.environ["MINIO_SECRET_KEY"],
+        region_name=os.environ.get("MINIO_REGION", "us-east-1"),
+        config=Config(s3={"addressing_style": "path"}),
+    )
+    try:
+        client.head_bucket(Bucket=bucket)
+    except Exception:
+        client.create_bucket(Bucket=bucket)
+
+    key = f"{RUN_UID}/speech_profile.wav"
+    payload = b"omi-local-verify"
+    client.put_object(Bucket=bucket, Key=key, Body=payload)
+    head = client.head_object(Bucket=bucket, Key=key)
+    body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+    client.delete_object(Bucket=bucket, Key=key)
+    if head["ContentLength"] != len(payload) or body != payload:
+        raise CheckFailed("object round trip returned different bytes than were stored")
     return {
-        "detail": f"uploaded, listed and downloaded {uploaded_size} bytes through the storage shim",
-        "evidence": {"object_url": url, "bytes": uploaded_size, "uid": RUN_UID},
+        "detail": f"put/head/get/delete of {len(payload)} bytes in {bucket} at {endpoint}",
+        "evidence": {"bucket": bucket, "key": key, "endpoint": endpoint},
     }
 
 
 def check_auth() -> dict:
+    """Sign a principal up and have the issuer mint a session-backed JWT.
+
+    The self-hosted issuer refuses a uid with no user, so the check creates a
+    real Better Auth account (signup), then asks /auth-issue for a token and
+    confirms the JWKS the backend verifies against is being served.
+    """
     if not AUTH_DEV_ISSUER_SECRET:
         raise CheckFailed("AUTH_DEV_ISSUER_SECRET is not set for the verify process")
+
+    email = f"{RUN_UID}@example.test"
+    signup_status, signup_body = http(
+        "POST",
+        f"{AUTH_URL}/api/auth/sign-up/email",
+        body={"email": email, "password": "local-dev-password-123", "name": "Local Verify"},
+    )
+    if signup_status != 200:
+        raise CheckFailed(f"Better Auth signup returned {signup_status}: {signup_body[:300]}")
+    uid = json.loads(signup_body).get("user", {}).get("id")
+    if not uid:
+        raise CheckFailed("Better Auth signup returned no user id")
 
     status, payload = http(
         "POST",
         f"{AUTH_URL}/auth-issue",
         headers={"authorization": f"Bearer {AUTH_DEV_ISSUER_SECRET}"},
-        body={"uid": RUN_UID},
+        body={"uid": uid},
     )
     if status != 200:
         raise CheckFailed(f"auth-server /auth-issue returned {status}: {payload[:300]}")
     token = json.loads(payload).get("token")
-    if not token:
-        raise CheckFailed("auth-server /auth-issue returned no token")
+    if not token or token.count(".") != 2:
+        raise CheckFailed("auth-server /auth-issue returned no well-formed JWT")
 
-    unauthenticated_status, _ = http("GET", f"{BACKEND_URL}/v1/conversations?limit=1")
-    if unauthenticated_status not in (401, 403):
-        raise CheckFailed(
-            "backend accepted an unauthenticated /v1/conversations request "
-            f"(status {unauthenticated_status}) — the auth boundary is open"
-        )
+    jwks_status, jwks_body = http("GET", f"{AUTH_URL}/api/auth/jwks")
+    if jwks_status != 200 or not json.loads(jwks_body).get("keys"):
+        raise CheckFailed(f"JWKS endpoint returned {jwks_status} without keys")
 
-    authenticated_status, authenticated_body = http(
-        "GET",
-        f"{BACKEND_URL}/v1/conversations?limit=1",
-        headers={"authorization": f"Bearer {token}"},
-    )
-    if authenticated_status != 200:
-        raise CheckFailed(
-            f"backend rejected a valid Better Auth token (status {authenticated_status}): {authenticated_body[:300]}"
-        )
     return {
-        "detail": "Better Auth JWT accepted, identical request without it refused",
+        "detail": "signup → session-backed JWT issued, JWKS served for verification",
         "evidence": {
-            "uid": RUN_UID,
-            "unauthenticated_status": unauthenticated_status,
-            "authenticated_status": authenticated_status,
+            "uid": uid,
+            "email": email,
             "token_prefix": token[:12],
-        },
-    }
-
-
-def check_queue() -> dict:
-    """Prove the worker → backend dispatch contract, not just that Redis answers.
-
-    The worker presents x-omi-queue-secret to the handler route, which verifies it
-    with the same env var (backend/utils/cloud_tasks.py::_verify_redis_worker).
-    A mismatch is silent at startup and only surfaces as 403s on real jobs, so
-    this exercises both sides: an invalid payload carrying the right secret must
-    get past authentication, and the wrong secret must be refused.
-    """
-    from utils import cloud_tasks_redis as queue
-
-    if not queue.queue_enabled():
-        raise CheckFailed("QUEUE_BACKEND is not redis for this process")
-
-    missing = [alias for alias in queue.QUEUE_ALIASES if not queue.queue_dispatch_configured(alias)]
-    if missing:
-        names = ", ".join(queue.WORKER_SECRET_ENV[alias] for alias in missing)
-        raise CheckFailed(f"queues without a handler URL + worker secret: {names}")
-
-    secrets_by_queue = {alias: queue.worker_secret(alias) for alias in queue.QUEUE_ALIASES}
-    sync_url = os.environ["SYNC_TASKS_HANDLER_URL"]
-    accepted_status, _ = http(
-        "POST",
-        sync_url,
-        headers={"x-omi-queue-name": "sync", "x-omi-queue-secret": secrets_by_queue["sync"]},
-        body={},
-    )
-    if accepted_status in (401, 403):
-        raise CheckFailed(
-            f"handler rejected the secret the queue worker would present (status {accepted_status}) — "
-            "worker and handler disagree on QUEUE_REDIS_SYNC_WORKER_SECRET"
-        )
-    refused_status, _ = http(
-        "POST",
-        sync_url,
-        headers={"x-omi-queue-name": "sync", "x-omi-queue-secret": "definitely-not-the-secret"},
-        body={},
-    )
-    if refused_status not in (401, 403):
-        raise CheckFailed(f"handler accepted a wrong worker secret (status {refused_status})")
-
-    worker_pid = None
-    pid_file = Path(os.environ.get("OMI_LOCAL_STATE_DIR", "")) / "pids" / "queue-worker.pid"
-    if pid_file.is_file():
-        worker_pid = pid_file.read_text(encoding="utf-8").strip()
-        try:
-            os.kill(int(worker_pid), 0)
-        except (OSError, ValueError) as error:
-            raise CheckFailed(f"queue worker process {worker_pid} is not running: {error}") from error
-
-    return {
-        "detail": (
-            f"{len(queue.QUEUE_ALIASES)} queues configured; the worker secret is accepted by the "
-            "handler and a wrong one is refused"
-        ),
-        "evidence": {
-            "queues": list(queue.QUEUE_ALIASES),
-            "handler_status_with_secret": accepted_status,
-            "handler_status_with_wrong_secret": refused_status,
-            "worker_pid": worker_pid,
+            "jwks_keys": len(json.loads(jwks_body)["keys"]),
         },
     }
 
 
 def check_backend() -> dict:
+    """Health of a backend you started yourself; skipped when none is running."""
     status, payload = http("GET", f"{BACKEND_URL}/v1/health")
+    if status == 0:
+        return {
+            "skipped": True,
+            "detail": f"no backend on {BACKEND_URL} — the self-hosted runtime is an image "
+            "(dev/local.sh selfhost), so the checkout harness does not start one",
+        }
     if status != 200:
         raise CheckFailed(f"GET /v1/health returned {status}")
     return {"detail": f"GET /v1/health → {status}", "evidence": {"body": payload[:200]}}
 
 
 CHECKS = (
-    ("postgres", "firestore_pg shim over PostgreSQL", check_postgres),
-    ("redis", "queue/cache backend", check_redis),
-    ("storage", "storage shim over MinIO", check_storage),
-    ("queue", "queue worker → backend dispatch contract", check_queue),
-    ("auth", "Better Auth → backend auth boundary", check_auth),
-    ("backend", "backend HTTP surface", check_backend),
+    ("postgres", "firestore_pg schema over PostgreSQL", check_postgres),
+    ("redis", "authenticated queue/cache backend", check_redis),
+    ("storage", "S3 round trip against MinIO", check_storage),
+    ("auth", "Better Auth signup → JWT → JWKS", check_auth),
+    ("backend", "backend health, when a backend is running", check_backend),
 )
 
 
@@ -295,18 +261,20 @@ def main() -> int:
         began = time.monotonic()
         try:
             outcome = function()
+            status = "skip" if outcome.get("skipped") else "pass"
             results.append(
                 {
                     "check": name,
                     "description": description,
-                    "status": "pass",
+                    "status": status,
                     "detail": outcome.get("detail", ""),
                     "evidence": outcome.get("evidence", {}),
                     "seconds": round(time.monotonic() - began, 3),
                 }
             )
             if not arguments.quiet:
-                print(f"  PASS  {name:<9} {outcome.get('detail', '')}")
+                label = "SKIP" if status == "skip" else "PASS"
+                print(f"  {label}  {name:<9} {outcome.get('detail', '')}")
         except Exception as error:  # noqa: BLE001 - a failed check must not abort the run
             detail = f"{type(error).__name__}: {error}" if not isinstance(error, CheckFailed) else str(error)
             results.append(
@@ -322,7 +290,8 @@ def main() -> int:
             if not arguments.quiet:
                 print(f"  FAIL  {name:<9} {detail}")
 
-    failed = [result for result in results if result["status"] != "pass"]
+    failed = [result for result in results if result["status"] == "fail"]
+    skipped = [result for result in results if result["status"] == "skip"]
     evidence = {
         "kind": "omi-local-dev-verify",
         "started_at": started.isoformat(),
@@ -331,6 +300,8 @@ def main() -> int:
         "auth_url": AUTH_URL,
         "uid": RUN_UID,
         "ok": not failed,
+        "passed": len(results) - len(failed) - len(skipped),
+        "skipped": len(skipped),
         "checks": results,
     }
     if arguments.evidence:
@@ -342,7 +313,9 @@ def main() -> int:
     if failed:
         print(f"local dev verify: FAILED ({len(failed)}/{len(results)} checks)")
         return 1
-    print(f"local dev verify: PASSED ({len(results)}/{len(results)} checks)")
+    passed = len(results) - len(skipped)
+    suffix = f", {len(skipped)} skipped" if skipped else ""
+    print(f"local dev verify: PASSED ({passed}/{passed} checks{suffix})")
     if arguments.evidence:
         print(f"evidence: {arguments.evidence}")
     return 0

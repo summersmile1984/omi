@@ -5,7 +5,7 @@
 # containers, while auth-server, the queue worker and the backend run as
 # supervised local processes. No cloud account, no cloud credentials, no GPU.
 #
-#   dev/local.sh up            bring the whole stack up and wait for health
+#   dev/local.sh up            bring up the local data plane and wait for health
 #   dev/local.sh status        what is running, on which ports, healthy or not
 #   dev/local.sh verify        end-to-end proof (PG / Redis / MinIO / auth / API)
 #   dev/local.sh restart       restart the application processes (keeps data)
@@ -52,7 +52,7 @@ _CONFIG_KEYS="OMI_LOCAL_POSTGRES_PORT OMI_LOCAL_REDIS_PORT OMI_LOCAL_MINIO_API_P
 OMI_LOCAL_MINIO_CONSOLE_PORT OMI_LOCAL_FIRESTORE_PORT OMI_LOCAL_FIREBASE_AUTH_PORT \
 OMI_LOCAL_FIREBASE_STORAGE_PORT OMI_LOCAL_AUTH_PORT OMI_LOCAL_BACKEND_PORT \
 OMI_LOCAL_BETTER_AUTH_SECRET OMI_LOCAL_AUTH_DEV_ISSUER_SECRET \
-OMI_LOCAL_QUEUE_WORKER_SECRET OMI_LOCAL_ENCRYPTION_SECRET"
+OMI_LOCAL_QUEUE_WORKER_SECRET OMI_LOCAL_ENCRYPTION_SECRET OMI_LOCAL_REDIS_PASSWORD"
 
 [ -f "$ENV_EXAMPLE" ] || {
   echo "missing $ENV_EXAMPLE — it carries the local stack defaults" >&2
@@ -97,6 +97,7 @@ export DEV_POSTGRES_PORT="$OMI_LOCAL_POSTGRES_PORT"
 export DEV_REDIS_PORT="$OMI_LOCAL_REDIS_PORT"
 export DEV_MINIO_API_PORT="$OMI_LOCAL_MINIO_API_PORT"
 export DEV_MINIO_CONSOLE_PORT="$OMI_LOCAL_MINIO_CONSOLE_PORT"
+export DEV_REDIS_PASSWORD="$OMI_LOCAL_REDIS_PASSWORD"
 export FIRESTORE_EMULATOR_PORT="$OMI_LOCAL_FIRESTORE_PORT"
 export FIREBASE_AUTH_EMULATOR_PORT="$OMI_LOCAL_FIREBASE_AUTH_PORT"
 export FIREBASE_STORAGE_EMULATOR_PORT="$OMI_LOCAL_FIREBASE_STORAGE_PORT"
@@ -115,8 +116,11 @@ MINIO_ROOT_PASSWORD="${DEV_MINIO_ROOT_PASSWORD:-minioadmin}"
 PG_DSN="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${OMI_LOCAL_POSTGRES_PORT}/${POSTGRES_DB}"
 PG_DSN_SQLALCHEMY="postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${OMI_LOCAL_POSTGRES_PORT}/${POSTGRES_DB}"
 MINIO_ENDPOINT="http://127.0.0.1:${OMI_LOCAL_MINIO_API_PORT}"
+# Public object origin seen by clients: same server, addressable from the host.
+MINIO_PUBLIC_ENDPOINT="$MINIO_ENDPOINT"
 AUTH_URL="http://127.0.0.1:${OMI_LOCAL_AUTH_PORT}"
 BACKEND_URL="http://127.0.0.1:${OMI_LOCAL_BACKEND_PORT}"
+OMI_LOCAL_SHARE_PORT="${OMI_LOCAL_SHARE_PORT:-3001}"
 
 PYTHON_BIN="$BACKEND_DIR/.venv/bin/python"
 
@@ -245,6 +249,16 @@ backend_env() {
   printf 'STORAGE_EMULATOR_HOST=127.0.0.1:%s\n' "$OMI_LOCAL_FIREBASE_STORAGE_PORT"
   printf 'FIREBASE_PROJECT_ID=demo-omi-local\n'
   printf 'OMI_ENV_STAGE=local\n'
+  # The self-hosted runtime selects its data plane from the generated profile
+  # table (backend/fork/profile.py), not from individual switches; `up` renders
+  # that table for the local stage before starting anything.
+  printf 'OMI_DEPLOYMENT_PROFILE=self_hosted.local\n'
+  printf 'OMI_DEPLOYMENT_TARGET=self_hosted\n'
+  printf 'PUBLIC_BACKEND_URL=%s/\n' "$BACKEND_URL"
+  printf 'PUBLIC_AUTH_URL=%s\n' "$AUTH_URL"
+  printf 'PUBLIC_MCP_URL=%s\n' "$BACKEND_URL"
+  printf 'PUBLIC_OBJECTS_URL=%s\n' "$MINIO_PUBLIC_ENDPOINT"
+  printf 'OMI_SHARE_BASE_URL=http://127.0.0.1:%s\n' "$OMI_LOCAL_SHARE_PORT"
   printf 'RATE_LIMIT_SHADOW_MODE=true\n'
   printf 'ENCRYPTION_SECRET=%s\n' "$OMI_LOCAL_ENCRYPTION_SECRET"
   printf 'AUTH_PROVIDER=better_auth\n'
@@ -252,6 +266,8 @@ backend_env() {
   printf 'AUTH_DEV_ISSUER_SECRET=%s\n' "$OMI_LOCAL_AUTH_DEV_ISSUER_SECRET"
   printf 'STORAGE_BACKEND=minio\n'
   printf 'MINIO_ENDPOINT=%s\n' "$MINIO_ENDPOINT"
+  printf 'MINIO_PUBLIC_ENDPOINT=%s\n' "$MINIO_PUBLIC_ENDPOINT"
+  printf 'MINIO_REGION=us-east-1\n'
   printf 'MINIO_ACCESS_KEY=%s\n' "$MINIO_ROOT_USER"
   printf 'MINIO_SECRET_KEY=%s\n' "$MINIO_ROOT_PASSWORD"
   printf 'BUCKET_SPEECH_PROFILES=omi-speech-profiles\n'
@@ -274,6 +290,7 @@ backend_env() {
   printf 'QUEUE_REDIS_ACCOUNT_DELETION_WORKER_SECRET=%s\n' "$OMI_LOCAL_QUEUE_WORKER_SECRET"
   printf 'QUEUE_REDIS_FINALIZATION_WORKER_SECRET=%s\n' "$OMI_LOCAL_QUEUE_WORKER_SECRET"
   printf 'REDIS_DB_HOST=127.0.0.1\n'
+  printf 'REDIS_DB_PASSWORD=%s\n' "$OMI_LOCAL_REDIS_PASSWORD"
   printf 'REDIS_DB_PORT=%s\n' "$OMI_LOCAL_REDIS_PORT"
   printf 'SYNC_TASKS_HANDLER_URL=%s/v2/sync-jobs/run\n' "$BACKEND_URL"
   printf 'AUDIO_MERGE_HANDLER_URL=%s/v2/audio-merge-jobs/run\n' "$BACKEND_URL"
@@ -352,37 +369,38 @@ cmd_ports() {
 }
 
 cmd_up() {
-  local no_backend=0
   for arg in "$@"; do
     case "$arg" in
-      --no-backend) no_backend=1 ;;
+      # Kept for compatibility: the checkout harness only ever starts the data
+      # plane, because the self-hosted runtime needs the image (see cmd_selfhost).
+      --no-backend) ;;
       *) die "unknown option for up: $arg" ;;
     esac
   done
 
-  step "[1/5] prerequisites"
+  step "[1/4] prerequisites"
   command -v docker >/dev/null || die "docker is required"
   docker info >/dev/null 2>&1 || die "docker daemon is not responding (start Docker/colima)"
   [ -x "$PYTHON_BIN" ] || die "backend venv missing — run 'make setup-backend' (expected $PYTHON_BIN)"
   [ -d "$AUTH_DIR/node_modules" ] || die "auth-server dependencies missing — run 'cd auth-server && npm ci'"
   log "    docker, backend venv, auth-server deps: OK"
 
-  step "[2/5] ports"
+  step "[2/4] ports"
   cmd_ports || die "resolve the port collisions above before starting the stack"
 
-  step "[3/5] containers (postgres / redis / minio / firebase emulators)"
+  step "[3/4] containers (postgres / redis / minio / firebase emulators)"
   docker compose -f "$COMPOSE_FILE" up -d
 
   wait_for "postgres" 60 docker exec "$POSTGRES_CONTAINER" pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" ||
     die "postgres not ready — docker logs $POSTGRES_CONTAINER"
-  wait_for "redis" 30 docker exec "$REDIS_CONTAINER" redis-cli ping ||
+  wait_for "redis" 30 docker exec "$REDIS_CONTAINER" redis-cli -a "$OMI_LOCAL_REDIS_PASSWORD" ping ||
     die "redis not ready — docker logs $REDIS_CONTAINER"
   wait_for "minio" 60 curl -sf "$MINIO_ENDPOINT/minio/health/live" ||
     die "minio not ready — docker logs $MINIO_CONTAINER"
   wait_for "firebase emulators" 120 curl -sf "http://127.0.0.1:$OMI_LOCAL_FIRESTORE_PORT/" ||
     warn "firebase emulators not ready; desktop local-auth flows will not work"
 
-  step "[4/5] schema (Better Auth + firestore-pg), auth-server, queue worker, backend"
+  step "[4/4] schema (Better Auth + firestore-pg) and auth-server"
   local fingerprint
   fingerprint="$(auth_secret_fingerprint "$OMI_LOCAL_BETTER_AUTH_SECRET")"
   if [ -f "$STATE_ENV" ]; then
@@ -405,7 +423,7 @@ cmd_up() {
   write_child_env
   local migrate_log="$LOG_DIR/firestore-pg-migrate.log"
   if ! (cd "$BACKEND_DIR" && set -a && . "$CHILD_ENV_FILE" && set +a &&
-    "$PYTHON_BIN" scripts/firestore_pg_migrate.py migrate) >"$migrate_log" 2>&1; then
+    "$PYTHON_BIN" -m fork.migrate migrate) >"$migrate_log" 2>&1; then
     cat "$migrate_log" >&2
     if grep -q "legacy firestore_pg tables" "$migrate_log"; then
       log ""
@@ -421,56 +439,67 @@ cmd_up() {
     "cd '$AUTH_DIR' && PORT='$OMI_LOCAL_AUTH_PORT' DATABASE_URL='$PG_DSN' \
      BETTER_AUTH_SECRET='$OMI_LOCAL_BETTER_AUTH_SECRET' BETTER_AUTH_URL='$AUTH_URL' \
      AUTH_DEV_ISSUER_SECRET='$OMI_LOCAL_AUTH_DEV_ISSUER_SECRET' exec node src/index.js"
-
   wait_for "auth-server" 60 curl -sf "$AUTH_URL/health" ||
     die "auth-server not ready — dev/local.sh logs auth-server"
 
-  if [ "$no_backend" -eq 1 ]; then
-    printf 'OMI_LOCAL_AUTH_SECRET_FINGERPRINT=%s\n' "$fingerprint" >"$STATE_ENV"
-    log ""
-    log "data plane + auth-server up; backend not started (--no-backend)"
-    return 0
-  fi
-
-  write_child_env
-  (cd "$BACKEND_DIR" && set -a && . "$CHILD_ENV_FILE" && set +a &&
-    "$PYTHON_BIN" -m compileall -q main.py firestore_pg utils routers >/dev/null) ||
-    die "backend failed to compile — run: cd backend && .venv/bin/python -m compileall main.py firestore_pg utils routers"
-  log "    backend python compiles"
-
-  start_process queue-worker bash -c \
-    "set -a; . '$CHILD_ENV_FILE'; set +a; cd '$BACKEND_DIR'; exec '$PYTHON_BIN' -m utils.cloud_tasks_redis --all"
-  # A worker whose queue env is incomplete logs an error and returns immediately;
-  # the supervisor then exits non-zero. Catch that here rather than discovering a
-  # dead consumer much later.
-  sleep 3
-  pid_alive queue-worker || die "queue worker exited on startup — dev/local.sh logs queue-worker"
-  start_process backend bash -c \
-    "set -a; . '$CHILD_ENV_FILE'; set +a; cd '$BACKEND_DIR'; exec '$PYTHON_BIN' -m uvicorn main:app --host 127.0.0.1 --port '$OMI_LOCAL_BACKEND_PORT'"
-
-  wait_for "backend" 180 curl -sf "$BACKEND_URL/v1/health" ||
-    die "backend not ready — dev/local.sh logs backend"
-
   printf 'OMI_LOCAL_AUTH_SECRET_FINGERPRINT=%s\n' "$fingerprint" >"$STATE_ENV"
 
-  step "[5/5] local dev stack is up"
-  log "  backend      $BACKEND_URL            (GET /v1/health)"
+  step "local data plane is up"
   log "  auth-server  $AUTH_URL            (GET /api/auth/jwks)"
   log "  postgres     postgresql://127.0.0.1:$OMI_LOCAL_POSTGRES_PORT/$POSTGRES_DB"
-  log "  redis        127.0.0.1:$OMI_LOCAL_REDIS_PORT"
+  log "  redis        127.0.0.1:$OMI_LOCAL_REDIS_PORT  (auth required)"
   log "  minio        $MINIO_ENDPOINT   (console http://127.0.0.1:$OMI_LOCAL_MINIO_CONSOLE_PORT)"
   log "  emulators    firestore $OMI_LOCAL_FIRESTORE_PORT / auth $OMI_LOCAL_FIREBASE_AUTH_PORT / storage $OMI_LOCAL_FIREBASE_STORAGE_PORT"
   log ""
-  log "  prove it:  dev/local.sh verify"
+  log "  This checkout harness does not run the backend: the self-hosted runtime is"
+  log "  an image with a rendered profile, model stores and qdrant. See:"
+  log "      dev/local.sh selfhost"
+  log ""
+  log "  prove the data plane:  dev/local.sh verify"
+}
+
+cmd_selfhost() {
+  cat <<'EOF'
+Server OS (self-hosted) local runtime
+
+The self-hosted backend is an image, not a checkout process: the profile table,
+the speech/LLM model stores and the Qdrant/Typesense/SearXNG services are all
+part of it (deploy/self-host/Dockerfile renders
+`self_hosted.<stage>` with scripts/profiles/render.py).
+
+  SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
+    deploy/self-host/operations.sh start
+
+Start from deploy/self-host/.env.production.example: set SELF_HOST_STAGE=local,
+point PUBLIC_* at the rendered self_hosted.local profile
+(`python3 scripts/profiles/render.py --target self_hosted \
+   --manifest brand/omi-upstream/manifest.yaml --stage local --emit-json`),
+and replace every REPLACE_* value. `python3 deploy/self-host/check-config.py
+--env-file <file>` validates the result before anything starts.
+
+Two host constraints on this Mac Studio:
+
+  * deploy/self-host/build-images.sh requires BACKEND_PLATFORM=linux/amd64, so
+    the images build under emulation (the fixture build exceeded 20 minutes
+    here); use an amd64 builder or CI for the image step.
+  * the local profile declares speech (SenseVoice + Kokoro) and an Ollama
+    `qwen3:1.7b` LLM, so those model stores must exist before `start`.
+
+`dev/local.sh up` therefore starts only the data plane: postgres, redis
+(password-authenticated), minio, the Firebase emulators and the Better Auth
+auth-server — enough for client work and for the migrations the runtime needs.
+EOF
 }
 
 cmd_status() {
-  log "Omi local dev — status"
+  log "Omi local dev — status (data plane)"
   log "config: $_config_source"
   log "state:  $STATE_DIR"
   log ""
-  printf '  %-14s %-9s %-44s %s\n' SERVICE KIND ENDPOINT STATE
-  _row() { printf '  %-14s %-9s %-44s %s\n' "$1" "$2" "$3" "$4"; }
+  printf '  %-14s %-9s %-44s %s
+' SERVICE KIND ENDPOINT STATE
+  _row() { printf '  %-14s %-9s %-44s %s
+' "$1" "$2" "$3" "$4"; }
   local state
   for pair in "postgres:$POSTGRES_CONTAINER" "redis:$REDIS_CONTAINER" \
     "minio:$MINIO_CONTAINER" "emulators:$EMULATOR_CONTAINER"; do
@@ -479,11 +508,11 @@ cmd_status() {
   done
   if http_ok "$AUTH_URL/health"; then state="up"; elif pid_alive auth-server; then state="starting"; else state="down"; fi
   _row auth-server process "$AUTH_URL" "$state"
-  if http_ok "$BACKEND_URL/v1/health"; then state="up"; elif pid_alive backend; then state="starting"; else state="down"; fi
+  if http_ok "$BACKEND_URL/v1/health"; then state="up"; elif pid_alive backend; then state="starting"; else state="absent"; fi
   _row backend process "$BACKEND_URL" "$state"
-  if pid_alive queue-worker; then state="up"; else state="down"; fi
-  _row queue-worker process "redis 127.0.0.1:$OMI_LOCAL_REDIS_PORT" "$state"
-
+  log ""
+  log "backend is 'absent' unless you started it yourself: the self-hosted runtime is"
+  log "an image (dev/local.sh selfhost), not a checkout process."
   log ""
   local evidence
   evidence="$(ls -1t "$EVIDENCE_DIR"/local-verify-*.json 2>/dev/null | head -1 || true)"
@@ -495,9 +524,9 @@ cmd_status() {
 }
 
 cmd_verify() {
-  http_ok "$BACKEND_URL/v1/health" || die "backend is not up — run 'dev/local.sh up' first"
   local out
   out="$EVIDENCE_DIR/local-verify-$(date -u +%Y%m%dT%H%M%SZ).json"
+  http_ok "$AUTH_URL/health" || die "auth-server is not up — run 'dev/local.sh up' first"
   export OMI_LOCAL_BACKEND_URL="$BACKEND_URL"
   export OMI_LOCAL_AUTH_URL="$AUTH_URL"
   export OMI_LOCAL_STATE_DIR="$STATE_DIR"
@@ -508,9 +537,7 @@ cmd_verify() {
 }
 
 cmd_restart() {
-  step "restarting application processes (containers and data are kept)"
-  stop_process backend
-  stop_process queue-worker
+  step "restarting the auth-server (containers and data are kept)"
   stop_process auth-server
   cmd_up
 }
@@ -562,20 +589,19 @@ cmd_env() {
 
 cmd_help() {
   cat <<'EOF'
-Omi local dev — stage 1 of the pipeline (compile + run), cloud-neutral.
+Omi local dev — stage 1 of the fork pipeline, on main.
 
-  dev/local.sh up            start everything and wait for health
-  dev/local.sh status        what is running, on which ports, healthy or not
-  dev/local.sh verify        end-to-end proof (PG / Redis / MinIO / auth / API)
-  dev/local.sh restart       restart backend, queue worker and auth-server
-  dev/local.sh logs [svc]    tail logs (backend, auth-server, queue-worker)
-  dev/local.sh ports         resolved port allocation + collision report
-  dev/local.sh env           print `export ...` lines for the current shell
-  dev/local.sh down          stop processes and containers (keeps volumes)
-  dev/local.sh reset         down + delete volumes (destructive)
-
-Options:
-  up --no-backend            start the data plane and auth-server only
+  dev/local.sh up        start the local data plane and wait for health
+  dev/local.sh verify    end-to-end proof of what is running + JSON evidence
+  dev/local.sh status    what is running, on which ports, healthy or not
+  dev/local.sh selfhost  what the Server OS (self-hosted) runtime needs, and why
+                         the checkout harness does not run it
+  dev/local.sh restart   restart the auth-server
+  dev/local.sh logs [svc]  tail logs (auth-server, firestore-pg-migrate, ...)
+  dev/local.sh ports     resolved port allocation + collision report
+  dev/local.sh env       print `export ...` lines for the current shell
+  dev/local.sh down      stop everything (keeps volumes)
+  dev/local.sh reset     stop and delete local data (destructive)
 
 Configuration: dev/local.env (copy dev/local.env.example).
 Precedence: ambient environment > dev/local.env > dev/local.env.example
@@ -587,6 +613,7 @@ command="${1:-help}"
 shift || true
 case "$command" in
   up) cmd_up "$@" ;;
+  selfhost) cmd_selfhost ;;
   status) cmd_status ;;
   verify) cmd_verify "$@" ;;
   restart) cmd_restart ;;
