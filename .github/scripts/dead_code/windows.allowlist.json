@@ -9,11 +9,11 @@
       "reason": "intentional test infrastructure"
     },
     {
-      "path": "desktop/windows/src/main/codingAgent/fixtures/fakeAcpAuthSubprocess.mjs",
+      "path": "desktop/windows/src/main/codingAgent/fixtures/fakeAcpSubprocess.mjs",
       "reason": "intentional test infrastructure"
     },
     {
-      "path": "desktop/windows/src/main/codingAgent/fixtures/fakeAcpSubprocess.mjs",
+      "path": "desktop/windows/src/main/codingAgent/fixtures/fakeAcpAuthSubprocess.mjs",
       "reason": "intentional test infrastructure"
     },
     {
@@ -27,10 +27,6 @@
     {
       "path": "desktop/windows/src/shared/agentControlTools.ts",
       "reason": "test-only contract module (AGENT_CONTROL_TOOL_NAMES assertions); the live IPC handler is self-contained in src/main/ipc/agentControl.ts"
-    },
-    {
-      "path": "desktop/windows/src/shared/fork/deploymentProfiles.generated.ts",
-      "reason": "generated fork deployment-profile table: consumed through the fork's profile loader, which the import scan does not resolve"
     }
   ]
 }
