@@ -225,6 +225,12 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
    的 break-glass 描述与仓库现状不符(前者工作流已 `disabled_manually`、无 `branch` 入参;
    后者全仓库不存在该 manifest 检查;desktop 真正的应急入口是 `desktop_breakglass_rollout_beta.yml`)。
    建议在三阶段口径确定后一并修正。
+5. **阶段 2 的"首个失败即停"**:`run_checks.py` 默认 `keep_going=False`,fork 门禁因此**每次只报一条**失败检查。
+   2026-09-14 修 Electron owner 时,这一条链被逐个揭开:electron → repo-state → flutter anchor,
+   每条都要付一轮完整 CI(约 4 分钟 + 排队),而三者其实互不相关、可以一次全报。
+   `.github/scripts/run_checks.py` 内部已有 `keep_going`(第 420 行),但**没有 CLI 开关**;
+   把它暴露出来属于上游文件改动(T0/T2 边界),在 fork 侧包一层"逐条跑完再汇总"则会动到
+   发布授权车道的 attestation 语义 —— 两者都需要一次明确的决定,故此处只记录,不擅自改。
 
 ---
 
