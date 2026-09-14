@@ -252,6 +252,25 @@ gh workflow run fork-cd-server.yml     --ref main -f delivery_run_id=<RELEASE_RU
 | 2 | **Cloudflare** | 本地 target(workers + 本地绑定 + Provider 替身) | `npm run dev:product -- --output <dir>` | ✅ `/health` `/v1/health` `/` = 200;业务路由 401 |
 | 3 | **客户端** | 各自 fork stage 在构建时解析 `<target>.local` 并注入端点 | 见下 | web ✅;desktop 已接线未构建;flutter 阻塞在 SDK 版本 |
 
+### 客户端本地运行入口(统一)
+
+```bash
+dev/local-client.sh web      [--target self_hosted|cloudflare] [--stage local] [--port 3210]
+dev/local-client.sh desktop  [--target ...] [--stage ...]
+dev/local-client.sh mobile   [--target ...]
+dev/local-client.sh stop web
+```
+
+每个客户端保留自己的实现,共享的只有 **profile**(`<target>.<stage>`)—— 这正是"环境对得上"的机制。
+`self_hosted.local` 把客户端指向 `http://127.0.0.1:8100`,也就是 `dev/local.sh up` +
+`dev/selfhost-local.sh up` 起的后端。
+
+| 客户端 | 入口做了什么 | 本机实测 |
+|---|---|---|
+| web | `bun deploy/web/build.ts --target <t> --stage <s>` → 起 `artifact/start.js` 并等待健康 | ✅ `Built 28 routes for self_hosted.local`;`/conversations` **200** |
+| desktop | `desktop/macos/fork/compile.sh`(staged 编译两个 target;**不安装、不启动**,这是 fork 的设计) | ✅ `Build complete! (85.71s)`,两个 target 均产出二进制 |
+| mobile | 先断言 Flutter 版本 = 3.44.5,再跑 `app/fork/test.sh` | ⛔ 本机 3.38.9 → **exit 1**,给出明确指引(CI 的 `fork-flutter-native-identity` 负责验证) |
+
 ### 客户端(第三条)的真实状态
 
 端点注入**已经实现**,分别在各自的 fork stage 里:
