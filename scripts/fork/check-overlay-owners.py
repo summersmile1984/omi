@@ -18,6 +18,15 @@ Registry semantics:
   * desktop/macos/fork/source-owners.json -> {key: sha256}, where key is a whole file
     ("AppBuild.swift"), a Swift declaration ("AuthService.swift:configure()"), or a
     marker-bounded region owned by desktop/macos/fork/prepare.py.
+  * desktop/windows/fork/source-owners.json -> {path: sha256} relative to desktop/windows/,
+    every key a whole file. desktop/windows/fork/prepare.py verifies it with the same
+    all-or-nothing loop and the same "Review upstream identity owner drift" error.
+
+Every registry is audited here, including the Electron one: when it was left out, an
+upstream import that touched only desktop/windows/package.json (the #12753 dev-wrapper
+change, `"dev": "electron-vite dev"` -> `"dev": "node scripts/dev.mjs"`) still failed
+fork-electron-native-identity in CI, because the audit never looked at the registry that
+was stale nor ran on a desktop/windows/** diff.
 
 Exit status is 1 when any owner is stale or unresolvable, 0 otherwise. Re-recording a
 digest is the *last* step: review what upstream changed in that owner first, and fix
@@ -39,6 +48,8 @@ ROOT = Path(__file__).resolve().parents[2]
 FLUTTER_REGISTRY = ROOT / "app/fork/source-owners.json"
 DESKTOP_REGISTRY = ROOT / "desktop/macos/fork/source-owners.json"
 DESKTOP_SOURCES = ROOT / "desktop/macos/Desktop/Sources"
+ELECTRON_REGISTRY = ROOT / "desktop/windows/fork/source-owners.json"
+ELECTRON_COMPONENT = ROOT / "desktop/windows"
 
 
 def audit_flutter() -> tuple[list[str], list[str], int]:
@@ -53,6 +64,32 @@ def audit_flutter() -> tuple[list[str], list[str], int]:
         if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             stale.append(name)
     return stale, unresolved, len(files)
+
+
+def audit_electron(
+    registry_path: Path = ELECTRON_REGISTRY,
+    component: Path = ELECTRON_COMPONENT,
+) -> tuple[list[str], list[str], int]:
+    """Whole-file owners under desktop/windows, verified exactly as prepare.py verifies them.
+
+    prepare.py hashes `component / path` for every key and raises on the first mismatch, so
+    this walks the whole registry instead: a reviewer fixing one entry at a time otherwise
+    pays one CI round trip per stale owner.
+    """
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    stale, unresolved = [], []
+    for name, digest in sorted(registry.items()):
+        rel = Path(name)
+        if rel.is_absolute() or ".." in rel.parts:
+            unresolved.append(f"{name} (escapes the component root)")
+            continue
+        path = component / rel
+        if not path.is_file():
+            unresolved.append(f"{name} (missing)")
+            continue
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            stale.append(name)
+    return stale, unresolved, len(registry)
 
 
 def _desktop_regions() -> dict[str, tuple[str, str]]:
@@ -118,13 +155,17 @@ def audit_desktop() -> tuple[list[str], list[str], int, str]:
 def main() -> int:
     flutter_stale, flutter_unresolved, flutter_total = audit_flutter()
     desktop_stale, desktop_unresolved, desktop_total, desktop_note = audit_desktop()
+    electron_stale, electron_unresolved, electron_total = audit_electron()
 
     print(f"fork overlay owners: flutter {flutter_total} ({len(flutter_stale)} stale), "
-          f"desktop {desktop_total} ({len(desktop_stale)} stale) — {desktop_note}")
-    for label, entries in (("stale", flutter_stale + desktop_stale), ("unresolved", flutter_unresolved + desktop_unresolved)):
+          f"desktop {desktop_total} ({len(desktop_stale)} stale), "
+          f"electron {electron_total} ({len(electron_stale)} stale) — {desktop_note}")
+    stale = flutter_stale + desktop_stale + electron_stale
+    unresolved = flutter_unresolved + desktop_unresolved + electron_unresolved
+    for label, entries in (("stale", stale), ("unresolved", unresolved)):
         for entry in entries:
             print(f"  {label}: {entry}", file=sys.stderr)
-    if flutter_stale or desktop_stale or flutter_unresolved or desktop_unresolved:
+    if stale or unresolved:
         print(
             "Review what upstream changed in each owner, fix the fork replacement when the change is "
             "semantic, then re-record the digest in the matching source-owners.json.",
