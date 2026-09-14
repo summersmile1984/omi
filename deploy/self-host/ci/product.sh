@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # LIFECYCLE: permanent
 # Same bounded product slice on a local Docker engine and the existing CI lane.
+#
+# The workflow pins SELF_HOST_CI_REPORT_DIR and uploads it as the
+# fork-selfhost-fixture-report-<sha> artifact, so a failing command-NN.log survives the run
+# instead of disappearing with the runner's temporary directory.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 REPORT="${SELF_HOST_CI_REPORT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/memweft-product-contract.XXXXXX")}"
