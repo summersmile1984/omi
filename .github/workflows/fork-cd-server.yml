@@ -43,7 +43,7 @@ jobs:
       sha: ${{ steps.delivery.outputs.sha }}
       artifact: ${{ steps.delivery.outputs.artifact }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - id: delivery
@@ -69,7 +69,7 @@ jobs:
     runs-on: ${{ fromJSON('["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.sha }}
           fetch-depth: 0
@@ -128,7 +128,7 @@ jobs:
 
       - name: Upload the release failure evidence
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: server-release-failure-${{ needs.resolve.outputs.sha }}
           path: fork-release-evidence
