@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "FC-fork-patch-binding-follows-upstream-signature",
+  "violated_contract": "A fork patch binds an upstream symbol by name and then calls it with a shape the fork recorded at authoring time. The contract is that the binding keeps matching the symbol's current upstream signature, and that a mismatch fails where the fork's own tests run rather than at runtime on the path the patch exists to replace. When upstream removes or renames a field, constructor argument, or call site, the patch keeps importing and registering successfully, so nothing fails until the seam is exercised in production: an upstream import dropped resolve_legacy_deletion_wipe_uid and the patch raised PatchError at import; the import that reshaped AccountDeletionTaskAuthentication removed its audience field and the account-deletion worker raised TypeError on its first real request.",
+  "canonical_prevention": "Re-derive every patch binding from the upstream symbol during the sync instead of trusting the recorded call shape, and keep a behavioural test that drives the patched seam through its real entrypoint so an upstream signature change fails in the fork's own suite. Assert the binding's public meaning (the verified retry count, the scoping that still applies) rather than a field upstream has since retired.",
+  "canonical_prevention_artifact": [
+    "backend/fork/patches/queue.py",
+    "backend/fork/tests/test_queue_retries.py",
+    "backend/fork/registry.py"
+  ],
+  "evidence_prs": [39, 47],
+  "scope_hints": [
+    "backend/fork/patches/**",
+    "backend/fork/tests/**",
+    "backend/fork/registry.py"
+  ],
+  "status": "open"
+}

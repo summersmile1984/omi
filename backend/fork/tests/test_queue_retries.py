@@ -69,7 +69,10 @@ def test_retry_headers_are_authenticated_scoped_bounded_and_legacy_starts_at_zer
     for count, expected in ((None, 0), ('0', 0), ('2', 2)):
         result = owner(request(queue, count))
         if queue.name == 'account-deletion':
-            assert result.audience == 'account_deletion'
+            # Upstream's AccountDeletionTaskAuthentication is a NamedTuple of the verified
+            # retry count; the audience lane lives inside
+            # verify_account_deletion_cloud_tasks_oidc, and the operator-mode scoping this
+            # test owns is the per-queue route secret exercised by the wrong-secret case below.
             result = result.retry_count
         assert result == expected
     for count in ('-1', '1.0', ' 1', '3', '1000', '\u0661'):

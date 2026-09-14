@@ -92,6 +92,11 @@ def test_complete_export_reads_admitted_collections_including_legacy_users(monke
     monkeypatch.setattr(data_export, 'get_people', lambda uid: [])
     monkeypatch.setattr(data_export, 'get_standalone_action_items', lambda uid, **kwargs: [])
     monkeypatch.setattr(data_export.conversations_db, 'iter_all_conversations', lambda uid, **kwargs: iter([]))
+    # The export walks conversation photos too. Leaving that owner unstubbed made the walk
+    # build a real Firestore client through database/_client.py, so the test demanded
+    # Application Default Credentials and failed with DefaultCredentialsError wherever CI
+    # has none -- never reaching the schema assertion it exists to prove.
+    monkeypatch.setattr(data_export.conversations_db, 'iter_all_conversation_photos', lambda uid: iter(()))
     monkeypatch.setattr(data_export.chat_db, 'iter_all_messages', lambda uid: iter([]))
     monkeypatch.setattr(
         data_export,

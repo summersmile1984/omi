@@ -80,7 +80,10 @@ def _redis_account_deletion_verifier(original: Callable[..., Any]) -> Callable[.
     def route(request: Request) -> Any:
         from utils.cloud_tasks import AccountDeletionTaskAuthentication
 
-        return AccountDeletionTaskAuthentication(retry_count=verify(request), audience='account_deletion')
+        # Upstream's NamedTuple carries only the verified retry count now; the audience lane
+        # is pinned inside verify_account_deletion_cloud_tasks_oidc, and this patch's own
+        # scoping is the per-queue route secret that _route_worker_auth checks above.
+        return AccountDeletionTaskAuthentication(retry_count=verify(request))
 
     return route
 
