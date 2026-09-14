@@ -61,23 +61,37 @@ dev/local.sh status | restart | logs | ports | env | down | reset
 
 **2026-09-14 在 main 上:4/4 PASSED,1 SKIPPED**(证据 `.local/local-dev/evidence/`)。
 
-### 1.2 Server OS 运行时(镜像,本地需要 amd64 构建通道)
+### 1.2 Server OS 运行时(本地已可跑通)
+
+镜像路径(`operations.sh start`)仍需要 amd64 构建通道;但在 checkout 上也能跑起来,
+用 core-only profile(**与 `deploy/self-host/ci/product.py::core_only_profile` 同一形状**:
+去掉 speech/LLM 模型库,保留 embedding):
 
 ```bash
-SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
-  deploy/self-host/operations.sh start
+dev/local.sh up            # 数据面:postgres/redis/minio/qdrant/typesense/emulators + auth-server
+dev/selfhost-local.sh up   # 渲染 core-only profile → qdrant 迁移 → uvicorn fork.main:app
+dev/local.sh verify        # 5/5(backend 从 SKIP 变 PASS)
+dev/selfhost-local.sh stop # 停后端并把生成的 profile 表还原
 ```
 
-前置:从 `.env.production.example` 复制出**非 `.example`** 的 env 文件(检查器明确拒绝示例文件)、
-填掉所有 `REPLACE_*`、`PUBLIC_*` 必须与渲染出的 `self_hosted.local` 一致
-(`python3 deploy/self-host/check-config.py --env-file <file>` 会逐条校验)。
+env 模板:`dev/selfhost-local.env.example` → 复制为 `dev/selfhost-local.env`(gitignore)。
+`up` 结束后可直接走真实业务链路:
 
-本机(Apple Silicon)的两个约束:
+```
+无 token  GET /v1/conversations → 401
+带 token  GET /v1/conversations → 200 []
+```
 
-- `deploy/self-host/build-images.sh` 要求 `BACKEND_PLATFORM=linux/amd64`,镜像需模拟构建
-  (本机复现 fixture 构建 20 分钟超时);镜像步骤应交给 amd64 builder 或 CI。
-- `self_hosted.local` profile 声明了 speech(SenseVoice + Kokoro)与 Ollama `qwen3:1.7b`,
-  这些模型库必须先在位。
+(token 由 auth-server 真实注册 + `/auth-issue` 签发;后端经 `/internal/verify` 校验会话,
+因此 auth-server 与后端共享 `AUTH_INTERNAL_ADMIN_SECRET`。)
+
+**2026-09-14 实测**:`dev/local.sh verify` 5/5,业务接口 401→200,
+`firestore_pg/tests/test_transaction_semantics.py` + `test_deletion_write_fence.py` 39 passed、
+`fork/tests/test_account_deletion.py` 10 passed。
+
+仍然需要 amd64 通道的场景:`deploy/self-host/build-images.sh`(镜像交付)与完整
+profile(speech/LLM 模型库:`prepare-speech.py` 目前因上游 TTS 归档 digest 与固定值不符而
+无法完成,见下)。
 
 ### 1.3 设计约束
 
