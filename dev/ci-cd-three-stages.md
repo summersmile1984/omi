@@ -225,6 +225,12 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
    的 break-glass 描述与仓库现状不符(前者工作流已 `disabled_manually`、无 `branch` 入参;
    后者全仓库不存在该 manifest 检查;desktop 真正的应急入口是 `desktop_breakglass_rollout_beta.yml`)。
    建议在三阶段口径确定后一并修正。
+5. **阶段 2 的"首个失败即停"**:`run_checks.py` 默认 `keep_going=False`,fork 门禁因此**每次只报一条**失败检查。
+   2026-09-14 修 Electron owner 时,这一条链被逐个揭开:electron → repo-state → flutter anchor,
+   每条都要付一轮完整 CI(约 4 分钟 + 排队),而三者其实互不相关、可以一次全报。
+   `.github/scripts/run_checks.py` 内部已有 `keep_going`(第 420 行),但**没有 CLI 开关**;
+   把它暴露出来属于上游文件改动(T0/T2 边界),在 fork 侧包一层"逐条跑完再汇总"则会动到
+   发布授权车道的 attestation 语义 —— 两者都需要一次明确的决定,故此处只记录,不擅自改。
 
 ---
 
@@ -270,6 +276,25 @@ gh workflow run fork-cd-server.yml     --ref main -f delivery_run_id=<RELEASE_RU
 | 1 | **Server OS 自托管** | 数据面 + core-only 自托管后端 | `dev/local.sh up` ; `dev/selfhost-local.sh up` | ✅ `verify` 5/5;业务接口 401 → 200 `[]` |
 | 2 | **Cloudflare** | 本地 target(workers + 本地绑定 + Provider 替身) | `npm run dev:product -- --output <dir>` | ✅ `/health` `/v1/health` `/` = 200;业务路由 401 |
 | 3 | **客户端** | 各自 fork stage 在构建时解析 `<target>.local` 并注入端点 | 见下 | web ✅;desktop 已接线未构建;flutter 阻塞在 SDK 版本 |
+
+### 客户端本地运行入口(统一)
+
+```bash
+dev/local-client.sh web      [--target self_hosted|cloudflare] [--stage local] [--port 3210]
+dev/local-client.sh desktop  [--target ...] [--stage ...]
+dev/local-client.sh mobile   [--target ...]
+dev/local-client.sh stop web
+```
+
+每个客户端保留自己的实现,共享的只有 **profile**(`<target>.<stage>`)—— 这正是"环境对得上"的机制。
+`self_hosted.local` 把客户端指向 `http://127.0.0.1:8100`,也就是 `dev/local.sh up` +
+`dev/selfhost-local.sh up` 起的后端。
+
+| 客户端 | 入口做了什么 | 本机实测 |
+|---|---|---|
+| web | `bun deploy/web/build.ts --target <t> --stage <s>` → 起 `artifact/start.js` 并等待健康 | ✅ `Built 28 routes for self_hosted.local`;`/conversations` **200** |
+| desktop | `desktop/macos/fork/compile.sh`(staged 编译两个 target;**不安装、不启动**,这是 fork 的设计) | ✅ `Build complete! (85.71s)`,两个 target 均产出二进制 |
+| mobile | 先断言 Flutter 版本 = 3.44.5,再跑 `app/fork/test.sh` | ⛔ 本机 3.38.9 → **exit 1**,给出明确指引(CI 的 `fork-flutter-native-identity` 负责验证) |
 
 ### 客户端(第三条)的真实状态
 
