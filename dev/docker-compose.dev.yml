@@ -87,7 +87,43 @@ services:
       timeout: 3s
       retries: 10
 
+  # Qdrant: the self-hosted profile selects it for vector projections, so the
+  # local runtime needs it (backend/fork/bootstrap.py requires QDRANT_URL).
+  qdrant:
+    image: "qdrant/qdrant:v1.15.4"
+    container_name: ${DEV_QDRANT_CONTAINER_NAME:-omi-qdrant}
+    environment:
+      QDRANT__SERVICE__API_KEY: ${DEV_QDRANT_API_KEY:-omi-local-qdrant-key}
+    ports:
+      - "${DEV_QDRANT_PORT:-6333}:6333"
+      - "${DEV_QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Typesense: the same profile binds keyword memory search to it
+  # (MEMORY_KEYWORD_INDEX_PROVIDER=typesense).
+  typesense:
+    image: "typesense/typesense:29.0"
+    container_name: ${DEV_TYPESENSE_CONTAINER_NAME:-omi-typesense}
+    command: ["--data-dir", "/data", "--api-key", "${DEV_TYPESENSE_API_KEY:-omi-local-typesense-key}", "--enable-cors", "false"]
+    ports:
+      - "${DEV_TYPESENSE_PORT:-8108}:8108"
+    volumes:
+      - typesense-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8108' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
 volumes:
+  qdrant-data:
+  typesense-data:
   emulator-data:
   postgres-data:
   redis-data:

@@ -508,7 +508,6 @@ def test_account_deletion_completion_replaces_private_marker_atomically(db, monk
     assert uid not in repr(receipt_data)
     assert 'private reason' not in repr(receipt_data)
     assert users_db.resolve_deletion_wipe_job_id('opaque-job-id') == {'outcome': 'completed', 'uid': None}
-    assert users_db.resolve_legacy_deletion_wipe_uid(uid) == {'outcome': 'completed', 'uid': None}
 
     # A provider resource arriving after completion reopens only the active
     # cleanup authority. Once that work is cleared, redelivery returns to the

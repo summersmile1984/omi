@@ -28,7 +28,6 @@ def patches():
     }
     wrapped = {
         'resolve_deletion_wipe_job_id': owner.resolve_job,
-        'resolve_legacy_deletion_wipe_uid': owner.resolve_legacy,
         'mark_user_deletion_wipe_running': owner.guard_mutation,
         'mark_user_deletion_wipe_failed': owner.guard_mutation,
         'set_user_deletion_feedback': owner.guard_mutation,

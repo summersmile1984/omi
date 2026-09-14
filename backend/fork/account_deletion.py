@@ -172,13 +172,6 @@ def resolve_job(original, wipe_job_id):
     return {'outcome': 'completed', 'uid': None}
 
 
-def resolve_legacy(original, uid):
-    result = original(uid)
-    if result['outcome'] == 'missing' and _receipt(_read(_refs(_client(), uid)[1])):
-        return {'outcome': 'completed', 'uid': None}
-    return result
-
-
 @transactional
 def _guard_completed(tx, active, receipt, action, completed_result):
     data = _read(active, tx)
