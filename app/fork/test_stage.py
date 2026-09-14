@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -14,7 +15,7 @@ class StageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             manifest = directory / "private.json"
-            manifest.write_text(json.dumps(fixture()))
+            manifest.write_text(json.dumps(fixture(directory)))
             packages = set()
             for target in ["self_hosted", "cloudflare"]:
                 output = directory / target
@@ -25,6 +26,14 @@ class StageTests(unittest.TestCase):
                 self.assertEqual(set(defines), {"OMI_FORK_DEPLOYMENT_JSON"})
                 profile = json.loads(defines["OMI_FORK_DEPLOYMENT_JSON"])["profile"]
                 self.assertEqual(profile["name"], target + ".local")
+                assets = result["assets"]
+                self.assertEqual(set(assets["inputs"]), {"icon_master", "logo_light", "logo_dark", "splash"})
+                self.assertEqual(assets["outputs"]["assets/images/herologo.png"]["width"], 256)
+                self.assertEqual(
+                    assets["outputs"]["android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"]["width"], 192
+                )
+                for path in ("assets/images/herologo.png", "android/app/src/dev/res/mipmap-mdpi/ic_launcher.png"):
+                    self.assertNotEqual(assets["outputs"][path]["sha256"], result["source_owners"][path])
                 # Static wiring/identity assertions, not behavior-test claims.
                 main = (output / "app/lib/main.dart").read_text()
                 self.assertIn("NativeIdentity.initialize()", main)
@@ -45,7 +54,7 @@ class StageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             manifest = directory / "private.json"
-            manifest.write_text(json.dumps(fixture()))
+            manifest.write_text(json.dumps(fixture(directory)))
             for target, output, brand in [
                 ("self_hosted", directory, manifest),
                 ("omi_cloud", directory / "bad", manifest),
@@ -58,7 +67,7 @@ class StageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
             manifest = directory / "private.json"
-            manifest.write_text(json.dumps(fixture()))
+            manifest.write_text(json.dumps(fixture(directory)))
             actual = Path.read_bytes
 
             def changed(path):
@@ -68,6 +77,18 @@ class StageTests(unittest.TestCase):
             with patch.object(Path, "read_bytes", changed), self.assertRaisesRegex(ValueError, "source owner changed"):
                 stage(manifest, "self_hosted", directory / "stage", Path(os.environ["DART"]))
             self.assertFalse((directory / "stage").exists())
+
+    def test_invalid_manifest_asset_fails_without_a_partial_mobile_stage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            value = fixture(directory, "notebook")
+            (directory / "assets/notebook-splash.png").write_bytes(b"invalid")
+            manifest = directory / "private.json"
+            manifest.write_text(json.dumps(value))
+            output = directory / "rejected"
+            with self.assertRaises(subprocess.CalledProcessError):
+                stage(manifest, "cloudflare", output, Path(os.environ["DART"]))
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

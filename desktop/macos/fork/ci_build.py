@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from build import build
 from prepare import ROOT, load_manifest
 
 
-def synthetic_manifest() -> dict:
+def synthetic_manifest(directory: Path, variant: str = "harbor") -> dict:
     value = copy.deepcopy(load_manifest("omi-upstream", ROOT))
     value["brand"].update(id="synthetic-native-ci", display_name="Synthetic Native CI")
     value["identifiers"].update(
@@ -33,6 +34,10 @@ def synthetic_manifest() -> dict:
         for key in ("api_base", "auth_base", "web_app", "mcp_base", "share_base", "objects_base")
     }
     value["deployments"] = {target: {"local": row} for target in ("self_hosted", "cloudflare")}
+    subprocess.run(["node", str(ROOT / "scripts/brand/raster/fixture.mjs"), str(directory), variant], check=True)
+    value["assets"].update(
+        {name: f"assets/{variant}-{name}.png" for name in ("icon_master", "logo_light", "logo_dark", "splash")}
+    )
     return value
 
 
@@ -43,5 +48,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="native-ci-manifest-") as temporary:
         manifest = Path(temporary) / "brand.json"
-        manifest.write_text(json.dumps(synthetic_manifest()))
+        manifest.write_text(json.dumps(synthetic_manifest(Path(temporary))))
         print(build(manifest, "self_hosted", "omi-native-ci", args.output, args.dependency_cache, compile_only=True))

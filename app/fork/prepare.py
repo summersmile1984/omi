@@ -114,6 +114,15 @@ def stage(manifest_path: Path, target: str, output: Path, dart: Path) -> dict:
         shutil.copy2(source, dest)
     shutil.copytree(ROOT / "app/lib/fork", app / "lib/fork", dirs_exist_ok=True)
     shutil.copytree(FORK, app / "fork", dirs_exist_ok=True)
+    asset_input = output / "brand-asset-input.json"
+    asset_input.write_text(json.dumps(manifest["assets"]))
+    try:
+        subprocess.run(
+            ["node", str(FORK / "assets.mjs"), str(manifest_path.parent), str(asset_input), str(app)], check=True
+        )
+    except Exception:
+        shutil.rmtree(output, ignore_errors=True)
+        raise
     for source, destination in {
         "auth_provider": "lib/providers/auth_provider.dart",
         "auth": "lib/pages/onboarding/auth.dart",
@@ -394,6 +403,7 @@ def stage(manifest_path: Path, target: str, output: Path, dart: Path) -> dict:
         "mode": "local_debug_only",
         "package_id": package_id,
         "profile": row,
+        "assets": json.loads((app / "fork/asset-coverage.json").read_text()),
         "source_owners": owners,
         "artifact": str(app),
         "remote_push": "disabled",

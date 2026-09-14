@@ -1,7 +1,7 @@
 # macOS native deployment consumer
 
 This package stages the current upstream Swift app with a selected fork profile.
-It is the first **local native authentication** acceptance package, not a signed
+It is a **local native authentication and selected raster** acceptance package, not a signed
 white-label distribution. No command installs, launches, seeds, or stops an app.
 Use only a synthetic `omi-*` named bundle when running it.
 
@@ -58,17 +58,33 @@ Changed owners require review of the current upstream behavior and an explicit
 upstream auth cleanup and API/WS callers stay in the staged app. `stage-manifest.json`
 records source owner hashes and every staged Swift source hash.
 
+The same manifest `icon_master`, `logo_light` and `logo_dark` inputs pass the
+shared bounded static-PNG validator before staging replaces any resource. The
+platform generator derives the existing Dock, menu-bar and `herologo` resource
+names, explicit light/dark sign-in images, and a complete local ICNS container.
+The existing AppKit consumers keep their state and layout ownership. The sign-in
+view shows an explicit unavailable message if a packaged image is damaged; it
+never falls back to an upstream logo. Packaging verifies every selected PNG
+byte-for-byte inside SwiftPM's resource bundle, installs the generated ICNS, and
+uses the manifest display name in `CFBundleDisplayName` while retaining the
+named test executable identity.
+
+The current asset scope does not cover the text logo, cinematic/notch/chat
+inline marks, device media, videos or splash. They remain explicit entries in
+`brand-assets.json`, so this package is not a whole-app no-leak assertion.
+
 The overlay is a build input, not a generated source commit. Temporary manifests,
 stages, SwiftPM outputs, signed apps and live credentials stay outside Git.
 `build.py` copies only checkout/artifact dependency caches, not compiled module
 caches with absolute paths. SwiftPM uses the upstream lock with automatic
 resolution disabled. The ad-hoc artifact manifest explicitly says
-`qualification=local-native-auth-only` and `release_ready=false`.
+`qualification=local-native-auth-and-brand-assets-only` and `release_ready=false`.
 
 ## Commands
 
-Prerequisites: macOS/Xcode (verified here with Swift 6.3.3), Python >=3.10 and the
-brand tooling dependencies. The upstream Desktop package dependencies must be
+Prerequisites: macOS/Xcode (verified here with Swift 6.3.3), Node 22 with
+`npm ci --prefix scripts/brand/raster`, Python >=3.10 and the brand tooling
+dependencies. The upstream Desktop package dependencies must be
 available at their locked revisions for a full build.
 
 ```sh
@@ -87,7 +103,7 @@ both local and CI lanes on macOS. Full compile CI entry: `python3 desktop/macos/
 (optionally `--dependency-cache`). It creates its own synthetic manifest, uses
 locked dependency resolution, and neither packages/signs nor launches the app.
 
-The production transport/cache/storage tests
+The production transport/cache/storage tests and AppKit image-decoding tests
 are behavioral; compiler owner drift is explicitly a static tripwire. Full app
 compilation and live services are separate evidence, never counted as hermetic
 unit test coverage. The existing `fork-checks.yml` selects macOS-only checks
@@ -126,9 +142,9 @@ These live checks need configured local Auth/API/WS services and stay outside CI
 This first package does not claim beta/production signing, notarization, updater
 feed isolation, universal architecture, portable dependency closure or macOS 14
 runtime acceptance. The local host linked Homebrew libwebp built for macOS 26;
-that must be vendored/qualified before distribution. Upstream onboarding text,
-assets, browser/account links and AI personality remain visible after login and
-require the subsequent full identity/brand package. OAuth, direct-provider
+that must be vendored/qualified before distribution. Uncovered upstream
+onboarding text/assets, browser/account links and AI personality remain visible
+after login and require subsequent reviewed packages. OAuth, direct-provider
 capability consumption and a packaged local agent runtime remain separate native
 acceptance work. Real signing teams/keys and final brand inputs are external
 inputs; generic generation and failure tests continue without them.

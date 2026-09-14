@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Behavioral identity probe plus explicitly static compiler-owner tripwires."""
 
-import copy
 import json
+import plistlib
+import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-from prepare import AUTH_REPLACEMENTS, ROOT, load_manifest, stage
+from build import install_brand_package_resources, local_info_plist
+from ci_build import synthetic_manifest
+from prepare import AUTH_REPLACEMENTS, ROOT, stage
 from swift_overlay import OverlayError, load_owners, rewrite_functions
 
 
@@ -17,15 +20,8 @@ class NativeStageTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory(prefix="native-stage-contract-")
         cls.directory = Path(cls.temporary.name)
-        value = copy.deepcopy(load_manifest("omi-upstream", ROOT))
+        value = synthetic_manifest(cls.directory)
         value["brand"].update(id="synthetic-native", display_name="Synthetic Native")
-        value["identifiers"].update(
-            macos_bundle_id="test.synthetic.native",
-            macos_bundle_id_beta="test.synthetic.native.beta",
-            macos_bundle_id_dev="test.synthetic.native.dev",
-            macos_named_bundle_prefix="test.synthetic.",
-            keychain_service_prefix="test.synthetic.",
-        )
         value["deployments"] = {
             "cloudflare": {
                 "local": {
@@ -84,6 +80,144 @@ print("native identity behavior passed")
         )
         result = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
         self.assertEqual(result.stdout.strip(), "native identity behavior passed")
+
+    def test_selected_resource_hashes_do_not_retain_the_reviewed_upstream_rasters(self):
+        for name in ("omi_app_icon.png", "omi_menu_bar_icon.png", "herologo.png"):
+            self.assertNotEqual(
+                self.proof["assets"]["outputs"][f"Desktop/Sources/Resources/{name}"]["sha256"],
+                self.proof["source_owners"][f"Resources/{name}"],
+            )
+
+    def test_generated_brand_images_decode_with_appkit_and_actual_sign_in_view_typechecks(self):
+        good = self.directory / "Good.bundle/Contents"
+        missing = self.directory / "Missing.bundle/Contents"
+        corrupt = self.directory / "Corrupt.bundle/Contents"
+        for root in (good, missing, corrupt):
+            (root / "Resources").mkdir(parents=True)
+            (root / "Info.plist").write_bytes(
+                plistlib.dumps({"CFBundleIdentifier": "invalid.example.brand." + root.parent.name.lower()})
+            )
+        resources = self.output / "Desktop/Sources/Resources"
+        for name in ("ForkBrandLight.png", "ForkBrandDark.png"):
+            shutil.copy2(resources / name, good / "Resources" / name)
+        (corrupt / "Resources/ForkBrandLight.png").write_bytes(b"not an image")
+        probe = self.directory / "brand-probe.swift"
+        probe.write_text('''import AppKit
+@main struct BrandProbe {
+  static func main() throws {
+    let good = Bundle(path: CommandLine.arguments[1])!
+    for dark in [false, true] {
+      let image = try ForkNativeBrand.image(dark: dark, in: good)
+      precondition(image.isValid && image.size == NSSize(width: 256, height: 256))
+      precondition(image.tiffRepresentation != nil)
+    }
+    for (path, expected) in [(CommandLine.arguments[2], "missing"), (CommandLine.arguments[3], "invalid")] {
+      do { _ = try ForkNativeBrand.image(dark: false, in: Bundle(path: path)!); fatalError("accepted \(expected)") }
+      catch ForkNativeBrand.AssetError.missing { precondition(expected == "missing") }
+      catch ForkNativeBrand.AssetError.invalidImage { precondition(expected == "invalid") }
+      catch { fatalError("unexpected error") }
+    }
+    print("native brand decoding passed")
+  }
+}
+''')
+        source = self.output / "Desktop/Sources/ForkNative/ForkNativeBrand.swift"
+        binary = self.directory / "brand-probe"
+        subprocess.run(
+            ["xcrun", "swiftc", str(source), str(probe), "-framework", "AppKit", "-o", str(binary)], check=True
+        )
+        result = subprocess.run(
+            [str(binary), str(good.parent), str(missing.parent), str(corrupt.parent)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.stdout.strip(), "native brand decoding passed")
+
+        stubs = self.directory / "sign-in-stubs.swift"
+        stubs.write_text('''import SwiftUI
+enum SessionPhase { case signedOut, recoveryRequired }
+@MainActor final class AuthState: ObservableObject {
+  @Published var error: String?
+  var isLoading = false
+  var sessionPhase = SessionPhase.signedOut
+}
+@MainActor final class AuthService {
+  static let shared = AuthService()
+  func signInWithEmail(email: String, password: String, name: String?) async throws {}
+  func retryRestoredSession() async {}
+}
+enum ForkDesktopBuild { static let productName = "Synthetic Native" }
+extension Bundle { static let resourceBundle = Bundle.main }
+''')
+        subprocess.run(
+            [
+                "xcrun",
+                "swiftc",
+                "-swift-version",
+                "6",
+                "-typecheck",
+                str(stubs),
+                str(source),
+                str(self.output / "Desktop/Sources/SignInView.swift"),
+            ],
+            check=True,
+        )
+
+    def test_package_boundary_rejects_stale_swiftpm_resources_and_installs_selected_icon(self):
+        packaged = self.directory / "package-resources"
+        bundle = packaged / "Omi Computer_Omi Computer.bundle"
+        bundle.mkdir(parents=True)
+        source = self.output / "Desktop/Sources/Resources"
+        for name in (
+            "omi_app_icon.png",
+            "omi_menu_bar_icon.png",
+            "herologo.png",
+            "ForkBrandLight.png",
+            "ForkBrandDark.png",
+        ):
+            shutil.copy2(source / name, bundle / name)
+        installed = install_brand_package_resources(self.output, packaged, self.proof)
+        self.assertEqual(
+            set(installed),
+            {
+                f"Omi Computer_Omi Computer.bundle/{name}"
+                for name in (
+                    "omi_app_icon.png",
+                    "omi_menu_bar_icon.png",
+                    "herologo.png",
+                    "ForkBrandLight.png",
+                    "ForkBrandDark.png",
+                )
+            }
+            | {"ForkAppIcon.icns"},
+        )
+        self.assertEqual((packaged / "ForkAppIcon.icns").read_bytes(), (self.output / "ForkAppIcon.icns").read_bytes())
+        plist = plistlib.loads(
+            local_info_plist(
+                self.proof,
+                plistlib.dumps({"SUFeedURL": "https://upstream.invalid", "SUPublicEDKey": "upstream-key"}),
+            )
+        )
+        self.assertEqual(plist["CFBundleDisplayName"], "Synthetic Native")
+        self.assertEqual(plist["CFBundleIconFile"], "ForkAppIcon")
+        self.assertEqual(plist["CFBundleName"], "omi-auth-contract")
+        self.assertNotIn("SUFeedURL", plist)
+        self.assertNotIn("SUPublicEDKey", plist)
+        (bundle / "herologo.png").write_bytes((bundle / "ForkBrandDark.png").read_bytes())
+        with self.assertRaisesRegex(ValueError, "herologo"):
+            install_brand_package_resources(self.output, packaged, self.proof)
+
+    def test_invalid_manifest_asset_removes_the_partial_stage(self):
+        value = synthetic_manifest(self.directory, "notebook")
+        invalid = self.directory / "assets/notebook-logo_dark.png"
+        invalid.write_bytes(b"not a png")
+        manifest = self.directory / "invalid-brand.json"
+        manifest.write_text(json.dumps(value))
+        output = self.directory / "invalid-stage"
+        with self.assertRaises(subprocess.CalledProcessError):
+            stage(manifest, "self_hosted", "omi-invalid-assets", output)
+        self.assertFalse(output.exists())
 
     def test_source_and_existing_output_are_never_mutated(self):
         with self.assertRaises(ValueError):

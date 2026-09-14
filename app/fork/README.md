@@ -5,8 +5,9 @@ an explicit `self_hosted.local` or `cloudflare.local` profile. It leaves the
 upstream source, tests, lockfiles and generated files unchanged. This first
 package supports Android debug artifacts. iOS extensions/App Groups/signing,
 mobile release qualification, OAuth, remote push and complete capability/UI
-branding remain separate deliverables; an upstream icon or untranslated Omi
-copy is not a white-label acceptance result.
+branding remain separate deliverables. This package projects selected Flutter
+runtime and Android debug rasters; untranslated Omi copy is still not a
+white-label acceptance result.
 
 ## Owners and credential boundary
 
@@ -43,6 +44,25 @@ Remote push and OAuth are explicitly disabled. Existing Android background
 readers receive only the derived short-lived JWT mirror; refreshing from a
 background-only native engine beyond JWT expiry is **not** qualified here.
 
+## Selected raster assets
+
+The same manifest `icon_master`, `logo_light`, `logo_dark` and `splash` inputs
+pass `scripts/brand/raster/png.mjs` before any staged asset is replaced. The
+Flutter generator writes the existing generated-Assets paths for the runtime
+logo, launcher source and splash, plus every Android density used by legacy,
+adaptive, monochrome, notification and Android 12 splash resource consumers.
+Main, dev and prod launcher names are all replaced even though this package only
+admits local debug builds. Missing, corrupt, escaping, animated, transparent or
+oversized inputs fail and remove the partial stage; there is no upstream-image
+fallback.
+
+The staged Flutter test loads the actual `Assets.images.herologo`, launcher and
+splash paths through `rootBundle` and the engine image decoder. The portable
+Node test decodes every Android output at its required density. This does not
+compile an APK or prove a device launcher, OEM mask, notification tray, iOS
+catalog, App Group, signing or store asset. `fork/asset-coverage.json` records
+the exact input/output hashes and these remaining boundaries.
+
 ## Build and verify
 
 Use Flutter **3.44.5** with its sibling Dart **3.12.2**, Python 3.12, and the
@@ -55,8 +75,9 @@ flutter pub get --enforce-lockfile
 cd ..
 bash app/fork/test.sh
 
-python3 app/fork/fixture.py > /tmp/mobile-proof-brand.json
-python3 app/fork/prepare.py --manifest /tmp/mobile-proof-brand.json \
+mkdir -p /tmp/mobile-proof
+python3 app/fork/fixture.py /tmp/mobile-proof > /tmp/mobile-proof/brand.json
+python3 app/fork/prepare.py --manifest /tmp/mobile-proof/brand.json \
   --target self_hosted --output /tmp/mobile-proof-stage --dart "$(command -v dart)"
 cd /tmp/mobile-proof-stage/app
 flutter pub get --offline --enforce-lockfile

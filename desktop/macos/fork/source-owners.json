@@ -17,5 +17,8 @@
   "DesktopBackendEnvironment.swift": "e41124dfdb683aabd876eb530dc6eb50fe094fe4c32681bdbcea032b61b49088",
   "DesktopLocalProfile.swift": "d957cf606cc2403b4c27c3d8f2f2581ac2a12cd80d9a957a8fea44d9c15aa6b2",
   "OmiApp.swift:firebase-bootstrap": "638986fa8749962e5d6a02a7f06e6262be1b17deb5287fba7b0765bf0fe8ead9",
-  "SignInView.swift": "56ff0c54c099c18f036f1aa2b8949e41885f2dde55ad5cf2b9ab43b8e1d982c6"
+  "SignInView.swift": "56ff0c54c099c18f036f1aa2b8949e41885f2dde55ad5cf2b9ab43b8e1d982c6",
+  "Resources/omi_app_icon.png": "25403252a5ef8824030ac529cc838de184d167702bf1ac7b3b05df38ea230fc6",
+  "Resources/omi_menu_bar_icon.png": "2c5aea1d05665b4398ca056129b6a6da72a8d816e74197e66b4a7d88bcd5bf00",
+  "Resources/herologo.png": "8f416dd16e7d56254bc6afe8222bddd318476a527197f181f2ac41f4f3afc773"
 }

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import plistlib
@@ -13,10 +14,62 @@ from pathlib import Path
 
 from prepare import ROOT, stage
 
+RESOURCE_BUNDLE_NAME = "Omi Computer_Omi Computer.bundle"
+BRAND_RESOURCE_NAMES = (
+    "omi_app_icon.png",
+    "omi_menu_bar_icon.png",
+    "herologo.png",
+    "ForkBrandLight.png",
+    "ForkBrandDark.png",
+)
+
 
 def run(*arguments: str) -> None:
     environment = {**os.environ, "PATH": "/opt/homebrew/bin:" + os.environ.get("PATH", "")}
     subprocess.run(arguments, check=True, env=environment)
+
+
+def install_brand_package_resources(output: Path, resources: Path, proof: dict) -> dict:
+    """Verify SwiftPM's copied resource bundle and install the selected Finder icon."""
+    bundle = resources / RESOURCE_BUNDLE_NAME
+    assets = proof["assets"]["outputs"]
+    installed = {}
+    for name in BRAND_RESOURCE_NAMES:
+        key = f"Desktop/Sources/Resources/{name}"
+        source = output / key
+        packaged = bundle / name
+        expected = assets[key]
+        source_bytes = source.read_bytes()
+        packaged_bytes = packaged.read_bytes()
+        if source_bytes != packaged_bytes or hashlib.sha256(packaged_bytes).hexdigest() != expected["sha256"]:
+            raise ValueError(f"Packaged brand resource differs from the selected stage: {name}")
+        installed[f"{RESOURCE_BUNDLE_NAME}/{name}"] = expected
+    icon = output / "ForkAppIcon.icns"
+    icon_bytes = icon.read_bytes()
+    expected_icon = assets["ForkAppIcon.icns"]
+    if hashlib.sha256(icon_bytes).hexdigest() != expected_icon["sha256"]:
+        raise ValueError("Generated application icon differs from the selected stage")
+    shutil.copy2(icon, resources / "ForkAppIcon.icns")
+    installed["ForkAppIcon.icns"] = expected_icon
+    return installed
+
+
+def local_info_plist(proof: dict, original: bytes) -> bytes:
+    plist = plistlib.loads(original)
+    plist.update(
+        CFBundleIdentifier=proof["bundle_id"],
+        CFBundleExecutable=proof["app_name"],
+        CFBundleName=proof["app_name"],
+        CFBundleDisplayName=proof["product_name"],
+        CFBundleIconFile="ForkAppIcon",
+        CFBundleURLTypes=[],
+        SUEnableAutomaticChecks=False,
+        SUAutomaticallyUpdate=False,
+        ForkDeploymentProfile=proof["profile"],
+    )
+    for key in ("SUFeedURL", "SUPublicEDKey", "OMIExternalPreview", "OMIExternalPreviewBackend"):
+        plist.pop(key, None)
+    return plistlib.dumps(plist)
 
 
 def package_local(output: Path) -> Path:
@@ -39,26 +92,19 @@ def package_local(output: Path) -> Path:
         shutil.copytree(path, frameworks / path.name, symlinks=True)
     for path in products.glob("*.bundle"):
         shutil.copytree(path, resources / path.name, symlinks=True)
+    packaged_assets = install_brand_package_resources(output, resources, proof)
     # This is an explicitly local development artifact, not a portable release.
     # Vendor/toolchain deployment-floor qualification belongs to distribution.
     shutil.copy2(output / "ForkDeployment.json", resources / "ForkDeployment.json")
-    plist = plistlib.loads((output / "Desktop/Info.plist").read_bytes())
-    plist.update(
-        CFBundleIdentifier=proof["bundle_id"],
-        CFBundleExecutable=proof["app_name"],
-        CFBundleName=proof["app_name"],
-        CFBundleDisplayName=proof["app_name"],
-        CFBundleURLTypes=[],
-        SUEnableAutomaticChecks=False,
-        SUAutomaticallyUpdate=False,
-        ForkDeploymentProfile=proof["profile"],
-    )
-    for key in ("SUFeedURL", "SUPublicEDKey", "OMIExternalPreview", "OMIExternalPreviewBackend"):
-        plist.pop(key, None)
-    (contents / "Info.plist").write_bytes(plistlib.dumps(plist))
+    (contents / "Info.plist").write_bytes(local_info_plist(proof, (output / "Desktop/Info.plist").read_bytes()))
     run("codesign", "--force", "--deep", "--sign", "-", str(app))
     run("codesign", "--verify", "--deep", "--strict", str(app))
-    proof.update(app=str(app), signing="ad-hoc", qualification="local-native-auth-only")
+    proof.update(
+        app=str(app),
+        signing="ad-hoc",
+        qualification="local-native-auth-and-brand-assets-only",
+        packaged_assets=packaged_assets,
+    )
     (output / "artifact-manifest.json").write_text(json.dumps(proof, indent=2) + "\n")
     return app
 

@@ -1,0 +1,32 @@
+import 'dart:ui' as ui;
+
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:omi/gen/assets.gen.dart';
+
+Future<ui.Image> decodeAsset(String path) async {
+  final data = await rootBundle.load(path);
+  final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
+  final frame = await codec.getNextFrame();
+  codec.dispose();
+  return frame.image;
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('the generated Assets runtime path decodes the selected brand pixels', () async {
+    expect(Assets.images.herologo.path, 'assets/images/herologo.png');
+    final logo = await decodeAsset(Assets.images.herologo.path);
+    expect((logo.width, logo.height), (256, 256));
+    logo.dispose();
+
+    final launcher = await decodeAsset(Assets.images.appLauncherIcon.path);
+    expect((launcher.width, launcher.height), (1024, 1024));
+    launcher.dispose();
+
+    final splash = await decodeAsset(Assets.images.splash.path);
+    expect((splash.width, splash.height), (390, 844));
+    splash.dispose();
+  });
+}
