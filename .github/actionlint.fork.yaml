@@ -2,4 +2,8 @@ self-hosted-runner:
   labels:
     - mac-studio
     - memweft
+    # The x86 runner that carries the Linux-native portable gate (Docker 29.7.2,
+    # Compose v5.4.0, 32 vCPU, 1.5 TB free, verified by a probe run); declared so
+    # actionlint resolves the label instead of failing the fork workflow lint.
+    - linux-x64
 config-variables: null
