@@ -24,6 +24,18 @@ class ContractFailure(RuntimeError):
     pass
 
 
+# The JIT rollout decision is a tri-state authority answer; every target must serve all of
+# these. `budget_contract_version` is separate: the Server OS envelope adds it upstream and
+# only when OMI_JIT_PROACTIVITY_BUDGET_CONTRACT selects the matching version, so it is an
+# additive optional response field (permitted by the released-client compatibility rule)
+# rather than part of the required shape. It stayed invisible until the fixture could run
+# again: the check reported only "wire fields differ", with no way to see which field.
+_JIT_DECISION_FIELDS = frozenset(
+    {'rollout', 'kill_switch', 'effective', 'reason', 'error_class', 'cache_hit', 'cache_ttl_seconds'}
+)
+_JIT_DECISION_OPTIONAL_FIELDS = frozenset({'budget_contract_version'})
+
+
 def require(condition, message):
     if not condition:
         raise ContractFailure(message)
@@ -212,19 +224,20 @@ class ProductContract:
             self.request('api', 'GET', path, 401)
             for principal in (owner, other):
                 state, _ = self.request('api', 'GET', path, 200, bearer=principal.jwt)
+                fields = set(state)
+                missing = _JIT_DECISION_FIELDS - fields
+                unexpected = fields - _JIT_DECISION_FIELDS - _JIT_DECISION_OPTIONAL_FIELDS
                 require(
-                    set(state)
-                    == {
-                        'rollout',
-                        'kill_switch',
-                        'effective',
-                        'reason',
-                        'error_class',
-                        'cache_hit',
-                        'cache_ttl_seconds',
-                    },
-                    'JIT rollout decision wire fields differ',
+                    not missing and not unexpected,
+                    'JIT rollout decision wire fields differ '
+                    f'(missing={sorted(missing)}, unexpected={sorted(unexpected)})',
                 )
+                if 'budget_contract_version' in fields:
+                    require(
+                        state['budget_contract_version'] is None
+                        or type(state['budget_contract_version']) is str,
+                        'JIT budget contract version lost its wire type',
+                    )
                 for field in ('rollout', 'kill_switch', 'effective'):
                     require(state[field] in {'enabled', 'disabled', 'unknown'}, 'JIT decision lost tri-state authority')
                 require(

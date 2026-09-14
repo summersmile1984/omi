@@ -33,7 +33,10 @@ services:
       start_period: 5s
 
   minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
+    # MinIO no longer publishes this repository on Docker Hub (the pull is denied
+    # there); the same release is served from Quay, and the manifest digest is
+    # byte-identical, so only the registry host changes.
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
