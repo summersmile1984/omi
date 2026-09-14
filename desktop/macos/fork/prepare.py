@@ -26,10 +26,16 @@ from render import resolve  # noqa: E402
 from manifest import load_manifest  # noqa: E402
 
 AUTH_REPLACEMENTS = {
+    # Upstream arms the restoring-phase watchdog BEFORE the restore awaits
+    # anything (AuthService.armRestoringPhaseWatchdog), so a restore that never
+    # resolves cannot hold the restoring phase open. The fork replaces the whole
+    # body, so it must keep that ordering itself.
     "configure()": """func configure() async {
     guard !isConfigured else { return }
     isConfigured = true
-    await forkRestore(attempt: beginSessionAttempt())
+    let attempt = beginSessionAttempt()
+    armRestoringPhaseWatchdog(attempt: attempt)
+    await forkRestore(attempt: attempt)
   }""",
     "retryRestoredSession()": """func retryRestoredSession() async {
     await forkRestore(attempt: beginSessionAttempt())
