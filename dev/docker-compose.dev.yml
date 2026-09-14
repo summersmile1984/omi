@@ -70,7 +70,10 @@ services:
   # MinIO: S3-compatible object storage replacing GCS for local dev
   # (backend utils/other/storage.py with STORAGE_BACKEND=minio)
   minio:
-    image: "minio/minio:latest"
+    # Same release and digest as deploy/self-host/compose.production.yml: MinIO stopped
+    # serving this repository on Docker Hub, and local dev should run the object store the
+    # self-host target runs rather than a moving :latest.
+    image: "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e"
     container_name: ${DEV_MINIO_CONTAINER_NAME:-omi-minio}
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
