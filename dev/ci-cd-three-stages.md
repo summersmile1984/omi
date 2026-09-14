@@ -1,6 +1,6 @@
 # CI/CD 三阶段主线(Local dev → CI → CD×2)
 
-日期: 2026-09-14 · 分支: `feature/cloud-neutral-shim` @ `2aba718423` · 作者: 本地 dev 阶段落地 + 三阶段梳理
+日期: 2026-09-14 · 分支: `main` @ `4c0885b306`(上游 v0.12.348 已并入)· 作者: 本地 dev 阶段落地 + 三阶段梳理
 
 本文是 fork 交付主线的**单一口径**:三个阶段、一条流水线、产物只向前流动、下游不重新构建。
 阶段 1 已经在当前 checkout 上跑通并留下证据;阶段 2/3 的接线主要落在 `origin/main`,
@@ -23,96 +23,69 @@
 
 ## 0. 一句话结论
 
-- **阶段 1(本地)已达成**:一条命令起全栈,一条命令自证,6/6 通过(2026-09-14,本机)。
-- **阶段 2(CI)已存在但不在本分支**:上游清单 + fork 清单双门禁,规则是"差异选择、无密钥即绿"。
-- **阶段 3(CD)是两条车道 × 两个 stage**:Cloudflare 与 Server OS 各自 beta/production,手工触发、只认冻结产物。
+- **阶段 1(本地)**:数据面 harness 已在 main 上跑通(4/4,1 项按需跳过);Server OS 运行时是镜像形态,
+  本地需要 amd64 构建通道,见 §1.2。
+- **阶段 2(CI)**:上游清单 + fork 清单双门禁,规则是"差异选择、无密钥即绿";fork 清单与两条 CD 车道都在 main 上。
+- **阶段 3(CD)**:两条车道 × 两个 stage——Cloudflare 与 Server OS 各自 beta/production,手工触发、只认冻结产物。
+  **2026-09-14 复核:Cloudflare 产品契约 `bash deploy/cloudflare/ci/product.sh` 在合并后的 main 上通过。**
 
 ---
 
 ## 1. 阶段 1 —— Local dev(编译 + 运行)
 
-### 1.1 入口
+> **2026-09-14 在 main 上复核后的口径**:上游 v0.12.348 合并进 main 之后,Server OS 的运行时
+> 是**镜像形态**——profile 表、语音/LLM 模型库、Qdrant/Typesense/SearXNG 都在镜像里
+> (`deploy/self-host/Dockerfile` 用 `scripts/profiles/render.py --target self_hosted --stage <stage>`
+> 渲染)。因此本地 dev 分成两条,别再混为一谈:
+
+### 1.1 数据面 harness(本机、无镜像,秒级)
 
 ```bash
-dev/local.sh up          # 起全栈并等待健康(冷启动约 30s,其中 emulator 镜像已缓存)
-dev/local.sh verify      # 端到端自证,写 JSON 证据
-dev/local.sh status      # 谁在跑、在哪个端口、健康与否
-dev/local.sh restart     # 只重启应用进程(容器与数据保留)
-dev/local.sh logs backend
-dev/local.sh down        # 停进程 + 停容器(保留数据卷)
-dev/local.sh reset       # 停 + 删数据卷(本地数据可丢,重建即可)
+dev/local.sh up        # postgres + redis(带密码) + minio + firebase emulators + 两个迁移 + auth-server
+dev/local.sh verify    # 4 项自证 + 1 项(backend)按需跳过,写 JSON 证据
+dev/local.sh selfhost  # 打印 Server OS 运行时需要什么、为什么 checkout 跑不起来
+dev/local.sh status | restart | logs | ports | env | down | reset
 ```
 
-`make -f Makefile.fork local-up|local-verify|...` 是同一件事的 make 包装。
-fork 目标放在 `Makefile.fork` 而不是上游 `Makefile`:上游文件每改一行都是下一次同步的冲突源。
+`make -f Makefile.fork local-up|local-verify|local-status|local-down|local-reset|local-selftest` 等价。
 
-### 1.2 起了什么
-
-| 组件 | 形态 | 端口 | 说明 |
-|---|---|---|---|
-| postgres | 容器 | 5442 | `firestore_pg` shim 的落点,与生产同形 |
-| redis | 容器 | 6379 | 队列 + 缓存(`QUEUE_BACKEND=redis`) |
-| minio | 容器 | 9100/9101 | 对象存储,替代 GCS(`STORAGE_BACKEND=minio`) |
-| firebase emulators | 容器 | 8080/9099/9199 | 本机登录流程用(Firestore/Auth/Storage) |
-| auth-server | 进程 | 3000 | Better Auth:签发 JWT + JWKS |
-| queue-worker | 进程 | — | 4 条队列(sync/audio-merge/account-deletion/finalization) |
-| backend | 进程 | 8100 | FastAPI,全 shim env |
-
-状态与日志在 `.local/local-dev/`(pid、logs、evidence),已被 gitignore。
-
-### 1.3 "编译"这一步在这个仓库是什么
-
-| 目标 | 命令 | 现状 |
-|---|---|---|
-| backend 依赖 | `make setup-backend`(`uv pip sync pylock.macos.toml`) | 已有,锁定版本 |
-| backend 语法/编译 | `python -m compileall main.py firestore_pg utils routers` | **已纳入 `local.sh up`**,编译不过就不启动 |
-| backend 运行 | `uvicorn main:app --port 8100` | 已纳入 |
-| auth-server 依赖 + 迁移 | `npm run migrate` | 已纳入(`up` 里自动跑) |
-| firestore-pg 迁移 | `python scripts/firestore_pg_migrate.py migrate` | **已纳入**(与生产 `firestore-pg-migrate` 同一个入口) |
-| 桌面端(macOS) | `desktop/macos/run.sh` | 独立目标,不在 `local.sh` 内(见 §1.6) |
-| 移动端(Flutter) | `app/test.sh` / `flutter build` | 独立目标 |
-| Web | `web/app/test.sh`(`bun run check`) | 独立目标 |
-
-### 1.4 自证:`dev/local.sh verify`
-
-六个检查,全部走生产代码路径或真实网络往返,任一失败即整体失败:
+自证内容(全部是真实往返):
 
 | # | 检查 | 证明的事 |
 |---|---|---|
-| 1 | postgres | `firestore_pg` 已迁移:2 个 migration、136 个 collection、109 张表 |
-| 2 | redis | PING + set/get/delete 往返 |
-| 3 | storage | 经 storage shim 上传 → `get_user_has_speech_profile` 可见 → 下载字节完全一致(8044B) |
-| 4 | queue | 4 条队列的 worker↔handler 秘钥契约:worker 会出示的 secret 被接受,错的被 403;worker 进程存活 |
-| 5 | auth | Better Auth 签发 JWT 被后端接受;同一请求不带 token 被拒(边界双向验证) |
-| 6 | backend | `GET /v1/health` 200 |
+| 1 | postgres | `firestore_pg` 已迁移(9 个 migration / 159 collections / 132 张表) |
+| 2 | redis | 带密码认证的 PING + set/get/delete(与 `REDIS_DB_PASSWORD` 契约一致) |
+| 3 | storage | 直连 MinIO 的 put/head/get/delete 往返 |
+| 4 | auth | Better Auth **真实注册** → `/auth-issue` 签发会话 JWT → JWKS 可取 |
+| 5 | backend | 仅当你自己起了 backend 才检查,否则明确 SKIP(不是假装通过) |
 
-证据文件:`.local/local-dev/evidence/local-verify-<UTC>.json`。
+**2026-09-14 在 main 上:4/4 PASSED,1 SKIPPED**(证据 `.local/local-dev/evidence/`)。
 
-**2026-09-14 本机结果:6/6 PASSED**(冷启动后复跑同样 6/6)。
+### 1.2 Server OS 运行时(镜像,本地需要 amd64 构建通道)
 
-### 1.5 设计约束(为什么这样写)
+```bash
+SELF_HOST_ENV=$PWD/deploy/self-host/.env.production \
+  deploy/self-host/operations.sh start
+```
 
-1. **不依赖任何云凭证**:本地不需要 OpenAI/Deepgram/Gemini/Anthropic 的 key,也不需要 GCP/Firebase 账号。
-   (上游 `make dev-up` 走的是另一套:Firebase 模拟器 + 云 provider key,`PROVIDER_MODE=offline` 才能脱云。)
-2. **端口可配**:`dev/local.env`(gitignore)覆盖 `dev/local.env.example`;优先级 `环境变量 > local.env > example`。
-   本机 5434/9000/9001 被无关容器占用,所以本地栈用 5442/9100/9101 —— 本地 dev 绝不要求你去停别的项目。
-   `dev/local.sh ports` 会打印占用者并在冲突时拒绝启动。
-3. **与生产同形**:本地少的只是副本数、TLS、备份;组件与 env 契约(哪些桶、哪些队列、哪个 shim)一致。
-4. **失败要说人话**:老本地库会被 `firestore_pg` 迁移拒绝,`up` 会直接给出 `dev/local.sh reset` 的指引;
-   queue worker 环境不全会秒退,`up` 会在 3 秒后检查进程存活并报错。
-5. **自测不许有副作用**:`dev/tests/test_local_sh.py` 只跑只读命令(help/ports/env)。
-   `--stop` / `--no-backend` 会操作真实容器与进程,所以在测试里绝不调用 —— 这条是踩过坑之后写下的:
-   早期版本的测试用 `--stop` 验证兼容性,结果把正在运行的本地栈真的拆了。
+前置:从 `.env.production.example` 复制出**非 `.example`** 的 env 文件(检查器明确拒绝示例文件)、
+填掉所有 `REPLACE_*`、`PUBLIC_*` 必须与渲染出的 `self_hosted.local` 一致
+(`python3 deploy/self-host/check-config.py --env-file <file>` 会逐条校验)。
 
-### 1.6 本阶段已知边界
+本机(Apple Silicon)的两个约束:
 
-- 桌面端/移动端/Web **不**由 `local.sh` 拉起。桌面端要连本地后端时,先 `eval "$(dev/local.sh env)"` 再运行
-  `desktop/macos/run.sh`(named bundle 启动参数见 `dev/deploy-local-ledger.md`)。
-- 本地 AI 能力是 operator 配置项:不配 `MIMO_*`/`MOSS_API_KEY`/`TRANSLATION_PROVIDER` 时后端照常启动,
-  只是 AI 功能不可用 —— 因此 verify 不检查 AI,只检查数据面/认证/队列。
-- 只支持单机单实例(容器名固定),同一台机器上同时开两个本地栈不受支持。
+- `deploy/self-host/build-images.sh` 要求 `BACKEND_PLATFORM=linux/amd64`,镜像需模拟构建
+  (本机复现 fixture 构建 20 分钟超时);镜像步骤应交给 amd64 builder 或 CI。
+- `self_hosted.local` profile 声明了 speech(SenseVoice + Kokoro)与 Ollama `qwen3:1.7b`,
+  这些模型库必须先在位。
 
----
+### 1.3 设计约束
+
+1. **不依赖云凭证**:数据面 harness 不需要任何云 key。
+2. **端口可配**:`dev/local.env`(gitignore)覆盖 `dev/local.env.example`;优先级 `环境变量 > local.env > example`;
+   `dev/local.sh ports` 打印占用者并在冲突时拒绝启动。
+3. **失败要说人话**:老本地库给出 `dev/local.sh reset`;harness 与运行时的边界写在 `dev/local.sh selfhost`。
+4. **自测无副作用**:`dev/tests/test_local_sh.py` 只跑只读命令(help/ports/env)。
 
 ## 2. 阶段 2 —— CI
 
@@ -201,7 +174,7 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
 
 | 能力 | 本分支 `feature/cloud-neutral-shim` | `origin/main` |
 |---|---|---|
-| 本地 dev 一键起栈 + 自证 | ✅ `dev/local.sh`(本次落地,6/6) | 无对应入口 |
+| 本地 dev 数据面 + 自证 | ✅ `dev/local.sh`(已并入 main,4/4 + 1 skip) | ✅ 同左 |
 | 上游清单(local/ci 双 lane) | ✅ 163 条 | ✅ |
 | fork 清单 + `scripts/fork/*` | ❌ 不在本分支 | ✅ `checks-manifest.fork.yaml`、`fork-checks.yml` |
 | CD 两条车道 | ❌ 不在本分支 | ✅ `fork-cd-cloudflare.yml` / `fork-cd-server.yml` |
@@ -209,8 +182,8 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
 
 未完成项(按上表顺延):
 
-1. **阶段 1**:把桌面端/移动端接进 `local.sh`(至少提供 `local.sh env` + run.sh 的一步式脚本);
-   目前是"手动两步"。
+1. **阶段 1**:Server OS 运行时的本地入口(`operations.sh start`)需要一条能在 arm64 上完成的
+   镜像通道(amd64 builder 或 CI);在此之前它无法在本机验证。
 2. **阶段 2**:本分支合入 main 后,把 `dev/local.sh` 的编译步骤登记为 fork 清单里的一条检查
    (`local` 与 `ci` 两个 lane),否则它只是"能跑的脚本",不是"受保护的门禁"。
 3. **阶段 3**:Server OS 镜像目前只在本地打 tag,没有任何 registry 推送;Cloudflare 侧远端资源尚未完整创建。
