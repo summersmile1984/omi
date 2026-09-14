@@ -21,16 +21,30 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / 'deploy/self-host/compose.production.yml'
 REQUIRED_SOURCE = (
-    'backend/fork/bootstrap.py', 'backend/fork/main.py', 'backend/fork/profile.py',
-    'backend/fork/embedding.py', 'backend/fork/model_contract.py', 'backend/fork/model_store.py',
-    'backend/fork/speech.py', 'backend/fork/speech_assets.py', 'backend/fork/speech_transport.py',
+    'backend/fork/bootstrap.py',
+    'backend/fork/main.py',
+    'backend/fork/profile.py',
+    'backend/fork/embedding.py',
+    'backend/fork/model_contract.py',
+    'backend/fork/model_store.py',
+    'backend/fork/speech.py',
+    'backend/fork/speech_assets.py',
+    'backend/fork/speech_transport.py',
+    'backend/fork/memory_maintenance_worker.py',
     'deploy/self-host/prepare-speech.py',
-    'backend/fork/vector_qdrant.py', 'backend/fork/worker.py', 'backend/fork/migrate.py', 'backend/fork/queue_config.py',
-    'backend/firestore_pg/migrations.py', 'backend/Dockerfile',
+    'backend/fork/vector_qdrant.py',
+    'backend/fork/worker.py',
+    'backend/fork/migrate.py',
+    'backend/fork/queue_config.py',
+    'backend/firestore_pg/migrations.py',
+    'backend/Dockerfile',
     'deploy/self-host/auth-runtime.mjs',
-    'deploy/self-host/Dockerfile', 'deploy/self-host/build-images.sh',
-    'deploy/self-host/operations.sh', 'deploy/self-host/compose-clean-env.sh',
-    'deploy/self-host/volume-snapshot.py', 'deploy/self-host/runtime-evidence.py',
+    'deploy/self-host/Dockerfile',
+    'deploy/self-host/build-images.sh',
+    'deploy/self-host/operations.sh',
+    'deploy/self-host/compose-clean-env.sh',
+    'deploy/self-host/volume-snapshot.py',
+    'deploy/self-host/runtime-evidence.py',
 )
 
 
@@ -59,11 +73,24 @@ def check_sources(root: Path = ROOT) -> None:
             raise ValueError(f'{name}: stage-aware Auth entrypoint is required')
         if 'SELF_HOST_STAGE=${SELF_HOST_STAGE:-production}' not in service.get('environment', []):
             raise ValueError(f'{name}: Auth stage must come from SELF_HOST_STAGE')
-    if compose['services']['backend'].get('depends_on', {}).get('qdrant-migrate', {}).get('condition') != 'service_completed_successfully':
+    if (
+        compose['services']['backend'].get('depends_on', {}).get('qdrant-migrate', {}).get('condition')
+        != 'service_completed_successfully'
+    ):
         raise ValueError('backend: successful Qdrant migration is required before serving')
-    for name in ('backend', 'queue-worker', 'firestore-pg-migrate', 'qdrant-migrate'):
+    for name in ('backend', 'queue-worker', 'memory-maintenance-worker', 'firestore-pg-migrate', 'qdrant-migrate'):
         if compose['services'][name]['build']['dockerfile'] != 'deploy/self-host/Dockerfile':
             raise ValueError(f'{name}: the self-host profile image layer is required')
+    maintenance = compose['services']['memory-maintenance-worker']
+    required_dependencies = {
+        'embedding': 'service_healthy',
+        'firestore-pg-migrate': 'service_completed_successfully',
+        'qdrant-migrate': 'service_completed_successfully',
+        'typesense': 'service_healthy',
+    }
+    for name, condition in required_dependencies.items():
+        if maintenance.get('depends_on', {}).get(name, {}).get('condition') != condition:
+            raise ValueError(f'memory-maintenance-worker: {name} must satisfy {condition}')
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -98,15 +125,26 @@ def check_environment(path: Path) -> None:
     manifest = (ROOT / values['SELF_HOST_BRAND_MANIFEST']).resolve()
     if not manifest.is_relative_to(ROOT) or not manifest.is_file():
         raise ValueError('SELF_HOST_BRAND_MANIFEST must be an existing file inside the build context')
-    command = [sys.executable, str(ROOT / 'scripts/profiles/render.py'), '--target', 'self_hosted',
-               '--manifest', str(manifest), '--stage', stage, '--emit-json']
+    command = [
+        sys.executable,
+        str(ROOT / 'scripts/profiles/render.py'),
+        '--target',
+        'self_hosted',
+        '--manifest',
+        str(manifest),
+        '--stage',
+        stage,
+        '--emit-json',
+    ]
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
     if result.returncode:
         raise ValueError('brand/profile cannot be rendered; validate the manifest with scripts/profiles/render.py')
     row = json.loads(result.stdout)['profiles'][f'self_hosted.{stage}']
     for env_name, profile_name in {
-        'PUBLIC_BACKEND_URL': 'api_base_url', 'PUBLIC_AUTH_URL': 'auth_base_url',
-        'PUBLIC_MCP_URL': 'mcp_base_url', 'PUBLIC_OBJECTS_URL': 'objects_base_url',
+        'PUBLIC_BACKEND_URL': 'api_base_url',
+        'PUBLIC_AUTH_URL': 'auth_base_url',
+        'PUBLIC_MCP_URL': 'mcp_base_url',
+        'PUBLIC_OBJECTS_URL': 'objects_base_url',
         'OMI_SHARE_BASE_URL': 'share_base_url',
     }.items():
         if values.get(env_name, '').rstrip('/') != row[profile_name].rstrip('/'):

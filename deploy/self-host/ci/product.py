@@ -196,12 +196,14 @@ class Fixture:
             'redis',
             'minio',
             'qdrant',
+            'typesense',
             'auth-migrate',
             'firestore-pg-migrate',
             'qdrant-migrate',
             'auth-server',
             'backend',
             'queue-worker',
+            'memory-maintenance-worker',
         )
         services = {name: config['services'][name] for name in selected}
         for name, service in services.items():
@@ -356,10 +358,32 @@ class Fixture:
 
     def start(self):
         self.created = True
-        self.compose('up', '-d', '--wait', '--wait-timeout', '120', 'postgres', 'redis', 'minio', 'qdrant', 'embedding')
+        self.compose(
+            'up',
+            '-d',
+            '--wait',
+            '--wait-timeout',
+            '120',
+            'postgres',
+            'redis',
+            'minio',
+            'qdrant',
+            'typesense',
+            'embedding',
+        )
         for service in ('auth-migrate', 'firestore-pg-migrate', 'qdrant-migrate'):
             self.compose('run', '--rm', service)
-        self.compose('up', '-d', '--wait', '--wait-timeout', '180', 'auth-server', 'backend', 'queue-worker')
+        self.compose(
+            'up',
+            '-d',
+            '--wait',
+            '--wait-timeout',
+            '180',
+            'auth-server',
+            'backend',
+            'queue-worker',
+            'memory-maintenance-worker',
+        )
         self.compose('up', '-d', '--wait', '--wait-timeout', '90', 'loopback')
         (self.output / 'metadata.json').write_text(json.dumps(self.metadata, indent=2))
         print(json.dumps(self.metadata), flush=True)

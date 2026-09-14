@@ -13,8 +13,9 @@ SNAPSHOT_TOOL="$OPS_DIR/volume-snapshot.py"
 RUNTIME_EVIDENCE_TOOL="$OPS_DIR/runtime-evidence.py"
 COMPOSE_WRAPPER="$OPS_DIR/compose-clean-env.sh"
 CONFIG_CHECKER="$OPS_DIR/check-config.py"
-APPLICATION_SERVICES=(queue-worker backend auth-server)
+APPLICATION_SERVICES=(memory-maintenance-worker queue-worker backend auth-server)
 STATE_SERVICES=(postgres redis minio qdrant typesense searxng)
+PROVIDER_SERVICES=(embedding)
 STATE_ARCHIVES=(redis minio qdrant typesense backend)
 ARCHIVE_FILES=(postgres.dump.enc redis.tar.gz.enc minio.tar.gz.enc qdrant.tar.gz.enc typesense.tar.gz.enc backend.tar.gz.enc)
 
@@ -240,9 +241,10 @@ start_profile() {
   # Quiesce callers, admit state services, and execute a fresh disposable
   # migration container before Auth/backend/worker traffic can resume.
   compose stop "${APPLICATION_SERVICES[@]}" >/dev/null 2>&1 || true
-  compose up --detach --wait "${STATE_SERVICES[@]}"
+  compose up --detach --wait "${STATE_SERVICES[@]}" "${PROVIDER_SERVICES[@]}"
   compose run --rm --no-deps -T auth-migrate
   compose run --rm --no-deps -T firestore-pg-migrate
+  compose run --rm --no-deps -T qdrant-migrate
   compose up --detach --wait --no-deps "${APPLICATION_SERVICES[@]}"
 }
 
@@ -306,7 +308,7 @@ restore_state() {
   }
   key_file="$(backup_key_file)"
   verify_backup "$directory"
-  compose stop queue-worker backend auth-server auth-migrate firestore-pg-migrate searxng typesense redis minio qdrant postgres || true
+  compose stop memory-maintenance-worker queue-worker backend auth-server auth-migrate firestore-pg-migrate embedding-artifact-check embedding searxng typesense redis minio qdrant postgres || true
   snapshot_volume restore redis /data "$directory/redis.tar.gz.enc"
   snapshot_volume restore minio /data "$directory/minio.tar.gz.enc"
   snapshot_volume restore qdrant /qdrant/storage "$directory/qdrant.tar.gz.enc"
@@ -336,7 +338,7 @@ status() {
   compose ps
   local service container state health
   local unhealthy=()
-  for service in "${STATE_SERVICES[@]}" auth-server backend queue-worker; do
+  for service in "${STATE_SERVICES[@]}" "${PROVIDER_SERVICES[@]}" "${APPLICATION_SERVICES[@]}"; do
     container="$(compose ps --quiet "$service")"
     if [[ -z "$container" ]]; then
       unhealthy+=("$service:missing")
@@ -356,7 +358,7 @@ status() {
 metrics() {
   require_runtime
   local service container state health restarts queue_name queue_key
-  for service in "${STATE_SERVICES[@]}" auth-server backend queue-worker; do
+  for service in "${STATE_SERVICES[@]}" "${PROVIDER_SERVICES[@]}" "${APPLICATION_SERVICES[@]}"; do
     container="$(compose ps --quiet "$service")"
     [[ -n "$container" ]] || { printf 'omi_container_up{service="%s"} 0\n' "$service"; continue; }
     read -r state health restarts < <(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}}' "$container")

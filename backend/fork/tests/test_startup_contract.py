@@ -48,7 +48,7 @@ def test_unknown_profile_stops_real_entrypoint(entry):
     assert 'WORKLOAD_RAN' not in result.stdout
 
 
-@pytest.mark.parametrize('role', ['API', 'WORKER'])
+@pytest.mark.parametrize('role', ['API', 'WORKER', 'MEMORY_MAINTENANCE'])
 def test_dependency_failure_stops_admission(role):
     code = f'''
 from unittest import mock
@@ -130,6 +130,52 @@ def test_worker_bootstrap_does_not_import_asgi_or_model_modules():
             assert admitted.patches == ()
         finally:
             bootstrap.bootstrap.cache_clear()
+
+
+def test_memory_maintenance_bootstrap_uses_projection_patches_without_redis_or_asgi():
+    from fork import capabilities
+    from utils.memory import atom_keyword_index
+
+    environment = {
+        'FIRESTORE_PG_DSN': 'postgresql+psycopg://unused',
+        'EMBEDDING_ENDPOINT': 'http://embedding:11434',
+        'QDRANT_URL': 'http://qdrant:6333',
+        'QDRANT_API_KEY': 'synthetic',
+        'QDRANT_COLLECTION_PREFIX': 'synthetic',
+        'TYPESENSE_HOST': 'typesense',
+        'TYPESENSE_HOST_PORT': '8108',
+        'TYPESENSE_API_KEY': 'synthetic',
+        'MEMORY_TYPESENSE_COLLECTION': 'canonical_memory_atoms',
+    }
+    with mock.patch.object(profile, 'current', return_value=SELF_HOST), mock.patch.object(
+        bootstrap, '_require_modules'
+    ) as require_modules, mock.patch.object(migrations, 'check_schema'), mock.patch.object(
+        capabilities, 'validate'
+    ), mock.patch.object(
+        bootstrap, 'collect_memory_projection', return_value=[]
+    ) as collect_projection, mock.patch.object(
+        bootstrap, 'collect', side_effect=AssertionError('API patches imported')
+    ), mock.patch.object(
+        atom_keyword_index, 'ensure_memories_collection'
+    ) as ensure_collection, mock.patch.object(
+        atom_keyword_index, 'ensure_ledger_keyword_schema'
+    ) as ensure_ledger, mock.patch.dict(
+        os.environ, environment, clear=True
+    ):
+        bootstrap.bootstrap.cache_clear()
+        try:
+            admitted = bootstrap.bootstrap(bootstrap.Role.MEMORY_MAINTENANCE)
+        finally:
+            bootstrap.bootstrap.cache_clear()
+
+    assert admitted.role == bootstrap.Role.MEMORY_MAINTENANCE
+    assert admitted.patches == ()
+    collect_projection.assert_called_once_with()
+    ensure_collection.assert_called_once_with()
+    ensure_ledger.assert_called_once_with()
+    imported = {name for call in require_modules.call_args_list for name in call.args[0]}
+    assert 'redis' not in imported
+    assert 'fastapi' not in imported
 
 
 def test_migration_v6_admits_current_inventory_and_preserves_mapping():

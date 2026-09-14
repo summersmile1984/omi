@@ -33,11 +33,13 @@ REQUIRED_SERVICES = (
     'qdrant',
     'typesense',
     'searxng',
+    'embedding',
     'auth-server',
     'backend',
     'queue-worker',
+    'memory-maintenance-worker',
 )
-SOURCE_WORKLOADS = ('auth-server', 'backend', 'queue-worker')
+SOURCE_WORKLOADS = ('auth-server', 'backend', 'queue-worker', 'memory-maintenance-worker')
 OBJECT_ID = re.compile(r'^[0-9a-f]{40}$')
 SHA256 = re.compile(r'^[0-9a-f]{64}$')
 IMAGE_ID = re.compile(r'^sha256:[0-9a-f]{64}$')

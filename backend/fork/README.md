@@ -14,6 +14,19 @@ ASGI/model modules, validates all four queue destinations and credentials, and
 supervises one process per queue. Any unexpectedly completed child fails the
 supervisor. `--check` validates admission and Redis connectivity without consuming.
 
+`python -m fork.memory_maintenance_worker` is the separate standard Server OS
+owner for canonical-memory projection delivery. It pages only the existing
+content-free canonical maintenance registry, then calls the existing leased
+outbox drain for each UID. PostgreSQL source replacement, outbox status, retry,
+dead-letter, Typesense writes and Qdrant writes retain their existing owners;
+this process adds only bounded scheduling and Compose supervision. It applies
+only the embedding/vector and captured provider-fence seams, with no Redis,
+ASGI, Auth, storage, TTL, consolidation, or chat-model dependency. `--once`
+fails when a bounded pass reports a provider or acknowledgement failure.
+The registry page cursor is process-local and wraps in UID order; restarting
+the process restarts discovery at the first page but cannot lose or acknowledge
+the durable outbox. The standard deployment runs one supervised instance.
+
 `profile.py` reads the image's generated `deployment_profiles.generated.json`.
 Build with `render.py --target self_hosted --manifest ... --stage ... --emit-json`;
 select an exact row with `OMI_DEPLOYMENT_PROFILE=self_hosted.production` (or
