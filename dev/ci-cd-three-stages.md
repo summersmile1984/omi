@@ -320,7 +320,7 @@ dev/local-client.sh stop web
 
 | 目标 | CI lane | 运行位置 | 状态 |
 |---|---|---|---|
-| Server OS | `fork-selfhost-product-core` → `deploy/self-host/ci/product.sh` | PR: `ubuntu-latest`(原生 amd64);push/manual: Mac Studio(arm64 模拟) | ✅ 2026-09-14 起绿(PR lane 180s,16 个 product case 全过);根因见下 |
+| Server OS | `fork-selfhost-product-core` → `deploy/self-host/ci/product.sh` | PR: `ubuntu-latest`(原生 amd64);push/manual: **自托管 x86**(`linux-x64`) | ✅ 2026-09-14 起绿;PR lane 180s,release lane 在 x86 上 250.59s,16 个 product case 全过 |
 | Cloudflare | `fork-cloudflare-product-core` → `deploy/cloudflare/ci/product.sh` | 同上 | ✅ 本机 exit 0 |
 | Web | `deploy/web/ci.sh` | — | ✅ 本机 exit 0 |
 | 桌面 / 移动 | `desktop-swift-ci` / `mobile-app-checks` | macos-26 / hosted | 需按 profile 构建 |
@@ -337,10 +337,21 @@ dev/local-client.sh stop web
    `contracts/deployment/**` 是 fork 自有,按"允许新增可选响应字段"放宽,并把失败信息改成
    打印 missing/unexpected(原来只说 "wire fields differ",这次为此多花了两次定位)。
 
-**可用的 x86 runner**:`turing-agents-MotherBoard-Series`(Linux X64,labels `omi,linux-x64`)已注册在线,
-但**没有任何工作流引用它**。`fork-selfhost-product-core` 需要真实 Docker(它 build 镜像、起 compose);
-PR lane 的 `ubuntu-latest` 本来就是原生 amd64,所以收益在 push/manual(release 授权)车道,
-而那台 x86 机器是否有 Docker 尚未验证 —— 属"改发布授权车道的 runner",需要一次明确决定后再动。
+**x86 runner 已接上(2026-09-14)**:`turing-agents-MotherBoard-Series`(Linux X64,labels `omi,linux-x64`)
+先探测再路由 —— `fork-runner-probe.yml`(`workflow_dispatch` only)报告:Ubuntu x86_64、32 vCPU、90 GiB 内存、
+1.5 TB 空闲、**Docker 29.7.2 + Compose v5.4.0**,`pull`/`run` 均 OK(只有 `bun` 缺失,工作流自己装)。
+于是可信车道改为:
+
+| 事件 | 之前 | 现在 |
+|---|---|---|
+| `pull_request` | `ubuntu-latest` | `ubuntu-latest`(**不变**:不可信代码不进自托管机) |
+| `push` | Mac Studio(arm64 模拟 amd64) | 自托管 **x86** |
+| `workflow_dispatch`(release) | Mac Studio(arm64 模拟 amd64) | 自托管 **x86** |
+
+macOS 原生 job 仍用 Mac Studio;job 名字未变,所以 repo-state 策略与 required checks 不受影响,
+release admission 仍按前缀合并同一对 attestation。`runs-on` 用常量 `fromJSON('[...]')`:
+上游 Repo Checks 的 actionlint 读 `.github/actionlint.yaml`(只认 `macos`),字面量自定义 label 会直接报
+`[runner-label]`;fork 自己的 lint 会解析该常量并按 fork 目录校验。
 
 **新的头号缺口(阶段 2)**:`dead-code-ratchet`(属上游 Hygiene)在 `main` 上就是红的,
 只要某个 diff 碰到 `backend/**/*.py` 就会被选中并卡住合并 —— 也就是说**这个 fork 目前无法修改任何
@@ -350,3 +361,18 @@ backend Python 文件**。判定依据是 7 个 `app/lib/fork/identity/*.dart`(�
 都在 `.github/scripts/**`,是 fork 不修改的上游路径,所以只能改 staging 设计:
 把 Flutter identity 也做成 overlay 输入(`*.dart.txt`,由 `prepare.py` 落盘),以及让 Electron 消费
 那份 profile 或让 render 合同不再产出它。两条都是设计选择,单独一个 PR 做。
+
+**第二个缺口(阶段 3 的 release 车道)**:完整清单(release lane)会在 `fork-cloudflare-routes` 停下,
+而 diff-scoped 的 PR/push 车道根本不会选中它 —— 所以它一直没露面:
+
+```
+FAIL: backend route inventory is stale:
+ added   GET /v1/dev/user/daily-summaries, GET /v1/dev/user/daily-summaries/{summary_id},
+         GET /v1/static-map, GET /v3/speech-profile/stt-availability,
+         POST /v1/conversations/{conversation_id}/mutations, POST /v1/users/developer/button-event
+ removed POST /v1/webhooks/sentry, POST /v1/webhooks/sentry/poll
+```
+
+即上游 v0.12.348 的路由面跑在了 fork 已提交的 inventory 前面。修法本身是机械的
+(`route_inventory.py --write`),但那等于给 6 个上游路由身份背书,并会接着跑该检查的 Cloudflare 一半,
+所以它是**独立的一次改动**,不搭在路由 PR 上。
