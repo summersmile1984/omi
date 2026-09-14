@@ -74,6 +74,11 @@
         "reason": "Freeze and qualify lane; manual only, gated by environment credentials."
       },
       {
+        "file": "fork-runner-probe.yml",
+        "enforcement": "advisory",
+        "reason": "Manual, read-only capability report for the x86 runner the portable gate now depends on (Docker, compose, disk, tools, image pull/run), because fork-selfhost-product-core builds images and runs compose there. workflow_dispatch only, so it never runs on its own. It stays declared because a workflow pushed on any branch remains registered on GitHub after that branch is deleted: an undeclared entry is exactly the drift this policy exists to catch."
+      },
+      {
         "file": "fork-upstream-sync.yml",
         "enforcement": "advisory",
         "reason": "Weekly upstream sync; opens a pull request and never writes to main."

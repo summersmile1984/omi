@@ -1,0 +1,48 @@
+# Reports what the self-hosted runner the portable gate depends on can actually do.
+#
+# This began as a throwaway probe: routing `fork-selfhost-product-core` to the x86 runner
+# is only sound if that box has a working Docker engine (the check builds images and runs
+# compose), and nothing in the repository answered that. It is kept because the answer is
+# a live property of a machine the gate now depends on -- and because a workflow that was
+# once pushed stays registered on GitHub after its branch is deleted, so an unclassified
+# entry here is exactly what `fork-repo-state` exists to catch.
+#
+# workflow_dispatch only, read-only, no secrets: it never runs on its own.
+name: Fork runner capability
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: x86 Linux runner
+    # Constant fromJSON selector, like every other fork workflow: upstream's Repo Checks
+    # actionlint runs with .github/actionlint.yaml, which knows only `macos`, and a literal
+    # custom label there is a hard [runner-label] error. The fork's own lint resolves the
+    # constant and checks it against the fork catalog, where `linux-x64` is declared.
+    runs-on: ${{ fromJSON('["self-hosted","linux-x64"]') }}
+    timeout-minutes: 15
+    steps:
+      - name: Report host capability
+        run: |
+          echo "== host =="
+          uname -a; nproc; free -h || true; df -h / /tmp /var/lib/docker 2>/dev/null || df -h / /tmp
+          echo "== docker =="
+          if command -v docker >/dev/null; then
+            docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
+            docker info --format 'driver={{.Driver}} mem={{.MemTotal}} cpus={{.NCPU}}'
+            docker compose version || echo "COMPOSE_UNAVAILABLE"
+            # The self-host fixture pulls this exact reference; a registry change is what
+            # broke that check once already.
+            docker pull quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z >/dev/null 2>&1 \
+              && echo "PULL_OK" || echo "PULL_FAILED"
+            docker run --rm hello-world >/dev/null 2>&1 && echo "RUN_OK" || echo "RUN_FAILED"
+          else
+            echo "DOCKER_UNAVAILABLE"
+          fi
+          echo "== tools =="
+          for tool in node npm pnpm bun python3 git jq curl gh; do
+            printf '%s: ' "$tool"; command -v "$tool" || echo missing
+          done
