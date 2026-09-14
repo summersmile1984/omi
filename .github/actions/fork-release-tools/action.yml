@@ -16,7 +16,7 @@ runs:
         make setup-backend
         uv pip install --python backend/.venv/bin/python --no-deps --require-hashes -r backend/requirements-fork.txt
         echo "$GITHUB_WORKSPACE/backend/.venv/bin" >> "$GITHUB_PATH"
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v7
       with:
         node-version: '22'
         cache: npm

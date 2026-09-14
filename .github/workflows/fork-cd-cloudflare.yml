@@ -71,7 +71,7 @@ jobs:
       sha: ${{ steps.delivery.outputs.sha }}
       artifact: ${{ steps.delivery.outputs.artifact }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - id: delivery
@@ -109,7 +109,7 @@ jobs:
             echo 'Cloudflare environment credentials are unavailable; check the selected environment and reusable-workflow secret inheritance.' >&2
             exit 1
           fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: ${{ !inputs.reset_stage }}
         with:
           ref: ${{ needs.resolve.outputs.sha }}
@@ -169,7 +169,7 @@ jobs:
       # contract (Workers absent, D1 authorities empty). It is a step of this job,
       # not a job of its own, because the release admission requires this
       # reusable workflow's job names to be exactly the release job set.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: ${{ inputs.reset_stage }}
         with:
           persist-credentials: false
@@ -231,7 +231,7 @@ jobs:
 
       - name: Upload the release failure evidence
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cloudflare-release-failure-${{ needs.resolve.outputs.sha }}
           path: fork-release-evidence

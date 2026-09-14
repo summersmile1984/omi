@@ -129,10 +129,30 @@ UserMutationPatchBuilder = Callable[[MemoryItem, datetime], Tuple[Payload, Paylo
 _LEDGER_WRITE_AUTHORITY = object()
 _DIRECT_USER_LEDGER_WRITE_AUTHORITY = object()
 _DIRECT_USER_LEDGER_EVIDENCE_TYPES = {
+    "explicit_user_statement",
     "explicit_user_correction",
     "explicit_user_reopen",
     "explicit_user_revert",
 }
+
+
+def mint_direct_user_write_authority() -> object:
+    """Mint the in-process capability held by authenticated user routes.
+
+    The returned object carries no user data and is intentionally checked by
+    identity.  Internal integration and extraction callers cannot opt into
+    the direct-user ledger seam by setting a payload field.
+    """
+
+    return _DIRECT_USER_LEDGER_WRITE_AUTHORITY
+
+
+def is_direct_user_write_authority(value: object | None) -> bool:
+    """Return whether ``value`` is the route-minted direct-user capability."""
+
+    return value is _DIRECT_USER_LEDGER_WRITE_AUTHORITY
+
+
 # ``knowledge_ledger`` imports this adapter, so the wire discriminator cannot
 # be imported back without a cycle. Keep this private copy contract-tested.
 _LEDGER_SCHEMA_VERSION = "knowledge_ledger.v1"
@@ -941,11 +961,13 @@ def search_canonical_memories(
         keyword_search_ledger_memory_ids,
         keyword_search_memory_ids,
         merge_memory_search_ids,
+        require_typesense_projection_ready,
     )
 
     if ledger_kinds is None:
         keyword_ids = keyword_search_memory_ids(uid, normalized_query, limit=fetch_limit, db_client=client)
     else:
+        require_typesense_projection_ready(uid)
         keyword_ids = keyword_search_ledger_memory_ids(
             uid,
             normalized_query,
@@ -975,33 +997,23 @@ def search_canonical_memories(
 
     now = datetime.now(timezone.utc)
     policy = MemoryAccessPolicy.for_omi_chat(archive_capability=False)
+    hydration = _hydrate_bounded_ledger_search_items(
+        uid,
+        merged_ids,
+        db_client=client,
+        policy=policy,
+        now=now,
+        device_scope=device_scope,
+        client_device_id=client_device_id,
+    )
+    lineage_items_by_id = hydration.lineage_items_by_id
+    survivor_items_by_id = hydration.survivor_items_by_id
     if ledger_kinds is None:
-        all_items = fetch_authoritative_product_memory_items(uid=uid, db_client=client)
-        visible_items = filter_canonical_default_visible_items(all_items, policy=policy, now=now)
-        scoped_items = filter_items_by_device_scope(
-            visible_items,
-            device_scope=device_scope if device_scope in ("current", "all", "explicit") else "all",
-            client_device_id=client_device_id,
-        )
-        lineage_items_by_id = {item.memory_id: item for item in all_items}
-        survivor_items_by_id = {item.memory_id: item for item in scoped_items}
         candidate_ids = merged_ids
     else:
-        hydration = _hydrate_bounded_ledger_search_items(
-            uid,
-            merged_ids,
-            db_client=client,
-            policy=policy,
-            now=now,
-            device_scope=device_scope,
-            client_device_id=client_device_id,
-        )
-        candidate_items = list(hydration.candidate_items)
-        lineage_items_by_id = hydration.lineage_items_by_id
-        survivor_items_by_id = hydration.survivor_items_by_id
         candidate_items = [
             item
-            for item in candidate_items
+            for item in hydration.candidate_items
             if _ledger_search_lineage_is_complete(item, lineage_items_by_id=lineage_items_by_id)
         ]
         candidate_ids = [item.memory_id for item in candidate_items]
@@ -1488,9 +1500,53 @@ def _existing_identical_add_row(
     item = MemoryItem(**_snapshot_payload(snapshot))
     if item.status != MemoryItemStatus.active:
         return None
+    if (item.promotion or {}).get("user_review") is False:
+        # A rejected row remains active for audit/history, but it is not a
+        # successful retry target.  Reusing it would silently resurrect a
+        # user-rejected statement under the old content-derived identity.
+        return None
     if (item.content or "").strip() != (data.get("content") or "").strip():
         return None
     return item
+
+
+_DUPLICATE_ADD_SNAPSHOT_RETRY_DELAYS: tuple[float, ...] = (0.05, 0.15, 0.3)
+
+
+def _resolve_duplicate_add_row(
+    uid: str,
+    *,
+    result: ApplyResult,
+    memory_id: str,
+    data: Dict[str, Any],
+    db_client: Any,
+) -> Optional[MemoryItem]:
+    """Resolve an add collision, retrying briefly while the row is not readable yet.
+
+    The apply transaction observed the colliding row inside its own snapshot, but
+    a concurrent identical submission can return ``invalid_patch`` while the
+    winning write is still landing for a plain read — the exact residue behind
+    the 2026-09-11 ``canonical write failed`` family on chat/extraction writes.
+    Re-read briefly before failing so an identical resubmission resolves to the
+    existing row instead of surfacing a 500. Definitive conflicts — a row that
+    is not active, user-rejected, or carrying different content — return None on
+    every re-read and stay fail-closed.
+    """
+    # Only the duplicate-add collision shape can ever be resolved by a re-read;
+    # any other failure (admission, inactive-source, payload mismatch,
+    # exhausted-head-retry) pays nothing here and fails immediately.
+    if result.status != ApplyStatus.invalid_patch or result.reason != _DUPLICATE_ADD_ROW_REASON:
+        return None
+    duplicate = _existing_identical_add_row(uid, result=result, memory_id=memory_id, data=data, db_client=db_client)
+    if duplicate is not None:
+        return duplicate
+    for delay in _DUPLICATE_ADD_SNAPSHOT_RETRY_DELAYS:
+        time.sleep(delay)
+        snapshot = db_client.document(f"{MemoryCollections(uid=uid).memory_items}/{memory_id}").get()
+        if not getattr(snapshot, "exists", False):
+            continue
+        return _existing_identical_add_row(uid, result=result, memory_id=memory_id, data=data, db_client=db_client)
+    return None
 
 
 def write_canonical_extraction_memory(
@@ -1548,7 +1604,7 @@ def write_canonical_extraction_memory(
             break
     assert result is not None
     if result.status not in {ApplyStatus.committed, ApplyStatus.idempotent_skip}:
-        duplicate_row = _existing_identical_add_row(
+        duplicate_row = _resolve_duplicate_add_row(
             uid,
             result=result,
             memory_id=memory_id,
@@ -1764,17 +1820,29 @@ def write_canonical_direct_user_knowledge_ledger_memory(
     required_source_item: Optional[MemoryItem] = None,
     ledger_reopen_receipt: Optional[MemoryLedgerReopenReceipt] = None,
 ) -> str:
-    """Dedicated append boundary for an explicit user correction, reopen, or revert."""
+    """Dedicated boundary for an explicit user fact or correction append."""
 
     evidence = _evidence_items_from_payload(data)
-    if (
-        data.get("ledger_schema_version") != _LEDGER_SCHEMA_VERSION
-        or data.get("write_reason") != LedgerWriteReason.direct_user_statement.value
-        or data.get("user_asserted") is not True
-        or (not data.get("supersedes") and ledger_reopen_receipt is None)
-        or not any(item.source_type in _DIRECT_USER_LEDGER_EVIDENCE_TYPES for item in evidence)
-    ):
-        raise ValueError("direct user ledger writes require an explicit correction, reopen, or revert append")
+    is_initial_user_fact = (
+        data.get("ledger_schema_version") == _LEDGER_SCHEMA_VERSION
+        and data.get("write_reason") == LedgerWriteReason.direct_user_statement.value
+        and data.get("user_asserted") is True
+        and not data.get("supersedes")
+        and ledger_reopen_receipt is None
+        and any(item.source_type == "explicit_user_statement" for item in evidence)
+    )
+    is_user_amendment = (
+        data.get("ledger_schema_version") == _LEDGER_SCHEMA_VERSION
+        and data.get("write_reason") == LedgerWriteReason.direct_user_statement.value
+        and data.get("user_asserted") is True
+        and (bool(data.get("supersedes")) or ledger_reopen_receipt is not None)
+        and any(
+            item.source_type in {"explicit_user_correction", "explicit_user_reopen", "explicit_user_revert"}
+            for item in evidence
+        )
+    )
+    if not (is_initial_user_fact or is_user_amendment):
+        raise ValueError("direct user ledger writes require an explicit user fact or append authority")
     client = db_client if db_client is not None else default_db_client
     evidence_items = (
         evidence if ledger_reopen_receipt is not None else _reissued_external_evidence(uid, evidence, db_client=client)

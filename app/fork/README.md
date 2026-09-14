@@ -35,8 +35,12 @@ white-label acceptance result.
   declaration spans. It does not scan braces or edit tracked source files.
 - `overlays/*.dart.txt` are compiled production input, materialized only in the
   stage. `tests/gateway_test.dart.txt` executes the resulting AuthService and
-  authenticated request replayer. `.txt` prevents the upstream analyzer from
-  type-checking an overlay against the wrong, unmodified source owners.
+  authenticated request replayer, and `tests/better_auth_token_test.dart.txt`
+  covers the staged `parseBetterAuthDevCredential` and
+  `AuthenticationProvider.betterAuthDevSignInEnabled`. `.txt` prevents the
+  upstream analyzer from type-checking an overlay against the wrong, unmodified
+  source owners; a staged-only test left as a live `.dart` file fails the
+  upstream `dart analyze` job for every pull request that touches `app/`.
 
 The local artifact materializes its fork-owned basic local-notification service
 with a neutral color and never initializes Firebase/FCM, Intercom or remote
