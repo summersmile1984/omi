@@ -1,14 +1,15 @@
 name: Fork Checks
 
-# Fork-owned CI for summersmile1984/omi. Trusted branch pushes and manual runs
-# use Mac Studio; pull requests use disposable GitHub-hosted runners.
+# Fork-owned CI for summersmile1984/omi. Pull requests use disposable GitHub-hosted
+# runners; trusted branch pushes and manual runs use the fork's self-hosted runners
+# (x86 Linux for the portable gate, Mac Studio for the macOS-native contracts).
 # Upstream workflow files remain unchanged and keep their own repository settings.
 #
 # Three lanes share this file; the lane is the event, and it decides both the
 # selection scope and whether the run can authorize a release:
-#   pull_request       hosted runners, diff against the target branch, no release
-#   push               Mac Studio,    diff against the event's `before`, no release
-#   workflow_dispatch  Mac Studio,    the complete manifest, the release lane
+#   pull_request       hosted runners,  diff against the target branch, no release
+#   push               self-hosted x86, diff against the event's `before`, no release
+#   workflow_dispatch  self-hosted x86, the complete manifest, the release lane
 on:
   pull_request:
     branches: [main]
@@ -33,7 +34,13 @@ jobs:
   fork-gate:
     name: Fork gate (Server OS + Cloudflare)
     if: github.repository == 'summersmile1984/omi'
-    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["self-hosted","macOS","ARM64","mac-studio","memweft"]') }}
+    # Portable contracts are Linux-native, so trusted pushes and the release lane run
+    # them on the fork's x86 runner instead of emulating amd64 on the ARM Mac Studio.
+    # `fork-selfhost-product-core` builds images and runs compose, and its Server OS
+    # target is linux/amd64: on Mac Studio that was qemu-emulated, and the fixture's
+    # own admission checks read the host it runs on. Pull requests keep using
+    # disposable GitHub-hosted runners so untrusted code never reaches a self-hosted box.
+    runs-on: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["self-hosted","linux-x64"]') }}
     timeout-minutes: 120
     env:
       FORK_FULL_CHECKS: ${{ github.event_name == 'workflow_dispatch' }}
@@ -209,7 +216,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # Portable contracts run on either host; macOS-only checks run below.
-      # Server OS still executes in Linux Docker containers on Mac Studio.
+      # The self-host fixture runs on this same Linux host, natively amd64, so its
+      # image builds and compose stack are no longer emulated.
       - name: Fork manifest (ci lane)
         env:
           # The self-host fixture writes per-command logs; pin them to a stable path
