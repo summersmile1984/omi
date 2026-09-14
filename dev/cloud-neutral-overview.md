@@ -2,6 +2,12 @@
 
 日期: 2026-08-10 · 分支: feature/cloud-neutral-shim · 目标: 4C8G 无云无 GPU 自托管部署
 
+> **本地 dev 入口(2026-09-14 起)**:`dev/local.sh up` / `dev/local.sh verify`。
+> 一条命令起全栈(postgres/redis/minio/emulators + auth-server + queue-worker + backend),
+> 一条命令自证 6 项(数据面/存储/队列契约/认证边界/后端健康)并写 JSON 证据。
+> 三阶段(Local dev → CI → CD×2)的口径见 `dev/ci-cd-three-stages.md`。
+> 下文记录的 `dev/deploy-local.sh` 仍可用,现在只是 `dev/local.sh` 的兼容壳。
+
 ## 现状:端到端全绿 ✅
 
 移动端 + 桌面端都已对接 fork 后的自托管服务,local dev 环境完整跑通。
