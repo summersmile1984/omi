@@ -144,3 +144,15 @@ Docker builds; keep real runtime sources in both contexts.
   generation own duplicate handling. Never add a permanent Redis name set that
   can swallow a later replay. The startup lane covers old jobs, duplicate/new
   generations and rejected publication retaining a durable queued intent.
+
+- Self-host images bake `brand.runtime.json` beside the generated profile from the
+  same validated manifest. Its `brand_id`, `display_name` and `ai_persona_name`
+  must match that profile; missing old artifacts require a rebuild and never
+  silently select upstream names. `fork/patches/brand.py` projects only reviewed
+  static literals in real default prompt builders and their captured consumers.
+  User history, usernames and custom app/persona prompts stay verbatim. The
+  selected agent template uses the canonical local template through the existing
+  renderer; it does not read a LangSmith key or cached cloud template. Upstream
+  mode retains its original prompt owner. Startup tests execute these production
+  paths in `fork/tests/test_brand_prompts.py`; this does not qualify every public
+  output, model self-identification, email, notification or support classifier.

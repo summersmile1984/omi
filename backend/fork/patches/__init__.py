@@ -12,6 +12,7 @@ from typing import List
 from ..registry import Patch
 from . import account_deletion as _account_deletion
 from . import auth as _auth
+from . import brand as _brand
 from . import embedding as _embedding
 from . import capabilities as _capabilities
 from . import speech as _speech
@@ -23,6 +24,7 @@ from . import storage as _storage
 
 ALL = (
     _auth,
+    _brand,
     _embedding,
     _capabilities,
     _speech,

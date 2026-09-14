@@ -133,6 +133,9 @@ class Fixture:
         validate(row)
         profile_file = self.output / 'profile.json'
         profile_file.write_text(json.dumps(table, indent=2) + '\n')
+        from fork.brand import from_manifest
+
+        (self.output / 'brand.runtime.json').write_text(json.dumps(from_manifest(manifest, table).as_dict()) + '\n')
         env = {}
         for line in (ROOT / 'deploy/self-host/.env.production.example').read_text().splitlines():
             if line.strip() and not line.lstrip().startswith('#') and '=' in line:
@@ -333,11 +336,12 @@ class Fixture:
         (self.output / 'runtime-source-hashes.json').write_text(json.dumps(expected, indent=2))
         self.command(['docker', 'build', '-f', 'auth-server/Dockerfile', '-t', self.auth_image, '.'], timeout=600)
         shutil.copyfile(ROOT / 'deploy/self-host/requirements.txt', self.output / 'requirements.txt')
-        (self.output / '.dockerignore').write_text('*\n!Dockerfile\n!requirements.txt\n!profile.json\n')
+        (self.output / '.dockerignore').write_text('*\n!Dockerfile\n!requirements.txt\n!profile.json\n!brand.runtime.json\n')
         (self.output / 'Dockerfile').write_text(
             'ARG BASE\nFROM ${BASE}\nUSER root\nCOPY requirements.txt /tmp/fork-requirements.txt\n'
             'RUN python -m pip install --no-cache-dir --no-deps --require-hashes -r /tmp/fork-requirements.txt\n'
-            'COPY --chown=omi:omi --chmod=0444 profile.json /app/fork/deployment_profiles.generated.json\nUSER omi\n'
+            'COPY --chown=omi:omi --chmod=0444 profile.json /app/fork/deployment_profiles.generated.json\n'
+            'COPY --chown=omi:omi --chmod=0444 brand.runtime.json /app/fork/brand.runtime.json\nUSER omi\n'
             'CMD ["uvicorn","fork.main:app","--host","0.0.0.0","--port","8080","--loop","uvloop"]\n'
         )
         self.command(

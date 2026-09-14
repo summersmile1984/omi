@@ -1327,3 +1327,14 @@ reads that receipt even in local stage. This does not attest to all unowned
 transient objects, every independent PG writer, external identity removal or
 unknown in-flight provider outcomes; see
 `dev/unified-main/implementation-2026-09-04/SH2-providers-verification.md`.
+
+### Default assistant brand
+
+The selected public manifest also supplies the default assistant name and product
+name. `Dockerfile` renders `brand.runtime.json` with the same manifest as the
+deployment profile. Rebuild old self-host images that lack this artifact; copying
+a profile from another brand is rejected. The default greeting, agent template,
+platform instructions, support answer and emotional response use those names;
+custom app/persona text and user content are preserved. The default agent uses
+the current canonical local template rather than a separately configured
+LangSmith project. This package does not rebrand every backend output.
