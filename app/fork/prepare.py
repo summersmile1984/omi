@@ -320,7 +320,7 @@ def stage(manifest_path: Path, target: str, output: Path, dart: Path) -> dict:
         "import 'package:flutter/material.dart';",
         "import 'package:flutter/material.dart';\nimport 'package:omi/utils/alerts/app_snackbar.dart';",
     )
-    once(name_step, "bool hasPrefilledName = false;", "bool hasPrefilledName = false;\n  bool isSaving = false;")
+    once(name_step, "  var focusNode = FocusNode();", "  var focusNode = FocusNode();\n  bool isSaving = false;")
     once(
         name_step,
         "onPressed: nameController.text.trim().isEmpty",

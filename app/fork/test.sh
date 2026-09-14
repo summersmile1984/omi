@@ -18,11 +18,6 @@ for target in self_hosted cloudflare; do
   cp test/fork/*.dart "$TEMP_STAGE/$target/app/test/fork/"
   cp fork/tests/gateway_test.dart.txt "$TEMP_STAGE/$target/app/test/fork/gateway_test.dart"
   cp fork/tests/assets_test.dart.txt "$TEMP_STAGE/$target/app/test/fork/brand_assets_test.dart"
-  # parseBetterAuthDevCredential and AuthenticationProvider.betterAuthDevSignInEnabled
-  # exist only after an overlay is staged, so this test belongs with the other
-  # overlay tests: as a .txt it stays invisible to the upstream analyzer, which
-  # type-checks the unmodified source owners and otherwise fails the app tree.
-  cp fork/tests/better_auth_token_test.dart.txt "$TEMP_STAGE/$target/app/test/fork/better_auth_token_test.dart"
   (
     cd "$TEMP_STAGE/$target/app"
     flutter pub get --offline --enforce-lockfile
