@@ -1,39 +1,11 @@
 {
   "entries": [
     {
-      "path": "app/lib/fork/identity/client.dart",
-      "reason": "fork identity owner: imported only by the staged overlays (app/fork/overlays/*.dart.txt), which the plain-tree import graph cannot see"
-    },
-    {
-      "path": "app/lib/fork/identity/credential.dart",
-      "reason": "fork identity owner: imported only by the staged overlays (app/fork/overlays/*.dart.txt), which the plain-tree import graph cannot see"
-    },
-    {
-      "path": "app/lib/fork/identity/deployment.dart",
-      "reason": "fork identity owner: imported only by the staged overlays (app/fork/overlays/*.dart.txt), which the plain-tree import graph cannot see"
-    },
-    {
-      "path": "app/lib/fork/identity/owner.dart",
-      "reason": "fork identity owner: imported only by the staged overlays (app/fork/overlays/*.dart.txt), which the plain-tree import graph cannot see"
-    },
-    {
-      "path": "app/lib/fork/identity/runtime.dart",
-      "reason": "fork identity owner: imported only by the staged overlays (app/fork/overlays/*.dart.txt), which the plain-tree import graph cannot see"
-    },
-    {
-      "path": "app/lib/fork/identity/secure_store.dart",
-      "reason": "fork identity owner: imported only by the staged overlays (app/fork/overlays/*.dart.txt), which the plain-tree import graph cannot see"
-    },
-    {
-      "path": "app/lib/fork/identity/sign_out.dart",
-      "reason": "fork identity owner: imported only by the staged overlays (app/fork/overlays/*.dart.txt), which the plain-tree import graph cannot see"
-    },
-    {
-      "path": "app/lib/phone_mic_interface.dart",
+      "path": "app/lib/pigeon_interfaces.dart",
       "reason": "codegen contract inputs, unimported by design"
     },
     {
-      "path": "app/lib/pigeon_interfaces.dart",
+      "path": "app/lib/phone_mic_interface.dart",
       "reason": "codegen contract inputs, unimported by design"
     }
   ]

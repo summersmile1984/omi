@@ -1,16 +1,3 @@
 {
-  "entries": [
-    {
-      "path": "backend/utils/mimo_pipeline/tts.py",
-      "reason": "fork TTS provider adapter: selected at runtime by TTS_PROVIDER=mimo, so no static importer exists in the tree"
-    },
-    {
-      "path": "backend/utils/moss_pipeline/pipeline.py",
-      "reason": "fork batch-ASR provider adapter: selected at runtime by STT_PRERECORDED_MODEL=moss, so no static importer exists in the tree"
-    },
-    {
-      "path": "backend/utils/moss_pipeline/prerecorded_provider.py",
-      "reason": "fork batch-ASR provider adapter: selected at runtime by STT_PRERECORDED_MODEL=moss, so no static importer exists in the tree"
-    }
-  ]
+  "entries": []
 }

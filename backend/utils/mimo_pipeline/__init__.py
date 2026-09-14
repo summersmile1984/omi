@@ -8,7 +8,7 @@ of Western ASR pricing (TokenPlan ~0.285 CNY/h).
 
 Role split in this fork:
   - **STT (live streaming)** → MiMo-V2.5-ASR via ``socket.MimoSttSocket``
-  - **ASR (pre-recorded batch)** → OpenMOSS via ``utils.moss_pipeline``
+  - **ASR (pre-recorded batch)** → ``STT_PRERECORDED_MODEL`` (see ``fork/prerecorded_stt_config.py``)
 
 Modules:
   - ``mimo_client``  thin HTTP client for the ASR endpoint
