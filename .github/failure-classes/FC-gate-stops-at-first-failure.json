@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "FC-gate-stops-at-first-failure",
+  "violated_contract": "A check lane reports the state of a diff only if it attempts every check that diff selects. Stopping at the first failure turns one red gate into a serial discovery process: each round trip reveals exactly one breakage, the reviewer cannot size the work before starting, and the failures that follow are attributed to whichever change happened to be first in the manifest order rather than to their own causes. On 2026-09-14 repairing the Electron owners uncovered electron, then repo-state, then the Flutter anchor -- three independent problems, one full CI round trip each (about four minutes plus queueing). The same stopping rule also lives inside a lane: `deploy/cloudflare/ci/routes.sh` exits at its first failing step, so a stale route inventory hid an entire 1299-test Worker suite behind it, and the lane's own log looked like it had only one problem.",
+  "canonical_prevention": "Attempt every selected check and report the complete failure set in one non-zero exit: the lane's value is the list, not the first item. Change only the stopping rule and leave selection alone, so every check still runs its own command with its own evidence and exit code, and nothing is reimplemented to achieve it. Exclusions have to be explicit and tested, because a fan-out is wrong wherever a single invocation is the contract: selection probes that print a document instead of running checks (`--output json`, `--list`) and modes that already aggregate their own failures (`--metadata-only`, which the upstream runner drives with `keep_going`). A caller's own explicit check ids are part of that contract too -- the upstream runner executes every id it is given, so an id left in the base invocation re-runs that check on every round.",
+  "canonical_prevention_artifact": [
+    "scripts/fork/run_checks.py",
+    "scripts/fork/test_run_checks_fan_out.py",
+    ".github/checks-manifest.fork.yaml"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "scripts/fork/run_checks.py",
+    ".github/checks-manifest.fork.yaml",
+    "deploy/cloudflare/ci/routes.sh"
+  ],
+  "status": "open"
+}
