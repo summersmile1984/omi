@@ -225,12 +225,17 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
    的 break-glass 描述与仓库现状不符(前者工作流已 `disabled_manually`、无 `branch` 入参;
    后者全仓库不存在该 manifest 检查;desktop 真正的应急入口是 `desktop_breakglass_rollout_beta.yml`)。
    建议在三阶段口径确定后一并修正。
-5. **阶段 2 的"首个失败即停"**:`run_checks.py` 默认 `keep_going=False`,fork 门禁因此**每次只报一条**失败检查。
-   2026-09-14 修 Electron owner 时,这一条链被逐个揭开:electron → repo-state → flutter anchor,
-   每条都要付一轮完整 CI(约 4 分钟 + 排队),而三者其实互不相关、可以一次全报。
-   `.github/scripts/run_checks.py` 内部已有 `keep_going`(第 420 行),但**没有 CLI 开关**;
-   把它暴露出来属于上游文件改动(T0/T2 边界),在 fork 侧包一层"逐条跑完再汇总"则会动到
-   发布授权车道的 attestation 语义 —— 两者都需要一次明确的决定,故此处只记录,不擅自改。
+5. **阶段 2 的"首个失败即停"** —— 已在 fork 侧解决(2026-09-15)。原来 `run_checks.py` 默认
+   `keep_going=False`,门禁**每次只报一条**失败检查:2026-09-14 修 Electron owner 时这条链被逐个揭开
+   (electron → repo-state → flutter anchor),每条付一轮完整 CI(约 4 分钟 + 排队),而三者互不相关、
+   本可一次全报。现在 `scripts/fork/run_checks.py` **逐条跑完所有被选中的检查再汇总**
+   (`Fork manifest checks failed: a, b, c`,退出码仍为 1):选择逻辑仍由上游 runner 决定,每个检查仍跑
+   自己的命令、保留自己的证据与退出码,只改"停不停"这一条规则。
+   保持单次调用的例外都显式列出了并被测试钉住:`--output json` / `--list`(它们打印选择文档而不执行)、
+   以及上游本来就用 `keep_going` 驱动的 `--metadata-only`;调用方自己传的 `--check-id` 也必须先从基础
+   命令里剥离(上游 runner 会执行它收到的每一个 id,留在里面就会每轮重跑同一个检查)。
+   仍然不变的是:上游 `.github/scripts/run_checks.py` 的 `keep_going` 只有 `--metadata-only` 在用,
+   把它暴露成 CLI 开关属于上游文件改动(T1 要求 ≤3 行 + 上游 PR 链接),fork 选择不碰它。
 6. **阶段 2 的"触发覆盖"**:门禁只在 diff 命中 `triggers` 时才会跑,所以 triggers 列表本身是一条
    正确性边界。Cloudflare 的 Python Worker 由 `deploy/cloudflare/scripts/*_sources.py` 从上游模块逐节点
    投影而来,而 2026-09-15 实测:**52 个被投影的上游源里有 35 个不在任何 `fork-cloudflare-*` 检查的
