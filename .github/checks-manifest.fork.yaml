@@ -182,3 +182,9 @@ checks:
     triggers: ["dev/**", ".github/checks-manifest.fork.yaml"]
     lanes: ["local", "ci"]
     reason: "The 2026-09-15 cold start found two blind spots in dev/selfhost-local.sh: `stop` only knew the pid file, so a backend left listening without one kept :8100 taken while `stop` reported success, and `status` called that same live backend stopped. `make -f Makefile.fork local-selftest` already covered dev/local.sh, but no lane ran it -- both the existing suite and these regressions were on-demand only. This runs both hermetically: no docker, no backend, loopback sockets only."
+
+  - id: fork-backend-test-collection
+    command: ["bash", "-c", "cd backend && p=.venv/bin/python; [ -x \"$p\" ] || p=python3; \"$p\" -m pytest fork/tests --collect-only -q"]
+    triggers: ["backend/fork/tests/**", "backend/fork/**", ".github/checks-manifest.fork.yaml"]
+    lanes: ["local", "ci"]
+    reason: "Every backend fork lane runs a hand-written file list (fork-backend-seams names three files, fork-selfhost-startup names twenty-four), so a test file that nothing lists is executed by nobody and rots unseen. The 2026-09-04 audit recorded exactly that: backend/fork/tests/test_export_cloudflare_x_posts.py imported scripts.export_cloudflare_x_posts, a module that never existed in this repository, and its collection error stayed invisible for eleven days because both lanes hand-list their files. Importing every test module costs about two seconds and catches that class without running the suite; a full-directory execution is deliberately not used here, because two of its files interfere with each other's environment (recorded in dev/ci-cd-three-stages.md)."
