@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "FC-harness-stop-trusts-a-single-evidence-file",
+  "violated_contract": "A local harness stop/status entry point must decide whether the thing it owns is running from evidence it can always obtain. Treating its own pid file as the only evidence means an earlier stop, a wiped state directory, or a crash leaves the process alive while stop reports success and status reports stopped: the report is the only signal the operator gets, so the failure is silent, the port stays taken by a process the harness believes is gone, and the next start collides with itself. The 2026-09-15 cold start hit exactly this — dev/selfhost-local.sh stop did nothing to a live uvicorn on :8100 because backend.pid was gone, and the operator only learned it from a port collision on the next up.",
+  "canonical_prevention": "Resolve the owned process from the pid file first, then fall back to the listener on the configured port, and only ever claim a process whose command line is that entry point's own — an unrelated service that happens to hold the port must never be killed. Report which evidence was used, and cover both paths in a hermetic test that starts a listener under the owned argv[0] with no pid file, plus one that proves an unrelated listener survives.",
+  "canonical_prevention_artifact": [
+    "dev/selfhost-local.sh",
+    "dev/tests/test_selfhost_local_sh.py",
+    ".github/checks-manifest.fork.yaml"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "dev/*.sh",
+    "dev/tests/**"
+  ],
+  "status": "open"
+}

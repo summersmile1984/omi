@@ -17,7 +17,7 @@ help:
 	@echo "make -f Makefile.fork local-status     # what is running, on which ports"
 	@echo "make -f Makefile.fork local-down       # stop the stack (keeps data)"
 	@echo "make -f Makefile.fork local-reset      # stop and delete local data"
-	@echo "make -f Makefile.fork local-selftest   # hermetic tests for dev/local.sh"
+	@echo "make -f Makefile.fork local-selftest   # hermetic tests for both local dev entry points"
 
 setup-fork:
 	@git config remote.upstream.tagOpt --no-tags && \
@@ -65,3 +65,4 @@ local-reset:
 
 local-selftest:
 	@python3 dev/tests/test_local_sh.py
+	@python3 dev/tests/test_selfhost_local_sh.py

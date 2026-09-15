@@ -176,3 +176,9 @@ checks:
     triggers: ["backend/fork/tests/test_storage_queue_adapters.py", "deploy/self-host/**", "backend/fork/**", "backend/requirements-fork.txt", "backend/utils/memory/canonical_memory_adapter.py", "backend/firestore_pg/**", "backend/utils/sensevoice/**", "backend/utils/cloud_tasks_redis.py", "backend/utils/cloud_tasks.py", "backend/utils/auth_shim.py", "backend/utils/other/endpoints.py", "backend/database/users.py", "backend/database/account_deletion_transitions.py", "backend/database/legal_holds.py", "backend/database/vector_db.py", "backend/utils/other/storage.py", "backend/Dockerfile", "backend/Dockerfile.dockerignore", "deploy/profiles/**", "scripts/profiles/**"]
     lanes: ["local", "ci"]
     reason: "fork PR #7 shipped a missing PG migration command and an ungenerated profile; prove source closure and fatal process admission through the real entrypoints; the same main audit reproduced PG deletion gaps, now guarded by transactional erasure/receipt behaviors"
+
+  - id: fork-local-dev-harness
+    command: ["bash", "-c", "python3 dev/tests/test_local_sh.py && python3 dev/tests/test_selfhost_local_sh.py"]
+    triggers: ["dev/**", ".github/checks-manifest.fork.yaml"]
+    lanes: ["local", "ci"]
+    reason: "The 2026-09-15 cold start found two blind spots in dev/selfhost-local.sh: `stop` only knew the pid file, so a backend left listening without one kept :8100 taken while `stop` reported success, and `status` called that same live backend stopped. `make -f Makefile.fork local-selftest` already covered dev/local.sh, but no lane ran it -- both the existing suite and these regressions were on-demand only. This runs both hermetically: no docker, no backend, loopback sockets only."
