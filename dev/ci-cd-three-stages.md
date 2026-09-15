@@ -369,14 +369,29 @@ release admission 仍按前缀合并同一对 attestation。`runs-on` 用常量 
 上游 Repo Checks 的 actionlint 读 `.github/actionlint.yaml`(只认 `macos`),字面量自定义 label 会直接报
 `[runner-label]`;fork 自己的 lint 会解析该常量并按 fork 目录校验。
 
-**新的头号缺口(阶段 2)**:`dead-code-ratchet`(属上游 Hygiene)在 `main` 上就是红的,
-只要某个 diff 碰到 `backend/**/*.py` 就会被选中并卡住合并 —— 也就是说**这个 fork 目前无法修改任何
-backend Python 文件**。判定依据是 7 个 `app/lib/fork/identity/*.dart`(只被 staged overlay 引用,
-上游分析器看不到)加 1 个 `desktop/windows/src/shared/fork/deploymentProfiles.generated.ts`
-(render.py 产出、Electron 侧没有任何消费者)。checker 提示的补救(写 allowlist / `--update-baseline`)
-都在 `.github/scripts/**`,是 fork 不修改的上游路径,所以只能改 staging 设计:
-把 Flutter identity 也做成 overlay 输入(`*.dart.txt`,由 `prepare.py` 落盘),以及让 Electron 消费
-那份 profile 或让 render 合同不再产出它。两条都是设计选择,单独一个 PR 做。
+**新的头号缺口(阶段 2)**:`dead-code-ratchet`(属上游 Hygiene)在 `main` 上就是红的 ——
+7 个 `app/lib/fork/identity/*.dart`(只被 staged overlay 引用,上游分析器看不到)加 1 个
+`desktop/windows/src/shared/fork/deploymentProfiles.generated.ts`(render.py 产出、Electron 侧
+没有任何消费者)。
+
+它的**触发路径含 `backend/**/*.py`**,所以任何 backend Python 改动都会把它选中 —— 包括 fork 自有的
+`backend/fork/**`(shim/部署目标代码,恰恰是政策给的正门);选中后它因为上面那 8 条既有发现而必然红,
+于是 required 的 Hygiene 卡住合并,而失败内容与本次改动**无关**。补救通道
+(写 `.github/scripts/dead_code/*.allowlist.json`、`--update-baseline`)都在 fork 不改的上游路径里,
+所以只有两条路:把 Hygiene 降为 advisory,或做结构性迁移让那 8 条真绿
+(Flutter identity 也做成 overlay 输入 `*.dart.txt` 由 `prepare.py` 落盘;Windows 那份 profile
+要么被 Electron 消费、要么 render 不再产出)。两条都是设计/策略选择,单独一个 PR 做。
+
+**别把它误读成"不能改 backend"**。政策(`dev/unified-main/upstream-touch-allowlist.yaml`)的真实分工是:
+
+| 改什么 | 允许吗 | 代价 |
+|---|---|---|
+| 新增/修改 **fork 自有**的 `backend/fork/**`(shim、patches、部署目标适配、fork 测试) | ✅ 正门,随便改 | 上游改了被 patch 的符号时,绑定要跟着重做(已立失败类 `FC-fork-patch-binding-follows-upstream-signature`) |
+| 直接改**上游已有**的 backend 模块 | ❌ T2 永不入白名单(`backend/**`) | —— |
+| 改上游的**非 backend** 文件(客户端 call site 等) | ⚠️ 需入白名单:≤3 行、带 reason 与 upstream_pr | 每次同步上游都要重新施加一次 |
+
+所以"部署目标相关、shim 相关"的 backend 改动正是设计意图;挡住合并的不是这条政策,而是上面那条被
+无关既有红拖垮的上游检查。
 
 **第二个缺口(阶段 3 的 release 车道)**:完整清单(release lane)会在 `fork-cloudflare-routes` 停下,
 而 diff-scoped 的 PR/push 车道根本不会选中它 —— 所以它一直没露面:
