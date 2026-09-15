@@ -61,7 +61,21 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The lane's one observed infra flake (2026-09-15T10:41Z): this download aborted with
+      # "The operation was aborted due to timeout" and, because the step precedes every
+      # check, the whole gate reported a failure no code caused -- the same commit passed
+      # 22 seconds later. The action exposes no retry input, so the step retries as a unit
+      # and the second attempt reuses whatever the first managed to download.
       - name: Install uv
+        id: install-uv
+        continue-on-error: true
+        uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/pylock*.toml
+
+      - name: Install uv (retry after a transient download failure)
+        if: steps.install-uv.outcome == 'failure'
         uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
         with:
           enable-cache: true
@@ -283,7 +297,21 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The lane's one observed infra flake (2026-09-15T10:41Z): this download aborted with
+      # "The operation was aborted due to timeout" and, because the step precedes every
+      # check, the whole gate reported a failure no code caused -- the same commit passed
+      # 22 seconds later. The action exposes no retry input, so the step retries as a unit
+      # and the second attempt reuses whatever the first managed to download.
       - name: Install uv
+        id: install-uv
+        continue-on-error: true
+        uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/pylock*.toml
+
+      - name: Install uv (retry after a transient download failure)
+        if: steps.install-uv.outcome == 'failure'
         uses: astral-sh/setup-uv@ecd24dd710f2fb0dca1693a67af11fc4a5c5ec84
         with:
           enable-cache: true
