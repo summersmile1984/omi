@@ -45,6 +45,46 @@ class ProfileSelectionTests(unittest.TestCase):
         self.resolve()
         self.assertTrue(profile.is_upstream_mode())
 
+    def test_a_local_run_can_point_at_its_own_table(self):
+        # A local Server OS run renders `self_hosted.local`; the override is what keeps that
+        # render out of the tracked table instead of restoring it from git afterwards.
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "deployment_profiles.generated.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "target": "self_hosted",
+                        "profiles": {
+                            "self_hosted.local": {
+                                "name": "self_hosted.local",
+                                "target": "self_hosted",
+                                "identity_provider": "better_auth",
+                            }
+                        },
+                    }
+                )
+            )
+            row = self.resolve(
+                OMI_DEPLOYMENT_PROFILE="self_hosted.local",
+                OMI_DEPLOYMENT_PROFILES_PATH=str(path),
+            )
+        self.assertEqual(row["name"], "self_hosted.local")
+
+    def test_a_missing_override_names_the_table_it_looked_for(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "absent-table.json"
+            with self.assertRaises(profile.ProfileError) as raised:
+                self.resolve(OMI_DEPLOYMENT_PROFILES_PATH=str(missing))
+        self.assertIn("absent-table.json", str(raised.exception))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

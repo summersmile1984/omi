@@ -21,6 +21,13 @@ from pathlib import Path
 
 GENERATED_TABLE = Path(__file__).with_name("deployment_profiles.generated.json")
 
+# A local Server OS run renders `self_hosted.local` instead of the committed table.
+# Letting it write the tracked file made every dev run a dirty working tree -- the
+# `fork-profile-tables` lane then failed locally because the file no longer matched
+# `deploy/profiles/`, and the render was one `git add -A` away from being committed. The
+# override keeps the image's table untouched and the local render out of tree.
+TABLE_PATH_ENV = "OMI_DEPLOYMENT_PROFILES_PATH"
+
 DEFAULT_PROFILE = "omi_cloud.production"
 
 # Upstream's stage names do not all map onto the fork's stage axis; only the
@@ -32,13 +39,19 @@ class ProfileError(RuntimeError):
     pass
 
 
+def _table_path() -> Path:
+    override = os.getenv(TABLE_PATH_ENV, "").strip()
+    return Path(override) if override else GENERATED_TABLE
+
+
 def _load_table() -> dict:
-    if not GENERATED_TABLE.exists():
+    path = _table_path()
+    if not path.exists():
         raise ProfileError(
-            f"{GENERATED_TABLE.name} is missing. Generate it with: "
+            f"{path.name} is missing. Generate it with: "
             f"scripts/profiles/render.py --target <target> --brand <brand>"
         )
-    return json.loads(GENERATED_TABLE.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _requested_name() -> str:

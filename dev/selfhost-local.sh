@@ -28,7 +28,10 @@ BACKEND_DIR="$_REPO_ROOT/backend"
 STATE_DIR="${OMI_SELFHOST_STATE_DIR:-$_REPO_ROOT/.local/selfhost}"
 LOG="$STATE_DIR/backend.log"
 PID_FILE="$STATE_DIR/backend.pid"
-TABLE="backend/fork/deployment_profiles.generated.json"
+# The local render lives beside the pid file, not in the tracked table: a dev run
+# used to dirty backend/fork/deployment_profiles.generated.json, which broke the
+# fork-profile-tables lane locally and risked committing a local-stage render.
+TABLE="$STATE_DIR/deployment_profiles.generated.json"
 ENV_EXAMPLE="$_REPO_ROOT/dev/selfhost-local.env.example"
 ENV_FILE="${OMI_SELFHOST_ENV_FILE:-$_REPO_ROOT/dev/selfhost-local.env}"
 PORT="${OMI_SELFHOST_PORT:-8100}"
@@ -74,15 +77,6 @@ backend_pid() {
   return 0
 }
 
-restore_table() {
-  if git -C "$_REPO_ROOT" diff --quiet -- "$TABLE" 2>/dev/null; then
-    return 0
-  fi
-  git -C "$_REPO_ROOT" checkout -- "$TABLE" 2>/dev/null &&
-    log "    committed profile table restored" ||
-    log "    warning: restore $TABLE by hand (git checkout -- $TABLE)"
-}
-
 cmd_up() {
   pid_alive && { log "already running (pid $(cat "$PID_FILE"))"; return 0; }
 
@@ -109,6 +103,10 @@ table["profiles"]["self_hosted.local"] = row
 json.dump(table, sys.stdout, indent=1)
 ' >"$TABLE" || die "rendering the profile table failed"
   log "    $TABLE rendered (self_hosted.local, core-only)"
+  # Every backend command below resolves the profile, not only the uvicorn launch:
+  # the qdrant migration step failed with "self_hosted.local is not in the generated
+  # table" when only the daemon inherited the override.
+  export OMI_DEPLOYMENT_PROFILES_PATH="$TABLE"
 
   (cd "$BACKEND_DIR" && "$PYTHON_BIN" -m fork.vector_qdrant migrate) ||
     die "qdrant migration failed"
@@ -153,7 +151,6 @@ cmd_stop() {
     log "backend: nothing listening on :$PORT"
   fi
   rm -f "$PID_FILE"
-  restore_table
 }
 
 cmd_status() {
@@ -166,10 +163,10 @@ cmd_status() {
   else
     log "backend: stopped"
   fi
-  if git -C "$_REPO_ROOT" diff --quiet -- "$TABLE" 2>/dev/null; then
-    log "profile table: committed version (no local render)"
+  if [ -f "$TABLE" ]; then
+    log "profile table: $TABLE (out of tree; the tracked table is untouched)"
   else
-    log "profile table: locally rendered (dev/selfhost-local.sh stop restores it)"
+    log "profile table: not rendered yet"
   fi
 }
 
