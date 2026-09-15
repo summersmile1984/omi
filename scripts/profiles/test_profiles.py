@@ -125,13 +125,13 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(row['embedding']['provider'], 'ollama')
         self.assertIn('llm', table['profiles']['self_hosted.local'])
 
-    def test_all_five_generated_outputs_are_checked_and_missing_is_failure(self):
+    def test_all_four_generated_outputs_are_checked_and_missing_is_failure(self):
         self.configure()
         for target in ("self_hosted", "cloudflare"):
             output = self.root / target
             proc = self.cli(target, "--output-root", str(output))
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            self.assertEqual(len([p for p in output.rglob('*') if p.is_file()]), 5)
+            self.assertEqual(len([p for p in output.rglob('*') if p.is_file()]), 4)
             args = [
                 sys.executable,
                 str(ROOT / "scripts/profiles/check_tables.py"),

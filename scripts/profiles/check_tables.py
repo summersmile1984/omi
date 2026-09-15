@@ -9,7 +9,7 @@ Three properties, in the order they matter:
    the next sync instead of the fork silently drifting.
 2. **The selected target resolves.** Required capability and data-plane keys present,
    identity provider correctly derived, https enforced where the stage demands it.
-3. **All five generated outputs are present and current.** `render.py --check`
+3. **All four generated outputs are present and current.** `render.py --check`
    against the selected build root. Default scope is omi_cloud. The CI-wired
    test_profiles.py exercises both fork targets using temporary manifests.
 
@@ -141,7 +141,7 @@ def main() -> int:
         ("upstream equivalence (omi_cloud vs app/lib/env/environment_profile.dart)", check_equivalence),
         (f"target resolution ({args.target})", lambda: check_targets(args.brand, [args.target], args.manifest)),
         (
-            "generated tables current (all five outputs required)",
+            "generated tables current (all four outputs required)",
             lambda: check_generated(args.brand, args.target, args.manifest, args.output_root),
         ),
     ]
