@@ -406,7 +406,32 @@ Windows 那份 profile 要么被 Electron 消费、要么 render 不再产出)�
 线上 ruleset 用 `scripts/fork/apply_repo_state.py --apply` 同步,`--verify` 与
 `check_repo_state.py --live` 均 OK,生产环境各自的 1 名 reviewer 未被改动。效果:Hygiene 继续跑、
 继续报红,但**不再挡合并**,于是 `backend/**` 的任何改动(含 shim/部署目标工作)可以正常落地。
-结构性迁移(让那 8 条真绿、把 Hygiene 重新变回 required)仍是留待将来的一项工作。
+
+**2026-09-15 后续:8 条里能真修的那 1 条已修,剩下 7 条按政策不可修(附实测)。**
+
+- **Windows 那条已删除**:`scripts/profiles/render.py` 不再产出
+  `desktop/windows/src/shared/fork/deploymentProfiles.generated.ts`,该文件一并删除。它是真的死产物
+  ——`desktop/windows/` 下没有任何引用,Electron 读的是 `desktop/windows/fork/prepare.py` 生成的
+  `fork/native/profile.generated.ts`。渲染器输出 5 → 4(`render.py`/`check_tables.py`/`test_profiles.py`
+  同步更新),`check_dead_code.py` 的 `dead-code[windows]` 由 FAILED 变 ok。
+- **Flutter 那 7 条**:它们不是死代码,而是**静态分析看不到 staged 导入边**——上游的判据是
+  "从 `app/lib/main.dart` 出发、只沿 tracked import 走"(`.github/scripts/check_dead_code.py`
+  的 `scan_flutter`),而 fork 的 T0 设计让 `app/lib/fork/identity/*.dart` 只被 staging 产物和
+  `app/test/fork/native_identity_test.dart` 引用;`git grep` 实测:**没有任何上游 `app/lib` 文件
+  引用过任何 fork 自有 lib 文件**,所以这类文件在判据里不可能可达。
+  上面记的"做成 overlay 输入由 `prepare.py` 落盘"这条结构性路,**2026-09-15 试过并实测失败**:
+  把运行时的 tracked 副本移出 `app/lib` 后,staged 树里同一份文件会同时以相对路径(测试的
+  `../../fork/identity/owner.dart`)和 package URI(`package:omi/fork/identity/owner.dart`)被引用,
+  Dart 按 URI 判定类型同一性,于是 `gateway_test.dart` 传入的 `MemoryStore` 不再被认作
+  `OpaqueCredentialStore`,staged 测试编译失败:
+  `The argument type 'MemoryStore' can't be assigned to the parameter type 'OpaqueCredentialStore'`。
+  要靠"把测试也搬进 staged 输入"绕开,就等于放弃 in-repo 的那条快速用例,并把发布路径的
+  包布局改掉 —— 对一个 advisory 检查不值当,故已回退。
+  豁免通道(`.github/scripts/dead_code/*.allowlist.json` / `--update-baseline`)是上游路径,
+  而政策的 T2 开口有**三项入选门槛**(上游自身缺陷 / fork 侧无合法修法 / 同 PR 排入
+  `upstream-prs.md`):这里要豁免的是 **fork 自有文件**,属"fork 自己的需求",第一条就不成立,
+  所以例外不可用。结论:那 7 条留作**已记录的假阳性**,Hygiene 保持 advisory;
+  结构性迁移(让它们真绿、把 Hygiene 变回 required)仍待将来。
 
 **别把它误读成"不能改 backend"**。政策(`dev/unified-main/upstream-touch-allowlist.yaml`)的真实分工是:
 
