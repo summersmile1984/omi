@@ -56,6 +56,24 @@ pid_alive() {
   kill -0 "$(cat "$PID_FILE")" 2>/dev/null
 }
 
+# The pid file is the fast path, but it is not durable: an earlier stop, a wiped
+# .local/, or a crash can leave the backend listening with no pid file, and then the
+# old `stop` silently did nothing while :$PORT stayed taken. Fall back to the listener
+# on $PORT, and only ever claim a process that is this backend.
+backend_pid() {
+  local pid=''
+  if pid_alive; then
+    cat "$PID_FILE"
+    return 0
+  fi
+  pid=$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
+  [ -n "$pid" ] || return 0
+  if ps -o command= -p "$pid" 2>/dev/null | grep -q 'uvicorn fork[.]main:app'; then
+    printf '%s' "$pid"
+  fi
+  return 0
+}
+
 restore_table() {
   if git -C "$_REPO_ROOT" diff --quiet -- "$TABLE" 2>/dev/null; then
     return 0
@@ -96,8 +114,18 @@ json.dump(table, sys.stdout, indent=1)
     die "qdrant migration failed"
 
   log "==> [3/3] backend (uvicorn fork.main:app on :$PORT)"
-  (cd "$BACKEND_DIR" && nohup "$PYTHON_BIN" -m uvicorn fork.main:app \
-    --host 127.0.0.1 --port "$PORT" >"$LOG" 2>&1 & echo $! >"$PID_FILE")
+  # Started from this shell and disowned, not wrapped in a subshell. A background child
+  # left in this shell's job table made bash block in wait4 on its way out whenever the
+  # caller piped this script -- `dev/selfhost-local.sh up | tail` never returned, because
+  # tail waited for a pipe this shell still held while this shell waited for uvicorn.
+  # disown drops the job from the table, so the script can exit while uvicorn keeps
+  # running; </dev/null keeps the daemon from holding the caller's stdin.
+  cd "$BACKEND_DIR" || die "cannot enter $BACKEND_DIR"
+  nohup "$PYTHON_BIN" -m uvicorn fork.main:app \
+    --host 127.0.0.1 --port "$PORT" </dev/null >"$LOG" 2>&1 &
+  printf '%s' "$!" >"$PID_FILE"
+  disown
+  cd "$_REPO_ROOT" || die "cannot return to $_REPO_ROOT"
 
   for _ in $(seq 1 90); do
     if curl -sf -m 3 "http://127.0.0.1:$PORT/v1/health" >/dev/null 2>&1; then
@@ -114,19 +142,26 @@ json.dump(table, sys.stdout, indent=1)
 }
 
 cmd_stop() {
-  if pid_alive; then
-    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+  local pid
+  pid=$(backend_pid)
+  if [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null || true
     sleep 2
-    kill -9 "$(cat "$PID_FILE")" 2>/dev/null || true
-    log "backend stopped"
+    kill -9 "$pid" 2>/dev/null || true
+    log "backend stopped (pid $pid)"
+  else
+    log "backend: nothing listening on :$PORT"
   fi
   rm -f "$PID_FILE"
   restore_table
 }
 
 cmd_status() {
-  if pid_alive; then
-    log "backend: running (pid $(cat "$PID_FILE"))"
+  local pid
+  pid=$(backend_pid)
+  if [ -n "$pid" ]; then
+    log "backend: running (pid $pid)"
+    [ -f "$PID_FILE" ] || log "    no pid file — found by port; 'stop' still stops it"
     curl -s -m 3 "http://127.0.0.1:$PORT/v1/health" -w ' HTTP %{http_code}\n' || true
   else
     log "backend: stopped"
