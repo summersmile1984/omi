@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render deployment-profile tables for every client and the backend.
 
-One source (`deploy/profiles/*.yaml`), one resolver, five generated tables. The
+One source (`deploy/profiles/*.yaml`), one resolver, four generated tables. The
 point is that a client never learns *which* backend implementation it is talking
 to -- it reads a profile: endpoints, identity provider, and capability switches.
 That is what lets `deploy/self-host/` and `deploy/cloudflare/` be directories
@@ -12,9 +12,13 @@ file:
 
     app/lib/env/fork/deployment_profiles.g.dart
     desktop/macos/Desktop/Sources/Generated/DeploymentProfiles.generated.swift
-    desktop/windows/src/shared/fork/deploymentProfiles.generated.ts
     web/app/src/lib/fork/deploymentProfile.generated.ts
     backend/fork/deployment_profiles.generated.json
+
+The Electron client is deliberately absent: it never read a rendered table.
+`desktop/windows/fork/prepare.py` generates `fork/native/profile.generated.ts`
+into the staged package, so the `src/shared/fork` table this renderer used to
+emit had no consumer -- `dead-code-ratchet` reported it, correctly.
 
 Usage:
     scripts/profiles/render.py --target self_hosted [--brand <id>] [--check]
@@ -409,7 +413,6 @@ def render_backend_json(resolved: dict) -> str:
 OUTPUTS = {
     "app/lib/env/fork/deployment_profiles.g.dart": render_dart,
     "desktop/macos/Desktop/Sources/Generated/DeploymentProfiles.generated.swift": render_swift,
-    "desktop/windows/src/shared/fork/deploymentProfiles.generated.ts": render_ts,
     "web/app/src/lib/fork/deploymentProfile.generated.ts": render_ts,
     "backend/fork/deployment_profiles.generated.json": render_backend_json,
 }
