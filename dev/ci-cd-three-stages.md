@@ -248,8 +248,16 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
    投影时直接报错,而不是生成一个 import 不了的 kernel);新增 `fork-cloudflare-staged-owners` 检查,
    机械要求 `source(...)`/`selected_nodes(...)` 的每个路径都被某个 `fork-cloudflare-*` trigger 命中,
    并复用 CI 自己的 `load_manifest`/`trigger_matches`(一个 matcher,不是第二份可能漂移的副本)。
-   代价:`fork-cloudflare-routes`(CI 约 11 分钟)现在也会被这些上游路径选中,上游改动弄坏投影时会在
-   那一条 PR 上就红,而不是留给后面某条无关 PR。
+   代价:`fork-cloudflare-routes` 现在也会被这些上游路径选中,上游改动弄坏投影时会在那一条 PR 上就红,
+   而不是留给后面某条无关 PR。
+7. **阶段 2 的"门禁时长"**:CF lane 是全部门禁里最贵的一条,2026-09-15 实测它在 CI 里 28m29s,
+   其中 **api-core 的 1299 条用例占 17m45s**(run 34963800926;route inventory 到 11:39、vitest 2m09s、
+   api-ai 19s)。修法是**并行化**而不是换机器:该套件是"文件隔离"的(每个测试文件在自己的临时目录里
+   stage 模块),所以 `-n auto --dist loadfile` 是安全的(同文件留在同一 worker,避免跨文件夹具被拆开)。
+   实测同一台开发机上 1299 条从 10m34s 降到 39s,整条 `routes.sh` 从约 12 分钟降到 **2m35s**。
+   为什么不是"PR lane 也放 x86 自托管机":`.github/workflows/fork-checks.yml` 已经写明 PR 用一次性
+   GitHub-hosted runner,是为了**不可信代码不落到自托管机**上;这条边界不要为了省时间而移动。
+   自托管(x86,32 vCPU)只有 push 与手工发布车道在用。
 
 ---
 

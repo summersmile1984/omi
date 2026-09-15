@@ -16,4 +16,8 @@ dev = [
   "workers-py",
   "workers-runtime-sdk",
   "pytest",
+  # The Worker suite is the slow half of the fork gate (~17:45 in CI). It is
+  # file-isolated, so `--dist loadfile` shards it safely: 1299 tests in 2:50 on a
+  # developer machine that took 10:34 single-process.
+  "pytest-xdist",
 ]
