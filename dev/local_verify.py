@@ -97,14 +97,14 @@ def check_postgres() -> dict:
         raise CheckFailed("FIRESTORE_PG_DSN is not set for the verify process")
     engine = sa.create_engine(dsn)
     with engine.connect() as connection:
-        migrations = connection.execute(
-            sa.text("SELECT count(*) FROM firestore_pg_schema_migrations")
-        ).scalar_one()
+        migrations = connection.execute(sa.text("SELECT count(*) FROM firestore_pg_schema_migrations")).scalar_one()
         if not migrations:
             raise CheckFailed("firestore_pg_schema_migrations is empty — the shim never migrated")
-        collections = connection.execute(
-            sa.text("SELECT collection_id FROM firestore_pg_collections ORDER BY collection_id")
-        ).scalars().all()
+        collections = (
+            connection.execute(sa.text("SELECT collection_id FROM firestore_pg_collections ORDER BY collection_id"))
+            .scalars()
+            .all()
+        )
         if not collections:
             raise CheckFailed("no collections registered — the shim did not materialize any table")
         tables = connection.execute(
@@ -177,17 +177,18 @@ def check_storage() -> dict:
     }
 
 
-def check_auth() -> dict:
+def issue_principal(label: str) -> tuple[str, str, str]:
     """Sign a principal up and have the issuer mint a session-backed JWT.
 
-    The self-hosted issuer refuses a uid with no user, so the check creates a
-    real Better Auth account (signup), then asks /auth-issue for a token and
-    confirms the JWKS the backend verifies against is being served.
+    The self-hosted issuer refuses a uid with no user, so this creates a real Better
+    Auth account (signup) and then asks /auth-issue for a token. Shared by the auth
+    check and the product round trip: both need a principal the backend accepts, and
+    each gets its own address because one signup per email is all Better Auth allows.
     """
     if not AUTH_DEV_ISSUER_SECRET:
         raise CheckFailed("AUTH_DEV_ISSUER_SECRET is not set for the verify process")
 
-    email = f"{RUN_UID}@example.test"
+    email = f"{RUN_UID}-{label}@example.test"
     signup_status, signup_body = http(
         "POST",
         f"{AUTH_URL}/api/auth/sign-up/email",
@@ -210,6 +211,12 @@ def check_auth() -> dict:
     token = json.loads(payload).get("token")
     if not token or token.count(".") != 2:
         raise CheckFailed("auth-server /auth-issue returned no well-formed JWT")
+    return uid, token, email
+
+
+def check_auth() -> dict:
+    """Sign a principal up, mint a JWT, and confirm the JWKS the backend verifies."""
+    uid, token, email = issue_principal("auth")
 
     jwks_status, jwks_body = http("GET", f"{AUTH_URL}/api/auth/jwks")
     if jwks_status != 200 or not json.loads(jwks_body).get("keys"):
@@ -240,12 +247,55 @@ def check_backend() -> dict:
     return {"detail": f"GET /v1/health → {status}", "evidence": {"body": payload[:200]}}
 
 
+def check_product() -> dict:
+    """One authenticated product round trip through the backend checkout.
+
+    The image-based Server OS runtime cannot run on an arm64 host: `deploy/self-host/Dockerfile`
+    derives from an amd64 upstream base, the compose file pins `platform: linux/amd64` for the
+    model services, and the fixture passes `--platform=linux/amd64` to every build and run. The
+    x86 runner covers that packaging. What an arm64 checkout can still exercise end to end is
+    the product surface the image serves: a real JWT from the local issuer, a write through the
+    fork entry point into PostgreSQL, and a read back of the same row.
+    """
+    status, _ = http("GET", f"{BACKEND_URL}/v1/health")
+    if status == 0:
+        return {
+            "skipped": True,
+            "detail": f"no backend on {BACKEND_URL} — start one with dev/selfhost-local.sh up",
+        }
+    uid, token, _ = issue_principal("product")
+    headers = {"authorization": f"Bearer {token}"}
+    description = f"local verify round trip {RUN_UID}"
+
+    create_status, create_body = http(
+        "POST", f"{BACKEND_URL}/v1/action-items", headers=headers, body={"description": description}
+    )
+    if create_status != 200:
+        raise CheckFailed(f"POST /v1/action-items returned {create_status}: {create_body[:300]}")
+    item_id = json.loads(create_body).get("id")
+    if not item_id:
+        raise CheckFailed("POST /v1/action-items returned no id")
+
+    read_status, read_body = http("GET", f"{BACKEND_URL}/v1/action-items/{item_id}", headers=headers)
+    if read_status != 200 or json.loads(read_body).get("description") != description:
+        raise CheckFailed(f"GET /v1/action-items/{item_id} returned {read_status}: {read_body[:300]}")
+
+    # Leave the local database as it was found; a failed cleanup is not a product failure.
+    http("DELETE", f"{BACKEND_URL}/v1/action-items/{item_id}", headers=headers)
+
+    return {
+        "detail": "JWT → POST /v1/action-items → GET the same row → DELETE (PostgreSQL)",
+        "evidence": {"uid": uid, "action_item_id": item_id, "description": description},
+    }
+
+
 CHECKS = (
     ("postgres", "firestore_pg schema over PostgreSQL", check_postgres),
     ("redis", "authenticated queue/cache backend", check_redis),
     ("storage", "S3 round trip against MinIO", check_storage),
     ("auth", "Better Auth signup → JWT → JWKS", check_auth),
     ("backend", "backend health, when a backend is running", check_backend),
+    ("product", "authenticated product round trip, when a backend is running", check_product),
 )
 
 
