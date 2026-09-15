@@ -184,7 +184,7 @@ checks:
     reason: "fork PR #7 shipped a missing PG migration command and an ungenerated profile; prove source closure and fatal process admission through the real entrypoints; the same main audit reproduced PG deletion gaps, now guarded by transactional erasure/receipt behaviors"
 
   - id: fork-local-dev-harness
-    command: ["bash", "-c", "python3 dev/tests/test_local_sh.py && python3 dev/tests/test_selfhost_local_sh.py"]
+    command: ["bash", "-c", "python3 dev/tests/test_local_sh.py && python3 dev/tests/test_selfhost_local_sh.py && python3 dev/tests/test_git_hygiene.py"]
     triggers: ["dev/**", ".github/checks-manifest.fork.yaml"]
     lanes: ["local", "ci"]
     reason: "The 2026-09-15 cold start found two blind spots in dev/selfhost-local.sh: `stop` only knew the pid file, so a backend left listening without one kept :8100 taken while `stop` reported success, and `status` called that same live backend stopped. `make -f Makefile.fork local-selftest` already covered dev/local.sh, but no lane ran it -- both the existing suite and these regressions were on-demand only. This runs both hermetically: no docker, no backend, loopback sockets only."
