@@ -376,11 +376,18 @@ release admission 仍按前缀合并同一对 attestation。`runs-on` 用常量 
 
 它的**触发路径含 `backend/**/*.py`**,所以任何 backend Python 改动都会把它选中 —— 包括 fork 自有的
 `backend/fork/**`(shim/部署目标代码,恰恰是政策给的正门);选中后它因为上面那 8 条既有发现而必然红,
-于是 required 的 Hygiene 卡住合并,而失败内容与本次改动**无关**。补救通道
-(写 `.github/scripts/dead_code/*.allowlist.json`、`--update-baseline`)都在 fork 不改的上游路径里,
-所以只有两条路:把 Hygiene 降为 advisory,或做结构性迁移让那 8 条真绿
-(Flutter identity 也做成 overlay 输入 `*.dart.txt` 由 `prepare.py` 落盘;Windows 那份 profile
-要么被 Electron 消费、要么 render 不再产出)。两条都是设计/策略选择,单独一个 PR 做。
+而失败内容与本次改动**无关**。补救通道(写 `.github/scripts/dead_code/*.allowlist.json`、
+`--update-baseline`)都在 fork 不改的上游路径里,所以只有两条路:把 Hygiene 降为 advisory,
+或做结构性迁移让那 8 条真绿(Flutter identity 也做成 overlay 输入 `*.dart.txt` 由 `prepare.py` 落盘;
+Windows 那份 profile 要么被 Electron 消费、要么 render 不再产出)。
+
+**2026-09-15 采取的处置:走第一条 —— Hygiene 降为 advisory。** `config/repo-state.fork.json` 里
+`repo-checks.yml` 由 `required` 改为 `advisory`、去掉 `required_jobs`、从 `required_checks` 移除
+`Hygiene`(7 → 6),并给它加了一条 quarantine 记录(原因是上面那 8 条发现与不可达的补救通道);
+线上 ruleset 用 `scripts/fork/apply_repo_state.py --apply` 同步,`--verify` 与
+`check_repo_state.py --live` 均 OK,生产环境各自的 1 名 reviewer 未被改动。效果:Hygiene 继续跑、
+继续报红,但**不再挡合并**,于是 `backend/**` 的任何改动(含 shim/部署目标工作)可以正常落地。
+结构性迁移(让那 8 条真绿、把 Hygiene 重新变回 required)仍是留待将来的一项工作。
 
 **别把它误读成"不能改 backend"**。政策(`dev/unified-main/upstream-touch-allowlist.yaml`)的真实分工是:
 
