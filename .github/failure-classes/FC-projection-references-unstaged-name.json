@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "FC-projection-references-unstaged-name",
+  "violated_contract": "A projection that re-emits upstream code inherits every name that code references. When a stager selects nodes but not a helper those nodes call, the generated module keeps the call and raises NameError the first time that path executes -- and nothing in the generation step notices, because `ast.unparse` emits whatever the upstream body references. `_budget_authority` reached a Cloudflare Worker that way on 2026-09-05: the projection was built, deployed and tested, the NameError waited on a path the lane's tests did not exercise, and it surfaced ten days later as ten failures in an unrelated lane once a pinned boundary assertion happened to run that path. A blanket static check is not the remedy on its own: on a healthy tree it reported twenty references, eleven of them names supplied by star imports the scope table cannot see.",
+  "canonical_prevention": "Treat the projection's binding set as part of its contract, in two layers. At generation, each stager asserts the boundary it already knows -- the names it rewrites itself -- so a new call into an unselected same-module helper fails the build instead of being emitted (jit_snapshot_sources.py pins the two `_budget_authority` call sites, the single profile read it swaps, the projected return and the fail-open branch). Across the whole staged set, ratchet what no single stager can see: stage every projection, resolve star imports, and fail on module-scope names a module references that nothing binds, keeping the references that already exist as a floor whose every entry carries a reason -- because a reference that is merely latent (recorded, not fixed) must not be able to hide a new one, and a per-call guard inside one stager is the wrong granularity: stagers legitimately select nodes whose siblings provide the referenced names.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/scripts/check_projection_names.py",
+    "deploy/cloudflare/projection-names.baseline.json",
+    "deploy/cloudflare/scripts/jit_snapshot_sources.py",
+    "deploy/cloudflare/ci/routes.sh"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/scripts/*_sources.py",
+    "deploy/cloudflare/scripts/check_projection_names.py",
+    "deploy/cloudflare/projection-names.baseline.json"
+  ],
+  "status": "open"
+}

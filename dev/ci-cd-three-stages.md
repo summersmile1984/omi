@@ -249,6 +249,11 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
    机械要求 `source(...)`/`selected_nodes(...)` 的每个路径都被某个 `fork-cloudflare-*` trigger 命中,
    并复用 CI 自己的 `load_manifest`/`trigger_matches`(一个 matcher,不是第二份可能漂移的副本)。
    代价:`fork-cloudflare-routes` 现在也会被这些上游路径选中,上游改动弄坏投影时会在那一条 PR 上就红,
+   2026-09-15 又补了静态的另一半:`deploy/cloudflare/scripts/check_projection_names.py` 把"投影引用了但
+   没有任何 staged 模块绑定"的模块级名字做成 ratchet(基线 + 只对**新增**报错,每条必须写理由),跑在
+   `routes.sh` 的早期一步。实测当前基线 10 条:1 条是 stager 用 `FunctionType` 注入的、3 条属 CF 不路由的
+   consolidation 路径、6 条是 revert 路径上未 stage 的 helper —— 也就是说这类潜伏引用在 CF 侧确实存在,
+   只是不在 lane 跑到的路径上;新增引用会立刻把 lane 弄红。
    而不是留给后面某条无关 PR。
 7. **阶段 2 的"门禁时长"**:CF lane 是全部门禁里最贵的一条,2026-09-15 实测它在 CI 里 28m29s,
    其中 **api-core 的 1299 条用例占 17m45s**(run 34963800926;route inventory 到 11:39、vitest 2m09s、

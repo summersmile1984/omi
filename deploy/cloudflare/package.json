@@ -10,7 +10,7 @@
     "verify:migrations": "node scripts/release.mjs check",
     "release": "node scripts/release.mjs",
     "validate:backend-routes": "cd ../../backend && scripts/openapi_runner.sh ../deploy/cloudflare/scripts/route_inventory.py --check",
-    "test:route-inventory": "cd ../../backend && scripts/openapi_runner.sh -m unittest discover -s ../deploy/cloudflare/tests -p test_route_inventory.py -v",
+    "test:route-inventory": "cd ../../backend && scripts/openapi_runner.sh -m unittest discover -s ../deploy/cloudflare/tests -p test_*.py -v",
     "pretest": "npm run validate:manifest",
     "test": "vitest run",
     "test:watch": "vitest",

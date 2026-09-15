@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "note": "Module-scope names the Cloudflare projections reference but nothing in the staged set binds. Every entry needs a reason: either the stager provides it another way (state which), or the path is not reachable in the Worker and the name is a latent reference to fix. New entries fail check_projection_names.py.",
+  "known": [
+    {
+      "module": "developer_ask_prompt.py",
+      "name": "get_prompt_memories",
+      "reason": "developer_ask_sources.py injects it into the staged function's globals through its FunctionType wrapper; the module never binds the name itself."
+    },
+    {
+      "module": "memory_kernel_consolidation.py",
+      "name": "HumanMessage",
+      "reason": "third-party (langchain) name used by the consolidation path, which the Cloudflare Worker does not route: no staged module calls that function and the CF lane does not exercise it."
+    },
+    {
+      "module": "memory_kernel_consolidation.py",
+      "name": "PydanticOutputParser",
+      "reason": "same consolidation path as HumanMessage: the langchain parser the Worker does not ship or call."
+    },
+    {
+      "module": "memory_kernel_consolidation.py",
+      "name": "SystemMessage",
+      "reason": "same consolidation path as HumanMessage: the langchain message type the Worker does not ship or call."
+    },
+    {
+      "module": "memory_revert_kernel.py",
+      "name": "_conversation_extracted_claim",
+      "reason": "defined in backend/utils/memory/canonical_memory_adapter.py, which this projection does not stage; the reference is latent on a revert path the CF lane does not exercise."
+    },
+    {
+      "module": "memory_revert_kernel.py",
+      "name": "_evidence_items_from_payload",
+      "reason": "defined in backend/utils/memory/canonical_memory_adapter.py, unstaged here; latent on the same revert path."
+    },
+    {
+      "module": "memory_revert_kernel.py",
+      "name": "decide_initial_memory_tier",
+      "reason": "defined in backend/models/memories.py, unstaged here; latent on the same revert path."
+    },
+    {
+      "module": "memory_revert_kernel.py",
+      "name": "extraction_memory_id",
+      "reason": "defined in backend/utils/memory/canonical_memory_adapter.py, unstaged here; latent on the same revert path."
+    },
+    {
+      "module": "memory_revert_kernel.py",
+      "name": "is_direct_user_write_authority",
+      "reason": "defined in backend/utils/memory/canonical_memory_adapter.py, unstaged here; latent on the same revert path."
+    },
+    {
+      "module": "memory_revert_kernel.py",
+      "name": "subject_scope_from_extraction",
+      "reason": "defined in backend/utils/memory/belief_model.py, unstaged here; latent on the same revert path."
+    }
+  ]
+}
