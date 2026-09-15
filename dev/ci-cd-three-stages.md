@@ -286,6 +286,22 @@ dev/local-client.sh mobile   [--target ...]
 dev/local-client.sh stop web
 ```
 
+**本机装 pinned Flutter(侧装,不动已有的 SDK)**:
+
+```bash
+curl -fL -o /tmp/flutter-3.44.5.zip \
+  https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_arm64_3.44.5-stable.zip
+shasum -a 256 /tmp/flutter-3.44.5.zip   # 442aece6674c4334d46a4f110008a44e835ff53979a8f317333c5e71ccc065b4
+ditto -x -k /tmp/flutter-3.44.5.zip "$HOME/flutter-3.44.5"
+mv "$HOME/flutter-3.44.5/flutter"/* "$HOME/flutter-3.44.5/"   # zip 多一层 flutter/
+cd app && "$HOME/flutter-3.44.5/bin/flutter" pub get --enforce-lockfile
+```
+
+`dev/local-client.sh mobile` 依次找 `OMI_FLUTTER_BIN` → `~/flutter-3.44.5/bin` → PATH,
+所以侧装后无需改 PATH。`flutter pub get` 会重写 `app/ios/Flutter/ephemeral/**` 里的生成物
+(本机缺 `.packages/` 时内容与仓库里的不同),那是生成文件,提交前
+`git checkout -- app/ios/Flutter/ephemeral` 还原即可。
+
 每个客户端保留自己的实现,共享的只有 **profile**(`<target>.<stage>`)—— 这正是"环境对得上"的机制。
 `self_hosted.local` 把客户端指向 `http://127.0.0.1:8100`,也就是 `dev/local.sh up` +
 `dev/selfhost-local.sh up` 起的后端。
@@ -294,7 +310,7 @@ dev/local-client.sh stop web
 |---|---|---|
 | web | `bun deploy/web/build.ts --target <t> --stage <s>` → 起 `artifact/start.js` 并等待健康 | ✅ `Built 28 routes for self_hosted.local`;`/conversations` **200** |
 | desktop | `desktop/macos/fork/compile.sh`(staged 编译两个 target;**不安装、不启动**,这是 fork 的设计) | ✅ `Build complete! (85.71s)`,两个 target 均产出二进制 |
-| mobile | 先断言 Flutter 版本 = 3.44.5,再跑 `app/fork/test.sh` | ⛔ 本机 3.38.9 → **exit 1**,给出明确指引(CI 的 `fork-flutter-native-identity` 负责验证) |
+| mobile | 自动解析 pinned SDK(见下),再跑 `app/fork/test.sh` | ✅ 本机已装 `~/flutter-3.44.5`(Flutter 3.44.5 / Dart 3.12.2):staged `pub get` → `build_runner`(7 outputs)→ `flutter test` **20/20 all passed** → `build bundle`,exit 0 |
 
 ### 客户端(第三条)的真实状态
 
@@ -304,7 +320,7 @@ dev/local-client.sh stop web
 |---|---|---|---|
 | Web | `deploy/web/ci.sh`;`bun deploy/web/build.ts --target <t> --stage <s> --output <dir>` | `deploy/web/profile_input.py`(→ `scripts/profiles/render.py`) | ✅ `ci.sh` exit 0(8/8);`--target self_hosted --stage local` → `Built 28 routes for self_hosted.local`,产物含 `127.0.0.1:8100/3000/3001` |
 | macOS desktop | `desktop/macos/fork/{compile,build,test}.sh` | `desktop/macos/fork/prepare.py:149` 解析 `<target>.local`,第 296-299 行 `setenv OMI_PYTHON_API_URL / OMI_DESKTOP_API_URL / OMI_AUTH_API_URL / OMI_SHARE_BASE_URL`;`build.py` 写 `ForkDeploymentProfile` 进 Info.plist | 接线已在;本机未构建验证(xcodebuild 有,.build 缓存 1.6G) |
-| Flutter | `app/fork/test.sh` | `app/fork/prepare.py:82` 解析 `<target>.local`,并替换上游 `env/environment_profile.dart` 的导入(所以 `environment_profile.dart` 里那份硬编码枚举不影响 staged 构建) | ❌ 本机 Flutter 3.38.9,仓库钉 **3.44.5** |
+| Flutter | `app/fork/test.sh` | `app/fork/prepare.py:82` 解析 `<target>.local`,并替换上游 `env/environment_profile.dart` 的导入(所以 `environment_profile.dart` 里那份硬编码枚举不影响 staged 构建) | ✅ 本机装了仓库钉的 **3.44.5 / Dart 3.12.2**,与 CI(`subosito/flutter-action`, `flutter-version: 3.44.5`)同一版本 |
 
 注意:仓库里**提交的**四份生成表(`app/lib/env/fork/*.g.dart`、macOS/Windows/Web 的 generated)是
 `omi_cloud` 默认渲染;fork stage 会在构建时按 target/stage 重新解析,所以"表里没有 self_hosted 行"

@@ -17,7 +17,12 @@
 #   web      bun 1.3.14 (the version deploy/web/ci.sh pins)
 #   desktop  macOS + xcodebuild (compiles only; the fork package never installs or
 #            launches an app by design — see desktop/macos/fork/README.md)
-#   mobile   Flutter 3.44.5 (app/fork/test.sh asserts the pinned version)
+#   mobile   Flutter 3.44.5 with its sibling Dart 3.12.2 (app/fork/test.sh asserts the
+#            pinned version). The entry finds it without PATH surgery: `OMI_FLUTTER_BIN`
+#            if set, else a side-by-side `~/flutter-3.44.5`, else `flutter` on PATH.
+#            Install it side-by-side (2.1 GB zip, sha256 442aece6674c4334d46a4f110008a44e835ff53979a8f317333c5e71ccc065b4,
+#            from storage.googleapis.com/flutter_infra_release/releases/stable/macos/)
+#            and then `cd app && flutter pub get --enforce-lockfile`.
 
 set -euo pipefail
 
@@ -93,12 +98,28 @@ case "$CLIENT" in
     ;;
   mobile)
     pinned=3.44.5
+    # Resolve the pinned SDK the way CI does (subosito/flutter-action at flutter-version
+    # 3.44.5), but from a side-by-side install so it never disturbs another Flutter.
+    if [ -n "${OMI_FLUTTER_BIN:-}" ] && [ -x "$OMI_FLUTTER_BIN/flutter" ]; then
+      PATH="$OMI_FLUTTER_BIN:$PATH"
+    elif [ -x "$HOME/flutter-$pinned/bin/flutter" ]; then
+      PATH="$HOME/flutter-$pinned/bin:$PATH"
+    fi
+    export PATH
     current="$(flutter --version 2>/dev/null | head -1 | awk '{print $2}')"
     if [ "$current" != "$pinned" ]; then
-      printf 'error: the Flutter client pins %s, this host has %s\n' "$pinned" "${current:-none}" >&2
-      printf 'Install the pinned SDK (or run the fork lane in CI: fork-flutter-native-identity).\n' >&2
+      printf 'error: the Flutter client pins %s, this host resolved %s\n' "$pinned" "${current:-none}" >&2
+      printf 'Install the pinned SDK side-by-side, then re-run:\n' >&2
+      printf '  https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_arm64_%s-stable.zip\n' "$pinned" >&2
+      printf '  ditto -x -k <zip> $HOME/flutter-%s && cd app && flutter pub get --enforce-lockfile\n' "$pinned" >&2
+      printf 'Or set OMI_FLUTTER_BIN to the directory holding the pinned flutter binary.\n' >&2
       exit 1
     fi
+    test -f app/.dart_tool/package_config.json || {
+      printf 'error: app dependencies are not installed for the pinned SDK\n' >&2
+      printf 'Run: cd app && flutter pub get --enforce-lockfile\n' >&2
+      exit 1
+    }
     bash app/fork/test.sh
     ;;
   *)
