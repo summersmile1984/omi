@@ -6,7 +6,9 @@
   "canonical_prevention_artifact": [
     "scripts/fork/check-overlay-owners.py",
     "scripts/fork/test_overlay_owner_audit.py",
-    ".github/checks-manifest.fork.yaml"
+    ".github/checks-manifest.fork.yaml",
+    "deploy/cloudflare/scripts/check_staged_owner_coverage.py",
+    "deploy/cloudflare/scripts/jit_snapshot_sources.py"
   ],
   "evidence_prs": [40, 44],
   "scope_hints": [
