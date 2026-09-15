@@ -70,8 +70,8 @@ dev/local.sh status | restart | logs | ports | env | down | reset
 ```bash
 dev/local.sh up            # 数据面:postgres/redis/minio/qdrant/typesense/emulators + auth-server
 dev/selfhost-local.sh up   # 渲染 core-only profile → qdrant 迁移 → uvicorn fork.main:app
-dev/local.sh verify        # 5/5(backend 从 SKIP 变 PASS)
-dev/selfhost-local.sh stop # 停后端并把生成的 profile 表还原
+dev/local.sh verify        # 6/6(含产品级往返:JWT → 建任务 → 读回)
+dev/selfhost-local.sh stop # 停后端(本地渲染的表在 .local/selfhost/,工作树保持干净)
 ```
 
 env 模板:`dev/selfhost-local.env.example` → 复制为 `dev/selfhost-local.env`(gitignore)。
@@ -281,6 +281,17 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
    **仍未确定**:部署后那次究竟为什么失败 —— 需要下一次 CD 运行(发布车道,由 operator 发起)
    自己说明;本机 22 个 journal 里那两次失败都只留下同一句不可诊断的 reason。
 
+10. **阶段 1 的 Server OS 镜像路径(arm64 本机的边界)** —— **构造性不可行,但产品面已可在本机端到端验证**。
+    镜像路径是 amd64 的:`deploy/self-host/Dockerfile` 是 `FROM ${UPSTREAM_BACKEND_IMAGE}`(上游 amd64 基础
+    镜像),`compose.production.yml` 对 embedding/ollama/llm 等固定 `platform: linux/amd64`,
+    `deploy/self-host/ci/product.py` 的每次 build/run 都带 `--platform=linux/amd64`。所以本机(arm64)
+    只能 QEMU 模拟 —— 这正是当初把 Server OS lane 放到 x86 runner 的原因。
+    但 checkout 能覆盖**同一个产品面**:`dev/local_verify.py` 新增 `product` 检查,用本地 issuer 真签发的
+    JWT 走 `POST /v1/action-items` → `GET` 读回同一行 → `DELETE`,经 `fork.main:app` 落到 PostgreSQL。
+    本机实测 `dev/local.sh verify` **6/6 PASSED**(证据
+    `.local/local-dev/evidence/local-verify-20260915T174538Z.json`)。也就是说:镜像**打包**由 x86 runner 证明,
+    镜像**行为**在本机就能端到端验证。
+
 ---
 
 ## 6. 现在怎么用(最小闭环)
@@ -288,7 +299,7 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
 ```bash
 # 阶段 1:本地跑起来并自证
 dev/local.sh up
-dev/local.sh verify          # 期望 5/5 PASSED(postgres/redis/storage/auth/backend)
+dev/local.sh verify          # 期望 6/6 PASSED(postgres/redis/storage/auth/backend/product)
 dev/local.sh status
 
 # 阶段 1 → 阶段 2:提交前跑同一批检查
@@ -322,7 +333,7 @@ gh workflow run fork-cd-server.yml     --ref main -f delivery_run_id=<RELEASE_RU
 
 | # | 生产目标 | 本地对应环境 | 命令 | 实测结果 |
 |---|---|---|---|---|
-| 1 | **Server OS 自托管** | 数据面 + core-only 自托管后端 | `dev/local.sh up` ; `dev/selfhost-local.sh up` | ✅ `verify` 5/5;业务接口 401 → 200 `[]` |
+| 1 | **Server OS 自托管** | 数据面 + core-only 自托管后端 | `dev/local.sh up` ; `dev/selfhost-local.sh up` | ✅ `verify` 6/6(含产品级往返);业务接口 401 → 200 `[]` |
 | 2 | **Cloudflare** | 本地 target(workers + 本地绑定 + Provider 替身) | `npm run dev:product -- --output <dir>` | ✅ `/health` `/v1/health` `/` = 200;业务路由 401 |
 | 3 | **客户端** | 各自 fork stage 在构建时解析 `<target>.local` 并注入端点 | 见下 | web ✅;desktop 已接线未构建;flutter 阻塞在 SDK 版本 |
 
