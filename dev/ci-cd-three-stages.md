@@ -306,6 +306,14 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
     `.local/local-dev/evidence/local-verify-20260915T174538Z.json`)。也就是说:镜像**打包**由 x86 runner 证明,
     镜像**行为**在本机就能端到端验证。
 
+11. **阶段 2 的"瞬时基础设施失败被当成门禁结论"**:2026-09-15T10:41Z 的 Fork Checks 在 `Install uv`
+    阶段报 `The operation was aborted due to timeout` —— 这一步排在**每个检查之前**,于是一条没碰代码的
+    diff 也拿到"门禁红",而**同一个 commit** 的门禁在 22 秒后成功。该 action 没有 retry 输入,所以改成
+    整步重试:第一步 `continue-on-error` + `id: install-uv`,第二步 `if: steps.install-uv.outcome == 'failure'`;
+    重试步**不**带 `continue-on-error`,真正的网络故障仍然让门禁红。两个 job(portable 与 macOS-native)
+    都改。频率如实记录:近 20 次 Fork Checks 里出现 **1** 次,所以这是重试而不是重构;若再复发,
+    要查的是那台 runner 为什么下载慢,而不是继续加重试次数。
+
 ---
 
 ## 6. 现在怎么用(最小闭环)
