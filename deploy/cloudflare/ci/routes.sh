@@ -18,6 +18,9 @@ npm run test:route-inventory
 npm run validate:backend-routes
 npm run typecheck
 npm test
+# Cheap and early: a projection that references a name nothing stages cannot run at all,
+# and the suites below only catch it on the paths they happen to exercise.
+"${OPENAPI_RUNNER_PYTHON:-python3}" scripts/check_projection_names.py
 cd python/api-core
 # This suite is the lane's slow half -- 17:45 of the 28-minute CI gate, measured on
 # run 34963800926 -- and it is file-isolated: each test file stages its own modules in
