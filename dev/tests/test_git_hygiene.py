@@ -15,6 +15,7 @@ import tempfile
 import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+GIT_ENV = {**os.environ, 'LC_ALL': 'C', 'LANG': 'C'}
 HYGIENE = REPO_ROOT / "dev" / "git-hygiene.sh"
 
 
@@ -34,19 +35,27 @@ class GitHygieneTests(unittest.TestCase):
         self.git("push", "-u", "origin", "main", cwd=self.clone)
 
     def git(self, *arguments: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            ["git", *arguments], cwd=cwd, capture_output=True, text=True, check=check
-        )
+        # LC_ALL=C: git localizes its messages, and the CI runner is not an English host --
+        # this test first failed there with 'fatal: 无法找到远程引用 refs/heads/gone'.
+        return subprocess.run(["git", *arguments], cwd=cwd, capture_output=True, text=True, check=check, env=GIT_ENV)
 
     def hygiene(self, mode: str) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [str(HYGIENE), mode, "origin"], cwd=self.clone, capture_output=True, text=True, check=False
+            [str(HYGIENE), mode, "origin"],
+            cwd=self.clone,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=GIT_ENV,
         )
 
     def add_dead_refspec(self, branch: str = "gone") -> None:
         self.git(
-            "config", "--add", "remote.origin.fetch",
-            f"+refs/heads/{branch}:refs/remotes/origin/{branch}", cwd=self.clone,
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            cwd=self.clone,
         )
 
     def test_a_clean_checkout_passes(self) -> None:
@@ -58,7 +67,8 @@ class GitHygieneTests(unittest.TestCase):
         self.add_dead_refspec()
         fetch = self.git("fetch", "origin", cwd=self.clone, check=False)
         self.assertNotEqual(fetch.returncode, 0, "the fixture did not reproduce a failing fetch")
-        self.assertIn("couldn't find remote ref", fetch.stderr)
+        # The ref name, not the sentence: git localizes the surrounding message.
+        self.assertIn("refs/heads/gone", fetch.stderr)
 
         completed = self.hygiene("check")
         self.assertEqual(completed.returncode, 1)
@@ -79,6 +89,7 @@ class GitHygieneTests(unittest.TestCase):
         # Delete it on the remote side, the way a branch prune does. Deleting it through the
         # clone would remove the local tracking ref too, and then there is nothing to repair.
         self.git("branch", "-D", "stale", cwd=self.remote)
+
         def tracking_ref_present() -> bool:
             # Not a path check: git may pack refs, so ask git.
             return (
@@ -95,7 +106,12 @@ class GitHygieneTests(unittest.TestCase):
 
     def test_an_unknown_remote_is_a_usage_error(self) -> None:
         completed = subprocess.run(
-            [str(HYGIENE), "check", "not-a-remote"], cwd=self.clone, capture_output=True, text=True, check=False
+            [str(HYGIENE), "check", "not-a-remote"],
+            cwd=self.clone,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=GIT_ENV,
         )
         self.assertEqual(completed.returncode, 2)
         self.assertIn("not a configured remote", completed.stderr)
