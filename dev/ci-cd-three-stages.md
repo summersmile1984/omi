@@ -281,6 +281,20 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
    **仍未确定**:部署后那次究竟为什么失败 —— 需要下一次 CD 运行(发布车道,由 operator 发起)
    自己说明;本机 22 个 journal 里那两次失败都只留下同一句不可诊断的 reason。
 
+9. **仓库卫生(本地 checkout 的三个坑)** —— 2026-09-15 实测发现:
+   - **被跟踪的运行态文件**:`dev/selfhost-local.sh` 原来把 `self_hosted.local` 渲染**就地写进**被跟踪的
+     `backend/fork/deployment_profiles.generated.json`,退出时再从 git 恢复;进程一旦被 kill,表就留下本地
+     渲染 —— 于是 `fork-profile-tables` 在本地变红,而且离被 `git add -A` 提交只差一步(本会话真的遇到过)。
+     现在本地渲染写到 `$STATE_DIR/deployment_profiles.generated.json`(`.local/` 下),后端经
+     `OMI_DEPLOYMENT_PROFILES_PATH`(`backend/fork/profile.py`,fork 自有 seam)读它;被跟踪表不再被触碰。
+     `dev/tests/test_selfhost_local_sh.py` 也从"快照后恢复"改成**断言它没被改写**,把这个契约钉住。
+   - **git refspec 漂移**:`remote.origin.fetch` 里只要有一条指向已被删除的远端分支,`git fetch` 会**整体**
+     失败(`couldn't find remote ref …`),于是 `git pull` 报错、main 静默变旧。2026-09-15 的分支剪枝在本机
+     留下三条这种 refspec,`git pull` 其实已经坏了。现在 `dev/git-hygiene.sh check|repair` 负责检查/修复
+     (针对**当前** checkout,不是脚本所在仓库),`dev/tests/test_git_hygiene.py` 用真实裸库夹具先复现
+     "死 refspec 让 fetch 失败"、再验证修复,5 个用例已进 `fork-local-dev-harness`。
+   - **未跟踪的提案**:`dev/ai-capability-contract.md` 长期未跟踪,随本 PR 入库。
+
 10. **阶段 1 的 Server OS 镜像路径(arm64 本机的边界)** —— **构造性不可行,但产品面已可在本机端到端验证**。
     镜像路径是 amd64 的:`deploy/self-host/Dockerfile` 是 `FROM ${UPSTREAM_BACKEND_IMAGE}`(上游 amd64 基础
     镜像),`compose.production.yml` 对 embedding/ollama/llm 等固定 `platform: linux/amd64`,

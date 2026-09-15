@@ -117,13 +117,20 @@ class SelfhostLocalShTests(unittest.TestCase):
     def setUp(self) -> None:
         self.state_dir = tempfile.mkdtemp(prefix="omi-selfhost-selftest-")
         self.port = free_port()
-        # `stop` restores this generated table from git; keep a developer's locally
-        # rendered copy intact so running the suite has no side effects.
+        # The script renders `self_hosted.local` into its own state directory and points
+        # the backend at it with OMI_DEPLOYMENT_PROFILES_PATH. It used to render the
+        # tracked table in place and restore it from git, which left a local-stage render
+        # behind whenever a run was killed -- the `fork-profile-tables` lane then failed
+        # locally, and the render was one `git add -A` from being committed.
         self.table_bytes = TABLE.read_bytes() if TABLE.exists() else None
 
     def tearDown(self) -> None:
-        if self.table_bytes is not None and TABLE.exists() and TABLE.read_bytes() != self.table_bytes:
-            TABLE.write_bytes(self.table_bytes)
+        if self.table_bytes is not None:
+            self.assertEqual(
+                TABLE.read_bytes(),
+                self.table_bytes,
+                "a local self-host run must not rewrite the tracked profile table",
+            )
 
     def test_status_reports_stopped_when_nothing_listens(self) -> None:
         result = run_selfhost("status", state_dir=self.state_dir, port=self.port)
