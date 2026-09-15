@@ -259,6 +259,23 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
    GitHub-hosted runner,是为了**不可信代码不落到自托管机**上;这条边界不要为了省时间而移动。
    自托管(x86,32 vCPU)只有 push 与手工发布车道在用。
 
+    2026-09-15 CI 实测(并行后):api-core pytest **17:45 → 7:20**(1065.43s → 440.45s),
+    `Fork gate` 整条 **28m29s → 17m46s**,即每条碰 Cloudflare 的 PR 省 10m43s。托管 runner 的
+    `-n auto` 解析成 4 个 worker(4 条 starlette 警告 = 每 worker 一条),所以天花板是**最慢的单个
+    测试文件**,不是核数 —— 这条 lane 若还要再便宜,下一个杠杆在那里。
+8. **阶段 3 的"失败不可诊断"**:CD 车道(`fork-cd-cloudflare.yml`)在 2026-09-11 与 09-12 连续两次以
+   **同一句话**失败:`CF-4 did not produce a qualification contract`。真因无处可读 —— 限定器
+   (`deploy/cloudflare/contracts/qualify-product.mjs`)本身是对的(合同写 stdout、原因写 stderr 并
+   退出码 1),但 wrapper `deploy/cloudflare/scripts/release-qualification.mjs` 只解析 stdout、**丢弃
+   stderr**,只报自己的推断;journal 与 job log 都只剩那句推断,子进程的输出随进程消失。
+   而且一次交付会 qualification **两次**(部署前 `candidate`、部署后 `deployed`),journal 只记了
+   candidate 那次 —— 实测那次的 CF-4 52 例、CI-1 69 例、prior-schema 5 例**全部 exit 0**,
+   所以那句推断连"是哪一次"都指错了。现在错误信息带上:`phase=deployed`、退出码/信号、stderr 片段
+   (必要时还有 stdout)、以及合同里具体哪一条不满足;信息仍经 `releaseFailure` → `redactReason`
+   (脱敏 + 2000 字符截断),没有开第二条原始输出通道。
+   **仍未确定**:部署后那次究竟为什么失败 —— 需要下一次 CD 运行(发布车道,由 operator 发起)
+   自己说明;本机 22 个 journal 里那两次失败都只留下同一句不可诊断的 reason。
+
 ---
 
 ## 6. 现在怎么用(最小闭环)
