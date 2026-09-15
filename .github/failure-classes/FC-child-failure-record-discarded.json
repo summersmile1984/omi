@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "FC-child-failure-record-discarded",
+  "violated_contract": "A wrapper that supervises a child process owns the only durable record of why the child failed. Reporting its own inference about the child -- 'did not produce a contract', 'failed', 'unavailable' -- while discarding the child's exit status and stderr produces a failure nobody can diagnose from what still exists: the local journal keeps the wrapper's sentence, the job log keeps the same sentence, and the child's transient output is gone with the process. On 2026-09-11 and 2026-09-12 the beta Cloudflare delivery failed twice with exactly 'CF-4 did not produce a qualification contract'. The retained journal shows the pre-deploy qualification passed -- CF-4 52 cases, CI-1 69, prior-schema 5, all exit 0 -- so the failure came from the second, post-deploy qualification, and its own reason was recorded nowhere the operator could read. The same failure had to be re-diagnosed from nothing, twice, and is still unexplained.",
+  "canonical_prevention": "When a supervised process fails, bind its own record into the error the wrapper throws: exit status or termination signal, and a bounded stderr snippet, plus stdout when the absence of machine-readable output is the finding itself. Name the phase or invocation when the same child runs more than once in one transaction, because a journal that records only the successful run attributes the failure to the wrong one. Report which predicate of the contract was not met instead of a generic 'invalid', and treat a non-object parse result as a named problem rather than a property-access TypeError. Route the message through the existing failure funnels so their redaction and length caps apply -- do not open a second path that dumps raw child output. Pin each of these with a test that writes the child's failure to stderr and to stdout.",
+  "canonical_prevention_artifact": [
+    "deploy/cloudflare/scripts/release-qualification.mjs",
+    "deploy/cloudflare/tests/release-adapter.test.mjs"
+  ],
+  "evidence_prs": [],
+  "scope_hints": [
+    "deploy/cloudflare/scripts/release-qualification.mjs",
+    "deploy/cloudflare/scripts/release-transaction.mjs",
+    "deploy/cloudflare/scripts/release-wrangler.mjs"
+  ],
+  "status": "open"
+}

@@ -246,6 +246,82 @@ describe("locked Wrangler release adapter", () => {
     expect(spawn).toHaveBeenCalledOnce();
   });
 
+  // Both the 2026-09-11 and 2026-09-12 beta deliveries recorded exactly "CF-4 did not
+  // produce a qualification contract", and the child's own reason was nowhere readable:
+  // the wrapper parsed stdout, discarded stderr, and reported only the missing contract.
+  // These pin the diagnosis to the qualifier's own record.
+  function qualificationFailure(script) {
+    const directory = mkdtempSync(resolve(tmpdir(), "cf-release-qualification-"));
+    directories.push(directory);
+    for (const entry of RELEASE_QUALIFIERS) {
+      const filename = resolve(directory, entry.path);
+      mkdirSync(dirname(filename), { recursive: true });
+      writeFileSync(filename, script(entry));
+    }
+    const candidate = { candidate_digest: "c".repeat(64) };
+    try {
+      runReleaseQualifiers(
+        directory,
+        candidate,
+        { release_phase: "deployed" },
+        { directory, spawn: spawnSync }
+      );
+    } catch (error) {
+      return error.message;
+    }
+    throw new Error("the qualification was expected to fail");
+  }
+
+  it("carries a crashed qualifier's own reason, not just its missing contract", () => {
+    const message = qualificationFailure(
+      (entry) =>
+        `console.error(${JSON.stringify(
+          `${entry.id} probe failed: workerd exited 3`
+        )}); process.exit(1);\n`
+    );
+    expect(message).toContain("did not produce a qualification contract");
+    expect(message).toContain("phase=deployed");
+    expect(message).toContain("exit status 1");
+    expect(message).toContain("probe failed: workerd exited 3");
+  });
+
+  it("shows what a qualifier printed when it emitted no contract at all", () => {
+    const message = qualificationFailure(
+      () => 'console.log("qualification crash dump");\n'
+    );
+    expect(message).toContain("stdout: qualification crash dump");
+  });
+
+  it("names a non-object contract instead of failing on property access", () => {
+    const message = qualificationFailure(() => "console.log('null');\n");
+    expect(message).toContain("the contract is not an object");
+  });
+
+  it("names which part of a stale contract is stale", () => {
+    const message = qualificationFailure((entry) =>
+      entry.id === "CF-4"
+        ? `console.log(${JSON.stringify(
+            JSON.stringify({
+              schema_version: 1,
+              candidate_digest: "c".repeat(64),
+              observation_digest: "d".repeat(64),
+              cases: [{ id: "fixture", result: "pass" }],
+            })
+          )});\n`
+        : `console.log(${JSON.stringify(
+            JSON.stringify({
+              schema_version: 1,
+              candidate_digest: "invalid",
+              observation_digest: digest({}),
+              cases: [{ id: "fixture", result: "pass" }],
+            })
+          )});\n`
+    );
+    expect(message).toContain("failed or produced stale/incomplete evidence");
+    expect(message).toContain("observation_digest is stale");
+    expect(message).not.toContain("did not produce a qualification contract");
+  });
+
   it("rejects valid-looking evidence from a timed-out real qualification process", () => {
     const directory = mkdtempSync(
       resolve(tmpdir(), "cf-release-qualification-timeout-")
