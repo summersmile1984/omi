@@ -19,7 +19,12 @@ npm run validate:backend-routes
 npm run typecheck
 npm test
 cd python/api-core
-uvx uv==0.12.3 run pytest -q
+# This suite is the lane's slow half -- 17:45 of the 28-minute CI gate, measured on
+# run 34963800926 -- and it is file-isolated: each test file stages its own modules in
+# its own temporary directory. `--dist loadfile` keeps a file's tests in one worker, so
+# the sharding is safe where a shared cross-file fixture would not be. 1299 tests take
+# 2:50 sharded versus 10:34 single-process on the same developer machine.
+uvx uv==0.12.3 run pytest -q -n auto --dist loadfile
 
 cd ../api-ai
 uvx uv==0.12.3 run pytest -q
