@@ -362,6 +362,7 @@ families:
         release_byok_llm_error_notification_lock,
         set_important_conversation_notification_sent,
         has_important_conversation_notification_been_sent,
+        try_acquire_daily_wear_lock,
       ]
     key_patterns:
       [
@@ -369,6 +370,7 @@ families:
         "users:{uid}:silent_notification_sent",
         "users:{uid}:byok_llm_error:{provider}:{reason}",
         "users:{uid}:important_conv_notif:{conversation_id}",
+        "users:{uid}:daily_wear_lock:{date}",
       ]
     legacy_features: [exists, set, delete, ttl, set-if-absent]
     consistency: per-user-strong
@@ -737,7 +739,58 @@ families:
     target: durable-object
     target_owner: api-core
     migration_state: blocked
+  - id: notifications-job-run-lock
+    source_symbols:
+      [
+        try_acquire_notifications_job_run_lock,
+        release_notifications_job_run_lock,
+      ]
+    key_patterns: ["notifications_job:run_lock"]
+    legacy_features: [set-if-absent, ttl, release-if-owner]
+    consistency: global-single-flight
+    # Upstream single-flights overlapping executions of the hourly Cloud Run
+    # notifications job; the CF target has no such job to guard. Delivery runs
+    # as drainNotifications on the jobs worker's "*/5 * * * *" cron, and the
+    # outbox itself is the single-flight owner: an execution may only send a row
+    # it flipped with the conditional UPDATE in firebase-messaging.ts
+    # (status pending -> sending, claimed.meta.changes === 1) under a
+    # lease_until retry lease. No process-level pass lock has a counterpart.
+    target: none
+    target_owner: jobs
+    migration_state: retired
 direct_legacy_callers:
+  # The mentor relevance gate's debounce record is cross-host authority: the
+  # listen and pusher realtime paths both evaluate it, and an eligibility answer
+  # re-reads the shared state under an atomic claim that serializes
+  # check-and-record. The CF surface has no mentor gate at all -- its only
+  # "mentor" state is the unrelated mentor_notification_frequency column on
+  # cf_user_notification_preferences -- so this needs a realtime-owned
+  # single-threaded owner, not a cache.
+  - {
+      path: backend/database/mentor_gate_state.py,
+      target: durable-object,
+      target_owner: realtime,
+      migration_state: blocked,
+    }
+  # Read-only probe of the legacy Redis SKU's used_memory for Cloud Monitoring
+  # (Redis Cloud omits maxmemory from INFO). Workers have no Redis and no
+  # counterpart metric; the legacy 12 GiB ceiling does not exist on this surface.
+  - {
+      path: backend/utils/redis_memory_health.py,
+      target: none,
+      target_owner: tooling,
+      migration_state: exempt-tooling,
+    }
+  # Rendered static-map bytes cached per quantized pin geometry. The CF target has
+  # no static-map route or cache (the route itself entered the ledger as blocked
+  # on 2026-09-15); a KV entry per geometry with expirationTtl is the
+  # architectural choice once that route is built.
+  - {
+      path: backend/utils/static_map.py,
+      target: kv,
+      target_owner: api-core,
+      migration_state: blocked,
+    }
   # Cloudflare reads D1 task rows directly; there is no Redis response cache
   # or write-bumped cache version to invalidate in that target.
   - {

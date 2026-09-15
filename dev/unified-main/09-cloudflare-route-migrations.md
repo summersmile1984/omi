@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 619 unique method/path/protocol slots: 602 have Worker owners and 17 remain blocked pending the contracts below. Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 623 unique method/path/protocol slots: 600 have Worker owners and 23 remain blocked pending the contracts below (the 2026-09-15 upstream additions are the six newest, below). Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -401,3 +401,24 @@ privacy revocation. These five routes do not remove the independent CF-4/CI-1
 production qualification gates. See the
 [contract](../../docs/doc/developer/ForkCloudflareFeedback.mdx) and
 [verification record](implementation-2026-09-05/feedback-reports-2026-09-06.md).
+
+<a id="cf4-upstream-route-additions-2026-09-15"></a>
+
+## CF-4: upstream route additions (2026-09-15)
+
+Owner: `api-core` for the developer, speech-profile and mapping surfaces; the Edge-vs-Core owner of the static-map proxy is still unconfirmed.
+
+An upstream import added six backend slots that the CF target does not implement. They therefore enter the ledger as `blocked` instead of inheriting a neighbouring family's `staging-owned` state: a shared prefix is not proof of availability, and the completion gate above is what changes a classification. Upstream authority and the CF-side position:
+
+| slot | upstream authority | CF position |
+|---|---|---|
+| `GET /v1/dev/user/daily-summaries` | `backend/routers/developer.py` | API Core serves other `/v1/dev/user` routes (`developer_ask_routes.py`, `developer_conversation_create_routes.py`) but has no daily-summaries handler |
+| `GET /v1/dev/user/daily-summaries/{summary_id}` | `backend/routers/developer.py` | same |
+| `GET /v1/static-map` | `backend/routers/static_map.py` | no reference to the path anywhere under `deploy/cloudflare/` |
+| `GET /v3/speech-profile/stt-availability` | `backend/routers/speech_profile.py` | `api-core/src/speech_profile_routes.py` implements `/v3/speech-profile`, `/status` and `/expand` only |
+| `POST /v1/conversations/{conversation_id}/mutations` | `backend/routers/conversation_mutations.py` | no CF handler for the path |
+| `POST /v1/users/developer/button-event` | `backend/routers/users.py` | `api-core/src/entry.py` serves `/v1/users/developer/webhook/**` only |
+
+The same import retired two slots: upstream `chore(desktop-backend): remove dead Sentry feedback ingest` (#13251) deleted `POST /v1/webhooks/sentry` and `POST /v1/webhooks/sentry/poll` from the backend, so the ledger drops them. **The CF target still implements both** (`deploy/cloudflare/python/api-core/src/sentry_routes.py`, `deploy/cloudflare/workers/edge/index.ts`); they are now CF-only extensions, and either belong to the separate CF route manifest or are retired together with a product decision. Leaving them in the backend ledger would claim a backend route that no longer exists.
+
+Each of the six stays `blocked` under the completion gate until its owner lands the production success and main failure path on the CF target.
