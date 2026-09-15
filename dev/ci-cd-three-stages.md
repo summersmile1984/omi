@@ -420,3 +420,17 @@ FAIL: backend route inventory is stale:
 即上游 v0.12.348 的路由面跑在了 fork 已提交的 inventory 前面。修法本身是机械的
 (`route_inventory.py --write`),但那等于给 6 个上游路由身份背书,并会接着跑该检查的 Cloudflare 一半,
 所以它是**独立的一次改动**,不搭在路由 PR 上。
+
+**阶段 2 补上的一条守卫**:`fork-backend-test-collection`(2–3 秒)只做一件事 —— 把
+`backend/fork/tests/` 里每个测试模块**导入**一遍。原因:所有 backend fork 车道都是手写文件清单
+(`fork-backend-seams` 3 个、`fork-selfhost-startup` 24 个),没被列到的文件等于没人执行。
+2026-09-04 的审计记录过正是这一类:`backend/fork/tests/test_export_cloudflare_x_posts.py` import 了
+一个**在本仓库历史上从未存在**的模块(`scripts.export_cloudflare_x_posts`),collection error 因此藏了
+11 天没人发现;该文件已删除。之所以只做收集、不做整目录执行,见下一条。
+
+**仍未解决(测试隔离)**:把 `backend/fork/tests/` **整目录**一起跑会红 —— 378 个用例里 6 个失败,
+集中在两个文件:`test_profile_selection.py` 与 `test_startup_contract.py`。它们各自按所在车道的窄清单
+单独跑都是绿的,两者一起跑时 `fork/profile.py:75` 抛 `ProfileError`,即模块之间泄漏了 env/全局状态
+(正是 `backend/AGENTS.md` "Test isolation / import purity" 一节要防的那类)。现在两条车道各自用窄清单
+规避了它,所以 CI 是绿的;整目录执行的守卫因此没有采用。要不要修这个隔离问题由你定。
+
