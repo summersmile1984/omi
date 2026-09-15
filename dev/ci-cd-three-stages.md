@@ -231,6 +231,20 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
    `.github/scripts/run_checks.py` 内部已有 `keep_going`(第 420 行),但**没有 CLI 开关**;
    把它暴露出来属于上游文件改动(T0/T2 边界),在 fork 侧包一层"逐条跑完再汇总"则会动到
    发布授权车道的 attestation 语义 —— 两者都需要一次明确的决定,故此处只记录,不擅自改。
+6. **阶段 2 的"触发覆盖"**:门禁只在 diff 命中 `triggers` 时才会跑,所以 triggers 列表本身是一条
+   正确性边界。Cloudflare 的 Python Worker 由 `deploy/cloudflare/scripts/*_sources.py` 从上游模块逐节点
+   投影而来,而 2026-09-15 实测:**52 个被投影的上游源里有 35 个不在任何 `fork-cloudflare-*` 检查的
+   triggers 内**。上游给 `backend/utils/memory/jit_trigger_snapshot.py` 加了 `_budget_authority`(读取
+   决定 JIT 唤醒预算节奏的画像时区)后,stager 投影了读取函数却没投影这个辅助函数,生成的
+   `jit_trigger_snapshot_kernel.py` 在两个预算调用点调用未定义名(`NameError`);又因为该文件不被任何
+   Cloudflare trigger 命中,整条 CF lane **一次都没跑**,缺陷就那样躺在 main 上,直到一条无关 PR 恰好选中
+   该 lane 才暴露 —— 读起来还像是 JIT 快照与反馈两个子系统的 10 条失败,与真正的成因隔了两个子系统。
+   现在两侧都补了:stager 在**生成期**断言它改写的调用点数量与上游形状(少一个、多一个、形状变了都在
+   投影时直接报错,而不是生成一个 import 不了的 kernel);新增 `fork-cloudflare-staged-owners` 检查,
+   机械要求 `source(...)`/`selected_nodes(...)` 的每个路径都被某个 `fork-cloudflare-*` trigger 命中,
+   并复用 CI 自己的 `load_manifest`/`trigger_matches`(一个 matcher,不是第二份可能漂移的副本)。
+   代价:`fork-cloudflare-routes`(CI 约 11 分钟)现在也会被这些上游路径选中,上游改动弄坏投影时会在
+   那一条 PR 上就红,而不是留给后面某条无关 PR。
 
 ---
 
@@ -239,7 +253,7 @@ make self-host-zero-vendor-acceptance # 零厂商依赖验收
 ```bash
 # 阶段 1:本地跑起来并自证
 dev/local.sh up
-dev/local.sh verify          # 期望 6/6 PASSED
+dev/local.sh verify          # 期望 5/5 PASSED(postgres/redis/storage/auth/backend)
 dev/local.sh status
 
 # 阶段 1 → 阶段 2:提交前跑同一批检查
