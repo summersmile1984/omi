@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from candidate_routes import context
 from jit_authority import resolve
+from jit_proactivity_store import TIMEZONE_QUERY
 from jit_trigger_snapshot_kernel import (
     MAX_AUTHORITATIVE_TRIGGERS,
     V3AccountGenerationFailureReason as Failure,
@@ -93,6 +94,12 @@ class TriggerSnapshotStore:
                 item = None
             snapshots.append({'id': row['id'], 'item': item})
         return snapshots
+
+    async def timezone(self):
+        # Same authority the reservation path paces its budget window from, so a
+        # mirrored snapshot cannot disagree with the window that releases work.
+        row = await self.db.prepare(TIMEZONE_QUERY).bind(self.uid).first()
+        return row['time_zone'] if row else None
 
 
 @router.get('/v1/jit/trigger-snapshot')

@@ -1,12 +1,15 @@
 """Original watchlist contracts through actual Core ASGI and migrated D1 SQL."""
 
 import json
+from datetime import timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from test_candidate_entry import api
 from test_candidate_routes import call
-from test_jit_proactivity_reservations import env, trigger_fixture
+from test_jit_proactivity_reservations import NOW, env, trigger_fixture
+import jit_trigger_snapshot_kernel as kernel
 import jit_trigger_snapshot_routes as routes
 
 PATH = '/v1/jit/trigger-snapshot'
@@ -78,6 +81,35 @@ def test_one_invalid_open_trigger_invalidates_the_entire_watchlist(api, env, cha
         )
     snapshot = read(api).json()
     assert not snapshot['complete'] and snapshot['rows'] == [] and snapshot['failure_reason'] == 'row_invalid'
+
+
+def test_snapshot_projects_the_profile_budget_window(api, env, monkeypatch):
+    """The pacing window comes from the D1 profile, and a missing profile stays readable.
+
+    Upstream reads `users/{uid}.time_zone` here; D1 owns that field, so the projection is
+    relocated rather than reimplemented.  Nothing asserted it before, which is how the
+    relocated read could go missing without a test noticing.
+    """
+
+    trigger_fixture(api, env)
+
+    class FrozenClock:
+        @staticmethod
+        def now(tz=None):
+            return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(kernel, 'datetime', FrozenClock)
+    projected = read(api).json()
+    assert projected['complete'] is True and projected['rows'] != []
+    assert projected['budget_timezone'] == 'Asia/Shanghai'
+    assert projected['budget_day'] == NOW.astimezone(ZoneInfo('Asia/Shanghai')).date().isoformat()
+
+    # A profile with no timezone yet must not cost the client its watchlist: the paid
+    # reservation stays the authority, so the projection simply carries no window.
+    env.APP_DB.connection.execute('DELETE FROM cf_user_fcm_tokens')
+    absent = read(api).json()
+    assert absent['complete'] is True and absent['rows'] != []
+    assert absent.get('budget_day') is None and absent.get('budget_timezone') is None
 
 
 def test_snoozed_trigger_remains_in_original_watchlist_with_its_expiry(api, env):
