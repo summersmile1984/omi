@@ -387,11 +387,17 @@ release admission 仍按前缀合并同一对 attestation。`runs-on` 用常量 
 | 改什么 | 允许吗 | 代价 |
 |---|---|---|
 | 新增/修改 **fork 自有**的 `backend/fork/**`(shim、patches、部署目标适配、fork 测试) | ✅ 正门,随便改 | 上游改了被 patch 的符号时,绑定要跟着重做(已立失败类 `FC-fork-patch-binding-follows-upstream-signature`) |
-| 直接改**上游已有**的 backend 模块 | ❌ T2 永不入白名单(`backend/**`) | —— |
+| 直接改**上游已有**的 backend 模块 | ⚠️ 默认禁止(`backend/**` 在 T2 的 `forbidden_patterns` 里),因为它属于"把业务实现内联进上游文件"那一类 | 确实没有运行时补丁缝时走正式豁免:把**精确路径**写进 `forbidden_exceptions`,再加一条带预算的 `allow`(≤3 行 + reason + upstream_pr);每次同步重做 |
 | 改上游的**非 backend** 文件(客户端 call site 等) | ⚠️ 需入白名单:≤3 行、带 reason 与 upstream_pr | 每次同步上游都要重新施加一次 |
 
 所以"部署目标相关、shim 相关"的 backend 改动正是设计意图;挡住合并的不是这条政策,而是上面那条被
 无关既有红拖垮的上游检查。
+
+政策文档自己的措辞就是"**能不改上游代码就不改**"(`dev/unified-main/00-upstream-touch-policy.md`):默认零改动是**取舍**,
+不是铁律 —— 代价是每周合并上游时的冲突面。`forbidden_exceptions` 就是给"这次确实没有别的缝"准备的一次性豁免通道
+(精确路径,禁通配符),走它仍然要登记预算与上游 PR,并且同步后重做。当前仓库实测:
+`check-upstream-touch.py --aggregate` → `OK: 2 upstream file(s) changed, all within the allowlist`
+(`app/lib/flavors.dart +3/3`、`desktop/macos/docs/desktop-updates.mdx +1/1`)。
 
 **第二个缺口(阶段 3 的 release 车道)**:完整清单(release lane)会在 `fork-cloudflare-routes` 停下,
 而 diff-scoped 的 PR/push 车道根本不会选中它 —— 所以它一直没露面:
