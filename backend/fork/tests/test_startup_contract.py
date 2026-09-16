@@ -35,8 +35,51 @@ SELF_HOST = {
 }
 
 
+# Environment names fork.bootstrap._bind writes into the parent process. In-process
+# bootstrap tests leave them in os.environ (a leak outside monkeypatch), and a child
+# that inherits them fails admission with a stale-conflict error instead of the
+# behavior under test. PR #7's regression must run against its own declared env.
+BOUND_BY_BOOTSTRAP = frozenset(
+    {
+        'OMI_DEPLOYMENT_TARGET',
+        'OMI_ENV_STAGE',
+        'OMI_DEPLOYMENT_PROFILE',
+        'AUTH_PROVIDER',
+        'STORAGE_BACKEND',
+        'QUEUE_BACKEND',
+        'AGENT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS',
+        'AGENT_STREAM_MAX_DURATION_SECONDS',
+        'QUEUE_REDIS_FINALIZATION_REQUEST_TIMEOUT_SECONDS',
+        'SPEAKER_EMBEDDING_PROVIDER',
+        'TTS_PROVIDER',
+        'PUSH_PROVIDER',
+        'STT_SERVICE_MODELS',
+        'STT_PRERECORDED_MODEL',
+        'SENSEVOICE_SPEAKER_MODE',
+        'SENSEVOICE_MODEL_DIR',
+        'SENSEVOICE_NUM_THREADS',
+        'SENSEVOICE_USE_ITN',
+        'SENSEVOICE_STREAM_WINDOW_SECONDS',
+        'SENSEVOICE_STREAM_POLL_SECONDS',
+        'HOSTED_VAD_API_URL',
+        'VECTOR_STORE_PROVIDER',
+        'MEMORY_KEYWORD_INDEX_PROVIDER',
+        'OLLAMA_HOST',
+        'OLLAMA_MODELS',
+        'MIMO_API_KEY',
+        'MIMO_SECRET_FILE',
+        'OPENROUTER_API_KEY',
+        'SILICONFLOW_API_KEY',
+        'CLOUDFLARE_API_TOKEN',
+        'CLOUDFLARE_GATEWAY_PROVIDER_API_KEY',
+    }
+)
+BOUND_BY_BOOTSTRAP |= {name for name in os.environ if name.startswith('OMI_LLM_GATEWAY_')}
+
+
 def child(code: str, **extra_env: str) -> subprocess.CompletedProcess:
-    env = {**os.environ, 'PYTHONPATH': str(ROOT / 'backend'), **extra_env}
+    inherited = {name: value for name, value in os.environ.items() if name not in BOUND_BY_BOOTSTRAP}
+    env = {**inherited, 'PYTHONPATH': str(ROOT / 'backend'), **extra_env}
     return subprocess.run([sys.executable, '-c', code], env=env, text=True, capture_output=True, timeout=30)
 
 
