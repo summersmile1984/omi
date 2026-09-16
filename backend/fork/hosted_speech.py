@@ -68,18 +68,19 @@ class Client:
 
         language = prerecorded_selection(language)[1]
         if selected.provider == operator_ai.CLOUDFLARE_GATEWAY:
-            endpoint = selected.asr_base_url + '/run'
+            # The direct account REST endpoint keeps the audio model's binary
+            # and transcription bodies (the unified /ai/run envelope returns
+            # an empty {result:{}} wrapper for TTS), still routed through the
+            # operator's gateway with the cf-aig-gateway-id header.
+            endpoint = selected.asr_base_url + '/run/' + selected.asr_model
             assert_http_endpoint_allowed(endpoint)
-            # The account REST envelope runs the same Workers AI models the
-            # fork's Cloudflare deployment serves: audio travels base64 inside
-            # the input object, never as multipart.
             result = _stream_json(
                 'POST',
                 endpoint,
                 headers=_headers(),
                 timeout=selected.request_timeout_seconds,
                 transport=transport,
-                json={'model': selected.asr_model, 'input': {'audio': base64.b64encode(audio_bytes).decode('ascii')}},
+                json={'audio': base64.b64encode(audio_bytes).decode('ascii')},
             )
             payload = result.get('result') if isinstance(result.get('result'), dict) else result
             text = payload.get('text') if isinstance(payload, dict) else None
@@ -124,7 +125,7 @@ def synthesize(text, voice=None, *, transport=None):
     if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT_CHARACTERS:
         raise SpeechError('speech_invalid_input')
     if selected.provider == operator_ai.CLOUDFLARE_GATEWAY:
-        endpoint = selected.tts_base_url + '/run'
+        endpoint = selected.tts_base_url + '/run/' + selected.tts_model
         assert_http_endpoint_allowed(endpoint)
         try:
             with httpx.Client(
@@ -134,7 +135,7 @@ def synthesize(text, voice=None, *, transport=None):
                     'POST',
                     endpoint,
                     headers=_headers(),
-                    json={'model': selected.tts_model, 'input': {'text': text}},
+                    json={'text': text},
                 ) as response:
                     if response.status_code != 200:
                         raise SpeechError(

@@ -62,7 +62,6 @@ def fake_transport(vendor, spec):
             # The Cloudflare account REST envelope: ASR answers inside the
             # result wrapper; TTS returns the audio bytes directly.
             body = json.loads(request.content)
-            assert body["model"] in (spec.asr_model, spec.tts_model)
             assert request.headers.get("cf-aig-gateway-id") == spec.gateway_id
             if body["model"] == spec.tts_model:
                 return httpx.Response(200, content=mono_wav_bytes(1))
@@ -70,6 +69,20 @@ def fake_transport(vendor, spec):
                 200,
                 content=json.dumps({"result": {"text": "fake transcript"}, "success": True}).encode(),
             )
+        if "/run/" in url and "@cf/" in url:
+            # The Cloudflare direct REST endpoint: model id in the path, the
+            # input object as the body.
+            assert request.headers.get("cf-aig-gateway-id") == spec.gateway_id
+            if url.endswith("/" + spec.tts_model):
+                return httpx.Response(200, content=mono_wav_bytes(1), headers={"content-type": "audio/mpeg"})
+            if url.endswith("/" + spec.asr_model):
+                body = json.loads(request.content)
+                assert "audio" in body
+                return httpx.Response(
+                    200,
+                    content=json.dumps({"result": {"text": "fake transcript"}, "success": True}).encode(),
+                )
+            raise AssertionError("unexpected smoke model path: " + url)
         raise AssertionError("unexpected smoke URL: " + url)
 
     return httpx.MockTransport(handler)

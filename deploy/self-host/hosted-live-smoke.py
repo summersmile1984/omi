@@ -48,22 +48,25 @@ def loaded_manifest(path):
     return load_manifest(None, ROOT, path)
 
 
-def render_profile(vendor: str, stage: str, manifest: str | None, out_dir: Path) -> dict:
+def render_profile(
+    vendor: str, stage: str, manifest: str | None, out_dir: Path, *, synthesize_gateway: bool = False
+) -> dict:
     """Render the hosted table through the real renderer, then point the fork
-    profile loader at it. The self-check synthesizes the Cloudflare gateway
-    manifest from a fake public identity; live runs require the operator's."""
+    profile loader at it. Only the self-check may synthesize the Cloudflare
+    gateway identity; a live run requires the operator's real ids."""
     import json
 
     from render import resolve
 
     manifest_path = Path(manifest) if manifest else ROOT / "brand/eddy/manifest.yaml"
-    if vendor == "cloudflare-gateway":
+    if vendor == "cloudflare-gateway" and synthesize_gateway:
         manifest_doc = loaded_manifest(manifest_path)
-        gateway = manifest_doc.get("cloudflare_ai_gateway")
-        if gateway is None:
-            gateway = {"account_id": "0" * 32, "gateway_id": "smoke-check"}
+        if not manifest_doc.get("cloudflare_ai_gateway"):
+            manifest_doc = {
+                **manifest_doc,
+                "cloudflare_ai_gateway": {"account_id": "0" * 32, "gateway_id": "smoke-check"},
+            }
             manifest_path = out_dir / "hosted-smoke-manifest.json"
-            manifest_doc = {**manifest_doc, "cloudflare_ai_gateway": gateway}
             manifest_path.write_text(json.dumps(manifest_doc))
     resolved = resolve("self_hosted", None, manifest_path, stage, vendor)
     table_path = out_dir / "deployment_profiles.generated.json"
@@ -210,7 +213,7 @@ def _run(
     vendor: str, stage: str, manifest: str | None, mode: str, out_path: Path | None, transport_factory=None
 ) -> int:
     with tempfile.TemporaryDirectory(prefix="omi-hosted-smoke-") as tmp:
-        row = render_profile(vendor, stage, manifest, Path(tmp))
+        row = render_profile(vendor, stage, manifest, Path(tmp), synthesize_gateway=mode == "self-check")
         from fork import operator_ai
 
         spec = operator_ai.select(row)

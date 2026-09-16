@@ -79,11 +79,11 @@ def test_hosted_selection_owns_every_capability(name):
 def test_cloudflare_gateway_urls_come_from_the_public_manifest_identity():
     spec = operator_ai.cloudflare_spec({'account_id': 'a' * 32, 'gateway_id': 'prod'})
     rest = 'https://api.cloudflare.com/client/v4/accounts/' + 'a' * 32 + '/ai/v1'
-    run = 'https://api.cloudflare.com/client/v4/accounts/' + 'a' * 32 + '/ai/run'
+    run_base = 'https://api.cloudflare.com/client/v4/accounts/' + 'a' * 32 + '/ai'
     assert spec.base_url == rest
     assert spec.embedding_base_url == rest
-    assert spec.asr_base_url == run
-    assert spec.tts_base_url == run
+    assert spec.asr_base_url == run_base
+    assert spec.tts_base_url == run_base
     assert spec.account_id == 'a' * 32 and spec.gateway_id == 'prod'
     assert spec.model == '@cf/meta/llama-3.1-8b-instruct-fast'
     assert spec.embedding_model == '@cf/baai/bge-m3'

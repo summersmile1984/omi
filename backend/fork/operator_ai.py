@@ -126,7 +126,9 @@ def cloudflare_spec(gateway):
     ):
         raise ValueError('cloudflare_ai_gateway needs a 32-hex account_id and a gateway_id slug')
     rest = 'https://api.cloudflare.com/client/v4/accounts/' + account + '/ai/v1'
-    run = 'https://api.cloudflare.com/client/v4/accounts/' + account + '/ai/run'
+    # The envelope base stops at /ai: the universal endpoint is its /run child,
+    # appended by the speech clients exactly like the OpenAI-compatible paths.
+    run_base = 'https://api.cloudflare.com/client/v4/accounts/' + account + '/ai'
     return HostedOperatorAI(
         provider='cloudflare-gateway',
         # Chat and embeddings share the account's OpenAI-compatible REST base;
@@ -137,9 +139,9 @@ def cloudflare_spec(gateway):
         embedding_base_url=rest,
         embedding_model='@cf/baai/bge-m3',
         embedding_dimension=1024,
-        asr_base_url=run,
+        asr_base_url=run_base,
         asr_model='@cf/openai/whisper-large-v3-turbo',
-        tts_base_url=run,
+        tts_base_url=run_base,
         tts_model='@cf/deepgram/aura-1',
         tts_voice='',
         tts_response_format='wav',
@@ -279,8 +281,8 @@ def gateway_headers():
 def _grants(spec):
     if isinstance(spec, MiMo):
         return (spec.base_url + '/chat/completions',)
-    asr_path = '/run' if spec.provider == CLOUDFLARE_GATEWAY else '/audio/transcriptions'
-    tts_path = '/run' if spec.provider == CLOUDFLARE_GATEWAY else '/audio/speech'
+    asr_path = '/run/' + spec.asr_model if spec.provider == CLOUDFLARE_GATEWAY else '/audio/transcriptions'
+    tts_path = '/run/' + spec.tts_model if spec.provider == CLOUDFLARE_GATEWAY else '/audio/speech'
     return (
         spec.base_url + '/chat/completions',
         spec.embedding_base_url + '/embeddings',

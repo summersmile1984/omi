@@ -53,8 +53,22 @@ deploy/self-host/hosted-live-smoke.py --live <vendor> --evidence /tmp/...`，
 | 供应商 | chat | embeddings | asr | tts | 证据 |
 |---|---|---|---|---|---|
 | openrouter | **ok** `qwen/qwen3-8b` echo, stop, 2.3s | **ok** echo `parasail-bge-m3`, **1024 维匹配**, 1.6s | **ok** `whisper-large-v3`, TTS 产物转写 23 字符, 1.9s | **ok** 单声道 16-bit WAV 3.7s | `/tmp/omi-hosted-openrouter-smoke.json` |
-| cloudflare-gateway | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN | — |
+| cloudflare-gateway | **ok** `@cf/meta/llama-3.1-8b-instruct-fast` echo, stop, 0.8s | **ok** `@cf/baai/bge-m3` echo, **1024 维匹配**, 0.6s | **ok** `@cf/openai/whisper-large-v3-turbo`, TTS 产物转写 22 字符 | **ok** aura-1 mp3 → 归一化 16-bit 单声道 WAV | `/tmp/omi-hosted-cloudflare-smoke.json` |
 | siliconflow | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN | — |
+
+### CF 通道的三处 wire 修正（2026-09-16 实测驱动）
+
+1. **token 权限**：`/accounts/{id}/ai/*` 全部端点需要「帐户 → Workers AI → 读取」；
+   只持 AI Gateway 权限的 token 返回 401 code 10000（Cloudflare 文档明文）。
+   `ai-api` token 已在 dashboard 补权限：AI Gateway:运行 + Workers AI:读取。
+2. **统一 envelope 丢音频**：`/ai/run`（envelope {model, input}）对 aura-1 返回
+   `{result:{}}` 且无音频字节；**model-in-path 直接端点**
+   `/ai/run/@cf/deepgram/aura-1` + 裸 input body（`{"text":...}` / `{"audio":base64}`）
+   返回真实 audio/mpeg，且 `cf-aig-gateway-id` 头仍然生效（网关路由保持）。
+   ASR/TTS 的 egress 授权面相应精确到 `/run/<model>`。
+3. **base URL 双拼 bug**：初版 spec 把 asr/tts base 存成 `/ai/run` 再拼 `/run`
+   → `/ai/run/run`（No route for that URI）。修正为 base 存 `/ai`，客户端拼
+   `/run/<model>`，与授权面同一构造。
 
 ### live 实测推翻的两处初版冻结选型（2026-09-16 修正）
 
