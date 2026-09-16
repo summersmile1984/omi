@@ -7,6 +7,28 @@
 receipt persistence, replay and conflicting reuse with controlled storage.
 Cloudflare's `memory_apply_mutation.py` retains the equivalent D1 mutation rule.
 
+## Hosted operator AI owners
+
+`operator_ai.py` owns the frozen hosted-vendor selection: three OpenAI-compatible
+vendors (openrouter, siliconflow, and the brand-manifest-identified
+cloudflare-gateway) alongside the MiMo choice. Each vendor's endpoints, model
+ids and the 1024-dimension embedding invariant are code-frozen the way MiMo's
+are; credentials live in per-vendor environment variables and never in the
+profile. The egress grant stays an exact per-capability endpoint list.
+
+`operator_chat.py` binds the hosted chat model through the existing LangChain
+tool/usage owners. `HostedEmbeddings` (in `embedding.py`) reuses the bounded
+input and vector contracts; it validates the response's model echo and exact
+declared dimension instead of the Ollama artifact identity, and sends no
+`dimensions` parameter (bge-m3 rejects it on some vendors). `hosted_speech.py`
+owns the standard speech wire: batch ASR posts multipart `/audio/transcriptions`,
+TTS posts `/audio/speech` with the frozen voice and per-vendor response format,
+and normalizes any decodable result into a bounded 16-bit mono WAV. The
+5-second VAD window socket is one shared owner in `speech.windowed_socket` —
+MiMo and every hosted vendor replace only the per-window inference call.
+Live STT admits `en/zh/multi` for hosted vendors; streaming ASR is therefore
+VAD window batching, not a realtime WebSocket contract.
+
 Local Server OS may explicitly select `--operator-ai mimo-cn` when rendering its
 profile. `operator_ai.py` owns the public model/endpoint contract and credential
 admission; `mimo_chat.py` and `mimo_speech.py` adapt the selected API. The ASGI

@@ -49,18 +49,21 @@ def language(value):
     return normalized
 
 
+HOSTED_OPERATOR_LANGUAGES = frozenset({'en', 'zh', 'multi'})
+
+
 def prerecorded_selection(value='en'):
     from .operator_ai import select
 
-    mimo = select(profile.current())
-    if mimo:
+    selected = select(profile.current())
+    if selected:
         normalized = language(value)
-        if normalized not in {'en', 'zh', 'multi'}:
+        if normalized not in HOSTED_OPERATOR_LANGUAGES:
             from config.prerecorded_stt import TranscriptionOutcome
             from utils.stt.outcomes import TranscriptionFailure
 
-            raise TranscriptionFailure(TranscriptionOutcome.INVALID_INPUT, provider='mimo', retryable=False)
-        return 'mimo', normalized, mimo.asr_model
+            raise TranscriptionFailure(TranscriptionOutcome.INVALID_INPUT, provider=selected.provider, retryable=False)
+        return selected.provider, normalized, selected.asr_model
     return 'sensevoice', language(value), contract().stt_model
 
 
@@ -70,17 +73,80 @@ LOCAL_STREAMING_SERVICE = 'sensevoice'
 def streaming_service():
     from .operator_ai import select
 
-    return 'mimo' if select(profile.current()) else LOCAL_STREAMING_SERVICE
+    selected = select(profile.current())
+    return selected.provider if selected else LOCAL_STREAMING_SERVICE
 
 
 def new_socket(sample_rate, transcript_callback, language='multi'):
-    if streaming_service() == 'mimo':
+    service = streaming_service()
+    if service == 'mimo':
         from .mimo_speech import socket
 
         return socket(sample_rate, transcript_callback, language)
+    if service != LOCAL_STREAMING_SERVICE:
+        from . import hosted_speech
+
+        return windowed_socket(sample_rate, transcript_callback, language, client_factory=hosted_speech.Client)
     from utils.sensevoice.socket import SenseVoiceSocket
 
     return SenseVoiceSocket(sample_rate=sample_rate, transcript_callback=transcript_callback)
+
+
+def windowed_socket(sample_rate, transcript_callback, language='multi', *, client_factory):
+    """One bounded 5-second VAD window owner for every hosted operator vendor.
+
+    Both the MiMo chat-shaped transport and the standard OpenAI-compatible one
+    replace only the per-window inference call; buffering, drain and
+    cancellation ownership stay here. `client_factory` builds a fresh bounded
+    client per window, exactly like the original MiMo socket did.
+    """
+    from utils.sensevoice.socket import SenseVoiceSocket
+    from utils.mimo_pipeline.socket import pcm16_to_wav
+    from utils.executors import run_blocking, sync_executor
+    from utils.stt.vad import linear16_pcm_is_silent
+
+    class WindowedSocket(SenseVoiceSocket):
+        """Reuse bounded buffering, drain and cancellation ownership; replace inference."""
+
+        async def _flush(self, *, force):
+            while True:
+                with self._lock:
+                    available = len(self._pcm)
+                    if available < self._window_bytes and not (force and available):
+                        return
+                    take = min(available, self._window_bytes)
+                    pcm = bytes(self._pcm[:take])
+                    del self._pcm[:take]
+                    start = self._emitted_seconds
+                    duration = take / (2 * self._sample_rate)
+                    self._emitted_seconds += duration
+                if await run_blocking(
+                    sync_executor, linear16_pcm_is_silent, pcm, sample_rate=self._sample_rate, channels=1
+                ):
+                    continue
+                result = await run_blocking(
+                    sync_executor,
+                    client_factory().transcribe_audio,
+                    pcm16_to_wav(pcm, self._sample_rate, 1),
+                    language=language,
+                )
+                if self._callback and result.text:
+                    self._callback(
+                        [
+                            {
+                                'speaker': 'SPEAKER_00',
+                                'start': start,
+                                'end': start + duration,
+                                'text': result.text,
+                                'is_user': False,
+                                'person_id': None,
+                            }
+                        ]
+                    )
+
+    result = WindowedSocket(sample_rate=sample_rate, transcript_callback=transcript_callback)
+    result.start()
+    return result
 
 
 def streaming_selection(

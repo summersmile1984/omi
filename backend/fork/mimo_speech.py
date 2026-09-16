@@ -150,47 +150,6 @@ def prerecorded():
 
 
 def socket(sample_rate, transcript_callback, language='multi'):
-    from utils.sensevoice.socket import SenseVoiceSocket
-    from utils.mimo_pipeline.socket import pcm16_to_wav
-    from utils.executors import run_blocking, sync_executor
-    from utils.stt.vad import linear16_pcm_is_silent
+    from .speech import windowed_socket
 
-    class MiMoSocket(SenseVoiceSocket):
-        """Reuse bounded buffering, drain and cancellation ownership; replace inference."""
-
-        async def _flush(self, *, force):
-            while True:
-                with self._lock:
-                    available = len(self._pcm)
-                    if available < self._window_bytes and not (force and available):
-                        return
-                    take = min(available, self._window_bytes)
-                    pcm = bytes(self._pcm[:take])
-                    del self._pcm[:take]
-                    start = self._emitted_seconds
-                    duration = take / (2 * self._sample_rate)
-                    self._emitted_seconds += duration
-                if await run_blocking(
-                    sync_executor, linear16_pcm_is_silent, pcm, sample_rate=self._sample_rate, channels=1
-                ):
-                    continue
-                result = await run_blocking(
-                    sync_executor, Client().transcribe_audio, pcm16_to_wav(pcm, self._sample_rate, 1), language=language
-                )
-                if self._callback and result.text:
-                    self._callback(
-                        [
-                            {
-                                'speaker': 'SPEAKER_00',
-                                'start': start,
-                                'end': start + duration,
-                                'text': result.text,
-                                'is_user': False,
-                                'person_id': None,
-                            }
-                        ]
-                    )
-
-    result = MiMoSocket(sample_rate=sample_rate, transcript_callback=transcript_callback)
-    result.start()
-    return result
+    return windowed_socket(sample_rate, transcript_callback, language, client_factory=Client)

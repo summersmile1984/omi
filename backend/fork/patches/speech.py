@@ -4,15 +4,20 @@ from ..registry import Patch
 
 
 def patches():
-    from .. import speech
+    from .. import operator_ai, speech
 
     def prerecorded(original):
         from utils.sensevoice.prerecorded_provider import SenseVoicePrerecordedProvider
 
         def provider(language='en'):
             speech.language(language)
-            if speech.streaming_service() == 'mimo':
+            service = speech.streaming_service()
+            if service == 'mimo':
                 from ..mimo_speech import prerecorded
+
+                return prerecorded()
+            if service != 'sensevoice':
+                from ..hosted_speech import prerecorded
 
                 return prerecorded()
             return SenseVoicePrerecordedProvider(speech.recognizer())
@@ -66,7 +71,11 @@ def patches():
         ('utils.sensevoice.socket', 'get_sensevoice_recognizer', lambda original: speech.recognizer),
         ('utils.sensevoice.prerecorded_provider', 'get_sensevoice_recognizer', lambda original: speech.recognizer),
         ('utils.sensevoice.socket', 'SenseVoiceSocket', socket),
-        ('utils.stt.outcomes', '_KNOWN_PROVIDERS', lambda original: original | {'sensevoice', 'mimo'}),
+        (
+            'utils.stt.outcomes',
+            '_KNOWN_PROVIDERS',
+            lambda original: original | {'sensevoice', 'mimo'} | operator_ai.HOSTED_VENDORS,
+        ),
     ]
     selected_patches = [
         Patch(

@@ -20,6 +20,8 @@
 | 13 | `desktop-beta-admission-firestore-contention` 缺依赖 | `backend/testing/desktop_beta_admission/run.sh` | `--with "fastapi==0.121.0"`（导入链经 `database.staged_tasks` → `utils.observability.fallback` → `utils.metrics` 到达 `fastapi`） | 无（fork 不能改 `backend/**`） | 待提 · **bug 修复** |
 | 14 | 检查触发器把嵌套同名文件也算上 | `.github/scripts/run_checks.py` | `_matches` 里的 `PurePath(path).match(pattern)` 让 `package.json` 匹配任意目录下的同名文件；应把无斜杠的模式限定为仓库根 | 无 | 待提 · **bug 修复** |
 
+| 15 | 模型端点清单支持追加登记 | `backend/docs/llm/model_endpoint_inventory.yaml` | `call_sites` 支持 `extra:` 或第二清单文件，让下游登记自己的托管 host 而不改上游文件；fork 的 hosted operator AI（openrouter.ai / 自有网关 host）现在被 `test_llm_gateway_coverage_guardrails` 的全库 host 扫描捕获 | 2（fork/egress_policy.py、fork/operator_ai.py） | 待提 · fork CI advisory 失败 2026-09-16 |
+
 ## 提交约定
 
 - 一个 PR 一件事，附：动机（可配置化，不提 fork）、默认值等价性测试、`make preflight` 结果。

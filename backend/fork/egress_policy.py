@@ -49,6 +49,13 @@ OFFICIAL_HOST_SUFFIXES = frozenset(
         'modulate-developer-apis.com',
         'xiaomimimo.com',
         'mosi.cn',
+        # Hosted operator-AI vendors. Selection is an exact endpoint grant via
+        # fork.operator_ai; the hosts themselves stay forbidden for everything
+        # else, including a merely allowlisted-but-unselected deployment.
+        'openrouter.ai',
+        'cloudflare.com',
+        'siliconflow.cn',
+        'siliconflow.com',
     }
 )
 

@@ -9,6 +9,7 @@ import httpx
 
 from .egress_policy import assert_http_endpoint_allowed
 from .model_contract import validate_llm
+from .operator_ai import HOSTED_VENDORS
 from .profile import current
 
 
@@ -138,6 +139,10 @@ def build(model, provider, streaming=False, options=None):
         from .mimo_chat import build as build_mimo
 
         return build_mimo(streaming=streaming, options=options)
+    if contract.provider in HOSTED_VENDORS:
+        from .operator_chat import build as build_hosted
+
+        return build_hosted(streaming=streaming, options=options)
     options = options or {}
     return LocalChatModel(
         authority=Authority(contract, os.environ.get('LLM_ENDPOINT', ''), timeout=contract.request_timeout_seconds),

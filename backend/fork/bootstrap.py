@@ -112,17 +112,18 @@ def bootstrap(role: Role = Role.API) -> Admission:
         from .capabilities import validate as validate_capabilities
 
         validate_capabilities(row)
+        operator_provider = operator_ai.provider if operator_ai else 'sensevoice' if row.get('speech') else 'disabled'
         for name, value in {
             'SPEAKER_EMBEDDING_PROVIDER': 'disabled',
-            'TTS_PROVIDER': 'mimo' if operator_ai else 'kokoro' if row.get('speech') else 'disabled',
+            'TTS_PROVIDER': operator_provider if operator_ai else 'kokoro' if row.get('speech') else 'disabled',
             'PUSH_PROVIDER': 'disabled',
             'OMI_LLM_GATEWAY_FEATURE_MODE': 'off',
             'OMI_LLM_CHAT_AGENT_ROUTE': 'direct',
             'OMI_LLM_GATEWAY_DEV_SHADOW_ALL_ENABLED': '0',
             'OMI_LLM_GATEWAY_CONVERSATION_STRUCTURE_SHADOW_ENABLED': '0',
             'OMI_LLM_GATEWAY_CONVERSATION_ACTION_ITEMS_SHADOW_ENABLED': '0',
-            'STT_SERVICE_MODELS': 'mimo' if operator_ai else 'sensevoice' if row.get('speech') else 'disabled',
-            'STT_PRERECORDED_MODEL': 'mimo' if operator_ai else 'sensevoice' if row.get('speech') else 'disabled',
+            'STT_SERVICE_MODELS': operator_provider,
+            'STT_PRERECORDED_MODEL': operator_provider,
             'SENSEVOICE_SPEAKER_MODE': 'single_speaker',
         }.items():
             _bind(name, value)
