@@ -58,6 +58,39 @@ is restored. Do not treat the startup self-check as a zero-vendor, full API, or
 production cutover authorization. The dated Server action plan tracks these
 remaining boundaries.
 
+## Hosted operator AI (zero local AI compute)
+
+Instead of the pinned local models, a Server OS stage may select one hosted
+OpenAI-compatible vendor per stage: `--operator-ai openrouter`,
+`--operator-ai siliconflow`, or `--operator-ai cloudflare-gateway` (the last
+additionally requires the `cloudflare_ai_gateway` block — public account and
+gateway ids only — in the brand manifest). MiMo (`mimo-cn`) remains available
+and keeps its local BGE-M3 embedding service; the three hosted vendors own all
+four capabilities from one frozen spec (`backend/fork/operator_ai.py`):
+
+- chat: the vendor's `/chat/completions` through the existing LangChain owners
+- embeddings: bge-m3, dimension 1024, so every Qdrant contract is unchanged
+- ASR: the vendor's `/audio/transcriptions` (OpenAI multipart shape)
+- TTS: the vendor's `/audio/speech`, normalized to a bounded 16-bit mono WAV
+
+A hosted Compose graph runs **no AI compute**: `model_services.py` removes the
+`llm` and `embedding` service groups, their volumes and env bindings, and
+injects the vendor's required credential variables into the backend and the
+canonical-memory worker. Credentials live only in the environment
+(`OPENROUTER_API_KEY`, `SILICONFLOW_API_KEY`, and for the gateway
+`CLOUDFLARE_GATEWAY_PROVIDER_API_KEY` plus `CLOUDFLARE_API_TOKEN`) — never in
+the profile. The egress grant is an exact per-capability endpoint list; the
+vendor hosts themselves stay forbidden unless that exact selection is active.
+
+Verification: `deploy/self-host/hosted-live-smoke.py --self-check` runs the
+same call builders against controlled fakes (no network, CI lane
+`fork-hosted-operator-smoke`). `--live <vendor>` performs the real four-call
+probe and records sanitized evidence JSON (model echo, embedding dimension,
+audio envelope) outside the repository. Live transcript/audio
+attestation and the runtime-evidence collector for a hosted stack remain
+separate acceptance work; until they land, hosted startup admission plus the
+self-checked wire contracts are the verified surface.
+
 This is the production entry point for a deployment that keeps identity, data,
 queues, object storage, vectors, LLM routing, embeddings, and pre-recorded STT
 behind operator-owned boundaries. It is separate from `dev/docker-compose.dev.yml`:
