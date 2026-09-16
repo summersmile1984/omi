@@ -2,6 +2,7 @@
 
 import io
 import json
+import shutil
 import wave
 from types import SimpleNamespace
 from unittest import mock
@@ -11,6 +12,11 @@ import pytest
 
 from fork import capabilities, hosted_speech, operator_ai, profile, speech, speech_transport
 from utils.mimo_pipeline.mimo_client import MimoTranscription
+
+# The mono-WAV normalization shells out to ffmpeg, an operator image
+# dependency some CI runners legitimately lack; the wire assertions below
+# do not depend on it.
+FFMPEG_SKIP = pytest.mark.skipif(shutil.which('ffmpeg') is None, reason='ffmpeg is unavailable on this runner')
 
 
 def selected():
@@ -121,7 +127,28 @@ def test_transcribe_typed_errors_never_expose_provider_bodies(monkeypatch):
     assert MimoTranscription is not None
 
 
-def test_synthesize_uses_the_frozen_voice_and_normalizes_to_mono_wav(monkeypatch):
+def test_synthesize_sends_the_frozen_voice_and_passes_a_compliant_wav_through(monkeypatch):
+    spec = hosted()
+    captured = {}
+
+    def handler(request):
+        captured['url'] = str(request.url)
+        captured['payload'] = json.loads(request.read())
+        return httpx.Response(200, content=mono_wav(1), headers={'content-type': 'audio/mpeg'})
+
+    monkeypatch.setattr(profile, 'current', lambda: operator_ai.configure(selected(), 'openrouter'))
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted.local')
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'or-key')
+    audio = hosted_speech.synthesize('hello', transport=httpx.MockTransport(handler))
+    assert captured['url'].endswith('/audio/speech')
+    assert captured['payload']['model'] == spec.tts_model
+    assert captured['payload']['voice'] == spec.tts_voice
+    assert captured['payload']['response_format'] == spec.tts_response_format
+    assert audio == mono_wav(1)
+
+
+@FFMPEG_SKIP
+def test_synthesize_normalizes_nonmono_audio_to_the_bounded_envelope(monkeypatch):
     spec = hosted()
     captured = {}
 
@@ -134,19 +161,11 @@ def test_synthesize_uses_the_frozen_voice_and_normalizes_to_mono_wav(monkeypatch
     monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted.local')
     monkeypatch.setenv('OPENROUTER_API_KEY', 'or-key')
     audio = hosted_speech.synthesize('hello', transport=httpx.MockTransport(handler))
-    assert captured['url'].endswith('/audio/speech')
     assert captured['payload']['model'] == spec.tts_model
-    assert captured['payload']['voice'] == spec.tts_voice
-    assert captured['payload']['response_format'] == spec.tts_response_format
     with wave.open(io.BytesIO(audio)) as decoded:
         assert decoded.getnchannels() == 1
         assert decoded.getsampwidth() == 2
         assert 0 < decoded.getnframes() <= decoded.getframerate() * speech.MAX_AUDIO_SECONDS
-    mono = mono_wav(1)
-    passthrough = hosted_speech.synthesize(
-        'hello', transport=httpx.MockTransport(lambda request: httpx.Response(200, content=mono))
-    )
-    assert passthrough == mono
 
 
 def test_synthesize_rejects_non_audio_and_oversized_results(monkeypatch):

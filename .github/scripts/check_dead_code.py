@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import posixpath
 import re
 import subprocess
@@ -533,8 +532,6 @@ def write_baseline(root: Path, area: str, dead: set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def scan_area(root: Path, area: str) -> AreaScan:
-    if area == "flutter" and root == DEFAULT_ROOT and os.environ.get("OMI_DEAD_CODE_SKIP_FLUTTER") == "1":
-        return AreaScan("flutter")
     return SCANNERS[area](root)
 
 

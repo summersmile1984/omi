@@ -149,13 +149,12 @@ class ProfileTests(unittest.TestCase):
         row = json.loads(
             self.cli('self_hosted', '--stage', 'local', '--operator-ai', 'cloudflare-gateway', '--emit-json').stdout
         )['profiles']['self_hosted.local']
-        self.assertEqual(
-            row['operator_ai']['base_url'], 'https://gateway.ai.cloudflare.com/v1/' + 'a' * 32 + '/prod/openai'
-        )
-        self.assertEqual(
-            row['operator_ai']['embedding_base_url'],
-            'https://api.cloudflare.com/client/v4/accounts/' + 'a' * 32 + '/ai/v1',
-        )
+        rest = 'https://api.cloudflare.com/client/v4/accounts/' + 'a' * 32 + '/ai/v1'
+        run_base = 'https://api.cloudflare.com/client/v4/accounts/' + 'a' * 32 + '/ai'
+        self.assertEqual(row['operator_ai']['base_url'], rest)
+        self.assertEqual(row['operator_ai']['embedding_base_url'], rest)
+        self.assertEqual(row['operator_ai']['asr_base_url'], run_base)
+        self.assertEqual(row['operator_ai']['tts_base_url'], run_base)
 
     def test_unknown_operator_selection_names_fail_the_manifest_schema(self):
         self.configure()
