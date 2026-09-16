@@ -113,6 +113,58 @@ class ProfileTests(unittest.TestCase):
             denied = self.cli(target, '--stage', stage, '--operator-ai', 'mimo-cn', '--emit-json')
             self.assertNotEqual(denied.returncode, 0)
 
+    def test_hosted_operator_selections_freeze_the_whole_contract(self):
+        self.configure()
+        for name in ('openrouter', 'siliconflow', 'cloudflare-gateway'):
+            if name == 'cloudflare-gateway':
+                self.manifest['cloudflare_ai_gateway'] = {'account_id': 'a' * 32, 'gateway_id': 'prod'}
+                self.write()
+            selected = self.cli('self_hosted', '--stage', 'local', '--operator-ai', name, '--emit-json')
+            self.assertEqual(selected.returncode, 0, selected.stderr)
+            row = json.loads(selected.stdout)['profiles']['self_hosted.local']
+            for key in ('llm', 'speech', 'embedding'):
+                self.assertNotIn(key, row)
+            self.assertEqual(row['operator_ai']['provider'], name)
+            self.assertEqual(row['operator_ai']['embedding_dimension'], 1024)
+            self.assertEqual(row['capabilities']['llm_provider'], name)
+            self.assertEqual(row['capabilities']['stt_providers'], [name])
+            self.assertEqual(row['capabilities']['tts_provider'], name)
+            self.assertEqual(row['capabilities']['embedding_dims'], 1024)
+            self.assertEqual(row['capabilities']['push_provider'], 'disabled')
+        for target, stage in [('cloudflare', 'local'), ('omi_cloud', 'production')]:
+            denied = self.cli(target, '--stage', stage, '--operator-ai', 'openrouter', '--emit-json')
+            self.assertNotEqual(denied.returncode, 0)
+
+    def test_cloudflare_gateway_requires_the_public_manifest_identity(self):
+        self.configure()
+        missing = self.cli('self_hosted', '--stage', 'local', '--operator-ai', 'cloudflare-gateway', '--emit-json')
+        self.assertNotEqual(missing.returncode, 0)
+        for bad in ({'account_id': 'zz', 'gateway_id': 'prod'}, {'account_id': 'a' * 32}):
+            self.manifest['cloudflare_ai_gateway'] = bad
+            self.write()
+            proc = self.cli('self_hosted', '--stage', 'local', '--operator-ai', 'cloudflare-gateway', '--emit-json')
+            self.assertNotEqual(proc.returncode, 0)
+        self.manifest['cloudflare_ai_gateway'] = {'account_id': 'a' * 32, 'gateway_id': 'prod'}
+        self.write()
+        row = json.loads(
+            self.cli('self_hosted', '--stage', 'local', '--operator-ai', 'cloudflare-gateway', '--emit-json').stdout
+        )['profiles']['self_hosted.local']
+        self.assertEqual(
+            row['operator_ai']['base_url'], 'https://gateway.ai.cloudflare.com/v1/' + 'a' * 32 + '/prod/openai'
+        )
+        self.assertEqual(
+            row['operator_ai']['embedding_base_url'],
+            'https://api.cloudflare.com/client/v4/accounts/' + 'a' * 32 + '/ai/v1',
+        )
+
+    def test_unknown_operator_selection_names_fail_the_manifest_schema(self):
+        self.configure()
+        self.manifest['self_hosted_inference'] = {'local': 'not-a-vendor'}
+        self.write()
+        proc = self.cli('self_hosted', '--emit-json')
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn('does not match the schema', proc.stderr)
+
     def test_eddy_release_inference_is_frozen_for_all_profile_consumers(self):
         from render import resolve
 

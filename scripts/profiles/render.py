@@ -247,7 +247,7 @@ def resolve(
             from fork.operator_ai import configure
 
             try:
-                row = configure(row, selected_ai)
+                row = configure(row, selected_ai, cloudflare=manifest.get('cloudflare_ai_gateway'))
             except ValueError as error:
                 raise ProfileError(str(error)) from error
         for key, value in row.items():
@@ -424,7 +424,11 @@ def main() -> int:
     parser.add_argument("--brand")
     parser.add_argument("--manifest", type=Path, help="explicit validated brand manifest (YAML or JSON)")
     parser.add_argument("--stage", choices=STAGES, help="resolve one stage; default resolves all stages")
-    parser.add_argument('--operator-ai', choices=['mimo-cn'], help='explicit hosted AI for one Server OS stage')
+    parser.add_argument(
+        '--operator-ai',
+        choices=['mimo-cn', 'openrouter', 'cloudflare-gateway', 'siliconflow'],
+        help='explicit hosted AI for one Server OS stage',
+    )
     parser.add_argument("--output-root", type=Path, default=REPO_ROOT, help="isolated build tree for generated files")
     parser.add_argument("--check", action="store_true", help="fail if generated files differ from source")
     parser.add_argument("--emit-json", action="store_true", help="print the resolved table and write nothing")
