@@ -46,6 +46,7 @@ class HostedOperatorAI:
     tts_base_url: str
     tts_model: str
     tts_voice: str
+    tts_response_format: str
     request_timeout_seconds: int = 120
     max_output_tokens: int = 8192
     account_id: str = ''
@@ -67,6 +68,7 @@ _OPENROUTER = HostedOperatorAI(
     tts_base_url='https://openrouter.ai/api/v1',
     tts_model='openai/gpt-4o-mini-tts-2025-12-15',
     tts_voice='alloy',
+    tts_response_format='mp3',
 )
 
 _SILICONFLOW = HostedOperatorAI(
@@ -81,6 +83,7 @@ _SILICONFLOW = HostedOperatorAI(
     tts_base_url='https://api.siliconflow.cn/v1',
     tts_model='FunAudioLLM/CosyVoice2-0.5B',
     tts_voice='FunAudioLLM/CosyVoice2-0.5B:anna',
+    tts_response_format='mp3',
 )
 
 # Code-frozen vendors: their entire spec, including URLs, is reviewed source.
@@ -128,6 +131,7 @@ def cloudflare_spec(gateway):
         tts_base_url='https://gateway.ai.cloudflare.com/v1/' + account + '/' + name + '/openai',
         tts_model='gpt-4o-mini-tts',
         tts_voice='alloy',
+        tts_response_format='wav',
         account_id=account,
         gateway_id=name,
     )
