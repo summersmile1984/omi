@@ -49,18 +49,21 @@ def language(value):
     return normalized
 
 
+HOSTED_OPERATOR_LANGUAGES = frozenset({'en', 'zh', 'multi'})
+
+
 def prerecorded_selection(value='en'):
     from .operator_ai import select
 
-    mimo = select(profile.current())
-    if mimo:
+    selected = select(profile.current())
+    if selected:
         normalized = language(value)
-        if normalized not in {'en', 'zh', 'multi'}:
+        if normalized not in HOSTED_OPERATOR_LANGUAGES:
             from config.prerecorded_stt import TranscriptionOutcome
             from utils.stt.outcomes import TranscriptionFailure
 
-            raise TranscriptionFailure(TranscriptionOutcome.INVALID_INPUT, provider='mimo', retryable=False)
-        return 'mimo', normalized, mimo.asr_model
+            raise TranscriptionFailure(TranscriptionOutcome.INVALID_INPUT, provider=selected.provider, retryable=False)
+        return selected.provider, normalized, selected.asr_model
     return 'sensevoice', language(value), contract().stt_model
 
 
@@ -70,14 +73,21 @@ LOCAL_STREAMING_SERVICE = 'sensevoice'
 def streaming_service():
     from .operator_ai import select
 
-    return 'mimo' if select(profile.current()) else LOCAL_STREAMING_SERVICE
+    selected = select(profile.current())
+    return selected.provider if selected else LOCAL_STREAMING_SERVICE
 
 
 def new_socket(sample_rate, transcript_callback, language='multi'):
-    if streaming_service() == 'mimo':
+    service = streaming_service()
+    if service == 'mimo':
         from .mimo_speech import socket
 
         return socket(sample_rate, transcript_callback, language)
+    if service != LOCAL_STREAMING_SERVICE:
+        # The hosted batch-ASR socket lands with its own bounded transport in
+        # the next change; until then hosted speech stays fail-closed, exactly
+        # like any other capability without an admitted provider.
+        raise SpeechError('speech_hosted_provider_not_admitted', retryable=False)
     from utils.sensevoice.socket import SenseVoiceSocket
 
     return SenseVoiceSocket(sample_rate=sample_rate, transcript_callback=transcript_callback)
