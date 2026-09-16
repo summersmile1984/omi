@@ -23,26 +23,34 @@
 - `hosted-live-smoke.py --self-check`：三家 × 四调用 fake transport 全 ok（model echo、1024 维匹配）
 - 顺带修复：`fork/tests/test_startup_contract.py` 的 `child()` 继承父进程 bootstrap `_bind` 残留 env，导致与 `test_speech_contract.py` 组跑时 `TTS_PROVIDER conflicts`——stash 基线复现为既有缺陷，本分支独立 commit 修复（child 剥离 bootstrap 绑定名）
 
-## live 冒烟（待三家 key，`NOT_RUN` 记录）
+## live 冒烟实测（2026-09-16，operator key）
 
-每家四次真实调用（chat / bge-m3 embeddings / 短音频 batch ASR / 一句 TTS），
-`backend/.venv/bin/python deploy/self-host/hosted-live-smoke.py --live <vendor>
---evidence /tmp/omi-hosted-<vendor>-smoke.json`。凭据放 env（不进仓库）：
-`OPENROUTER_API_KEY` / `SILICONFLOW_API_KEY` /（CF 通道）
-`CLOUDFLARE_GATEWAY_PROVIDER_API_KEY` + `CLOUDFLARE_API_TOKEN`。
+每家四次真实调用，`backend/.venv/bin/python
+deploy/self-host/hosted-live-smoke.py --live <vendor> --evidence /tmp/...`，
+凭据走 env（`backend/.env` gitignored，不进仓库）。
 
 | 供应商 | chat | embeddings | asr | tts | 证据 |
 |---|---|---|---|---|---|
-| openrouter | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN | — |
+| openrouter | **ok** `qwen/qwen3-8b` echo, stop, 2.3s | **ok** echo `parasail-bge-m3`, **1024 维匹配**, 1.6s | **ok** `whisper-large-v3`, TTS 产物转写 23 字符, 1.9s | **ok** 单声道 16-bit WAV 3.7s | `/tmp/omi-hosted-openrouter-smoke.json` |
 | cloudflare-gateway | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN | — |
 | siliconflow | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN | — |
 
-模型 id 冻结依据（2026-09-16 官方目录核实）：OpenRouter `openai/gpt-4o-mini` /
-`baai/bge-m3`(1024) / `openai/whisper-large-v3` / `openai/gpt-4o-mini-tts-2025-12-15`；
-SiliconFlow `Qwen/Qwen3-32B` / `BAAI/bge-m3` / `FunAudioLLM/SenseVoiceSmall` /
-`FunAudioLLM/CosyVoice2-0.5B`；CF 网关 OpenAI 路径 `gpt-4o-mini` /
-`gpt-4o-mini-transcribe` / `gpt-4o-mini-tts`，embeddings 走 Workers AI
-`@cf/baai/bge-m3`(1024)。live 实测若某 id 404，改冻结 spec 并重跑 hermetic。
+### live 实测推翻的两处初版冻结选型（2026-09-16 修正）
+
+1. **OpenRouter chat 初选 `openai/gpt-4o-mini` 403**：OpenAI/Google 上游对
+   operator 的地区（CN 网络）按供应商条款拒绝（403 "violation of provider
+   Terms Of Service"），Google 系同样被拦。改选 `qwen/qwen3-8b`（Alibaba
+   供应商直连 200）；`deepseek/deepseek-chat-v3.1`（DeepInfra）与
+   `qwen/qwen3-32b`（SiliconFlow）同样实测可用，为备选。
+2. **OpenRouter TTS 初选 `openai/gpt-4o-mini-tts-2025-12-15` 400**（该日期
+   slug 已从 OpenRouter 语音目录下线）。改选 `minimax/speech-2.8-turbo` +
+   文档 voice id `female-shaonv`（实测 200 返回 mp3；qwen-audio-3.0-tts 的
+   DashScope voice 命名对网关不透明，未采用）。
+3. **OpenRouter embeddings 的 echo 是路由供应商 id**（实测 `parasail-bge-m3`
+   ≠ 请求的 `baai/bge-m3`）：`HostedEmbeddings` 的身份校验放宽为"精确 id 或
+   以架构名结尾的路由 echo"，其余 fail-closed（回归测试覆盖）。
+4. ASR 探针改喂 TTS 产物：初版对静音测试音返回空转写（wire 通但断言无意义），
+   现在用真实语音往返（TTS "hosted operator smoke" → whisper 转写 23 字符）。
 
 ## 剩余验收（刻意未做，需真实栈或密钥）
 

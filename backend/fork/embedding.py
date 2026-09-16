@@ -58,6 +58,22 @@ class _BoundedEmbeddings:
             raise ValueError('embedding timeout must be finite and within 300 seconds')
         self.timeout = timeout
 
+    def _echo_matches(self, echo):
+        """The requested model id, or the serving provider's documented echo of it.
+
+        Routed vendors (OpenRouter's embeddings router) return the serving
+        provider's own id, e.g. ``parasail-bge-m3`` for ``baai/bge-m3``. The
+        identity check admits the exact id or an echo ending at the model's
+        architecture name; anything else fails closed.
+        """
+        requested = self.spec.embedding_model
+        if not isinstance(echo, str) or not echo:
+            return False
+        if echo == requested:
+            return True
+        tail = requested.rsplit('/', 1)[-1]
+        return echo.endswith('/' + tail) or echo.endswith('-' + tail)
+
     def _bounded_input(self, texts):
         if not isinstance(texts, list) or any(not isinstance(text, str) or not text.strip() for text in texts):
             raise ValueError('embedding input must be a list of nonempty text strings')
@@ -67,8 +83,8 @@ class _BoundedEmbeddings:
             raise ValueError('embedding batch exceeds the bounded request size')
         return texts
 
-    def _validate_vectors(self, model, vectors, expected):
-        if model != self.spec.embedding_model or not isinstance(vectors, list) or len(vectors) != len(expected):
+    def _validate_vectors(self, echo, vectors, expected):
+        if not self._echo_matches(echo) or not isinstance(vectors, list) or len(vectors) != len(expected):
             raise EmbeddingUnavailable('embedding result identity or cardinality differs')
         for vector in vectors:
             if (

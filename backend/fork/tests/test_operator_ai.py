@@ -273,11 +273,19 @@ def test_hosted_embeddings_own_the_dimension_contract(monkeypatch):
     assert instance.embed_documents([]) == []
 
     def wrong_model(request):
-        body = json.dumps({'data': [{'index': 0, 'embedding': vector}], 'model': 'other/model'}).encode()
+        body = json.dumps({'data': [{'index': 0, 'embedding': vector}], 'model': 'totally-unrelated'}).encode()
         return httpx.Response(200, content=body)
 
     with pytest.raises(embedding.EmbeddingUnavailable):
         embedding.HostedEmbeddings(spec, transport=httpx.MockTransport(wrong_model), timeout=60).embed_query('hello')
+
+    def routed_echo(request):
+        # Routed vendors serve bge-m3 under the provider's own id.
+        body = json.dumps({'data': [{'index': 0, 'embedding': vector}], 'model': 'parasail-bge-m3'}).encode()
+        return httpx.Response(200, content=body)
+
+    routed = embedding.HostedEmbeddings(spec, transport=httpx.MockTransport(routed_echo), timeout=60)
+    assert routed.embed_query('hello') == vector
 
     def wrong_dimension(request):
         body = json.dumps({'data': [{'index': 0, 'embedding': [0.5] * 1536}], 'model': spec.embedding_model}).encode()

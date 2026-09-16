@@ -167,23 +167,14 @@ def embeddings_call(spec, transport=None) -> dict:
     }
 
 
-def asr_call(spec, transport=None) -> dict:
+def tts_audio(spec, transport=None) -> bytes:
     from fork import hosted_speech
 
-    audio = mono_wav_bytes(1)
-    result = hosted_speech.Client().transcribe_audio(audio, filename="smoke.wav", transport=transport)
-    return {
-        "status": "ok",
-        "model": spec.asr_model,
-        "transcript_chars": len(result.text),
-        "reported_seconds": result.duration,
-    }
+    return hosted_speech.synthesize("hosted operator smoke", transport=transport)
 
 
 def tts_call(spec, transport=None) -> dict:
-    from fork import hosted_speech
-
-    audio = hosted_speech.synthesize("hosted operator smoke", transport=transport)
+    audio = tts_audio(spec, transport)
     with wave.open(io.BytesIO(audio)) as decoded:
         envelope = {
             "channels": decoded.getnchannels(),
@@ -191,6 +182,20 @@ def tts_call(spec, transport=None) -> dict:
             "frames": decoded.getnframes(),
         }
     return {"status": "ok", "envelope": envelope, "bytes": len(audio)}
+
+
+def asr_call(spec, transport=None, audio=None) -> dict:
+    from fork import hosted_speech
+
+    probe = audio if audio is not None else mono_wav_bytes(1)
+    result = hosted_speech.Client().transcribe_audio(probe, filename="smoke.wav", transport=transport)
+    return {
+        "status": "ok",
+        "model": spec.asr_model,
+        "input": "tts_output" if audio is not None else "silent_probe",
+        "transcript_chars": len(result.text),
+        "reported_seconds": result.duration,
+    }
 
 
 def _call_evidence(runner, spec, transport) -> dict:
@@ -223,11 +228,20 @@ def _run(
             for env in credential_envs:
                 os.environ[env] = "smoke-check-credential"
             transport = fake_transport(vendor, spec)
+        # TTS first: its WAV becomes the ASR probe, so the transcription check
+        # exercises real audible speech rather than a silent tone.
+        tts_evidence = _call_evidence(tts_call, spec, transport)
+        asr_audio = None
+        if tts_evidence.get("status") == "ok":
+            try:
+                asr_audio = tts_audio(spec, transport)
+            except Exception:  # noqa: BLE001 - the ASR probe falls back to the silent wav
+                asr_audio = None
         calls = {
             "chat": _call_evidence(chat_call, spec, transport),
             "embeddings": _call_evidence(embeddings_call, spec, transport),
-            "asr": _call_evidence(asr_call, spec, transport),
-            "tts": _call_evidence(tts_call, spec, transport),
+            "asr": _call_evidence(lambda spec, transport: asr_call(spec, transport, audio=asr_audio), spec, transport),
+            "tts": tts_evidence,
         }
         credential_envs = [operator_ai.CREDENTIAL_ENV[vendor]]
         if vendor == operator_ai.CLOUDFLARE_GATEWAY:

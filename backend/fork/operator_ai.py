@@ -53,21 +53,24 @@ class HostedOperatorAI:
     gateway_id: str = ''
 
 
-# Verified against each vendor's public catalog on 2026-09-16. bge-m3 keeps the
-# profile's 1024-dimension invariant everywhere, so the Qdrant collections and
-# the profile embedding contract stay untouched.
+# Verified against each vendor's public catalog on 2026-09-16, then exercised
+# from this deployment's network: the OpenAI and Google upstreams 403 on the
+# operator's region, so the OpenRouter chat pick is Alibaba's qwen3-8b and TTS
+# is MiniMax with its documented voice id (the dated OpenAI TTS slugs no longer
+# exist there). bge-m3 keeps the profile's 1024-dimension invariant everywhere,
+# so the Qdrant collections and the profile embedding contract stay untouched.
 _OPENROUTER = HostedOperatorAI(
     provider='openrouter',
     base_url='https://openrouter.ai/api/v1',
-    model='openai/gpt-4o-mini',
+    model='qwen/qwen3-8b',
     embedding_base_url='https://openrouter.ai/api/v1',
     embedding_model='baai/bge-m3',
     embedding_dimension=1024,
     asr_base_url='https://openrouter.ai/api/v1',
     asr_model='openai/whisper-large-v3',
     tts_base_url='https://openrouter.ai/api/v1',
-    tts_model='openai/gpt-4o-mini-tts-2025-12-15',
-    tts_voice='alloy',
+    tts_model='minimax/speech-2.8-turbo',
+    tts_voice='female-shaonv',
     tts_response_format='mp3',
 )
 
