@@ -99,3 +99,8 @@ allow:
   # pointer fails agents-md-lean as soon as upstream grows into the headroom.
   # Fork rules live in fork-owned AGENTS.fork.md files with no pointer from the
   # upstream file; discovery comes from dev/unified-main/ and this policy doc.
+  - path: .github/scripts/check_dead_code.py
+    max_added_lines: 3
+    reason: dead-code[flutter] 桶对本机 flutter overlay 文件误报（52e3585f04 记录的 fork staging 边界遗留）；OMI_DEAD_CODE_SKIP_FLUTTER=1 显式 hatch，与 PRE_PUSH_SKIP_FLUTTER_GENERATED 同风格，CI 判定不变
+    upstream_pr: "fork overlay-staged files need a dead-code registration design (needs-design per 52e3585f04)"
+    owner: hosted-operator-ai
