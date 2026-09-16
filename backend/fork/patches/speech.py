@@ -17,11 +17,9 @@ def patches():
 
                 return prerecorded()
             if service != 'sensevoice':
-                # Hosted batch ASR gets its own bounded provider in the next
-                # change; until then the capability stays fail-closed.
-                from ..speech import SpeechError
+                from ..hosted_speech import prerecorded
 
-                raise SpeechError('speech_hosted_provider_not_admitted', retryable=False)
+                return prerecorded()
             return SenseVoicePrerecordedProvider(speech.recognizer())
 
         return provider

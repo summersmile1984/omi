@@ -84,13 +84,69 @@ def new_socket(sample_rate, transcript_callback, language='multi'):
 
         return socket(sample_rate, transcript_callback, language)
     if service != LOCAL_STREAMING_SERVICE:
-        # The hosted batch-ASR socket lands with its own bounded transport in
-        # the next change; until then hosted speech stays fail-closed, exactly
-        # like any other capability without an admitted provider.
-        raise SpeechError('speech_hosted_provider_not_admitted', retryable=False)
+        from . import hosted_speech
+
+        return windowed_socket(sample_rate, transcript_callback, language, client_factory=hosted_speech.Client)
     from utils.sensevoice.socket import SenseVoiceSocket
 
     return SenseVoiceSocket(sample_rate=sample_rate, transcript_callback=transcript_callback)
+
+
+def windowed_socket(sample_rate, transcript_callback, language='multi', *, client_factory):
+    """One bounded 5-second VAD window owner for every hosted operator vendor.
+
+    Both the MiMo chat-shaped transport and the standard OpenAI-compatible one
+    replace only the per-window inference call; buffering, drain and
+    cancellation ownership stay here. `client_factory` builds a fresh bounded
+    client per window, exactly like the original MiMo socket did.
+    """
+    from utils.sensevoice.socket import SenseVoiceSocket
+    from utils.mimo_pipeline.socket import pcm16_to_wav
+    from utils.executors import run_blocking, sync_executor
+    from utils.stt.vad import linear16_pcm_is_silent
+
+    class WindowedSocket(SenseVoiceSocket):
+        """Reuse bounded buffering, drain and cancellation ownership; replace inference."""
+
+        async def _flush(self, *, force):
+            while True:
+                with self._lock:
+                    available = len(self._pcm)
+                    if available < self._window_bytes and not (force and available):
+                        return
+                    take = min(available, self._window_bytes)
+                    pcm = bytes(self._pcm[:take])
+                    del self._pcm[:take]
+                    start = self._emitted_seconds
+                    duration = take / (2 * self._sample_rate)
+                    self._emitted_seconds += duration
+                if await run_blocking(
+                    sync_executor, linear16_pcm_is_silent, pcm, sample_rate=self._sample_rate, channels=1
+                ):
+                    continue
+                result = await run_blocking(
+                    sync_executor,
+                    client_factory().transcribe_audio,
+                    pcm16_to_wav(pcm, self._sample_rate, 1),
+                    language=language,
+                )
+                if self._callback and result.text:
+                    self._callback(
+                        [
+                            {
+                                'speaker': 'SPEAKER_00',
+                                'start': start,
+                                'end': start + duration,
+                                'text': result.text,
+                                'is_user': False,
+                                'person_id': None,
+                            }
+                        ]
+                    )
+
+    result = WindowedSocket(sample_rate=sample_rate, transcript_callback=transcript_callback)
+    result.start()
+    return result
 
 
 def streaming_selection(

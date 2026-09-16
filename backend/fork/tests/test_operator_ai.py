@@ -304,14 +304,13 @@ def test_build_dispatches_hosted_and_local_owners(monkeypatch):
     assert isinstance(embedding.build(), embedding.OllamaEmbeddings)
 
 
-def test_hosted_speech_stays_fail_closed_until_its_owner_lands(monkeypatch):
+def test_hosted_speech_uses_the_shared_windowed_socket(monkeypatch):
     row = operator_ai.configure(selected(), 'openrouter')
     monkeypatch.setattr(profile, 'current', lambda: row)
+    monkeypatch.setenv('OMI_DEPLOYMENT_PROFILE', 'self_hosted.local')
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'or-key')
     assert speech.streaming_service() == 'openrouter'
     assert speech.prerecorded_selection('zh-CN') == ('openrouter', 'zh', 'openai/whisper-large-v3')
-    with pytest.raises(speech.SpeechError) as error:
-        speech.new_socket(16000, lambda segments: None)
-    assert error.value.code == 'speech_hosted_provider_not_admitted'
     assert speech.streaming_selection('en', exclude={'openrouter'}) == (None, None, None)
     monkeypatch.setattr(profile, 'current', lambda: selected())
     assert speech.streaming_service() == 'sensevoice'

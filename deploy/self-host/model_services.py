@@ -39,18 +39,35 @@ def specialize(config, profile):
     if 'operator_ai' not in profile:
         return config
     sys.path.insert(0, str(ROOT / 'backend'))
-    from fork.operator_ai import select
+    from fork.operator_ai import CLOUDFLARE_GATEWAY, CLOUDFLARE_TOKEN_ENV, CREDENTIAL_ENV, select
 
-    select(profile)
+    selected = select(profile)
+    hosted = selected.provider != 'mimo'
     services = config['services']
-    for name in ('llm', 'llm-artifact-check'):
+    removed = ['llm', 'llm-artifact-check']
+    if hosted:
+        # A hosted operator AI owns embeddings too, so the server runs no AI compute.
+        removed += ['embedding', 'embedding-artifact-check']
+    for name in removed:
         del services[name]
+    credential_envs = [CREDENTIAL_ENV[selected.provider]]
+    if selected.provider == CLOUDFLARE_GATEWAY:
+        credential_envs.append(CLOUDFLARE_TOKEN_ENV)
+    removed_env_prefixes = ('SPEECH_MODEL_STORE=', 'LLM_ENDPOINT=')
+    if hosted:
+        removed_env_prefixes += ('EMBEDDING_ENDPOINT=',)
     for service in services.values():
-        service.get('depends_on', {}).pop('llm', None)
+        depends = service.get('depends_on', {})
+        for name in removed:
+            depends.pop(name, None)
+        environment = service.get('environment') or []
+        service['environment'] = [value for value in environment if not value.startswith(removed_env_prefixes)]
+    credential_lines = [f'{name}=${{{name}:?{name} is required}}' for name in credential_envs]
+    for name in ('backend', 'memory-maintenance-worker'):
+        service = services.get(name)
+        if service is not None:
+            service['environment'] = list(service.get('environment') or []) + credential_lines
     backend = services['backend']
-    backend['environment'] = [
-        value for value in backend['environment'] if not value.startswith(('SPEECH_MODEL_STORE=', 'LLM_ENDPOINT='))
-    ] + ['MIMO_API_KEY=${MIMO_API_KEY:?MIMO_API_KEY is required}']
     backend['volumes'] = [value for value in backend['volumes'] if ':/models/speech:' not in value]
     return config
 
