@@ -54,7 +54,10 @@ deploy/self-host/hosted-live-smoke.py --live <vendor> --evidence /tmp/...`，
 |---|---|---|---|---|---|
 | openrouter | **ok** `qwen/qwen3-8b` echo, stop, 2.3s | **ok** echo `parasail-bge-m3`, **1024 维匹配**, 1.6s | **ok** `whisper-large-v3`, TTS 产物转写 23 字符, 1.9s | **ok** 单声道 16-bit WAV 3.7s | `/tmp/omi-hosted-openrouter-smoke.json` |
 | cloudflare-gateway | **ok** `@cf/meta/llama-3.1-8b-instruct-fast` echo, stop, 0.8s | **ok** `@cf/baai/bge-m3` echo, **1024 维匹配**, 0.6s | **ok** `@cf/openai/whisper-large-v3-turbo`, TTS 产物转写 22 字符 | **ok** aura-1 mp3 → 归一化 16-bit 单声道 WAV | `/tmp/omi-hosted-cloudflare-smoke.json` |
-| siliconflow | NOT_RUN | NOT_RUN | NOT_RUN | NOT_RUN | — |
+| siliconflow | **ok** `Qwen/Qwen3-32B` echo, stop（qwen3 思考耗时 9.7s） | **ok** `BAAI/bge-m3` echo 精确, **1024 维匹配**, 0.3s | **ok** `SenseVoiceSmall`, TTS 产物转写 25 字符 | **ok** CosyVoice2 mp3 → 归一化 16-bit 单声道 WAV 2.7s | `/tmp/omi-hosted-siliconflow-smoke.json` |
+
+**三家通道（OpenRouter / Cloudflare Gateway / SiliconFlow）四能力全部 live 验证通过**，
+bge-m3 1024 维不变量在三端实测成立，Qdrant 契约零改动。
 
 ### CF 通道的三处 wire 修正（2026-09-16 实测驱动）
 
