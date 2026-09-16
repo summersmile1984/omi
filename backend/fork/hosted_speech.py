@@ -1,5 +1,6 @@
 """Hosted OpenAI-compatible speech transport; bounded IO and the existing STT wire contract."""
 
+import base64
 import io
 import json
 import subprocess
@@ -59,19 +60,40 @@ class Client:
         **kwargs,
     ):
         selected = operator_ai.current()
-        endpoint = selected.asr_base_url + '/audio/transcriptions'
-        assert_http_endpoint_allowed(endpoint)
         from utils.mimo_pipeline.mimo_client import MimoSegment, MimoTranscription, infer_audio_format
 
         if not audio_bytes or len(audio_bytes) > MAX_UPLOAD_BYTES:
             raise SpeechError('speech_invalid_input')
+        from .speech import prerecorded_selection
+
+        language = prerecorded_selection(language)[1]
+        if selected.provider == operator_ai.CLOUDFLARE_GATEWAY:
+            endpoint = selected.asr_base_url + '/run'
+            assert_http_endpoint_allowed(endpoint)
+            # The account REST envelope runs the same Workers AI models the
+            # fork's Cloudflare deployment serves: audio travels base64 inside
+            # the input object, never as multipart.
+            result = _stream_json(
+                'POST',
+                endpoint,
+                headers=_headers(),
+                timeout=selected.request_timeout_seconds,
+                transport=transport,
+                json={'model': selected.asr_model, 'input': {'audio': base64.b64encode(audio_bytes).decode('ascii')}},
+            )
+            payload = result.get('result') if isinstance(result.get('result'), dict) else result
+            text = payload.get('text') if isinstance(payload, dict) else None
+            if not isinstance(text, str):
+                raise SpeechError('speech_invalid_transcript', retryable=True)
+            return MimoTranscription(
+                text=text, duration=0.0, segments=[MimoSegment(0, 0.0, text, 'SPEAKER_00')] if text else []
+            )
+        endpoint = selected.asr_base_url + '/audio/transcriptions'
+        assert_http_endpoint_allowed(endpoint)
         if filename or content_type:
             audio_format = infer_audio_format(filename or '', content_type)
         if audio_format not in ('wav', 'mp3'):
             raise SpeechError('speech_invalid_audio_format')
-        from .speech import prerecorded_selection
-
-        language = prerecorded_selection(language)[1]
         mime = 'audio/wav' if audio_format == 'wav' else 'audio/mpeg'
         result = _stream_json(
             'POST',
@@ -101,6 +123,34 @@ def synthesize(text, voice=None, *, transport=None):
     selected = operator_ai.current()
     if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT_CHARACTERS:
         raise SpeechError('speech_invalid_input')
+    if selected.provider == operator_ai.CLOUDFLARE_GATEWAY:
+        endpoint = selected.tts_base_url + '/run'
+        assert_http_endpoint_allowed(endpoint)
+        try:
+            with httpx.Client(
+                transport=transport, follow_redirects=False, timeout=selected.request_timeout_seconds
+            ) as client:
+                with client.stream(
+                    'POST',
+                    endpoint,
+                    headers=_headers(),
+                    json={'model': selected.tts_model, 'input': {'text': text}},
+                ) as response:
+                    if response.status_code != 200:
+                        raise SpeechError(
+                            'speech_provider_http_' + str(response.status_code),
+                            retryable=response.status_code == 429 or response.status_code >= 500,
+                        )
+                    audio = bytearray()
+                    for chunk in response.iter_bytes():
+                        audio.extend(chunk)
+                        if len(audio) > MAX_WAV_BYTES:
+                            raise SpeechError('speech_provider_response_limit', retryable=True)
+        except SpeechError:
+            raise
+        except Exception:
+            raise SpeechError('speech_provider_request_failed', retryable=True) from None
+        return _as_mono_wav(bytes(audio))
     endpoint = selected.tts_base_url + '/audio/speech'
     assert_http_endpoint_allowed(endpoint)
     payload = {

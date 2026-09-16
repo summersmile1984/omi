@@ -92,10 +92,13 @@ _SILICONFLOW = HostedOperatorAI(
 # Code-frozen vendors: their entire spec, including URLs, is reviewed source.
 FROZEN = {'openrouter': _OPENROUTER, 'siliconflow': _SILICONFLOW}
 
-# cloudflare-gateway is manifest-derived: the account-scoped URL needs the
-# operator's public account/gateway identity from the brand manifest, the same
-# place their domains live. Its chat/ASR/TTS path fronts OpenAI through the
-# gateway; embeddings stay dimension-true through the Workers AI endpoint.
+# cloudflare-gateway is manifest-derived: the account-scoped REST base URL
+# needs the operator's public account/gateway identity from the brand
+# manifest, the same place their domains live. 2026-09-16 dashboard: the
+# account-scoped REST API is the current surface — one CLOUDFLARE_API_TOKEN
+# authorizes every capability, `cf-aig-gateway-id` routes through the
+# operator's gateway, and the four capabilities stay on the production-
+# verified Workers AI models the fork's Cloudflare deployment already runs.
 CLOUDFLARE_GATEWAY = 'cloudflare-gateway'
 HOSTED_VENDORS = frozenset(FROZEN) | {CLOUDFLARE_GATEWAY}
 
@@ -103,7 +106,7 @@ HOSTED_VENDORS = frozenset(FROZEN) | {CLOUDFLARE_GATEWAY}
 CREDENTIAL_ENV = {
     'mimo': 'MIMO_API_KEY',
     'openrouter': 'OPENROUTER_API_KEY',
-    'cloudflare-gateway': 'CLOUDFLARE_GATEWAY_PROVIDER_API_KEY',
+    'cloudflare-gateway': 'CLOUDFLARE_API_TOKEN',
     'siliconflow': 'SILICONFLOW_API_KEY',
 }
 CLOUDFLARE_TOKEN_ENV = 'CLOUDFLARE_API_TOKEN'
@@ -122,18 +125,23 @@ def cloudflare_spec(gateway):
         or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,62}', name)
     ):
         raise ValueError('cloudflare_ai_gateway needs a 32-hex account_id and a gateway_id slug')
+    rest = 'https://api.cloudflare.com/client/v4/accounts/' + account + '/ai/v1'
+    run = 'https://api.cloudflare.com/client/v4/accounts/' + account + '/ai/run'
     return HostedOperatorAI(
         provider='cloudflare-gateway',
-        base_url='https://gateway.ai.cloudflare.com/v1/' + account + '/' + name + '/openai',
-        model='gpt-4o-mini',
-        embedding_base_url='https://api.cloudflare.com/client/v4/accounts/' + account + '/ai/v1',
+        # Chat and embeddings share the account's OpenAI-compatible REST base;
+        # ASR and TTS use the universal /ai/run envelope, whose shapes are the
+        # same Workers AI models the fork's Cloudflare deployment runs today.
+        base_url=rest,
+        model='@cf/meta/llama-3.1-8b-instruct-fast',
+        embedding_base_url=rest,
         embedding_model='@cf/baai/bge-m3',
         embedding_dimension=1024,
-        asr_base_url='https://gateway.ai.cloudflare.com/v1/' + account + '/' + name + '/openai',
-        asr_model='gpt-4o-mini-transcribe',
-        tts_base_url='https://gateway.ai.cloudflare.com/v1/' + account + '/' + name + '/openai',
-        tts_model='gpt-4o-mini-tts',
-        tts_voice='alloy',
+        asr_base_url=run,
+        asr_model='@cf/openai/whisper-large-v3-turbo',
+        tts_base_url=run,
+        tts_model='@cf/deepgram/aura-1',
+        tts_voice='',
         tts_response_format='wav',
         account_id=account,
         gateway_id=name,
@@ -249,32 +257,35 @@ def credentials():
 def embedding_credentials():
     """The bearer used by the hosted embeddings endpoint.
 
-    The Cloudflare embeddings authority is the operator's account REST API, so
-    it authenticates with the Cloudflare token itself, not a stored provider
-    key. Every other vendor uses its one provider key everywhere.
+    Every hosted vendor authenticates embeddings with its one provider key;
+    Cloudflare's account REST API is the same authority as its gateway use, so
+    the single token covers everything.
     """
-    selected = current()
-    if selected.provider == 'cloudflare-gateway':
-        return _required_env(CLOUDFLARE_TOKEN_ENV)
     return credentials()
 
 
 def gateway_headers():
-    """Extra vendor auth headers beyond the provider Authorization bearer."""
+    """Extra vendor routing headers beyond the provider Authorization bearer.
+
+    Cloudflare routes account-scoped REST calls through the operator's gateway
+    with this id; the other vendors have no equivalent concept.
+    """
     selected = current()
-    if selected.provider == 'cloudflare-gateway':
-        return {'cf-aig-authorization': 'Bearer ' + _required_env(CLOUDFLARE_TOKEN_ENV)}
+    if selected.provider == CLOUDFLARE_GATEWAY:
+        return {'cf-aig-gateway-id': selected.gateway_id}
     return {}
 
 
 def _grants(spec):
     if isinstance(spec, MiMo):
         return (spec.base_url + '/chat/completions',)
+    asr_path = '/run' if spec.provider == CLOUDFLARE_GATEWAY else '/audio/transcriptions'
+    tts_path = '/run' if spec.provider == CLOUDFLARE_GATEWAY else '/audio/speech'
     return (
         spec.base_url + '/chat/completions',
         spec.embedding_base_url + '/embeddings',
-        spec.asr_base_url + '/audio/transcriptions',
-        spec.tts_base_url + '/audio/speech',
+        spec.asr_base_url + asr_path,
+        spec.tts_base_url + tts_path,
     )
 
 

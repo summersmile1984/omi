@@ -23,6 +23,27 @@
 - `hosted-live-smoke.py --self-check`：三家 × 四调用 fake transport 全 ok（model echo、1024 维匹配）
 - 顺带修复：`fork/tests/test_startup_contract.py` 的 `child()` 继承父进程 bootstrap `_bind` 残留 env，导致与 `test_speech_contract.py` 组跑时 `TTS_PROVIDER conflicts`——stash 基线复现为既有缺陷，本分支独立 commit 修复（child 剥离 bootstrap 绑定名）
 
+### CF 通道定稿为方案 A：账号 REST API + Workers AI（2026-09-16，dashboard 实证）
+
+在 Cloudflare dashboard（账号 `05e70a39e7205b977404d4563e9803d7`，已有网关
+`default`）确认：账户级 REST API 是当前调用面，**单个 `CLOUDFLARE_API_TOKEN`
+覆盖全部四能力**，`cf-aig-gateway-id` 头把调用路由进网关；BYOK（Provider
+Keys）一项都未配置，原设计的"CF token + 上游 provider key"双凭据取消。
+
+冻结 spec（全部抄 fork CF 部署的生产模型，不猜）：
+
+| 能力 | 模型 | 端点形状 |
+|---|---|---|
+| chat | `@cf/meta/llama-3.1-8b-instruct-fast` | `/ai/v1/chat/completions`（OpenAI SDK 兼容） |
+| embeddings | `@cf/baai/bge-m3`（1024） | `/ai/v1/embeddings` |
+| ASR | `@cf/openai/whisper-large-v3-turbo` | `/ai/run` envelope（input.audio base64） |
+| TTS | `@cf/deepgram/aura-1` | `/ai/run` envelope（input.text）→ 二进制音频 |
+
+CF 通道的 ASR/TTS wire 形状与标准 multipart 不同，`hosted_speech.py` 按
+provider 分支；冒烟 fake、`model_services` 凭据注入（CF 只需
+`CLOUDFLARE_API_TOKEN` 一行）、egress 授权面同步更新。hermetic 回归：415
+passed + 冒烟自检三家全 ok。
+
 ## live 冒烟实测（2026-09-16，operator key）
 
 每家四次真实调用，`backend/.venv/bin/python

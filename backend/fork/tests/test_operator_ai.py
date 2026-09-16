@@ -40,7 +40,11 @@ def test_three_hosted_vendors_are_frozen_and_dimension_true():
         if spec is None:
             spec = operator_ai.cloudflare_spec({'account_id': 'a' * 32, 'gateway_id': 'prod'})
         assert spec.embedding_dimension == 1024
-        assert spec.model and spec.asr_model and spec.tts_model and spec.tts_voice
+        assert spec.model and spec.asr_model and spec.tts_model
+        # The Cloudflare /ai/run envelope has no voice concept; the standard
+        # vendors must name one frozen voice.
+        if spec.provider != operator_ai.CLOUDFLARE_GATEWAY:
+            assert spec.tts_voice
         for url in (spec.base_url, spec.embedding_base_url, spec.asr_base_url, spec.tts_base_url):
             assert url.startswith('https://')
     assert operator_ai.FROZEN['openrouter'].embedding_base_url != operator_ai.FROZEN['siliconflow'].embedding_base_url
@@ -74,9 +78,16 @@ def test_hosted_selection_owns_every_capability(name):
 
 def test_cloudflare_gateway_urls_come_from_the_public_manifest_identity():
     spec = operator_ai.cloudflare_spec({'account_id': 'a' * 32, 'gateway_id': 'prod'})
-    assert spec.base_url == 'https://gateway.ai.cloudflare.com/v1/' + 'a' * 32 + '/prod/openai'
-    assert spec.embedding_base_url == 'https://api.cloudflare.com/client/v4/accounts/' + 'a' * 32 + '/ai/v1'
+    rest = 'https://api.cloudflare.com/client/v4/accounts/' + 'a' * 32 + '/ai/v1'
+    run = 'https://api.cloudflare.com/client/v4/accounts/' + 'a' * 32 + '/ai/run'
+    assert spec.base_url == rest
+    assert spec.embedding_base_url == rest
+    assert spec.asr_base_url == run
+    assert spec.tts_base_url == run
     assert spec.account_id == 'a' * 32 and spec.gateway_id == 'prod'
+    assert spec.model == '@cf/meta/llama-3.1-8b-instruct-fast'
+    assert spec.embedding_model == '@cf/baai/bge-m3'
+    assert spec.embedding_dimension == 1024
     for bad in (
         {},
         {'account_id': 'nothex', 'gateway_id': 'prod'},
@@ -130,7 +141,7 @@ def test_hosted_rejects_a_leftover_local_embedding_row():
     [
         ('openrouter', 'OPENROUTER_API_KEY'),
         ('siliconflow', 'SILICONFLOW_API_KEY'),
-        ('cloudflare-gateway', 'CLOUDFLARE_GATEWAY_PROVIDER_API_KEY'),
+        ('cloudflare-gateway', 'CLOUDFLARE_API_TOKEN'),
     ],
 )
 def test_per_vendor_credential_envs_are_required(monkeypatch, vendor, env):
@@ -147,18 +158,17 @@ def test_per_vendor_credential_envs_are_required(monkeypatch, vendor, env):
     assert operator_ai.credentials() == 'operator-key'
 
 
-def test_cloudflare_splits_the_gateway_token_from_the_provider_key(monkeypatch):
+def test_cloudflare_gateway_runs_on_one_cloudflare_token(monkeypatch):
     row = operator_ai.configure(
         selected(), 'cloudflare-gateway', cloudflare={'account_id': 'a' * 32, 'gateway_id': 'prod'}
     )
     monkeypatch.setattr(profile, 'current', lambda: row)
     with pytest.raises(ValueError):
-        operator_ai.embedding_credentials()
-    monkeypatch.setenv('CLOUDFLARE_GATEWAY_PROVIDER_API_KEY', 'provider-key')
+        operator_ai.credentials()
     monkeypatch.setenv('CLOUDFLARE_API_TOKEN', 'cf-token')
-    assert operator_ai.credentials() == 'provider-key'
+    assert operator_ai.credentials() == 'cf-token'
     assert operator_ai.embedding_credentials() == 'cf-token'
-    assert operator_ai.gateway_headers() == {'cf-aig-authorization': 'Bearer cf-token'}
+    assert operator_ai.gateway_headers() == {'cf-aig-gateway-id': 'prod'}
     other = operator_ai.configure(selected(), 'openrouter')
     monkeypatch.setattr(profile, 'current', lambda: other)
     monkeypatch.setenv('OPENROUTER_API_KEY', 'or-key')

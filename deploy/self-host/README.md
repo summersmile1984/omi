@@ -77,10 +77,16 @@ A hosted Compose graph runs **no AI compute**: `model_services.py` removes the
 `llm` and `embedding` service groups, their volumes and env bindings, and
 injects the vendor's required credential variables into the backend and the
 canonical-memory worker. Credentials live only in the environment
-(`OPENROUTER_API_KEY`, `SILICONFLOW_API_KEY`, and for the gateway
-`CLOUDFLARE_GATEWAY_PROVIDER_API_KEY` plus `CLOUDFLARE_API_TOKEN`) — never in
-the profile. The egress grant is an exact per-capability endpoint list; the
-vendor hosts themselves stay forbidden unless that exact selection is active.
+(`OPENROUTER_API_KEY`, `SILICONFLOW_API_KEY`, and a single
+`CLOUDFLARE_API_TOKEN` for the gateway) — never in the profile. The Cloudflare
+vendor calls the account-scoped REST API with the production-verified Workers
+AI models (chat `@cf/meta/llama-3.1-8b-instruct-fast`, ASR
+`@cf/openai/whisper-large-v3-turbo`, TTS `@cf/deepgram/aura-1`, embeddings
+`@cf/baai/bge-m3`), routes through the operator's gateway by
+`cf-aig-gateway-id`, and its ASR/TTS use the `/ai/run` envelope instead of the
+multipart speech shapes. The egress grant is an exact per-capability endpoint
+list; the vendor hosts themselves stay forbidden unless that exact selection
+is active.
 
 Verification: `deploy/self-host/hosted-live-smoke.py --self-check` runs the
 same call builders against controlled fakes (no network, CI lane

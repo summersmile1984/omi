@@ -71,7 +71,7 @@ BOUND_BY_BOOTSTRAP = frozenset(
         'OPENROUTER_API_KEY',
         'SILICONFLOW_API_KEY',
         'CLOUDFLARE_API_TOKEN',
-        'CLOUDFLARE_GATEWAY_PROVIDER_API_KEY',
+        'CLOUDFLARE_API_TOKEN',
     }
 )
 BOUND_BY_BOOTSTRAP |= {name for name in os.environ if name.startswith('OMI_LLM_GATEWAY_')}
