@@ -7,6 +7,34 @@
     {
       "path": "app/lib/phone_mic_interface.dart",
       "reason": "codegen contract inputs, unimported by design"
+    },
+    {
+      "path": "app/lib/fork/identity/client.dart",
+      "reason": "staged fork Better Auth feature; reviewed AST declarations in an isolated Android debug stage, unimported by design; see commit 44327be458"
+    },
+    {
+      "path": "app/lib/fork/identity/credential.dart",
+      "reason": "staged fork Better Auth feature; reviewed AST declarations in an isolated Android debug stage, unimported by design; see commit 44327be458"
+    },
+    {
+      "path": "app/lib/fork/identity/deployment.dart",
+      "reason": "staged fork Better Auth feature; reviewed AST declarations in an isolated Android debug stage, unimported by design; see commit 44327be458"
+    },
+    {
+      "path": "app/lib/fork/identity/owner.dart",
+      "reason": "staged fork Better Auth feature; reviewed AST declarations in an isolated Android debug stage, unimported by design; see commit 44327be458"
+    },
+    {
+      "path": "app/lib/fork/identity/runtime.dart",
+      "reason": "staged fork Better Auth feature; reviewed AST declarations in an isolated Android debug stage, unimported by design; see commit 44327be458"
+    },
+    {
+      "path": "app/lib/fork/identity/secure_store.dart",
+      "reason": "staged fork Better Auth feature; reviewed AST declarations in an isolated Android debug stage, unimported by design; see commit 44327be458"
+    },
+    {
+      "path": "app/lib/fork/identity/sign_out.dart",
+      "reason": "staged fork Better Auth feature; reviewed AST declarations in an isolated Android debug stage, unimported by design; see commit 44327be458"
     }
   ]
 }
