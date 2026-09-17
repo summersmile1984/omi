@@ -8,7 +8,7 @@
   "AuthService.swift:expireStoredTokenForAutomation()": "f40381b2a292191d826b231ef7617ea73d1c5c7989e995c75deaebc71a54b3e3",
   "AuthService.swift:getIdToken(forceRefresh:)": "86b93d5534de12d1102308cd0c95b2538f605f104b8f6a754bf37628a85b670c",
   "AuthService.swift:handleOAuthCallback(url:)": "47aeff0c88e2db691cb4ff99d5ee64f8d40c73990ca173d60a67f78e12a43ef3",
-  "AuthService.swift:performLightSessionInvalidation()": "e48316229edc7bc63636642cc03b442f4e4130c9dc3d711d1c928206d078d5a6",
+  "AuthService.swift:performLightSessionInvalidation()": "ae943b2ea4cec969d61d3d3b67adfa2d9bc00b1dac6621f4b445699d875a813b",
   "AuthService.swift:retryRestoredSession()": "4d756505de609b9b083bc4d23d8dcde36e5987ee3de5bba809bc28671593663d",
   "AuthService.swift:signInWithApple()": "45594c6a85bade2a50671a271bbd74c0b6f1d6eae5166abcc9b18e4caab63871",
   "AuthService.swift:signInWithGoogle()": "9284275a5d173798a8e038c97788783e3c6eb1e34957a6d1c925d252202ab507",
