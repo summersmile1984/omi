@@ -359,7 +359,7 @@ def _harness_service_extra(cfg: HarnessConfig) -> dict[str, str]:
     # gateway-local stage, so FEATURE_MODE=gateway would make gateway_client reject
     # startup while still advertising gateway routing.
     gateway_feature_mode = "off" if cfg.provider_mode == "offline" else "gateway"
-    return {
+    extra: dict[str, str] = {
         "OMI_HARNESS_INSTANCE": cfg.instance,
         "OMI_HARNESS_STATE_ROOT": str(cfg.layout.state_root),
         "OMI_LOCAL_STORAGE_ROOT": str(cfg.layout.services_dir / "storage"),
@@ -393,6 +393,19 @@ def _harness_service_extra(cfg: HarnessConfig) -> dict[str, str]:
         "SCREEN_FRAME_SIGNING_SECRET": LOCAL_SCREEN_FRAME_SIGNING_SECRET,
         **LOCAL_STORAGE_BUCKET_ENV,
     }
+    if cfg.provider_mode == "offline":
+        # OFFLINE mode runs STT through the parakeet stub (which lives in
+        # ``backend/testing/listen_pusher_stack/parakeet_stub.py`` for the
+        # listen-pusher stack, and as a fake provider for general dev). Pinning
+        # the serving chain to ``parakeet`` keeps ``backend/main.py`` startup
+        # (``validate_streaming_stt_env``) from demanding real SONIOX/DEEPGRAM
+        # credentials — that validator only requires API keys for the providers
+        # actually named in ``STT_SERVICE_MODELS``. We deliberately do NOT
+        # inject any SONIOX/DEEPGRAM key here: ``build_child_env`` rejects
+        # ``*_API_KEY`` values under ``PROVIDER_MODE=offline`` to keep the
+        # offline stack fully hermetic.
+        extra["STT_SERVICE_MODELS"] = "parakeet"
+    return extra
 
 
 def child_env_for(cfg: HarnessConfig) -> dict[str, str]:

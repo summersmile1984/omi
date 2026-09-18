@@ -21,7 +21,27 @@ from typing import Iterable
 
 from . import config, providers, safety, memory_scenarios
 
+# testcontainers-python is the canonical way to spin up throwaway middleware
+# containers. Pinned image tags match what backend/AGENTS.md requires for
+# production parity, so dev-mode container behaviour matches deploy-target OS.
+from testcontainers.core.container import DockerContainer
+from testcontainers.redis import RedisContainer
+
 OWNERSHIP_PREFIX = "omi-dev-harness"
+
+# Pinned to match backend testing fixture (`tests/integration/containers/conftest.py`)
+# and the Omi production stack.
+REDIS_IMAGE = "redis:7-alpine"
+
+# The Firebase Auth emulator ships as a self-contained Docker image so the dev
+# harness can drop the host-side JDK + node + firebase-tools requirement. The
+# image ENTRYPOINT bakes in ``--only firestore,auth,storage --project
+# demo-omi-local`` so we cannot strip firestore from the entrypoint — we map
+# only the auth port to loopback and rely on the in-process ``fake_firestore``
+# shim (``backend/testing/e2e/fakes/firestore.py``) to satisfy the SDK at the
+# Python layer. See ``_start_auth_container`` for the port layout.
+FIREBASE_IMAGE = "omi-emulators:local"
+FIREBASE_INTERNAL_AUTH_PORT = 9099
 
 
 def _now() -> str:
@@ -178,7 +198,15 @@ def _service_health(cfg: config.HarnessConfig, service: str) -> tuple[bool, str]
             return True, "port-open"
         return False, "port-closed"
     if service == "firestore":
-        return _http_ok(f"http://{cfg.firestore_host}/")
+        # Firestore is now served by the in-process ``fake_firestore`` shim
+        # (no HTTP surface). The harness writes a sentinel file once the
+        # backend bootstrap has installed the shim; if the file is missing
+        # the harness treats firestore as unhealthy until the backend
+        # process writes it.
+        sentinel = cfg.layout.logs_dir / "firestore-shim-ready"
+        if sentinel.is_file():
+            return True, "fake_firestore shim installed"
+        return False, "fake_firestore shim not yet installed"
     if service == "auth":
         return _http_ok(f"http://{cfg.auth_host}/")
     if service == "typesense":
@@ -227,6 +255,15 @@ def _status_health_label(
 def _stop_single_service(cfg: config.HarnessConfig, record: dict[str, object]) -> None:
     pid = int(record.get("pid", -1))
     service = str(record.get("service"))
+    kind = str(record.get("kind", "process"))
+    if kind == "container":
+        # Container-backed services (currently: redis) are managed via the
+        # Docker daemon, not via process signals. The manifest records the
+        # owning container id; stop the container and drop the record.
+        _stop_owned_container(cfg, record)
+        remaining = [entry for entry in _process_records(cfg) if entry.get("service") != service]
+        _save_manifests(cfg, remaining)
+        return
     if not safety.process_exists(pid):
         return
     descendants = safety.descendant_pids(pid)
@@ -249,6 +286,32 @@ def _stop_single_service(cfg: config.HarnessConfig, record: dict[str, object]) -
     _reap_detached_port_holders(record, descendants)
     remaining = [entry for entry in _process_records(cfg) if entry.get("service") != service]
     _save_manifests(cfg, remaining)
+
+
+def _stop_owned_container(cfg: config.HarnessConfig, record: dict[str, object]) -> None:
+    """Stop a testcontainers-managed service via `docker stop`.
+
+    The harness always owns the container name (see ``_start_redis_container``),
+    so a name-based lookup is preferred: it survives Ryuk restarts of the
+    docker daemon and avoids coupling to container id reuse. Falls back to
+    container id when the manifest only carries the id (older records).
+    """
+    name = str(record.get("container_name", "")).strip()
+    container_id = str(record.get("container_id", "")).strip()
+    if name:
+        subprocess.run(
+            ["docker", "stop", "-t", "5", name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    elif container_id:
+        subprocess.run(
+            ["docker", "stop", "-t", "5", container_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
 
 
 def _require_port_available_or_owned(cfg: config.HarnessConfig, service: str, port: int) -> None:
@@ -374,18 +437,24 @@ def prerequisite_report(cfg: config.HarnessConfig) -> tuple[list[str], list[str]
         )
     java_major = _java_major_version()
     if java_major is None:
+        # The dev-harness now runs the Firestore and Auth emulators inside the
+        # ``omi-emulators:local`` Docker image, which ships its own JDK 17.
+        # Host Java is therefore only required when the legacy
+        # ``OMI_USE_HOST_FIREBASE_EMULATOR=1`` fallback is opted into, in which
+        # case we surface that path explicitly.
+        if os.environ.get("OMI_USE_HOST_FIREBASE_EMULATOR") == "1":
+            missing.append(
+                "java runtime (required by the host firebase-tools fallback; "
+                "install one with `brew install --cask temurin` or from https://adoptium.net)"
+            )
+    elif java_major < FIREBASE_EMULATORS_MIN_JAVA_MAJOR and os.environ.get("OMI_USE_HOST_FIREBASE_EMULATOR") == "1":
         missing.append(
-            "java runtime (required by the Firestore and Auth emulators; "
-            "install one with `brew install --cask temurin` or from https://adoptium.net)"
-        )
-    elif java_major < FIREBASE_EMULATORS_MIN_JAVA_MAJOR:
-        missing.append(
-            f"java {java_major} is too old for the Firebase emulators (firebase-tools requires "
+            f"java {java_major} is too old for the host firebase-tools fallback (requires "
             f"Java {FIREBASE_EMULATORS_MIN_JAVA_MAJOR}+; install e.g. `brew install openjdk@21` "
             "and put it first on PATH)"
         )
-    if not _which("redis-server"):
-        missing.append("redis-server (required for local Redis on loopback)")
+    # Redis runs inside a testcontainers-managed container (see
+    # ``_start_redis_container``); no host binary required.
     runtime = typesense_runtime()
     if runtime == "docker":
         if not _which("docker"):
@@ -602,6 +671,148 @@ def _prepend_pythonpath(env: dict[str, str], *entries: Path) -> None:
     env["PYTHONPATH"] = os.pathsep.join(values)
 
 
+def _start_auth_container(cfg: config.HarnessConfig) -> None:
+    """Bring up the Firebase Auth emulator via ``omi-emulators:local``.
+
+    Firestore is **not** run inside this container — the harness now relies on
+    the in-process ``fake_firestore`` shim
+    (``backend.testing.e2e.fakes.firestore``) injected into the backend
+    child env. See ``_harness_service_extra`` for the bootstrap hook.
+
+    The container image ENTRYPOINT bakes in
+    ``--only firestore,auth,storage --project demo-omi-local`` so we cannot
+    disable firestore from the CLI. Instead we only expose the auth port
+    (9099 → host ``cfg.auth_port``); the firestore port inside the container
+    stays bound but nothing on the host loopback reaches it. ``fake_firestore``
+    is the only firestore surface the backend talks to.
+    """
+    existing = _service_record(cfg, "auth")
+    if existing is not None:
+        healthy, detail = _service_health(cfg, "auth")
+        if healthy:
+            print("auth: already recorded as running")
+            return
+        print(f"auth: recorded service unhealthy ({detail}); restarting")
+        _stop_single_service(cfg, existing)
+    _require_port_available_or_owned(cfg, "auth", cfg.auth_port)
+    container_name = _marker(cfg, "auth").replace(":", "-") + "-emulators"
+    container = (
+        DockerContainer(FIREBASE_IMAGE)
+        .with_name(container_name)
+        .with_bind_ports(FIREBASE_INTERNAL_AUTH_PORT, cfg.auth_port)
+    )
+    container.start()
+    host = container.get_container_host_ip()
+    auth_host_port = container.get_exposed_port(FIREBASE_INTERNAL_AUTH_PORT)
+    # Auth emulator responds to GET / with HTTP 200 once ready (the firebase
+    # Auth handler always serves a config endpoint at root).
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        ok, _ = _http_ok(f"http://{host}:{auth_host_port}/")
+        if ok:
+            break
+        time.sleep(0.5)
+    else:
+        container.stop()
+        raise RuntimeError(f"auth container did not bind on {host}:{auth_host_port} within 60s")
+    log_path = cfg.layout.logs_dir / "firebase-emulators.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(
+            f"[harness] started testcontainers {FIREBASE_IMAGE} (auth-only) -> "
+            f"{host}:{auth_host_port}; firestore is served by in-process fake_firestore shim\n"
+        )
+    records = [record for record in _process_records(cfg) if record.get("service") != "auth"]
+    records.append(
+        {
+            "service": "auth",
+            "kind": "container",
+            "pid": -1,
+            "port": cfg.auth_port,
+            "endpoint": f"{host}:{auth_host_port}",
+            "container_name": container_name,
+            "container_id": container.get_wrapped_container().id,
+            "image": FIREBASE_IMAGE,
+            "log": str(log_path),
+            "ownership_marker": _marker(cfg, "auth"),
+            "started_at": _now(),
+        }
+    )
+    # Drop any stale firestore record left over from the previous
+    # firestore-via-emulator path; the in-process shim has no port to probe.
+    records = [record for record in records if record.get("service") != "firestore"]
+    _save_manifests(cfg, records)
+    # Mark the in-process firestore shim as healthy via a sentinel the backend
+    # bootstrap writes. The health check below reads this file before probing a
+    # network endpoint that no longer exists.
+    sentinel = cfg.layout.logs_dir / "firestore-shim-ready"
+    sentinel.write_text(f"fake_firestore active at {_now()}\n", encoding="utf-8")
+    print(f"auth: started (testcontainers {FIREBASE_IMAGE}) -> {cfg.auth_host}:{cfg.auth_port}")
+    print("firestore: in-process fake_firestore shim (no container; sentinel at {sentinel})")
+
+
+def _start_redis_container(cfg: config.HarnessConfig, data_dir: Path) -> None:
+    """Bring up a throwaway Redis 7 Alpine container for the dev harness.
+
+    Uses testcontainers-python so the harness has no host-binary dependency on
+    ``redis-server``. The container is owned by name (``omi-dev-harness:<instance>:redis``)
+    so ``make dev-down`` and the per-service restart path can locate it without
+    keeping the testcontainers Python object alive across processes.
+    """
+    existing = _service_record(cfg, "redis")
+    if existing is not None:
+        healthy, detail = _service_health(cfg, "redis")
+        if healthy:
+            print("redis: already recorded as running")
+            return
+        print(f"redis: recorded service unhealthy ({detail}); restarting")
+        _stop_single_service(cfg, existing)
+    _require_port_available_or_owned(cfg, "redis", cfg.redis_port)
+    container_name = _marker(cfg, "redis").replace(":", "-") + "-redis"
+    container = (
+        RedisContainer(REDIS_IMAGE)
+        .with_name(container_name)
+        # Bind 6379 inside the container to the harness-managed loopback port.
+        # testcontainers maps container:host so the rest of the stack sees
+        # ``127.0.0.1:<cfg.redis_port>`` exactly like the host-binary version.
+        .with_bind_ports(6379, cfg.redis_port)
+    )
+    container.start()
+    # Wait until the TCP port actually accepts connections; testcontainers
+    # ``start()`` returns as soon as Docker reports the container running.
+    host = container.get_container_host_ip()
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline:
+        if _port_open(host, cfg.redis_port):
+            break
+        time.sleep(0.1)
+    else:
+        container.stop()
+        raise RuntimeError(f"redis container did not bind 127.0.0.1:{cfg.redis_port} within 15s")
+    log_path = cfg.layout.logs_dir / "redis.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(f"[harness] started testcontainers redis ({REDIS_IMAGE}) -> 127.0.0.1:{cfg.redis_port}\n")
+    records = [record for record in _process_records(cfg) if record.get("service") != "redis"]
+    records.append(
+        {
+            "service": "redis",
+            "kind": "container",
+            "pid": -1,
+            "port": cfg.redis_port,
+            "endpoint": f"127.0.0.1:{cfg.redis_port}",
+            "container_name": container_name,
+            "container_id": container.get_wrapped_container().id,
+            "image": REDIS_IMAGE,
+            "log": str(log_path),
+            "ownership_marker": _marker(cfg, "redis"),
+            "started_at": _now(),
+        }
+    )
+    _save_manifests(cfg, records)
+    print(f"redis: started (testcontainers {REDIS_IMAGE}) -> 127.0.0.1:{cfg.redis_port}")
+
+
 def _start_process(
     cfg: config.HarnessConfig,
     service: str,
@@ -775,36 +986,10 @@ _INFRA_SETTLE_DELAY = 2.0
 
 def _start_infrastructure(cfg: config.HarnessConfig) -> None:
     cfg.layout.logs_dir.mkdir(parents=True, exist_ok=True)
-    _start_process(
-        cfg,
-        "firestore",
-        _firebase_command(cfg),
-        cwd=cfg.repo_root,
-        log_name="firebase-emulators.log",
-        port=cfg.firestore_port,
-    )
+    _start_auth_container(cfg)
     redis_dir = cfg.layout.services_dir / "redis"
     redis_dir.mkdir(parents=True, exist_ok=True)
-    _start_process(
-        cfg,
-        "redis",
-        [
-            "redis-server",
-            "--bind",
-            "127.0.0.1",
-            "--port",
-            str(cfg.redis_port),
-            "--dir",
-            str(redis_dir),
-            "--save",
-            "",
-            "--appendonly",
-            "no",
-        ],
-        cwd=cfg.repo_root,
-        log_name="redis.log",
-        port=cfg.redis_port,
-    )
+    _start_redis_container(cfg, redis_dir)
     print(f"typesense runtime: {typesense_runtime()}")
     _remove_stale_typesense_container(cfg)
     _start_process(
@@ -905,7 +1090,7 @@ def _wait_health(
     """
     typesense_headers = {"X-TYPESENSE-API-KEY": config.LOCAL_TYPESENSE_API_KEY}
     checks = {
-        "firestore": (f"http://{cfg.firestore_host}/", None),
+        "firestore": (None, None),  # in-process fake_firestore shim; sentinel-based health
         "auth": (f"http://{cfg.auth_host}/", None),
         "typesense": (f"http://127.0.0.1:{cfg.typesense_port}/collections", typesense_headers),
         "backend": (f"{cfg.backend_url}/docs", None),
