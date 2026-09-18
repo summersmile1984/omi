@@ -17,14 +17,16 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from . import config, providers, safety, memory_scenarios
+from .self_hosted_profile import self_hosted_local_dsn, write_self_hosted_local_profile
 
 # testcontainers-python is the canonical way to spin up throwaway middleware
 # containers. Pinned image tags match what backend/AGENTS.md requires for
 # production parity, so dev-mode container behaviour matches deploy-target OS.
 from testcontainers.core.container import DockerContainer
+from testcontainers.postgres import PostgresContainer
 from testcontainers.redis import RedisContainer
 
 OWNERSHIP_PREFIX = "omi-dev-harness"
@@ -32,6 +34,25 @@ OWNERSHIP_PREFIX = "omi-dev-harness"
 # Pinned to match backend testing fixture (`tests/integration/containers/conftest.py`)
 # and the Omi production stack.
 REDIS_IMAGE = "redis:7-alpine"
+
+# Self-hosted fork replaces the Firestore emulator with a PostgreSQL-backed
+# ``firestore_pg`` facade (see ``backend/firestore_pg/compat.py``). The harness
+# brings up a Postgres container here so the backend's psycopg connection has
+# somewhere to land. Pinned to match the Omi self-host stack
+# (``backend/AGENTS.fork.md``), which builds on top of ``postgres:16-alpine``.
+POSTGRES_IMAGE = "postgres:16-alpine"
+POSTGRES_USER = "omi"
+POSTGRES_PASSWORD = "omi_dev_only_local_dev_password"
+POSTGRES_DB = "omi"
+
+# Better Auth is the fork's replacement for Firebase Auth (see
+# ``backend/utils/auth_shim.py`` + ``omi-better-auth-shim.md``). The dev
+# harness runs the existing production ``omi-auth-server:self-host-live-current``
+# image on ``127.0.0.1:3000`` so ``AUTH_JWKS_URL`` resolves to its
+# ``/api/auth/jwks`` endpoint (the URL ``backend/utils/auth_shim.py`` defaults
+# to, ``http://127.0.0.1:3000/api/auth/jwks``).
+BETTER_AUTH_IMAGE = "omi-auth-server:self-host-live-current"
+BETTER_AUTH_PORT = 3000
 
 # The Firebase Auth emulator ships as a self-contained Docker image so the dev
 # harness can drop the host-side JDK + node + firebase-tools requirement. The
@@ -208,7 +229,19 @@ def _service_health(cfg: config.HarnessConfig, service: str) -> tuple[bool, str]
             return True, "fake_firestore shim installed"
         return False, "fake_firestore shim not yet installed"
     if service == "auth":
-        return _http_ok(f"http://{cfg.auth_host}/")
+        # Firebase Auth emulator doesn't expose a stable HTTP probe — it only
+        # serves gRPC. The ``All emulators ready!`` log line is the readiness
+        # signal the image prints; we approximate it with a TCP port-open
+        # check which is what firebase-tools itself relies on.
+        if _port_open("127.0.0.1", cfg.auth_port):
+            return True, "port-open"
+        return False, "port-closed"
+    if service == "postgres":
+        if _port_open("127.0.0.1", int(os.environ.get("OMI_HARNESS_PG_PORT", "5444"))):
+            return True, "port-open"
+        return False, "port-closed"
+    if service == "better-auth":
+        return _http_ok("http://127.0.0.1:3000/api/auth/jwks")
     if service == "typesense":
         url = f"http://127.0.0.1:{cfg.typesense_port}/collections"
         headers = {"X-TYPESENSE-API-KEY": config.LOCAL_TYPESENSE_API_KEY}
@@ -704,12 +737,12 @@ def _start_auth_container(cfg: config.HarnessConfig) -> None:
     container.start()
     host = container.get_container_host_ip()
     auth_host_port = container.get_exposed_port(FIREBASE_INTERNAL_AUTH_PORT)
-    # Auth emulator responds to GET / with HTTP 200 once ready (the firebase
-    # Auth handler always serves a config endpoint at root).
+    # Auth emulator doesn't expose a stable HTTP probe (it only serves gRPC).
+    # Wait for the TCP port to open instead, then probe with a short sleep to
+    # let the firebase-tools supervisor finish bringing auth up.
     deadline = time.monotonic() + 60.0
     while time.monotonic() < deadline:
-        ok, _ = _http_ok(f"http://{host}:{auth_host_port}/")
-        if ok:
+        if _port_open(host, auth_host_port):
             break
         time.sleep(0.5)
     else:
@@ -749,6 +782,287 @@ def _start_auth_container(cfg: config.HarnessConfig) -> None:
     sentinel.write_text(f"fake_firestore active at {_now()}\n", encoding="utf-8")
     print(f"auth: started (testcontainers {FIREBASE_IMAGE}) -> {cfg.auth_host}:{cfg.auth_port}")
     print("firestore: in-process fake_firestore shim (no container; sentinel at {sentinel})")
+
+
+def _start_postgres_container(
+    cfg: config.HarnessConfig,
+    harness_network: Any,
+) -> None:
+    """Bring up the self-hosted ``firestore_pg`` Postgres backend.
+
+    The fork-owned ``backend/firestore_pg/`` package routes Firestore SDK
+    calls to this Postgres instance via ``firestore_pg.compat.install``.
+    Writes the resolved loopback port to ``cfg.layout.services_dir / "pg_port.txt"``
+    so ``_harness_service_extra`` can include it in the backend child env.
+
+    The user / password / database match ``self_hosted_local_dsn`` so the
+    backend uvicorn can connect without further configuration. ``firestore_pg``
+    creates the schema lazily on first use via ``firestore_pg.migrations``.
+
+    Joins ``harness_network`` under the alias ``pg`` so the Better Auth
+    container can reach it via DNS instead of relying on
+    ``host.docker.internal`` (which is unreachable from the bridge network
+    on macOS Docker Desktop).
+    """
+    existing = _service_record(cfg, "postgres")
+    if existing is not None:
+        healthy, detail = _service_health(cfg, "postgres")
+        if healthy:
+            print("postgres: already recorded as running")
+            return
+        print(f"postgres: recorded service unhealthy ({detail}); restarting")
+        _stop_single_service(cfg, existing)
+    # Reuse the redis_port slot convention: harness owns one PG port per
+    # instance. Pick a fixed-but-configurable offset so multiple instances
+    # don't collide on a shared host.
+    pg_port = int(os.environ.get("OMI_HARNESS_PG_PORT", "5444"))
+    _require_port_available_or_owned(cfg, "postgres", pg_port)
+    container_name = _marker(cfg, "postgres").replace(":", "-") + "-pg"
+    container = (
+        PostgresContainer(
+            POSTGRES_IMAGE,
+            username=POSTGRES_USER,
+            password=POSTGRES_PASSWORD,
+            dbname=POSTGRES_DB,
+        )
+        .with_name(container_name)
+        .with_bind_ports(5432, pg_port)
+        .with_network(harness_network)
+        .with_network_aliases("pg")
+    )
+    container.start()
+    host = container.get_container_host_ip()
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        if _port_open(host, pg_port):
+            break
+        time.sleep(0.25)
+    else:
+        container.stop()
+        raise RuntimeError(f"postgres container did not bind 127.0.0.1:{pg_port} within 30s")
+    log_path = cfg.layout.logs_dir / "postgres.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(
+            f"[harness] started testcontainers postgres ({POSTGRES_IMAGE}) -> "
+            f"127.0.0.1:{pg_port} user={POSTGRES_USER} db={POSTGRES_DB}\n"
+        )
+    records = [record for record in _process_records(cfg) if record.get("service") != "postgres"]
+    records.append(
+        {
+            "service": "postgres",
+            "kind": "container",
+            "pid": -1,
+            "port": pg_port,
+            "endpoint": f"{host}:{pg_port}",
+            "container_name": container_name,
+            "container_id": container.get_wrapped_container().id,
+            "image": POSTGRES_IMAGE,
+            "log": str(log_path),
+            "ownership_marker": _marker(cfg, "postgres"),
+            "started_at": _now(),
+        }
+    )
+    _save_manifests(cfg, records)
+    # Record the resolved loopback port so ``_harness_service_extra`` can read
+    # it from the host-side filesystem when wiring ``FIRESTORE_PG_DSN`` into
+    # the backend uvicorn child env.
+    (cfg.layout.services_dir / "pg_port.txt").write_text(
+        f"{pg_port}\n", encoding="utf-8"
+    )
+    print(f"postgres: started (testcontainers {POSTGRES_IMAGE}) -> 127.0.0.1:{pg_port}")
+
+
+def _better_auth_envs() -> dict[str, str]:
+    """Return the env block the Better Auth image expects on every invocation.
+
+    Production ``omi-auth-server:self-host-live-current`` is fail-closed in
+    ``NODE_ENV=production`` (see ``src/auth.js:38``), so we always set
+    ``NODE_ENV=development`` for the harness and pre-fill every required
+    variable with a throwaway local-dev value. ``DATABASE_URL`` uses the
+    ``pg`` DNS alias resolved through the harness-shared docker network (see
+    ``_start_infrastructure``).
+    """
+    return {
+        "DATABASE_URL": os.environ.get(
+            "BETTER_AUTH_DATABASE_URL",
+            "postgresql://omi:omi_dev_only_local_dev_password@pg:5432/omi",
+        ),
+        "BETTER_AUTH_SECRET": os.environ.get(
+            "BETTER_AUTH_SECRET",
+            "local-dev-better-auth-secret-not-real-32-bytes-min",
+        ),
+        "BETTER_AUTH_URL": os.environ.get(
+            "BETTER_AUTH_URL",
+            f"http://127.0.0.1:{BETTER_AUTH_PORT}",
+        ),
+        "AUTH_INTERNAL_ADMIN_SECRET": os.environ.get(
+            "AUTH_INTERNAL_ADMIN_SECRET",
+            "local-dev-internal-admin-secret-not-real",
+        ),
+        "BETTER_AUTH_TRUSTED_ORIGINS": os.environ.get(
+            "BETTER_AUTH_TRUSTED_ORIGINS",
+            "http://127.0.0.1:3000,http://127.0.0.1:8000,http://localhost,http://127.0.0.1",
+        ),
+        "BETTER_AUTH_IP_HEADERS": os.environ.get(
+            "BETTER_AUTH_IP_HEADERS",
+            "x-forwarded-for,x-real-ip",
+        ),
+        "NODE_ENV": "development",
+    }
+
+
+def _run_better_auth_migration(
+    cfg: config.HarnessConfig,
+    harness_network: Any,
+    envs: dict[str, str],
+) -> None:
+    """One-shot container that runs ``src/migrate.js`` against Postgres.
+
+    The Better Auth image does NOT auto-migrate; ``src/index.js`` starts the
+    HTTP server immediately and ``/api/auth/jwks`` 500s until somebody has
+    created the ``jwks`` table and bootstrapped a signing key. We use the
+    production image's own migration script (``npm run migrate`` →
+    ``node src/migrate.js``) so the JWKS row shape and signing key match what
+    the server will subsequently serve.
+
+    Implemented via the docker SDK directly (not testcontainers) because the
+    image's ``ExposedPorts: 3000/tcp`` would otherwise cause testcontainers to
+    try publishing 3000 on the host loopback — a port the long-running server
+    also needs. The migration container has no use for that port.
+    """
+    from testcontainers.core.docker_client import DockerClient
+
+    migrate_name = _marker(cfg, "better-auth-migrate").replace(":", "-") + "-migrate"
+    client = DockerClient().client
+    env_list = [f"{k}={v}" for k, v in envs.items()]
+    log_path = cfg.layout.logs_dir / "better-auth-migrate.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    container = client.containers.run(
+        BETTER_AUTH_IMAGE,
+        command=["node", "src/migrate.js"],
+        name=migrate_name,
+        environment=envs,
+        network=harness_network.name,
+        remove=True,
+        stdout=True,
+        stderr=True,
+        detach=True,
+    )
+    # ``--rm`` makes docker delete the container as soon as it exits, so we
+    # capture the log to disk by streaming it into a sidecar file as the
+    # container runs.
+    log_file = log_path.open("ab")
+    for line in container.logs(stream=True, follow=True):
+        log_file.write(line)
+        log_file.flush()
+    container.wait()
+    log_file.close()
+    rc = container.attrs.get("State", {}).get("ExitCode", 1)
+    if rc != 0:
+        raise RuntimeError(
+            f"better-auth migration container exited with code {rc}; see {log_path}"
+        )
+    print(f"better-auth: schema migration OK (log={log_path})")
+
+
+def _start_better_auth_container(
+    cfg: config.HarnessConfig,
+    harness_network: Any,
+) -> None:
+    """Bring up the Better Auth TS service container exposing JWKS.
+
+    Uses the production ``omi-auth-server:self-host-live-current`` image that
+    ``backend/.openapi-venv/lib/.../langsmith/sandbox/README.md`` references.
+    If that image is not present locally, ``docker run`` will fail; the caller
+    is expected to have pulled it (``docker pull omi-auth-server:self-host-live-current``)
+    or built it from ``deploy/self-host/Dockerfile.llm``.
+    """
+    existing = _service_record(cfg, "better-auth")
+    if existing is not None:
+        healthy, detail = _service_health(cfg, "better-auth")
+        if healthy:
+            print("better-auth: already recorded as running")
+            return
+        print(f"better-auth: recorded service unhealthy ({detail}); restarting")
+        _stop_single_service(cfg, existing)
+    _require_port_available_or_owned(cfg, "better-auth", BETTER_AUTH_PORT)
+    container_name = _marker(cfg, "better-auth").replace(":", "-") + "-auth"
+    ba_envs = _better_auth_envs()
+    # Run schema migration + JWKS key bootstrap on a one-shot container so the
+    # long-running BA server has a populated ``jwks`` table on first request.
+    # ``src/migrate.js`` is in the production image (``omi-auth-server``); it
+    # also reuses the same Better Auth options as the main server, so the JWKS
+    # key it generates matches what ``/api/auth/jwks`` later serves.
+    print("better-auth: running schema migration...")
+    _run_better_auth_migration(cfg, harness_network, ba_envs)
+    # Start the long-running BA server via the docker SDK directly (not
+    # testcontainers) because the image's ``ExposedPorts: 3000/tcp`` causes
+    # testcontainers to publish that port on the host loopback — the port we
+    # want here — but we need a stable name + manual log capture. The shared
+    # docker network still resolves ``pg`` → Postgres.
+    from testcontainers.core.docker_client import DockerClient
+    client = DockerClient().client
+    ba_log_path = cfg.layout.logs_dir / "better-auth.log"
+    ba_log_path.parent.mkdir(parents=True, exist_ok=True)
+    ba_log_file = ba_log_path.open("ab")
+    container = client.containers.run(
+        BETTER_AUTH_IMAGE,
+        name=container_name,
+        environment=ba_envs,
+        network=harness_network.name,
+        ports={f"{BETTER_AUTH_PORT}/tcp": ("127.0.0.1", BETTER_AUTH_PORT)},
+        stdout=True,
+        stderr=True,
+        detach=True,
+    )
+    # Stream logs to the harness log file (testcontainers-managed stop()
+    # also handles this; we do it manually because we're using the raw
+    # docker SDK).
+    import threading
+    def _stream_logs():
+        try:
+            for line in container.logs(stream=True, follow=True):
+                ba_log_file.write(line)
+                ba_log_file.flush()
+        except Exception:
+            pass
+    threading.Thread(target=_stream_logs, daemon=True).start()
+    host = "127.0.0.1"
+    auth_host_port = BETTER_AUTH_PORT
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        ok, _ = _http_ok(f"http://{host}:{auth_host_port}/api/auth/jwks")
+        if ok:
+            break
+        time.sleep(0.5)
+    else:
+        try:
+            container.remove(force=True)
+        finally:
+            ba_log_file.close()
+        raise RuntimeError(
+            f"better-auth container did not expose JWKS on {host}:{auth_host_port} within 30s"
+        )
+    records = [record for record in _process_records(cfg) if record.get("service") != "better-auth"]
+    records.append(
+        {
+            "service": "better-auth",
+            "kind": "container",
+            "pid": -1,
+            "port": BETTER_AUTH_PORT,
+            "endpoint": f"{host}:{auth_host_port}",
+            "container_name": container_name,
+            "container_id": container.id,
+            "image": BETTER_AUTH_IMAGE,
+            "log": str(ba_log_path),
+            "ownership_marker": _marker(cfg, "better-auth"),
+            "started_at": _now(),
+            "_container": container,
+        }
+    )
+    _save_manifests(cfg, records)
+    print(f"better-auth: started ({BETTER_AUTH_IMAGE}) -> http://{host}:{auth_host_port}/api/auth/jwks")
 
 
 def _start_redis_container(cfg: config.HarnessConfig, data_dir: Path) -> None:
@@ -986,7 +1300,32 @@ _INFRA_SETTLE_DELAY = 2.0
 
 def _start_infrastructure(cfg: config.HarnessConfig) -> None:
     cfg.layout.logs_dir.mkdir(parents=True, exist_ok=True)
+    # Render the fork-owned self_hosted.local profile table so the backend
+    # uvicorn child resolves a row that satisfies backend/fork/bootstrap.py's
+    # data_plane asserts (store=firestore_pg, identity_provider=better_auth,
+    # object_store=minio, queue=redis, vector=qdrant, cache=redis).
+    profile_path = write_self_hosted_local_profile(cfg.layout.services_dir)
+    # Create a per-instance docker network so the harness-owned Postgres
+    # container can be reached by the Better Auth TS service container via a
+    # stable DNS alias (``pg``). Sharing a network sidesteps the macOS Docker
+    # Desktop quirks with ``host.docker.internal`` and ``--network=host`` (the
+    # former resolves but is unreachable from the container's bridge network,
+    # the latter makes the Better Auth container's bound port invisible on the
+    # host loopback). testcontainers tears the network down with the harness.
+    from testcontainers.core.network import Network
+    harness_network = Network().create()
+    # 1. Postgres for firestore_pg (replaces the Firestore emulator). Publishes
+    #    to the host loopback on the harness-managed port AND joins the shared
+    #    network under the alias ``pg``.
+    _start_postgres_container(cfg, harness_network)
+    # 2. Firebase Auth emulator still needed for ADMIN_KEY paths + Firebase
+    #    user-shape requests that some downstream code paths still exercise.
     _start_auth_container(cfg)
+    # 3. Better Auth TS service for JWT verification. Joins the same network
+    #    so it can dial Postgres over ``host.docker.internal:host-gateway`` —
+    #    testcontainers injects that DNS alias into every container on the
+    #    network, so the loopback ``pg:5432`` style also works.
+    _start_better_auth_container(cfg, harness_network)
     redis_dir = cfg.layout.services_dir / "redis"
     redis_dir.mkdir(parents=True, exist_ok=True)
     _start_redis_container(cfg, redis_dir)
@@ -1000,6 +1339,10 @@ def _start_infrastructure(cfg: config.HarnessConfig) -> None:
         log_name="typesense.log",
         port=cfg.typesense_port,
     )
+    # ``_start_postgres_container`` already wrote the resolved loopback port
+    # to ``pg_port.txt`` so ``_harness_service_extra`` can wire it into the
+    # backend uvicorn child env as ``FIRESTORE_PG_DSN``.
+    print(f"self_hosted.local profile written at {profile_path}")
 
 
 def _start_app_services(cfg: config.HarnessConfig) -> None:
@@ -1068,12 +1411,44 @@ _HEALTH_TIMEOUTS: dict[str, float] = {
     # The combined Firebase process can report Firestore ready before Auth has
     # finished its cold startup on the qualification runner.
     "auth": 90.0,
+    "postgres": 45.0,
+    "better-auth": 60.0,
     "typesense": 45.0,
     "backend": 180.0,
     "llm-gateway": 60.0,
     "desktop-backend": 60.0,
     "redis": 30.0,
 }
+
+
+def _service_default_port(cfg: config.HarnessConfig, service: str) -> int:
+    """Return the loopback port a service binds for harness-time probes.
+
+    Used to format the timeout error in ``_wait_health`` so it points at the
+    port that's actually being checked, not a redis-port-shaped fallback.
+    """
+    if service == "redis":
+        return cfg.redis_port
+    if service == "postgres":
+        return int(os.environ.get("OMI_HARNESS_PG_PORT", "5444"))
+    if service == "better-auth":
+        return BETTER_AUTH_PORT
+    if service == "typesense":
+        return cfg.typesense_port
+    if service == "backend":
+        return cfg.backend_port
+    if service == "llm-gateway":
+        return cfg.llm_gateway_port
+    if service == "desktop-backend":
+        return cfg.desktop_backend_port
+    if service == "auth":
+        return cfg.auth_port
+    if service == "firestore":
+        # Firestore shim has no HTTP surface; the wait-URL is the shim's
+        # sentinel file, not a port. Return 0 so the formatted error remains
+        # readable (``at 127.0.0.1:0``).
+        return 0
+    return 0
 
 
 def _wait_health(
@@ -1091,7 +1466,9 @@ def _wait_health(
     typesense_headers = {"X-TYPESENSE-API-KEY": config.LOCAL_TYPESENSE_API_KEY}
     checks = {
         "firestore": (None, None),  # in-process fake_firestore shim; sentinel-based health
-        "auth": (f"http://{cfg.auth_host}/", None),
+        "auth": (None, None),  # port-based check (gRPC-only service)
+        "postgres": (None, None),  # port-based check
+        "better-auth": ("http://127.0.0.1:3000/api/auth/jwks", None),
         "typesense": (f"http://127.0.0.1:{cfg.typesense_port}/collections", typesense_headers),
         "backend": (f"{cfg.backend_url}/docs", None),
         "llm-gateway": (f"{cfg.llm_gateway_url}/health", None),
@@ -1115,7 +1492,7 @@ def _wait_health(
         for service in list(pending):
             if now >= deadlines[service]:
                 url = pending[service][0]
-                endpoint = url or f"127.0.0.1:{cfg.redis_port}"
+                endpoint = url or f"127.0.0.1:{_service_default_port(cfg, service)}"
                 failures[service] = f"not healthy after {deadlines[service] - start:.0f}s at {endpoint}"
                 pending.pop(service)
         if not pending:
@@ -1136,7 +1513,12 @@ def _wait_health(
                     pending.pop(service)
                     failures.pop(service, None)
                 continue
-            ok, detail = _http_ok(url, headers=headers)
+            # Route every other service through ``_service_health`` so port-based
+            # checks (firestore shim sentinel, auth emulator, postgres, the
+            # ``better-auth`` JWKS HTTP probe) hit the right probe per service
+            # instead of ``_http_ok(None)`` raising on the bare ``(None, None)``
+            # ``checks`` entries above.
+            ok, detail = _service_health(cfg, service)
             if ok:
                 print(f"{service}: healthy ({detail})")
                 pending.pop(service)

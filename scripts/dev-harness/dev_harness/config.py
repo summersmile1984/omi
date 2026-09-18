@@ -405,6 +405,39 @@ def _harness_service_extra(cfg: HarnessConfig) -> dict[str, str]:
         # ``*_API_KEY`` values under ``PROVIDER_MODE=offline`` to keep the
         # offline stack fully hermetic.
         extra["STT_SERVICE_MODELS"] = "parakeet"
+        # Self-hosted fork profile: route the backend through the fork-owned
+        # ``firestore_pg`` facade + Better Auth identity provider instead of the
+        # upstream ``firebase_admin`` path. ``backend/fork/bootstrap.py`` reads
+        # ``OMI_DEPLOYMENT_PROFILES_PATH`` to resolve the profile table and
+        # then asserts ``store=firestore_pg`` and ``identity_provider=better_auth``;
+        # missing either fails closed at startup.
+        pg_port_file = cfg.layout.services_dir / "pg_port.txt"
+        pg_port = int(pg_port_file.read_text(encoding="utf-8").strip()) if pg_port_file.is_file() else 5443
+        from .self_hosted_profile import self_hosted_local_dsn
+        profile_path = cfg.layout.services_dir / "deployment_profiles.generated.json"
+        extra["OMI_DEPLOYMENT_TARGET"] = "self_hosted"
+        extra["OMI_DEPLOYMENT_PROFILE"] = "self_hosted.local"
+        extra["OMI_DEPLOYMENT_PROFILES_PATH"] = str(profile_path)
+        extra["OMI_BRAND"] = "omi-upstream"
+        extra["FIRESTORE_PG_DSN"] = self_hosted_local_dsn(pg_port)
+        extra["AUTH_PROVIDER"] = "better_auth"
+        extra["AUTH_JWKS_URL"] = f"http://127.0.0.1:{3000}/api/auth/jwks"
+        # ``AUTH_DEV_ISSUER_SECRET`` is gated by the backend to the dev-only
+        # ``/auth-issue`` bridge; the offline harness never reaches that path,
+        # and ``build_child_env`` rejects ``*_SECRET`` provider credentials
+        # under offline mode, so we deliberately leave it unset.
+        # ``backend/fork/bootstrap.py`` requires these to be set for the API
+        # role; the harness owns the redis container, so it can speak directly.
+        extra["REDIS_DB_HOST"] = cfg.redis_host
+        extra["REDIS_DB_PORT"] = str(cfg.redis_port)
+        extra["REDIS_DB_PASSWORD"] = ""
+        # Storage backend + queue backend switches (see fork bootstrap).
+        extra["STORAGE_BACKEND"] = "minio"
+        extra["QUEUE_BACKEND"] = "redis"
+        extra["VECTOR_STORE_PROVIDER"] = "qdrant"
+        # Suppress upstream OMI cloud telemetry/egress hooks under local dev.
+        extra["OMI_DEPLOYMENT_TARGET_STAGE"] = "local"
+        extra["OMI_LOCAL_INSTANCE"] = cfg.instance
     return extra
 
 
