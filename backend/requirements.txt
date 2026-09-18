@@ -235,3 +235,8 @@ pycountry==24.6.1
 langdetect==1.0.9
 lc3py==1.1.3; sys_platform == "linux" and platform_machine == "x86_64"
 twilio==9.5.0
+# Testcontainers integration fixtures: hermetic Redis/Postgres/etc. Docker
+# containers for integration tests. Kept in the runtime requirements list
+# (matching backend/AGENTS.md policy of pinning test infra in package.json) so
+# `make setup-backend` installs it alongside the rest of the backend stack.
+testcontainers[redis]==4.13.3
