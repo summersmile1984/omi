@@ -442,6 +442,21 @@ def _harness_service_extra(cfg: HarnessConfig) -> dict[str, str]:
         extra["STORAGE_BACKEND"] = "minio"
         extra["QUEUE_BACKEND"] = "redis"
         extra["VECTOR_STORE_PROVIDER"] = "qdrant"
+        # ``backend/fork/storage_minio.Config.from_env`` reads these four
+        # values; without them the bootstrap call raises ``ValueError``.
+        # The host/port come from ``minio_port.txt`` (written by
+        # ``_start_minio_container``) so dev-overrides of
+        # ``OMI_HARNESS_MINIO_PORT`` flow into the boto3 S3 endpoint URL.
+        # access/secret mirror the fork's own test fixtures so dev credentials
+        # are interchangeable with
+        # ``backend/fork/tests/test_storage_queue_adapters.py``.
+        minio_port_file = cfg.layout.services_dir / "minio_port.txt"
+        minio_port = int(minio_port_file.read_text(encoding="utf-8").strip()) if minio_port_file.is_file() else 9000
+        extra["MINIO_ENDPOINT"] = f"http://127.0.0.1:{minio_port}"
+        extra["MINIO_PUBLIC_ENDPOINT"] = f"http://127.0.0.1:{minio_port}"
+        extra["MINIO_ACCESS_KEY"] = "synthetic-access"
+        extra["MINIO_SECRET_KEY"] = "synthetic-secret"
+        extra["MINIO_REGION"] = "us-east-1"
         # Suppress upstream OMI cloud telemetry/egress hooks under local dev.
         extra["OMI_DEPLOYMENT_TARGET_STAGE"] = "local"
         extra["OMI_LOCAL_INSTANCE"] = cfg.instance

@@ -120,6 +120,12 @@ _LOCAL_BACKEND_SECRET_KEYS = {
     # _PROVIDER_SECRET_RE on "SECRET" but is not a provider credential, so offline
     # mode must pass it through rather than refuse it.
     "SCREEN_FRAME_SIGNING_SECRET",
+    # Local MinIO access/secret for the fork's ``STORAGE_BACKEND=minio``
+    # path. The harness's own minio container uses the same credentials, so
+    # these are not external provider secrets. ``SECRET_KEY`` matches the
+    # ``SECRET`` substring in ``_PROVIDER_SECRET_RE`` and would otherwise be
+    # refused; ``ACCESS_KEY`` is safe because the regex does not match it.
+    "MINIO_SECRET_KEY",
 }
 _OFFLINE_PROVIDER_PLACEHOLDERS = {
     "OPENAI_API_KEY": "sk-omi-local-harness-offline-not-real",

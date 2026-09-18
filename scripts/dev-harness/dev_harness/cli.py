@@ -54,6 +54,36 @@ POSTGRES_DB = "omi"
 BETTER_AUTH_IMAGE = "omi-auth-server:self-host-live-current"
 BETTER_AUTH_PORT = 3000
 
+# The fork's ``STORAGE_BACKEND=minio`` path (see ``backend/fork/bootstrap.py:83``
+# and ``backend/fork/storage_minio.py``) needs a real S3-compatible endpoint.
+# The dev harness runs the upstream MinIO image, which speaks the same
+# S3-shaped API as GCS so ``backend.fork.provider_objects.get_minio_client``
+# can talk to it without changes. Pinned to the latest stable line.
+MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z"
+MINIO_PORT = 9000
+MINIO_CONSOLE_PORT = 9001
+# The fork's storage tests (``backend/fork/tests/test_storage_queue_adapters.py``)
+# use ``synthetic-access``/``synthetic-secret`` as their stand-in values;
+# we reuse the same strings here so the dev credentials match the test
+# expectations. MinIO enforces a minimum length of 8 on both fields, and
+# ``storage_minio.Config.from_env`` raises ``ValueError`` if either is empty.
+MINIO_ACCESS_KEY = "synthetic-access"
+MINIO_SECRET_KEY = "synthetic-secret"
+# Buckets the backend reads/writes through the ``fork`` profile's
+# ``LOCAL_STORAGE_BUCKET_ENV`` mapping (``BUCKET_SPEECH_PROFILES``,
+# ``BUCKET_POSTPROCESSING`` etc.). Pre-create them on container start so the
+# first request doesn't have to handle the bucket-not-found error path.
+MINIO_BUCKETS = [
+    "speech-profiles",
+    "postprocessing",
+    "omi-private-cloud-sync",
+    "sync-temporal",
+    "memories-recordings",
+    "app-thumbnails",
+    "chat-files",
+    "desktop-updates",
+]
+
 # The Firebase Auth emulator ships as a self-contained Docker image so the dev
 # harness can drop the host-side JDK + node + firebase-tools requirement. The
 # image ENTRYPOINT bakes in ``--only firestore,auth,storage --project
@@ -242,6 +272,12 @@ def _service_health(cfg: config.HarnessConfig, service: str) -> tuple[bool, str]
         return False, "port-closed"
     if service == "better-auth":
         return _http_ok("http://127.0.0.1:3000/api/auth/jwks")
+    if service == "minio":
+        # MinIO exposes an unauthenticated ``/minio/health/live`` endpoint
+        # that returns 200 once the server is serving requests. We probe
+        # that rather than ``/_/`` (the MinIO browser console) so a
+        # temporary console restart does not flip this status.
+        return _http_ok(f"http://127.0.0.1:9000/minio/health/live")
     if service == "typesense":
         url = f"http://127.0.0.1:{cfg.typesense_port}/collections"
         headers = {"X-TYPESENSE-API-KEY": config.LOCAL_TYPESENSE_API_KEY}
@@ -966,6 +1002,122 @@ def _run_better_auth_migration(
     print(f"better-auth: schema migration OK (log={log_path})")
 
 
+def _start_minio_container(cfg: config.HarnessConfig) -> int:
+    """Bring up a MinIO container for the fork's S3-compatible storage path.
+
+    The fork's ``STORAGE_BACKEND=minio`` choice (``backend/fork/bootstrap.py:83``)
+    means ``storage_minio.Config.from_env`` instantiates a real boto3 S3
+    client during ``fork.bootstrap()``; without a running endpoint the
+    backend's storage helpers raise at first use. The dev harness brings
+    up the upstream MinIO image on a stable loopback port and writes the
+    S3 credentials into ``cfg.layout.services_dir / "minio.env"`` so the
+    backend child env can pick them up consistently.
+
+    Returns the resolved ``MINIO_ENDPOINT`` host:port. Buckets the fork
+    reads/writes through the ``LOCAL_STORAGE_BUCKET_ENV`` mapping are
+    pre-created on container start via ``mc admin`` so the first request
+    does not race the bucket creation.
+    """
+    from testcontainers.core.container import DockerContainer
+
+    existing = _service_record(cfg, "minio")
+    if existing is not None:
+        healthy, detail = _service_health(cfg, "minio")
+        if healthy:
+            print("minio: already recorded as running")
+            return int(existing["port"])
+        print(f"minio: recorded service unhealthy ({detail}); restarting")
+        _stop_single_service(cfg, existing)
+    minio_port = int(os.environ.get("OMI_HARNESS_MINIO_PORT", str(MINIO_PORT)))
+    minio_console_port = int(
+        os.environ.get("OMI_HARNESS_MINIO_CONSOLE_PORT", str(MINIO_CONSOLE_PORT))
+    )
+    _require_port_available_or_owned(cfg, "minio", minio_port)
+    container_name = _marker(cfg, "minio").replace(":", "-") + "-minio"
+    data_dir = cfg.layout.services_dir / "minio-data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    container = (
+        DockerContainer(MINIO_IMAGE)
+        .with_name(container_name)
+        .with_bind_ports(MINIO_PORT, minio_port)
+        .with_bind_ports(MINIO_CONSOLE_PORT, minio_console_port)
+        # MinIO's official image reads MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
+        # at startup. ``synthetic-access``/``synthetic-secret`` mirror the
+        # fork's own test fixtures so dev and CI use the same credentials.
+        .with_envs(
+            MINIO_ROOT_USER=MINIO_ACCESS_KEY,
+            MINIO_ROOT_PASSWORD=MINIO_SECRET_KEY,
+        )
+        .with_volume_mapping(str(data_dir), "/data")
+    )
+    container.start()
+    host = container.get_container_host_ip()
+    _port_open(host, minio_port)
+    # Pre-create the buckets the fork profile declares via
+    # ``LOCAL_STORAGE_BUCKET_ENV`` so the first PUT/GET request against
+    # any of them finds an existing object store. ``mc`` ships inside the
+    # MinIO image; ``anonymous`` and ``download`` are required for read-only
+    # public-style access even when the caller still passes credentials.
+    from testcontainers.core.docker_client import DockerClient
+    api = DockerClient().client
+    bucket_create_cmd = (
+        " && ".join(
+            [f"/usr/bin/mc alias local http://127.0.0.1:{MINIO_PORT} "
+             f"{MINIO_ACCESS_KEY} {MINIO_SECRET_KEY}"]
+            + [
+                f"/usr/bin/mc mb --ignore-existing local/{bucket}"
+                for bucket in MINIO_BUCKETS
+            ]
+        )
+    )
+    api.containers.run(
+        MINIO_IMAGE,
+        command=["sh", "-c", bucket_create_cmd],
+        name=_marker(cfg, "minio-bootstrap").replace(":", "-") + "-buckets",
+        environment={
+            "MC_CONFIG_DIR": "/tmp/.mc",
+        },
+        network=f"container:{container_name}",
+        remove=True,
+        detach=True,
+    ).wait()
+    log_path = cfg.layout.logs_dir / "minio.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(
+            f"[harness] started {MINIO_IMAGE} -> http://{host}:{minio_port} "
+            f"buckets={MINIO_BUCKETS}\n"
+        )
+    records = [record for record in _process_records(cfg) if record.get("service") != "minio"]
+    records.append(
+        {
+            "service": "minio",
+            "kind": "container",
+            "pid": -1,
+            "port": minio_port,
+            "endpoint": f"{host}:{minio_port}",
+            "container_name": container_name,
+            "container_id": container.get_wrapped_container().id,
+            "image": MINIO_IMAGE,
+            "log": str(log_path),
+            "ownership_marker": _marker(cfg, "minio"),
+            "started_at": _now(),
+        }
+    )
+    _save_manifests(cfg, records)
+    # Record the resolved loopback port so ``_harness_service_extra`` can
+    # wire ``MINIO_ENDPOINT`` to whatever the operator actually started the
+    # container on (mirrors the existing ``pg_port.txt`` pattern for PG).
+    (cfg.layout.services_dir / "minio_port.txt").write_text(
+        f"{minio_port}\n", encoding="utf-8"
+    )
+    print(
+        f"minio: started ({MINIO_IMAGE}) -> http://{host}:{minio_port} "
+        f"(console :{minio_console_port}, buckets={len(MINIO_BUCKETS)})"
+    )
+    return minio_port
+
+
 def _start_better_auth_container(
     cfg: config.HarnessConfig,
     harness_network: Any,
@@ -1318,6 +1470,11 @@ def _start_infrastructure(cfg: config.HarnessConfig) -> None:
     #    to the host loopback on the harness-managed port AND joins the shared
     #    network under the alias ``pg``.
     _start_postgres_container(cfg, harness_network)
+    # 1b. MinIO for the fork's ``STORAGE_BACKEND=minio`` path. Started before
+    #     the backend uvicorn child so the bucket pre-create can land in the
+    #     shared log; the backend env is injected from ``_harness_service_extra``
+    #     so the container ID is not used directly by the child.
+    _start_minio_container(cfg)
     # 2. Firebase Auth emulator still needed for ADMIN_KEY paths + Firebase
     #    user-shape requests that some downstream code paths still exercise.
     _start_auth_container(cfg)
@@ -1343,6 +1500,19 @@ def _start_infrastructure(cfg: config.HarnessConfig) -> None:
     # to ``pg_port.txt`` so ``_harness_service_extra`` can wire it into the
     # backend uvicorn child env as ``FIRESTORE_PG_DSN``.
     print(f"self_hosted.local profile written at {profile_path}")
+    # ``_start_minio_container`` wrote the resolved loopback port; the
+    # backend child env reads it from this file so dev-overrides of
+    # ``OMI_HARNESS_MINIO_PORT`` flow into the boto3 S3 endpoint URL.
+    minio_port_path = cfg.layout.services_dir / "minio_port.txt"
+    if minio_port_path.is_file():
+        cfg.layout.services_dir.joinpath("minio_port.txt")  # already present
+    else:
+        # Fallback: a port file is missing only if minio failed to start
+        # earlier in this session. Write the default so the backend env is
+        # still parseable; the boto3 client will fail-closed at first use.
+        cfg.layout.services_dir.joinpath("minio_port.txt").write_text(
+            f"{MINIO_PORT}\n", encoding="utf-8"
+        )
 
 
 def _start_app_services(cfg: config.HarnessConfig) -> None:
@@ -1413,6 +1583,7 @@ _HEALTH_TIMEOUTS: dict[str, float] = {
     "auth": 90.0,
     "postgres": 45.0,
     "better-auth": 60.0,
+    "minio": 30.0,
     "typesense": 45.0,
     "backend": 180.0,
     "llm-gateway": 60.0,
@@ -1469,6 +1640,7 @@ def _wait_health(
         "auth": (None, None),  # port-based check (gRPC-only service)
         "postgres": (None, None),  # port-based check
         "better-auth": ("http://127.0.0.1:3000/api/auth/jwks", None),
+        "minio": ("http://127.0.0.1:9000/minio/health/live", None),
         "typesense": (f"http://127.0.0.1:{cfg.typesense_port}/collections", typesense_headers),
         "backend": (f"{cfg.backend_url}/docs", None),
         "llm-gateway": (f"{cfg.llm_gateway_url}/health", None),
