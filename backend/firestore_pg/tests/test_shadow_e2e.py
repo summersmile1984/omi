@@ -45,6 +45,8 @@ from testcontainers.postgres import PostgresContainer
 # them at collection time is safe; no module-level state is set.
 from firestore_pg.tests.shadow_scenarios import SCENARIOS  # noqa: E402
 
+pytestmark = pytest.mark.container_integration  # noqa: E402
+
 _POSTGRES_INTERNAL_PORT = 5432
 _POSTGRES_IMAGE = "postgres:16-alpine"
 _EMULATOR_INTERNAL_PORT = 8080
