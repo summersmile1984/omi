@@ -362,10 +362,6 @@ def _harness_service_extra(cfg: HarnessConfig) -> dict[str, str]:
     extra: dict[str, str] = {
         "OMI_HARNESS_INSTANCE": cfg.instance,
         "OMI_HARNESS_STATE_ROOT": str(cfg.layout.state_root),
-        "OMI_LOCAL_STORAGE_ROOT": str(cfg.layout.services_dir / "storage"),
-        "OMI_LOCAL_STORAGE_BASE_URL": f"{cfg.backend_public_url}/_local/storage",
-        "FIRESTORE_EMULATOR_HOST": cfg.firestore_host,
-        "FIREBASE_AUTH_EMULATOR_HOST": cfg.auth_host,
         "FIREBASE_AUTH_PROJECT_ID": cfg.project_id,
         "FIREBASE_PROJECT_ID": cfg.project_id,
         "FIRESTORE_DATABASE_ID": cfg.database_id,
@@ -393,6 +389,17 @@ def _harness_service_extra(cfg: HarnessConfig) -> dict[str, str]:
         "SCREEN_FRAME_SIGNING_SECRET": LOCAL_SCREEN_FRAME_SIGNING_SECRET,
         **LOCAL_STORAGE_BUCKET_ENV,
     }
+    if cfg.provider_mode != "offline":
+        # Real-provider mode keeps routing through the Firebase emulators and
+        # ``firebase_admin`` Google ADC, so inject the emulator host env vars
+        # pointing at the testcontainers-managed ``omi-emulators:local``.
+        # Offline mode deliberately does NOT set these — the fork-owned
+        # ``firestore_pg.compat.install`` makes ``firestore.Client()`` call
+        # into the shim facade, and Better Auth replaces
+        # ``firebase_admin.auth``'s ID-token verifier. Setting the emulator
+        # host env would short-circuit both shims and break offline mode.
+        extra["FIRESTORE_EMULATOR_HOST"] = cfg.firestore_host
+        extra["FIREBASE_AUTH_EMULATOR_HOST"] = cfg.auth_host
     if cfg.provider_mode == "offline":
         # OFFLINE mode runs STT through the parakeet stub (which lives in
         # ``backend/testing/listen_pusher_stack/parakeet_stub.py`` for the
