@@ -11,3 +11,9 @@ psycopg-binary==3.3.4 --hash=sha256:ab8cca8ef8fb1ccf5b048ae5bd78ba55b9e4b5d472e3
 s3transfer==0.19.2 --hash=sha256:d8168eccca828cbb2cd573675333f3bddd254313a9c42494b84c76b539e8ba25
 sherpa-onnx==1.13.4 --hash=sha256:fbfc385b98d730080e1b12dc94c604be3867e4fb7bd6b15b830eb33cbf390111 --hash=sha256:c2d4337b80b54dd68f566cab941a2ad47ab6cfabb68e88002ee0c920493c16d3
 sherpa-onnx-core==1.13.4 --hash=sha256:367aa06cee90b3fd7959d4e071d6fc821710b859af399b4987e5c3119ee6ae2a --hash=sha256:7820183581b711a68e30281a4fb36c0af8ef5615bfc789234fb259439824a014
+# Testcontainers foundation for fork-only hermetic integration tests.
+# testcontainers[redis] pulls docker + wrapt transitively; both are hash-pinned
+# below so this layer installs cleanly with --no-deps.
+testcontainers==4.13.3 --hash=sha256:063278c4805ffa6dd85e56648a9da3036939e6c0ac1001e851c9276b19b05970
+docker==7.2.0 --hash=sha256:a3f45fdeb9165e2d25d9a1d02ddf3bc70fb572cf5ebbf9b58558c22caf29b71f
+wrapt==2.4.1 --hash=sha256:b86bfe741840cec6d8d5858b1eb53a325f564f08d7e6fb5694981961edcec230 --hash=sha256:8ec7aeb92e956810eedc268fe75f8c11f05d6c3d864d0995a53eb6623b3b6a51 --hash=sha256:ba66eccadd4b857a845e309c08457bb71fa8300000e508e3a86cd695bf9c7515
