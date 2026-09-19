@@ -17,82 +17,11 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
 
 from . import config, providers, safety, memory_scenarios
-from .self_hosted_profile import self_hosted_local_dsn, write_self_hosted_local_profile
-
-# testcontainers-python is the canonical way to spin up throwaway middleware
-# containers. Pinned image tags match what backend/AGENTS.md requires for
-# production parity, so dev-mode container behaviour matches deploy-target OS.
-from testcontainers.core.container import DockerContainer
-from testcontainers.postgres import PostgresContainer
-from testcontainers.redis import RedisContainer
 
 OWNERSHIP_PREFIX = "omi-dev-harness"
-
-# Pinned to match backend testing fixture (`tests/integration/containers/conftest.py`)
-# and the Omi production stack.
-REDIS_IMAGE = "redis:7-alpine"
-
-# Self-hosted fork replaces the Firestore emulator with a PostgreSQL-backed
-# ``firestore_pg`` facade (see ``backend/firestore_pg/compat.py``). The harness
-# brings up a Postgres container here so the backend's psycopg connection has
-# somewhere to land. Pinned to match the Omi self-host stack
-# (``backend/AGENTS.fork.md``), which builds on top of ``postgres:16-alpine``.
-POSTGRES_IMAGE = "postgres:16-alpine"
-POSTGRES_USER = "omi"
-POSTGRES_PASSWORD = "omi_dev_only_local_dev_password"
-POSTGRES_DB = "omi"
-
-# Better Auth is the fork's replacement for Firebase Auth (see
-# ``backend/utils/auth_shim.py`` + ``omi-better-auth-shim.md``). The dev
-# harness runs the existing production ``omi-auth-server:self-host-live-current``
-# image on ``127.0.0.1:3000`` so ``AUTH_JWKS_URL`` resolves to its
-# ``/api/auth/jwks`` endpoint (the URL ``backend/utils/auth_shim.py`` defaults
-# to, ``http://127.0.0.1:3000/api/auth/jwks``).
-BETTER_AUTH_IMAGE = "omi-auth-server:self-host-live-current"
-BETTER_AUTH_PORT = 3000
-
-# The fork's ``STORAGE_BACKEND=minio`` path (see ``backend/fork/bootstrap.py:83``
-# and ``backend/fork/storage_minio.py``) needs a real S3-compatible endpoint.
-# The dev harness runs the upstream MinIO image, which speaks the same
-# S3-shaped API as GCS so ``backend.fork.provider_objects.get_minio_client``
-# can talk to it without changes. Pinned to the latest stable line.
-MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z"
-MINIO_PORT = 9000
-MINIO_CONSOLE_PORT = 9001
-# The fork's storage tests (``backend/fork/tests/test_storage_queue_adapters.py``)
-# use ``synthetic-access``/``synthetic-secret`` as their stand-in values;
-# we reuse the same strings here so the dev credentials match the test
-# expectations. MinIO enforces a minimum length of 8 on both fields, and
-# ``storage_minio.Config.from_env`` raises ``ValueError`` if either is empty.
-MINIO_ACCESS_KEY = "synthetic-access"
-MINIO_SECRET_KEY = "synthetic-secret"
-# Buckets the backend reads/writes through the ``fork`` profile's
-# ``LOCAL_STORAGE_BUCKET_ENV`` mapping (``BUCKET_SPEECH_PROFILES``,
-# ``BUCKET_POSTPROCESSING`` etc.). Pre-create them on container start so the
-# first request doesn't have to handle the bucket-not-found error path.
-MINIO_BUCKETS = [
-    "speech-profiles",
-    "postprocessing",
-    "omi-private-cloud-sync",
-    "sync-temporal",
-    "memories-recordings",
-    "app-thumbnails",
-    "chat-files",
-    "desktop-updates",
-]
-
-# The Firebase Auth emulator ships as a self-contained Docker image so the dev
-# harness can drop the host-side JDK + node + firebase-tools requirement. The
-# image ENTRYPOINT bakes in ``--only firestore,auth,storage --project
-# demo-omi-local`` so we cannot strip firestore from the entrypoint — we map
-# only the auth port to loopback and rely on the in-process ``fake_firestore``
-# shim (``backend/testing/e2e/fakes/firestore.py``) to satisfy the SDK at the
-# Python layer. See ``_start_auth_container`` for the port layout.
-FIREBASE_IMAGE = "omi-emulators:local"
-FIREBASE_INTERNAL_AUTH_PORT = 9099
 
 
 def _now() -> str:
@@ -249,35 +178,9 @@ def _service_health(cfg: config.HarnessConfig, service: str) -> tuple[bool, str]
             return True, "port-open"
         return False, "port-closed"
     if service == "firestore":
-        # Firestore is now served by the in-process ``fake_firestore`` shim
-        # (no HTTP surface). The harness writes a sentinel file once the
-        # backend bootstrap has installed the shim; if the file is missing
-        # the harness treats firestore as unhealthy until the backend
-        # process writes it.
-        sentinel = cfg.layout.logs_dir / "firestore-shim-ready"
-        if sentinel.is_file():
-            return True, "fake_firestore shim installed"
-        return False, "fake_firestore shim not yet installed"
+        return _http_ok(f"http://{cfg.firestore_host}/")
     if service == "auth":
-        # Firebase Auth emulator doesn't expose a stable HTTP probe — it only
-        # serves gRPC. The ``All emulators ready!`` log line is the readiness
-        # signal the image prints; we approximate it with a TCP port-open
-        # check which is what firebase-tools itself relies on.
-        if _port_open("127.0.0.1", cfg.auth_port):
-            return True, "port-open"
-        return False, "port-closed"
-    if service == "postgres":
-        if _port_open("127.0.0.1", int(os.environ.get("OMI_HARNESS_PG_PORT", "5444"))):
-            return True, "port-open"
-        return False, "port-closed"
-    if service == "better-auth":
-        return _http_ok("http://127.0.0.1:3000/api/auth/jwks")
-    if service == "minio":
-        # MinIO exposes an unauthenticated ``/minio/health/live`` endpoint
-        # that returns 200 once the server is serving requests. We probe
-        # that rather than ``/_/`` (the MinIO browser console) so a
-        # temporary console restart does not flip this status.
-        return _http_ok(f"http://127.0.0.1:9000/minio/health/live")
+        return _http_ok(f"http://{cfg.auth_host}/")
     if service == "typesense":
         url = f"http://127.0.0.1:{cfg.typesense_port}/collections"
         headers = {"X-TYPESENSE-API-KEY": config.LOCAL_TYPESENSE_API_KEY}
@@ -324,15 +227,6 @@ def _status_health_label(
 def _stop_single_service(cfg: config.HarnessConfig, record: dict[str, object]) -> None:
     pid = int(record.get("pid", -1))
     service = str(record.get("service"))
-    kind = str(record.get("kind", "process"))
-    if kind == "container":
-        # Container-backed services (currently: redis) are managed via the
-        # Docker daemon, not via process signals. The manifest records the
-        # owning container id; stop the container and drop the record.
-        _stop_owned_container(cfg, record)
-        remaining = [entry for entry in _process_records(cfg) if entry.get("service") != service]
-        _save_manifests(cfg, remaining)
-        return
     if not safety.process_exists(pid):
         return
     descendants = safety.descendant_pids(pid)
@@ -355,32 +249,6 @@ def _stop_single_service(cfg: config.HarnessConfig, record: dict[str, object]) -
     _reap_detached_port_holders(record, descendants)
     remaining = [entry for entry in _process_records(cfg) if entry.get("service") != service]
     _save_manifests(cfg, remaining)
-
-
-def _stop_owned_container(cfg: config.HarnessConfig, record: dict[str, object]) -> None:
-    """Stop a testcontainers-managed service via `docker stop`.
-
-    The harness always owns the container name (see ``_start_redis_container``),
-    so a name-based lookup is preferred: it survives Ryuk restarts of the
-    docker daemon and avoids coupling to container id reuse. Falls back to
-    container id when the manifest only carries the id (older records).
-    """
-    name = str(record.get("container_name", "")).strip()
-    container_id = str(record.get("container_id", "")).strip()
-    if name:
-        subprocess.run(
-            ["docker", "stop", "-t", "5", name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    elif container_id:
-        subprocess.run(
-            ["docker", "stop", "-t", "5", container_id],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
 
 
 def _require_port_available_or_owned(cfg: config.HarnessConfig, service: str, port: int) -> None:
@@ -506,24 +374,18 @@ def prerequisite_report(cfg: config.HarnessConfig) -> tuple[list[str], list[str]
         )
     java_major = _java_major_version()
     if java_major is None:
-        # The dev-harness now runs the Firestore and Auth emulators inside the
-        # ``omi-emulators:local`` Docker image, which ships its own JDK 17.
-        # Host Java is therefore only required when the legacy
-        # ``OMI_USE_HOST_FIREBASE_EMULATOR=1`` fallback is opted into, in which
-        # case we surface that path explicitly.
-        if os.environ.get("OMI_USE_HOST_FIREBASE_EMULATOR") == "1":
-            missing.append(
-                "java runtime (required by the host firebase-tools fallback; "
-                "install one with `brew install --cask temurin` or from https://adoptium.net)"
-            )
-    elif java_major < FIREBASE_EMULATORS_MIN_JAVA_MAJOR and os.environ.get("OMI_USE_HOST_FIREBASE_EMULATOR") == "1":
         missing.append(
-            f"java {java_major} is too old for the host firebase-tools fallback (requires "
+            "java runtime (required by the Firestore and Auth emulators; "
+            "install one with `brew install --cask temurin` or from https://adoptium.net)"
+        )
+    elif java_major < FIREBASE_EMULATORS_MIN_JAVA_MAJOR:
+        missing.append(
+            f"java {java_major} is too old for the Firebase emulators (firebase-tools requires "
             f"Java {FIREBASE_EMULATORS_MIN_JAVA_MAJOR}+; install e.g. `brew install openjdk@21` "
             "and put it first on PATH)"
         )
-    # Redis runs inside a testcontainers-managed container (see
-    # ``_start_redis_container``); no host binary required.
+    if not _which("redis-server"):
+        missing.append("redis-server (required for local Redis on loopback)")
     runtime = typesense_runtime()
     if runtime == "docker":
         if not _which("docker"):
@@ -740,545 +602,6 @@ def _prepend_pythonpath(env: dict[str, str], *entries: Path) -> None:
     env["PYTHONPATH"] = os.pathsep.join(values)
 
 
-def _start_auth_container(cfg: config.HarnessConfig) -> None:
-    """Bring up the Firebase Auth emulator via ``omi-emulators:local``.
-
-    Firestore is **not** run inside this container — the harness now relies on
-    the in-process ``fake_firestore`` shim
-    (``backend.testing.e2e.fakes.firestore``) injected into the backend
-    child env. See ``_harness_service_extra`` for the bootstrap hook.
-
-    The container image ENTRYPOINT bakes in
-    ``--only firestore,auth,storage --project demo-omi-local`` so we cannot
-    disable firestore from the CLI. Instead we only expose the auth port
-    (9099 → host ``cfg.auth_port``); the firestore port inside the container
-    stays bound but nothing on the host loopback reaches it. ``fake_firestore``
-    is the only firestore surface the backend talks to.
-    """
-    existing = _service_record(cfg, "auth")
-    if existing is not None:
-        healthy, detail = _service_health(cfg, "auth")
-        if healthy:
-            print("auth: already recorded as running")
-            return
-        print(f"auth: recorded service unhealthy ({detail}); restarting")
-        _stop_single_service(cfg, existing)
-    _require_port_available_or_owned(cfg, "auth", cfg.auth_port)
-    container_name = _marker(cfg, "auth").replace(":", "-") + "-emulators"
-    container = (
-        DockerContainer(FIREBASE_IMAGE)
-        .with_name(container_name)
-        .with_bind_ports(FIREBASE_INTERNAL_AUTH_PORT, cfg.auth_port)
-    )
-    container.start()
-    host = container.get_container_host_ip()
-    auth_host_port = container.get_exposed_port(FIREBASE_INTERNAL_AUTH_PORT)
-    # Auth emulator doesn't expose a stable HTTP probe (it only serves gRPC).
-    # Wait for the TCP port to open instead, then probe with a short sleep to
-    # let the firebase-tools supervisor finish bringing auth up.
-    deadline = time.monotonic() + 60.0
-    while time.monotonic() < deadline:
-        if _port_open(host, auth_host_port):
-            break
-        time.sleep(0.5)
-    else:
-        container.stop()
-        raise RuntimeError(f"auth container did not bind on {host}:{auth_host_port} within 60s")
-    log_path = cfg.layout.logs_dir / "firebase-emulators.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as log:
-        log.write(
-            f"[harness] started testcontainers {FIREBASE_IMAGE} (auth-only) -> "
-            f"{host}:{auth_host_port}; firestore is served by in-process fake_firestore shim\n"
-        )
-    records = [record for record in _process_records(cfg) if record.get("service") != "auth"]
-    records.append(
-        {
-            "service": "auth",
-            "kind": "container",
-            "pid": -1,
-            "port": cfg.auth_port,
-            "endpoint": f"{host}:{auth_host_port}",
-            "container_name": container_name,
-            "container_id": container.get_wrapped_container().id,
-            "image": FIREBASE_IMAGE,
-            "log": str(log_path),
-            "ownership_marker": _marker(cfg, "auth"),
-            "started_at": _now(),
-        }
-    )
-    # Drop any stale firestore record left over from the previous
-    # firestore-via-emulator path; the in-process shim has no port to probe.
-    records = [record for record in records if record.get("service") != "firestore"]
-    _save_manifests(cfg, records)
-    # Mark the in-process firestore shim as healthy via a sentinel the backend
-    # bootstrap writes. The health check below reads this file before probing a
-    # network endpoint that no longer exists.
-    sentinel = cfg.layout.logs_dir / "firestore-shim-ready"
-    sentinel.write_text(f"fake_firestore active at {_now()}\n", encoding="utf-8")
-    print(f"auth: started (testcontainers {FIREBASE_IMAGE}) -> {cfg.auth_host}:{cfg.auth_port}")
-    print("firestore: in-process fake_firestore shim (no container; sentinel at {sentinel})")
-
-
-def _start_postgres_container(
-    cfg: config.HarnessConfig,
-    harness_network: Any,
-) -> None:
-    """Bring up the self-hosted ``firestore_pg`` Postgres backend.
-
-    The fork-owned ``backend/firestore_pg/`` package routes Firestore SDK
-    calls to this Postgres instance via ``firestore_pg.compat.install``.
-    Writes the resolved loopback port to ``cfg.layout.services_dir / "pg_port.txt"``
-    so ``_harness_service_extra`` can include it in the backend child env.
-
-    The user / password / database match ``self_hosted_local_dsn`` so the
-    backend uvicorn can connect without further configuration. ``firestore_pg``
-    creates the schema lazily on first use via ``firestore_pg.migrations``.
-
-    Joins ``harness_network`` under the alias ``pg`` so the Better Auth
-    container can reach it via DNS instead of relying on
-    ``host.docker.internal`` (which is unreachable from the bridge network
-    on macOS Docker Desktop).
-    """
-    existing = _service_record(cfg, "postgres")
-    if existing is not None:
-        healthy, detail = _service_health(cfg, "postgres")
-        if healthy:
-            print("postgres: already recorded as running")
-            return
-        print(f"postgres: recorded service unhealthy ({detail}); restarting")
-        _stop_single_service(cfg, existing)
-    # Reuse the redis_port slot convention: harness owns one PG port per
-    # instance. Pick a fixed-but-configurable offset so multiple instances
-    # don't collide on a shared host.
-    pg_port = int(os.environ.get("OMI_HARNESS_PG_PORT", "5444"))
-    _require_port_available_or_owned(cfg, "postgres", pg_port)
-    container_name = _marker(cfg, "postgres").replace(":", "-") + "-pg"
-    container = (
-        PostgresContainer(
-            POSTGRES_IMAGE,
-            username=POSTGRES_USER,
-            password=POSTGRES_PASSWORD,
-            dbname=POSTGRES_DB,
-        )
-        .with_name(container_name)
-        .with_bind_ports(5432, pg_port)
-        .with_network(harness_network)
-        .with_network_aliases("pg")
-    )
-    container.start()
-    host = container.get_container_host_ip()
-    deadline = time.monotonic() + 30.0
-    while time.monotonic() < deadline:
-        if _port_open(host, pg_port):
-            break
-        time.sleep(0.25)
-    else:
-        container.stop()
-        raise RuntimeError(f"postgres container did not bind 127.0.0.1:{pg_port} within 30s")
-    log_path = cfg.layout.logs_dir / "postgres.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as log:
-        log.write(
-            f"[harness] started testcontainers postgres ({POSTGRES_IMAGE}) -> "
-            f"127.0.0.1:{pg_port} user={POSTGRES_USER} db={POSTGRES_DB}\n"
-        )
-    records = [record for record in _process_records(cfg) if record.get("service") != "postgres"]
-    records.append(
-        {
-            "service": "postgres",
-            "kind": "container",
-            "pid": -1,
-            "port": pg_port,
-            "endpoint": f"{host}:{pg_port}",
-            "container_name": container_name,
-            "container_id": container.get_wrapped_container().id,
-            "image": POSTGRES_IMAGE,
-            "log": str(log_path),
-            "ownership_marker": _marker(cfg, "postgres"),
-            "started_at": _now(),
-        }
-    )
-    _save_manifests(cfg, records)
-    # Record the resolved loopback port so ``_harness_service_extra`` can read
-    # it from the host-side filesystem when wiring ``FIRESTORE_PG_DSN`` into
-    # the backend uvicorn child env.
-    (cfg.layout.services_dir / "pg_port.txt").write_text(
-        f"{pg_port}\n", encoding="utf-8"
-    )
-    print(f"postgres: started (testcontainers {POSTGRES_IMAGE}) -> 127.0.0.1:{pg_port}")
-
-
-def _better_auth_envs() -> dict[str, str]:
-    """Return the env block the Better Auth image expects on every invocation.
-
-    Production ``omi-auth-server:self-host-live-current`` is fail-closed in
-    ``NODE_ENV=production`` (see ``src/auth.js:38``), so we always set
-    ``NODE_ENV=development`` for the harness and pre-fill every required
-    variable with a throwaway local-dev value. ``DATABASE_URL`` uses the
-    ``pg`` DNS alias resolved through the harness-shared docker network (see
-    ``_start_infrastructure``).
-    """
-    return {
-        "DATABASE_URL": os.environ.get(
-            "BETTER_AUTH_DATABASE_URL",
-            "postgresql://omi:omi_dev_only_local_dev_password@pg:5432/omi",
-        ),
-        "BETTER_AUTH_SECRET": os.environ.get(
-            "BETTER_AUTH_SECRET",
-            "local-dev-better-auth-secret-not-real-32-bytes-min",
-        ),
-        "BETTER_AUTH_URL": os.environ.get(
-            "BETTER_AUTH_URL",
-            f"http://127.0.0.1:{BETTER_AUTH_PORT}",
-        ),
-        "AUTH_INTERNAL_ADMIN_SECRET": os.environ.get(
-            "AUTH_INTERNAL_ADMIN_SECRET",
-            "local-dev-internal-admin-secret-not-real",
-        ),
-        "BETTER_AUTH_TRUSTED_ORIGINS": os.environ.get(
-            "BETTER_AUTH_TRUSTED_ORIGINS",
-            "http://127.0.0.1:3000,http://127.0.0.1:8000,http://localhost,http://127.0.0.1",
-        ),
-        "BETTER_AUTH_IP_HEADERS": os.environ.get(
-            "BETTER_AUTH_IP_HEADERS",
-            "x-forwarded-for,x-real-ip",
-        ),
-        "NODE_ENV": "development",
-    }
-
-
-def _run_better_auth_migration(
-    cfg: config.HarnessConfig,
-    harness_network: Any,
-    envs: dict[str, str],
-) -> None:
-    """One-shot container that runs ``src/migrate.js`` against Postgres.
-
-    The Better Auth image does NOT auto-migrate; ``src/index.js`` starts the
-    HTTP server immediately and ``/api/auth/jwks`` 500s until somebody has
-    created the ``jwks`` table and bootstrapped a signing key. We use the
-    production image's own migration script (``npm run migrate`` →
-    ``node src/migrate.js``) so the JWKS row shape and signing key match what
-    the server will subsequently serve.
-
-    Implemented via the docker SDK directly (not testcontainers) because the
-    image's ``ExposedPorts: 3000/tcp`` would otherwise cause testcontainers to
-    try publishing 3000 on the host loopback — a port the long-running server
-    also needs. The migration container has no use for that port.
-    """
-    from testcontainers.core.docker_client import DockerClient
-
-    migrate_name = _marker(cfg, "better-auth-migrate").replace(":", "-") + "-migrate"
-    client = DockerClient().client
-    env_list = [f"{k}={v}" for k, v in envs.items()]
-    log_path = cfg.layout.logs_dir / "better-auth-migrate.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    container = client.containers.run(
-        BETTER_AUTH_IMAGE,
-        command=["node", "src/migrate.js"],
-        name=migrate_name,
-        environment=envs,
-        network=harness_network.name,
-        remove=True,
-        stdout=True,
-        stderr=True,
-        detach=True,
-    )
-    # ``--rm`` makes docker delete the container as soon as it exits, so we
-    # capture the log to disk by streaming it into a sidecar file as the
-    # container runs.
-    log_file = log_path.open("ab")
-    for line in container.logs(stream=True, follow=True):
-        log_file.write(line)
-        log_file.flush()
-    container.wait()
-    log_file.close()
-    rc = container.attrs.get("State", {}).get("ExitCode", 1)
-    if rc != 0:
-        raise RuntimeError(
-            f"better-auth migration container exited with code {rc}; see {log_path}"
-        )
-    print(f"better-auth: schema migration OK (log={log_path})")
-
-
-def _start_minio_container(cfg: config.HarnessConfig) -> int:
-    """Bring up a MinIO container for the fork's S3-compatible storage path.
-
-    The fork's ``STORAGE_BACKEND=minio`` choice (``backend/fork/bootstrap.py:83``)
-    means ``storage_minio.Config.from_env`` instantiates a real boto3 S3
-    client during ``fork.bootstrap()``; without a running endpoint the
-    backend's storage helpers raise at first use. The dev harness brings
-    up the upstream MinIO image on a stable loopback port and writes the
-    S3 credentials into ``cfg.layout.services_dir / "minio.env"`` so the
-    backend child env can pick them up consistently.
-
-    Returns the resolved ``MINIO_ENDPOINT`` host:port. Buckets the fork
-    reads/writes through the ``LOCAL_STORAGE_BUCKET_ENV`` mapping are
-    pre-created on container start via ``mc admin`` so the first request
-    does not race the bucket creation.
-    """
-    from testcontainers.core.container import DockerContainer
-
-    existing = _service_record(cfg, "minio")
-    if existing is not None:
-        healthy, detail = _service_health(cfg, "minio")
-        if healthy:
-            print("minio: already recorded as running")
-            return int(existing["port"])
-        print(f"minio: recorded service unhealthy ({detail}); restarting")
-        _stop_single_service(cfg, existing)
-    minio_port = int(os.environ.get("OMI_HARNESS_MINIO_PORT", str(MINIO_PORT)))
-    minio_console_port = int(
-        os.environ.get("OMI_HARNESS_MINIO_CONSOLE_PORT", str(MINIO_CONSOLE_PORT))
-    )
-    _require_port_available_or_owned(cfg, "minio", minio_port)
-    container_name = _marker(cfg, "minio").replace(":", "-") + "-minio"
-    data_dir = cfg.layout.services_dir / "minio-data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    container = (
-        DockerContainer(MINIO_IMAGE)
-        .with_name(container_name)
-        .with_bind_ports(MINIO_PORT, minio_port)
-        .with_bind_ports(MINIO_CONSOLE_PORT, minio_console_port)
-        # MinIO's official image reads MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
-        # at startup. ``synthetic-access``/``synthetic-secret`` mirror the
-        # fork's own test fixtures so dev and CI use the same credentials.
-        .with_envs(
-            MINIO_ROOT_USER=MINIO_ACCESS_KEY,
-            MINIO_ROOT_PASSWORD=MINIO_SECRET_KEY,
-        )
-        .with_volume_mapping(str(data_dir), "/data")
-    )
-    container.start()
-    host = container.get_container_host_ip()
-    _port_open(host, minio_port)
-    # Pre-create the buckets the fork profile declares via
-    # ``LOCAL_STORAGE_BUCKET_ENV`` so the first PUT/GET request against
-    # any of them finds an existing object store. ``mc`` ships inside the
-    # MinIO image; ``anonymous`` and ``download`` are required for read-only
-    # public-style access even when the caller still passes credentials.
-    from testcontainers.core.docker_client import DockerClient
-    api = DockerClient().client
-    bucket_create_cmd = (
-        " && ".join(
-            [f"/usr/bin/mc alias local http://127.0.0.1:{MINIO_PORT} "
-             f"{MINIO_ACCESS_KEY} {MINIO_SECRET_KEY}"]
-            + [
-                f"/usr/bin/mc mb --ignore-existing local/{bucket}"
-                for bucket in MINIO_BUCKETS
-            ]
-        )
-    )
-    api.containers.run(
-        MINIO_IMAGE,
-        command=["sh", "-c", bucket_create_cmd],
-        name=_marker(cfg, "minio-bootstrap").replace(":", "-") + "-buckets",
-        environment={
-            "MC_CONFIG_DIR": "/tmp/.mc",
-        },
-        network=f"container:{container_name}",
-        remove=True,
-        detach=True,
-    ).wait()
-    log_path = cfg.layout.logs_dir / "minio.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as log:
-        log.write(
-            f"[harness] started {MINIO_IMAGE} -> http://{host}:{minio_port} "
-            f"buckets={MINIO_BUCKETS}\n"
-        )
-    records = [record for record in _process_records(cfg) if record.get("service") != "minio"]
-    records.append(
-        {
-            "service": "minio",
-            "kind": "container",
-            "pid": -1,
-            "port": minio_port,
-            "endpoint": f"{host}:{minio_port}",
-            "container_name": container_name,
-            "container_id": container.get_wrapped_container().id,
-            "image": MINIO_IMAGE,
-            "log": str(log_path),
-            "ownership_marker": _marker(cfg, "minio"),
-            "started_at": _now(),
-        }
-    )
-    _save_manifests(cfg, records)
-    # Record the resolved loopback port so ``_harness_service_extra`` can
-    # wire ``MINIO_ENDPOINT`` to whatever the operator actually started the
-    # container on (mirrors the existing ``pg_port.txt`` pattern for PG).
-    (cfg.layout.services_dir / "minio_port.txt").write_text(
-        f"{minio_port}\n", encoding="utf-8"
-    )
-    print(
-        f"minio: started ({MINIO_IMAGE}) -> http://{host}:{minio_port} "
-        f"(console :{minio_console_port}, buckets={len(MINIO_BUCKETS)})"
-    )
-    return minio_port
-
-
-def _start_better_auth_container(
-    cfg: config.HarnessConfig,
-    harness_network: Any,
-) -> None:
-    """Bring up the Better Auth TS service container exposing JWKS.
-
-    Uses the production ``omi-auth-server:self-host-live-current`` image that
-    ``backend/.openapi-venv/lib/.../langsmith/sandbox/README.md`` references.
-    If that image is not present locally, ``docker run`` will fail; the caller
-    is expected to have pulled it (``docker pull omi-auth-server:self-host-live-current``)
-    or built it from ``deploy/self-host/Dockerfile.llm``.
-    """
-    existing = _service_record(cfg, "better-auth")
-    if existing is not None:
-        healthy, detail = _service_health(cfg, "better-auth")
-        if healthy:
-            print("better-auth: already recorded as running")
-            return
-        print(f"better-auth: recorded service unhealthy ({detail}); restarting")
-        _stop_single_service(cfg, existing)
-    _require_port_available_or_owned(cfg, "better-auth", BETTER_AUTH_PORT)
-    container_name = _marker(cfg, "better-auth").replace(":", "-") + "-auth"
-    ba_envs = _better_auth_envs()
-    # Run schema migration + JWKS key bootstrap on a one-shot container so the
-    # long-running BA server has a populated ``jwks`` table on first request.
-    # ``src/migrate.js`` is in the production image (``omi-auth-server``); it
-    # also reuses the same Better Auth options as the main server, so the JWKS
-    # key it generates matches what ``/api/auth/jwks`` later serves.
-    print("better-auth: running schema migration...")
-    _run_better_auth_migration(cfg, harness_network, ba_envs)
-    # Start the long-running BA server via the docker SDK directly (not
-    # testcontainers) because the image's ``ExposedPorts: 3000/tcp`` causes
-    # testcontainers to publish that port on the host loopback — the port we
-    # want here — but we need a stable name + manual log capture. The shared
-    # docker network still resolves ``pg`` → Postgres.
-    from testcontainers.core.docker_client import DockerClient
-    client = DockerClient().client
-    ba_log_path = cfg.layout.logs_dir / "better-auth.log"
-    ba_log_path.parent.mkdir(parents=True, exist_ok=True)
-    ba_log_file = ba_log_path.open("ab")
-    container = client.containers.run(
-        BETTER_AUTH_IMAGE,
-        name=container_name,
-        environment=ba_envs,
-        network=harness_network.name,
-        ports={f"{BETTER_AUTH_PORT}/tcp": ("127.0.0.1", BETTER_AUTH_PORT)},
-        stdout=True,
-        stderr=True,
-        detach=True,
-    )
-    # Stream logs to the harness log file (testcontainers-managed stop()
-    # also handles this; we do it manually because we're using the raw
-    # docker SDK).
-    import threading
-    def _stream_logs():
-        try:
-            for line in container.logs(stream=True, follow=True):
-                ba_log_file.write(line)
-                ba_log_file.flush()
-        except Exception:
-            pass
-    threading.Thread(target=_stream_logs, daemon=True).start()
-    host = "127.0.0.1"
-    auth_host_port = BETTER_AUTH_PORT
-    deadline = time.monotonic() + 30.0
-    while time.monotonic() < deadline:
-        ok, _ = _http_ok(f"http://{host}:{auth_host_port}/api/auth/jwks")
-        if ok:
-            break
-        time.sleep(0.5)
-    else:
-        try:
-            container.remove(force=True)
-        finally:
-            ba_log_file.close()
-        raise RuntimeError(
-            f"better-auth container did not expose JWKS on {host}:{auth_host_port} within 30s"
-        )
-    records = [record for record in _process_records(cfg) if record.get("service") != "better-auth"]
-    records.append(
-        {
-            "service": "better-auth",
-            "kind": "container",
-            "pid": -1,
-            "port": BETTER_AUTH_PORT,
-            "endpoint": f"{host}:{auth_host_port}",
-            "container_name": container_name,
-            "container_id": container.id,
-            "image": BETTER_AUTH_IMAGE,
-            "log": str(ba_log_path),
-            "ownership_marker": _marker(cfg, "better-auth"),
-            "started_at": _now(),
-            "_container": container,
-        }
-    )
-    _save_manifests(cfg, records)
-    print(f"better-auth: started ({BETTER_AUTH_IMAGE}) -> http://{host}:{auth_host_port}/api/auth/jwks")
-
-
-def _start_redis_container(cfg: config.HarnessConfig, data_dir: Path) -> None:
-    """Bring up a throwaway Redis 7 Alpine container for the dev harness.
-
-    Uses testcontainers-python so the harness has no host-binary dependency on
-    ``redis-server``. The container is owned by name (``omi-dev-harness:<instance>:redis``)
-    so ``make dev-down`` and the per-service restart path can locate it without
-    keeping the testcontainers Python object alive across processes.
-    """
-    existing = _service_record(cfg, "redis")
-    if existing is not None:
-        healthy, detail = _service_health(cfg, "redis")
-        if healthy:
-            print("redis: already recorded as running")
-            return
-        print(f"redis: recorded service unhealthy ({detail}); restarting")
-        _stop_single_service(cfg, existing)
-    _require_port_available_or_owned(cfg, "redis", cfg.redis_port)
-    container_name = _marker(cfg, "redis").replace(":", "-") + "-redis"
-    container = (
-        RedisContainer(REDIS_IMAGE)
-        .with_name(container_name)
-        # Bind 6379 inside the container to the harness-managed loopback port.
-        # testcontainers maps container:host so the rest of the stack sees
-        # ``127.0.0.1:<cfg.redis_port>`` exactly like the host-binary version.
-        .with_bind_ports(6379, cfg.redis_port)
-    )
-    container.start()
-    # Wait until the TCP port actually accepts connections; testcontainers
-    # ``start()`` returns as soon as Docker reports the container running.
-    host = container.get_container_host_ip()
-    deadline = time.monotonic() + 15.0
-    while time.monotonic() < deadline:
-        if _port_open(host, cfg.redis_port):
-            break
-        time.sleep(0.1)
-    else:
-        container.stop()
-        raise RuntimeError(f"redis container did not bind 127.0.0.1:{cfg.redis_port} within 15s")
-    log_path = cfg.layout.logs_dir / "redis.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as log:
-        log.write(f"[harness] started testcontainers redis ({REDIS_IMAGE}) -> 127.0.0.1:{cfg.redis_port}\n")
-    records = [record for record in _process_records(cfg) if record.get("service") != "redis"]
-    records.append(
-        {
-            "service": "redis",
-            "kind": "container",
-            "pid": -1,
-            "port": cfg.redis_port,
-            "endpoint": f"127.0.0.1:{cfg.redis_port}",
-            "container_name": container_name,
-            "container_id": container.get_wrapped_container().id,
-            "image": REDIS_IMAGE,
-            "log": str(log_path),
-            "ownership_marker": _marker(cfg, "redis"),
-            "started_at": _now(),
-        }
-    )
-    _save_manifests(cfg, records)
-    print(f"redis: started (testcontainers {REDIS_IMAGE}) -> 127.0.0.1:{cfg.redis_port}")
-
-
 def _start_process(
     cfg: config.HarnessConfig,
     service: str,
@@ -1452,40 +775,36 @@ _INFRA_SETTLE_DELAY = 2.0
 
 def _start_infrastructure(cfg: config.HarnessConfig) -> None:
     cfg.layout.logs_dir.mkdir(parents=True, exist_ok=True)
-    # Render the fork-owned self_hosted.local profile table so the backend
-    # uvicorn child resolves a row that satisfies backend/fork/bootstrap.py's
-    # data_plane asserts (store=firestore_pg, identity_provider=better_auth,
-    # object_store=minio, queue=redis, vector=qdrant, cache=redis).
-    profile_path = write_self_hosted_local_profile(cfg.layout.services_dir)
-    # Create a per-instance docker network so the harness-owned Postgres
-    # container can be reached by the Better Auth TS service container via a
-    # stable DNS alias (``pg``). Sharing a network sidesteps the macOS Docker
-    # Desktop quirks with ``host.docker.internal`` and ``--network=host`` (the
-    # former resolves but is unreachable from the container's bridge network,
-    # the latter makes the Better Auth container's bound port invisible on the
-    # host loopback). testcontainers tears the network down with the harness.
-    from testcontainers.core.network import Network
-    harness_network = Network().create()
-    # 1. Postgres for firestore_pg (replaces the Firestore emulator). Publishes
-    #    to the host loopback on the harness-managed port AND joins the shared
-    #    network under the alias ``pg``.
-    _start_postgres_container(cfg, harness_network)
-    # 1b. MinIO for the fork's ``STORAGE_BACKEND=minio`` path. Started before
-    #     the backend uvicorn child so the bucket pre-create can land in the
-    #     shared log; the backend env is injected from ``_harness_service_extra``
-    #     so the container ID is not used directly by the child.
-    _start_minio_container(cfg)
-    # 2. Firebase Auth emulator still needed for ADMIN_KEY paths + Firebase
-    #    user-shape requests that some downstream code paths still exercise.
-    _start_auth_container(cfg)
-    # 3. Better Auth TS service for JWT verification. Joins the same network
-    #    so it can dial Postgres over ``host.docker.internal:host-gateway`` —
-    #    testcontainers injects that DNS alias into every container on the
-    #    network, so the loopback ``pg:5432`` style also works.
-    _start_better_auth_container(cfg, harness_network)
+    _start_process(
+        cfg,
+        "firestore",
+        _firebase_command(cfg),
+        cwd=cfg.repo_root,
+        log_name="firebase-emulators.log",
+        port=cfg.firestore_port,
+    )
     redis_dir = cfg.layout.services_dir / "redis"
     redis_dir.mkdir(parents=True, exist_ok=True)
-    _start_redis_container(cfg, redis_dir)
+    _start_process(
+        cfg,
+        "redis",
+        [
+            "redis-server",
+            "--bind",
+            "127.0.0.1",
+            "--port",
+            str(cfg.redis_port),
+            "--dir",
+            str(redis_dir),
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+        ],
+        cwd=cfg.repo_root,
+        log_name="redis.log",
+        port=cfg.redis_port,
+    )
     print(f"typesense runtime: {typesense_runtime()}")
     _remove_stale_typesense_container(cfg)
     _start_process(
@@ -1496,23 +815,6 @@ def _start_infrastructure(cfg: config.HarnessConfig) -> None:
         log_name="typesense.log",
         port=cfg.typesense_port,
     )
-    # ``_start_postgres_container`` already wrote the resolved loopback port
-    # to ``pg_port.txt`` so ``_harness_service_extra`` can wire it into the
-    # backend uvicorn child env as ``FIRESTORE_PG_DSN``.
-    print(f"self_hosted.local profile written at {profile_path}")
-    # ``_start_minio_container`` wrote the resolved loopback port; the
-    # backend child env reads it from this file so dev-overrides of
-    # ``OMI_HARNESS_MINIO_PORT`` flow into the boto3 S3 endpoint URL.
-    minio_port_path = cfg.layout.services_dir / "minio_port.txt"
-    if minio_port_path.is_file():
-        cfg.layout.services_dir.joinpath("minio_port.txt")  # already present
-    else:
-        # Fallback: a port file is missing only if minio failed to start
-        # earlier in this session. Write the default so the backend env is
-        # still parseable; the boto3 client will fail-closed at first use.
-        cfg.layout.services_dir.joinpath("minio_port.txt").write_text(
-            f"{MINIO_PORT}\n", encoding="utf-8"
-        )
 
 
 def _start_app_services(cfg: config.HarnessConfig) -> None:
@@ -1581,45 +883,12 @@ _HEALTH_TIMEOUTS: dict[str, float] = {
     # The combined Firebase process can report Firestore ready before Auth has
     # finished its cold startup on the qualification runner.
     "auth": 90.0,
-    "postgres": 45.0,
-    "better-auth": 60.0,
-    "minio": 30.0,
     "typesense": 45.0,
     "backend": 180.0,
     "llm-gateway": 60.0,
     "desktop-backend": 60.0,
     "redis": 30.0,
 }
-
-
-def _service_default_port(cfg: config.HarnessConfig, service: str) -> int:
-    """Return the loopback port a service binds for harness-time probes.
-
-    Used to format the timeout error in ``_wait_health`` so it points at the
-    port that's actually being checked, not a redis-port-shaped fallback.
-    """
-    if service == "redis":
-        return cfg.redis_port
-    if service == "postgres":
-        return int(os.environ.get("OMI_HARNESS_PG_PORT", "5444"))
-    if service == "better-auth":
-        return BETTER_AUTH_PORT
-    if service == "typesense":
-        return cfg.typesense_port
-    if service == "backend":
-        return cfg.backend_port
-    if service == "llm-gateway":
-        return cfg.llm_gateway_port
-    if service == "desktop-backend":
-        return cfg.desktop_backend_port
-    if service == "auth":
-        return cfg.auth_port
-    if service == "firestore":
-        # Firestore shim has no HTTP surface; the wait-URL is the shim's
-        # sentinel file, not a port. Return 0 so the formatted error remains
-        # readable (``at 127.0.0.1:0``).
-        return 0
-    return 0
 
 
 def _wait_health(
@@ -1636,11 +905,8 @@ def _wait_health(
     """
     typesense_headers = {"X-TYPESENSE-API-KEY": config.LOCAL_TYPESENSE_API_KEY}
     checks = {
-        "firestore": (None, None),  # in-process fake_firestore shim; sentinel-based health
-        "auth": (None, None),  # port-based check (gRPC-only service)
-        "postgres": (None, None),  # port-based check
-        "better-auth": ("http://127.0.0.1:3000/api/auth/jwks", None),
-        "minio": ("http://127.0.0.1:9000/minio/health/live", None),
+        "firestore": (f"http://{cfg.firestore_host}/", None),
+        "auth": (f"http://{cfg.auth_host}/", None),
         "typesense": (f"http://127.0.0.1:{cfg.typesense_port}/collections", typesense_headers),
         "backend": (f"{cfg.backend_url}/docs", None),
         "llm-gateway": (f"{cfg.llm_gateway_url}/health", None),
@@ -1664,7 +930,7 @@ def _wait_health(
         for service in list(pending):
             if now >= deadlines[service]:
                 url = pending[service][0]
-                endpoint = url or f"127.0.0.1:{_service_default_port(cfg, service)}"
+                endpoint = url or f"127.0.0.1:{cfg.redis_port}"
                 failures[service] = f"not healthy after {deadlines[service] - start:.0f}s at {endpoint}"
                 pending.pop(service)
         if not pending:
@@ -1685,12 +951,7 @@ def _wait_health(
                     pending.pop(service)
                     failures.pop(service, None)
                 continue
-            # Route every other service through ``_service_health`` so port-based
-            # checks (firestore shim sentinel, auth emulator, postgres, the
-            # ``better-auth`` JWKS HTTP probe) hit the right probe per service
-            # instead of ``_http_ok(None)`` raising on the bare ``(None, None)``
-            # ``checks`` entries above.
-            ok, detail = _service_health(cfg, service)
+            ok, detail = _http_ok(url, headers=headers)
             if ok:
                 print(f"{service}: healthy ({detail})")
                 pending.pop(service)

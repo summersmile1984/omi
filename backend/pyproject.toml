@@ -8,5 +8,4 @@ asyncio_mode = "auto"
 markers = [
     "integration: live or credentialed tests that are not run by backend/test.sh",
     "slow: tests that are intentionally slower than normal unit tests",
-    "container_integration: testcontainers-backed integration tests that bring up a per-session Docker container",
 ]
