@@ -93,6 +93,12 @@ allow:
     upstream_pr: "Kconfig-driven NFC pairing URL"
     owner: B7
 
+  - path: .github/scripts/dead_code/flutter.allowlist.json
+    max_added_lines: 30
+    reason: 添加 fork-staged Better Auth identity 7 个文件到 flutter allowlist（不在 source tree 被 reach，而是经 prepare.py 注入到 staging artifact）；预算覆盖 7 条 entry 的 reason/path 字段
+    upstream_pr: "extend flutter dead-code ratchet with a 'fork-staged' allowlist seam (or upstream accepts the identity-provider seam upstream_pr above)"
+    owner: M1-fork
+
   # AGENTS.md pointers were tried on 2026-09-03 and removed the same day.
   # Upstream keeps these files at their guardrail ceiling -- app/AGENTS.md was
   # 11288/11500 bytes and backend/AGENTS.md 38997/39000 -- so a one-line fork
