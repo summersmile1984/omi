@@ -359,9 +359,13 @@ def _harness_service_extra(cfg: HarnessConfig) -> dict[str, str]:
     # gateway-local stage, so FEATURE_MODE=gateway would make gateway_client reject
     # startup while still advertising gateway routing.
     gateway_feature_mode = "off" if cfg.provider_mode == "offline" else "gateway"
-    extra: dict[str, str] = {
+    return {
         "OMI_HARNESS_INSTANCE": cfg.instance,
         "OMI_HARNESS_STATE_ROOT": str(cfg.layout.state_root),
+        "OMI_LOCAL_STORAGE_ROOT": str(cfg.layout.services_dir / "storage"),
+        "OMI_LOCAL_STORAGE_BASE_URL": f"{cfg.backend_public_url}/_local/storage",
+        "FIRESTORE_EMULATOR_HOST": cfg.firestore_host,
+        "FIREBASE_AUTH_EMULATOR_HOST": cfg.auth_host,
         "FIREBASE_AUTH_PROJECT_ID": cfg.project_id,
         "FIREBASE_PROJECT_ID": cfg.project_id,
         "FIRESTORE_DATABASE_ID": cfg.database_id,
@@ -389,78 +393,6 @@ def _harness_service_extra(cfg: HarnessConfig) -> dict[str, str]:
         "SCREEN_FRAME_SIGNING_SECRET": LOCAL_SCREEN_FRAME_SIGNING_SECRET,
         **LOCAL_STORAGE_BUCKET_ENV,
     }
-    if cfg.provider_mode != "offline":
-        # Real-provider mode keeps routing through the Firebase emulators and
-        # ``firebase_admin`` Google ADC, so inject the emulator host env vars
-        # pointing at the testcontainers-managed ``omi-emulators:local``.
-        # Offline mode deliberately does NOT set these — the fork-owned
-        # ``firestore_pg.compat.install`` makes ``firestore.Client()`` call
-        # into the shim facade, and Better Auth replaces
-        # ``firebase_admin.auth``'s ID-token verifier. Setting the emulator
-        # host env would short-circuit both shims and break offline mode.
-        extra["FIRESTORE_EMULATOR_HOST"] = cfg.firestore_host
-        extra["FIREBASE_AUTH_EMULATOR_HOST"] = cfg.auth_host
-    if cfg.provider_mode == "offline":
-        # OFFLINE mode runs STT through the parakeet stub (which lives in
-        # ``backend/testing/listen_pusher_stack/parakeet_stub.py`` for the
-        # listen-pusher stack, and as a fake provider for general dev). Pinning
-        # the serving chain to ``parakeet`` keeps ``backend/main.py`` startup
-        # (``validate_streaming_stt_env``) from demanding real SONIOX/DEEPGRAM
-        # credentials — that validator only requires API keys for the providers
-        # actually named in ``STT_SERVICE_MODELS``. We deliberately do NOT
-        # inject any SONIOX/DEEPGRAM key here: ``build_child_env`` rejects
-        # ``*_API_KEY`` values under ``PROVIDER_MODE=offline`` to keep the
-        # offline stack fully hermetic.
-        extra["STT_SERVICE_MODELS"] = "parakeet"
-        # Self-hosted fork profile: route the backend through the fork-owned
-        # ``firestore_pg`` facade + Better Auth identity provider instead of the
-        # upstream ``firebase_admin`` path. ``backend/fork/bootstrap.py`` reads
-        # ``OMI_DEPLOYMENT_PROFILES_PATH`` to resolve the profile table and
-        # then asserts ``store=firestore_pg`` and ``identity_provider=better_auth``;
-        # missing either fails closed at startup.
-        pg_port_file = cfg.layout.services_dir / "pg_port.txt"
-        pg_port = int(pg_port_file.read_text(encoding="utf-8").strip()) if pg_port_file.is_file() else 5443
-        from .self_hosted_profile import self_hosted_local_dsn
-        profile_path = cfg.layout.services_dir / "deployment_profiles.generated.json"
-        extra["OMI_DEPLOYMENT_TARGET"] = "self_hosted"
-        extra["OMI_DEPLOYMENT_PROFILE"] = "self_hosted.local"
-        extra["OMI_DEPLOYMENT_PROFILES_PATH"] = str(profile_path)
-        extra["OMI_BRAND"] = "omi-upstream"
-        extra["FIRESTORE_PG_DSN"] = self_hosted_local_dsn(pg_port)
-        extra["AUTH_PROVIDER"] = "better_auth"
-        extra["AUTH_JWKS_URL"] = f"http://127.0.0.1:{3000}/api/auth/jwks"
-        # ``AUTH_DEV_ISSUER_SECRET`` is gated by the backend to the dev-only
-        # ``/auth-issue`` bridge; the offline harness never reaches that path,
-        # and ``build_child_env`` rejects ``*_SECRET`` provider credentials
-        # under offline mode, so we deliberately leave it unset.
-        # ``backend/fork/bootstrap.py`` requires these to be set for the API
-        # role; the harness owns the redis container, so it can speak directly.
-        extra["REDIS_DB_HOST"] = cfg.redis_host
-        extra["REDIS_DB_PORT"] = str(cfg.redis_port)
-        extra["REDIS_DB_PASSWORD"] = ""
-        # Storage backend + queue backend switches (see fork bootstrap).
-        extra["STORAGE_BACKEND"] = "minio"
-        extra["QUEUE_BACKEND"] = "redis"
-        extra["VECTOR_STORE_PROVIDER"] = "qdrant"
-        # ``backend/fork/storage_minio.Config.from_env`` reads these four
-        # values; without them the bootstrap call raises ``ValueError``.
-        # The host/port come from ``minio_port.txt`` (written by
-        # ``_start_minio_container``) so dev-overrides of
-        # ``OMI_HARNESS_MINIO_PORT`` flow into the boto3 S3 endpoint URL.
-        # access/secret mirror the fork's own test fixtures so dev credentials
-        # are interchangeable with
-        # ``backend/fork/tests/test_storage_queue_adapters.py``.
-        minio_port_file = cfg.layout.services_dir / "minio_port.txt"
-        minio_port = int(minio_port_file.read_text(encoding="utf-8").strip()) if minio_port_file.is_file() else 9000
-        extra["MINIO_ENDPOINT"] = f"http://127.0.0.1:{minio_port}"
-        extra["MINIO_PUBLIC_ENDPOINT"] = f"http://127.0.0.1:{minio_port}"
-        extra["MINIO_ACCESS_KEY"] = "synthetic-access"
-        extra["MINIO_SECRET_KEY"] = "synthetic-secret"
-        extra["MINIO_REGION"] = "us-east-1"
-        # Suppress upstream OMI cloud telemetry/egress hooks under local dev.
-        extra["OMI_DEPLOYMENT_TARGET_STAGE"] = "local"
-        extra["OMI_LOCAL_INSTANCE"] = cfg.instance
-    return extra
 
 
 def child_env_for(cfg: HarnessConfig) -> dict[str, str]:
@@ -475,6 +407,10 @@ def child_env_for(cfg: HarnessConfig) -> dict[str, str]:
     env = safety.build_child_env(provider_mode=cfg.provider_mode, extra=extra)
     if cfg.provider_mode == "offline":
         env.update(safety.offline_provider_placeholders())
+        # Offline strips real provider keys. Default STT_SERVICE_MODELS includes
+        # soniox, and backend startup then fails closed on an empty SONIOX_API_KEY.
+        # Pin a keyless chain so isolated sessions can boot without paid STT.
+        env["STT_SERVICE_MODELS"] = "parakeet"
     return env
 
 
@@ -491,4 +427,5 @@ def desktop_backend_child_env_for(cfg: HarnessConfig) -> dict[str, str]:
     if cfg.provider_mode == "offline":
         env.update(safety.offline_provider_placeholders())
         env["OMI_LLM_STUB"] = "1"
+        env["STT_SERVICE_MODELS"] = "parakeet"
     return env
