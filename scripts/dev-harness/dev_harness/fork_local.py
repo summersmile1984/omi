@@ -608,6 +608,13 @@ def _fork_harness_service_extra(cfg) -> dict:
         "STORAGE_BACKEND": "minio",
         "QUEUE_BACKEND": "redis",
         "VECTOR_STORE_PROVIDER": "qdrant",
+        # Pin STT to the in-tree parakeet stub so the backend's
+        # ``validate_streaming_stt_env`` (in ``utils/stt/streaming.py``)
+        # does not demand real SONIOX / DEEPGRAM credentials. This is
+        # the same override the prior fork used under ``provider_mode=offline``;
+        # we set it unconditionally under fork-local because the harness
+        # never reaches a real STT provider in this entry.
+        "STT_SERVICE_MODELS": "parakeet",
         "MINIO_ENDPOINT": f"http://127.0.0.1:{minio_port}",
         "MINIO_PUBLIC_ENDPOINT": f"http://127.0.0.1:{minio_port}",
         "MINIO_ACCESS_KEY": MINIO_ACCESS_KEY,
