@@ -520,6 +520,36 @@ def _marker(cfg, service: str) -> str:
     return _upstream_cli._marker(cfg, service)
 
 
+def _preclean_stale_containers() -> None:
+    """Remove stale ``omi-dev-harness-*`` containers left by prior runs.
+
+    Each ``local-tc-up`` invocation creates six short-lived containers
+    (postgres / minio / auth / better-auth / redis / better-auth-migrate).
+    A failed previous run leaves them running, occupying host ports and
+    blocking the next run with 409 Conflict on container start. Probe the
+    docker daemon for any omi-dev-harness container and ``docker rm -f`` it
+    before we try to start fresh containers.
+    """
+    try:
+        import subprocess as _sp
+        result = _sp.run(
+            ["docker", "ps", "-a", "--filter", f"name={OWNERSHIP_PREFIX}", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        names = [n.strip() for n in result.stdout.splitlines() if n.strip()]
+        if names:
+            print(f"fork-local: removing {len(names)} stale container(s) from prior run(s)")
+            _sp.run(
+                ["docker", "rm", "-f", *names],
+                capture_output=True, timeout=30, check=False,
+            )
+    except (OSError, _sp.TimeoutExpiredException):
+        # Docker daemon missing or slow; the prerequisite_report already
+        # surfaced that. Silently skip — the next testcontainers call will
+        # fail loudly on the actual create.
+        pass
+
+
 def _fork_start_infrastructure(cfg) -> None:
     """Replacement for upstream ``_start_infrastructure``.
 
@@ -527,6 +557,7 @@ def _fork_start_infrastructure(cfg) -> None:
     via Testcontainers + Docker SDK. Writes pg_port.txt and minio_port.txt
     that ``_harness_service_extra`` reads to wire env into the backend child.
     """
+    _preclean_stale_containers()
     from testcontainers.core.network import Network
 
     cfg.layout.logs_dir.mkdir(parents=True, exist_ok=True)
