@@ -4,7 +4,8 @@ BASE ?= origin/main
 BRAND ?= omi-upstream
 
 .PHONY: help setup-fork preflight-fork upstream-touch sync-probe dev-shadow-diff run-canonical-promotion \
-	local-up local-status local-verify local-restart local-logs local-down local-reset local-selftest
+	local-up local-status local-verify local-restart local-logs local-down local-reset local-selftest \
+	local-tc-up local-tc-status local-tc-down local-tc-reset local-tc-check local-tc-logs
 
 help:
 	@echo "make -f Makefile.fork setup-fork       # fork-local git config (no upstream tags)"
@@ -18,6 +19,13 @@ help:
 	@echo "make -f Makefile.fork local-down       # stop the stack (keeps data)"
 	@echo "make -f Makefile.fork local-reset      # stop and delete local data"
 	@echo "make -f Makefile.fork local-selftest   # hermetic tests for the local dev entry points and this checkout's git config"
+	@echo ""
+	@echo "make -f Makefile.fork local-tc-up      # Testcontainers stack (Postgres+Redis+MinIO+Better Auth+Typesense)"
+	@echo "make -f Makefile.fork local-tc-status  # show what testcontainers-managed services are running"
+	@echo "make -f Makefile.fork local-tc-check   # docker daemon + python-dotenv + image presence"
+	@echo "make -f Makefile.fork local-tc-down    # stop containers + supervised processes"
+	@echo "make -f Makefile.fork local-tc-reset   # down + delete volumes (destructive)"
+	@echo "make -f Makefile.fork local-tc-logs    # tail logs (service arg required)"
 
 setup-fork:
 	@git config remote.upstream.tagOpt --no-tags && \
@@ -67,3 +75,27 @@ local-selftest:
 	@python3 dev/tests/test_local_sh.py
 	@python3 dev/tests/test_selfhost_local_sh.py
 	@python3 dev/tests/test_git_hygiene.py
+
+# Testcontainers-managed local stack. Brings up Postgres+Redis+MinIO+Better Auth
+# containerised and runs the upstream dev-harness app services (llm-gateway, backend,
+# desktop-backend) under its supervised-process machinery. State, health checks,
+# status/down/reset/logs all reuse upstream dev_harness.cli via the fork-owned
+# fork_local.py shim. See dev/unified-main/00-upstream-touch-policy.md §3 — this
+# does NOT modify any upstream file.
+local-tc-up:
+	@bash scripts/dev-harness/fork_local.sh up
+
+local-tc-status:
+	@bash scripts/dev-harness/fork_local.sh status
+
+local-tc-check:
+	@bash scripts/dev-harness/fork_local.sh check
+
+local-tc-down:
+	@bash scripts/dev-harness/fork_local.sh down
+
+local-tc-reset:
+	@bash scripts/dev-harness/fork_local.sh reset
+
+local-tc-logs:
+	@bash scripts/dev-harness/fork_local.sh logs $(SERVICE)

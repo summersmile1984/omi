@@ -171,6 +171,12 @@ checks:
     lanes: ["local", "ci"]
     reason: "apply.py --brand omi-upstream must stay a zero-diff no-op as generators land in B1-B7 -- this is the regression guarantee the design doc's B0 acceptance criteria names"
 
+  - id: fork-flutter-dead-code
+    command: ["python3", "scripts/fork/check_dead_code.py"]
+    triggers: ["app/lib/**", "app/pubspec.yaml", "scripts/fork/check_dead_code.py", ".github/scripts/dead_code/**", ".github/checks-manifest.fork.yaml"]
+    lanes: ["local", "ci"]
+    reason: "The upstream .github/scripts/check_dead_code.py only reads ${DATA_DIR}/${area}.allowlist.json; the fork's seven app/lib/fork/identity/*.dart files are intentional fork code staged through app/fork/prepare.py but unreachable in the source tree. This wrapper composes the upstream allowlist with a fork-owned fork.${area}.allowlist.json so the ratchet reads the union without modifying any upstream allowlist file (which would create a merge conflict on every sync that touched the same entries)."
+
   - id: fork-profile-boundary-tests
     command: ["python3", "scripts/profiles/test_profiles.py"]
     triggers: ["backend/fork/model_contract.py", "deploy/profiles/**", "scripts/profiles/**", "brand/**", "scripts/brand/**"]
@@ -188,6 +194,12 @@ checks:
     triggers: ["dev/**", ".github/checks-manifest.fork.yaml"]
     lanes: ["local", "ci"]
     reason: "The 2026-09-15 cold start found two blind spots in dev/selfhost-local.sh: `stop` only knew the pid file, so a backend left listening without one kept :8100 taken while `stop` reported success, and `status` called that same live backend stopped. `make -f Makefile.fork local-selftest` already covered dev/local.sh, but no lane ran it -- both the existing suite and these regressions were on-demand only. This runs both hermetically: no docker, no backend, loopback sockets only."
+
+  - id: fork-local-dev-harness-tc
+    command: ["bash", "-c", "set -e; p=python3; [ -x backend/.venv/bin/python ] && p=backend/.venv/bin/python; PYTHONPATH=scripts/dev-harness \"$p\" -m dev_harness.fork_local check"]
+    triggers: ["scripts/dev-harness/dev_harness/fork_local.py", "scripts/dev-harness/fork_local.sh", "Makefile.fork", ".github/checks-manifest.fork.yaml"]
+    lanes: ["local", "ci"]
+    reason: "Testcontainers-managed local dev harness (replaces host redis-server / java / firebase-tools with PostGIS/Redis/MinIO/Better Auth containers). Verifies docker daemon reachability, python-dotenv install, and image presence for omi-emulators:local + omi-auth-server:self-host-live-current without starting the actual containers."
 
   - id: fork-backend-test-collection
     command: ["bash", "-c", "cd backend && p=.venv/bin/python; [ -x \"$p\" ] || p=python3; \"$p\" -m pytest fork/tests --collect-only -q"]
