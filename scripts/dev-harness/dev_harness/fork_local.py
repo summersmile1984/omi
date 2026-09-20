@@ -124,10 +124,16 @@ _upstream_cli = None
 _upstream_config = None
 _upstream_self_hosted_profile = None
 
+# Captured in _bootstrap_upstream() before main() patches the upstream
+# ``_harness_service_extra``. ``_fork_harness_service_extra`` calls this
+# captured reference (not the patched one) so it can extend the upstream
+# env dict without recursing into itself.
+_original_harness_service_extra = None
+
 
 def _bootstrap_upstream() -> None:
     """Load upstream dev_harness.cli / config / self_hosted_profile."""
-    global _upstream_cli, _upstream_config, _upstream_self_hosted_profile
+    global _upstream_cli, _upstream_config, _upstream_self_hosted_profile, _original_harness_service_extra
     if _upstream_cli is not None:
         return
     # ``dev_harness`` is the package; ensure scripts/dev-harness is on sys.path.
@@ -140,6 +146,10 @@ def _bootstrap_upstream() -> None:
     _upstream_cli = cli_mod
     _upstream_config = config_mod
     _upstream_self_hosted_profile = profile_mod
+    # Capture the ORIGINAL upstream ``_harness_service_extra`` BEFORE main()
+    # monkey-patches it. The fork wrapper needs to call the unpatched version
+    # to avoid infinite recursion (patch-into-patched).
+    _original_harness_service_extra = _upstream_config._harness_service_extra
 
 
 # ---------------------------------------------------------------------------
@@ -163,11 +173,16 @@ def _start_postgres_container(cfg, harness_network) -> None:
     from testcontainers.postgres import PostgresContainer
 
     _require_port_available_or_owned(cfg, "postgres", int(os.environ.get("OMI_HARNESS_PG_PORT", "5444")))
-    container_name = _marker(cfg, "postgres").replace(":", "-") + "-pg"
+    pg_port = int(os.environ.get("OMI_HARNESS_PG_PORT", "5444"))
+    # Container name must include the port so multiple instances on different
+    # ports don't collide on the hardcoded Docker container name. The fork's
+    # OWNERSHIP_PREFIX collision bug predates testcontainers; the upstream
+    # _marker() omits port from the marker string.
+    container_name = _marker(cfg, "postgres").replace(":", "-") + f"-pg-{pg_port}"
     container = (
         PostgresContainer(POSTGRES_IMAGE, username=POSTGRES_USER, password=POSTGRES_PASSWORD, dbname=POSTGRES_DB)
         .with_name(container_name)
-        .with_bind_ports(5432, int(os.environ.get("OMI_HARNESS_PG_PORT", "5444")))
+        .with_bind_ports(5432, pg_port)
         .with_network(harness_network)
         .with_network_aliases("pg")
     )
@@ -214,11 +229,13 @@ def _start_minio_container(cfg) -> int:
     from testcontainers.core.container import DockerContainer
 
     _require_port_available_or_owned(cfg, "minio", int(os.environ.get("OMI_HARNESS_MINIO_PORT", str(MINIO_PORT))))
-    container_name = _marker(cfg, "minio").replace(":", "-") + "-minio"
     data_dir = cfg.layout.services_dir / "minio-data"
     data_dir.mkdir(parents=True, exist_ok=True)
     minio_port = int(os.environ.get("OMI_HARNESS_MINIO_PORT", str(MINIO_PORT)))
     minio_console_port = int(os.environ.get("OMI_HARNESS_MINIO_CONSOLE_PORT", str(MINIO_CONSOLE_PORT)))
+    # Same port-in-name pattern as Postgres to avoid collisions across
+    # multiple test runs on different ports in the same docker daemon.
+    container_name = _marker(cfg, "minio").replace(":", "-") + f"-minio-{minio_port}"
     container = (
         DockerContainer(MINIO_IMAGE)
         .with_name(container_name)
@@ -542,7 +559,9 @@ def _fork_harness_service_extra(cfg) -> dict:
     MinIO credentials, VECTOR_STORE_PROVIDER=qdrant, Better Auth env) on top of
     the upstream-supplied base dict.
     """
-    base = _upstream_config._harness_service_extra(cfg)
+    # ``_upstream_config._harness_service_extra`` is replaced by ``main()`` so we
+    # capture the ORIGINAL upstream function before patching to avoid recursion.
+    base = _original_harness_service_extra(cfg)
     pg_port_file = cfg.layout.services_dir / "pg_port.txt"
     pg_port = int(pg_port_file.read_text(encoding="utf-8").strip()) if pg_port_file.is_file() else 5443
     minio_port_file = cfg.layout.services_dir / "minio_port.txt"
