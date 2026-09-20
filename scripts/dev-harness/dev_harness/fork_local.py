@@ -521,7 +521,8 @@ def _marker(cfg, service: str) -> str:
 
 
 def _preclean_stale_containers() -> None:
-    """Remove stale ``omi-dev-harness-*`` containers left by prior runs.
+    """Remove stale ``omi-dev-harness-*`` containers AND orphaned
+    testcontainers-managed networks left by prior runs.
 
     Each ``local-tc-up`` invocation creates six short-lived containers
     (postgres / minio / auth / better-auth / redis / better-auth-migrate).
@@ -529,6 +530,13 @@ def _preclean_stale_containers() -> None:
     blocking the next run with 409 Conflict on container start. Probe the
     docker daemon for any omi-dev-harness container and ``docker rm -f`` it
     before we try to start fresh containers.
+
+    Testcontainers creates a bridge network per ``Network().create()`` call.
+    When the harness exits before network teardown (e.g. on health-check
+    failure), the network leaks. The Docker default bridge has 29 usable
+    /16 subnets; after enough leaks we hit ``all predefined address pools
+    have been fully subnetted`` from the docker API. ``docker network prune``
+    removes every bridge not referenced by a running container.
     """
     try:
         import subprocess as _sp
@@ -543,6 +551,14 @@ def _preclean_stale_containers() -> None:
                 ["docker", "rm", "-f", *names],
                 capture_output=True, timeout=30, check=False,
             )
+        # Prune unreferenced bridge networks (testcontainers UUID-shaped).
+        # Without this, repeated failures leak networks until docker refuses
+        # new ones with ``all predefined address pools have been fully
+        # subnetted``.
+        _sp.run(
+            ["docker", "network", "prune", "-f", "--filter", "driver=bridge"],
+            capture_output=True, timeout=30, check=False,
+        )
     except (OSError, _sp.TimeoutExpiredException):
         # Docker daemon missing or slow; the prerequisite_report already
         # surfaced that. Silently skip — the next testcontainers call will
