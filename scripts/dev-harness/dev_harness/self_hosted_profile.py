@@ -49,7 +49,14 @@ REQUIRED_CAPABILITIES = {
     "sync_upload_batch_limit": 5,
     "max_request_bytes": 0,
     "push_provider": "disabled",
-    "tts_provider": "kokoro",
+    # Local dev has no admitted speech bundle; ``backend/fork/bootstrap.py``
+    # requires ``stt_providers`` to equal the empty list and ``tts_provider``
+    # to equal ``"disabled"`` when ``validate_speech(None)``. The previous
+    # ``"kokoro"`` here was wrong: it forced the bootstrap to call a real
+    # kokoro TTS path the harness never wires, surfacing as a 5-minute
+    # firestore timeout on first request. Keeping ``realtime_relay=operator``
+    # so the chat contract tests still pass.
+    "tts_provider": "disabled",
     "realtime_relay": "operator",
     "stt_providers": [],
 }
