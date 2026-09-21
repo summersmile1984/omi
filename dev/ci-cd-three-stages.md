@@ -39,10 +39,10 @@
 ### 1.1 本地完整运行时
 
 ```bash
-dev/local.sh up                         # 默认 core-only；真实数据面、迁移、Auth、API、worker
+dev/local.sh up                         # 默认规范 native：完整 chat/STT/TTS/embedding + 数据面
 dev/local.sh up --no-backend             # 只启动数据面与 Auth
 OMI_LOCAL_QDRANT_COLLECTION_PREFIX=omi_local_openrouter dev/local.sh restart --operator-ai openrouter
-dev/local.sh restart --core-only         # 不继承任何 ambient provider 凭证
+OMI_LOCAL_AI_PROFILE=native OMI_LOCAL_QDRANT_COLLECTION_PREFIX=omi_local dev/local.sh restart
 dev/local.sh verify                     # 必须有本实例健康 API；真实产品读写，不跳过后端
 dev/local.sh status | restart | logs | ports | env | down | reset
 ```
@@ -52,6 +52,15 @@ dev/local.sh status | restart | logs | ports | env | down | reset
 `siliconflow` / `cloudflare-gateway`；只把选中供应商的 `OMI_LOCAL_*` 凭证映射到子进程。
 Cloudflare 另需 `OMI_LOCAL_BRAND_MANIFEST` 指向包含 gateway 身份的私有品牌清单。
 不要再使用 `dev/selfhost-local.env` 或 `OMI_SELFHOST_*`；将端口及密钥迁移到统一配置。
+旧 `--core-only` 参数、`OMI_LOCAL_AI_PROFILE=core-only` 和保留的旧选择均已撤销，
+会报错而不是静默切换。先删除本地配置中的旧值，再显式选择现有 `native` 或托管供应商；
+旧状态目录无需删除，不带选项重启遇到旧选择时不会停止正在运行的实例。
+默认 native 需要 `OMI_LOCAL_LLM_ENDPOINT`（默认 `http://127.0.0.1:11434`）、
+`OMI_LOCAL_EMBEDDING_ENDPOINT`（同默认地址）以及显式绝对路径
+`OMI_LOCAL_SPEECH_MODEL_STORE`。模型按 `deploy/self-host/model-runtime.md`、
+`deploy/self-host/speech-runtime.md` 预置；缺少服务/模型会失败，不禁用能力、不下载替代模型。
+显式 MiMo 仍使用真实 BGE-M3 embedding 服务和 `OMI_LOCAL_MIMO_API_KEY`，
+chat/STT/TTS 由 MiMo 提供，不要求本地 speech/LLM。
 
 Compose project 从 checkout + `OMI_LOCAL_STATE_DIR` 派生，所有 published 端口只绑定 loopback。
 旧全局 `omi-*` 容器不会被接管或停止；迁移时先显式停止旧实例，或为新实例分配不同端口。
@@ -70,17 +79,17 @@ Compose project 从 checkout + `OMI_LOCAL_STATE_DIR` 派生，所有 published �
 
 **2026-09-14 在 main 上:4/4 PASSED,1 SKIPPED**(证据 `.local/local-dev/evidence/`)。
 
-### 1.2 Server OS 运行时(本地已可跑通)
+### 1.2 Server OS 完整运行时
 
-镜像路径仍由发布构建通道负责。checkout 的默认 core-only 通过规范渲染器
-`scripts/profiles/render.py --target self_hosted --stage local --core-only --emit-json`
-生成，不再手写 profile；它关闭 speech/chat，保留 embedding（本地 bge-m3 服务由
-`OMI_LOCAL_EMBEDDING_ENDPOINT` 指定）。外部 AI 使用同一渲染器 `--operator-ai`；
-两者始终保留 `self_hosted.local` 的 PostgreSQL / Redis / MinIO / Qdrant 数据面。
+镜像路径仍由发布构建通道负责。checkout 默认使用既有规范 native profile，
+由 `scripts/profiles/render.py --target self_hosted --stage local --emit-json`
+生成，不再手写或裁剪 profile。chat、STT、TTS、embedding 全部保留；
+外部 AI 使用同一渲染器 `--operator-ai`。两者始终保留 `self_hosted.local`
+的 PostgreSQL / Redis / MinIO / Qdrant 数据面。
 Qdrant 集合绑定实际 embedding 权威与模型身份；相同维度不代表模型可互换。
 首次切换本地 / 托管 embedding 或托管供应商时，必须显式选择经审查的新
 `OMI_LOCAL_QDRANT_COLLECTION_PREFIX` 并按需回填数据，不能自动重标或删除旧集合。
-默认前缀仍为 `omi_local`；切回 core-only 时恢复该前缀。
+默认前缀仍为 `omi_local`；重启保留已选前缀，配置显式指定时才替换。
 
 ```bash
 dev/local.sh up --no-backend # 数据面和 Auth
@@ -90,7 +99,8 @@ dev/selfhost-local.sh stop  # 只停本实例 API 和 worker
 ```
 
 profile 表保存在 `$OMI_LOCAL_STATE_DIR/deployment_profiles.generated.json`，
-默认 `.local/local-dev/`，不修改被跟踪的表。重启不带选项保留已运行的 AI profile。
+默认 `.local/local-dev/`，不修改被跟踪的表。不带选项重启保留已运行的 AI profile，
+除非 `dev/local.env` 或 local-scoped 环境变量显式替换；不会把旧选择静默映射到 native。
 `up` 结束后可直接走真实业务链路:
 
 ```
@@ -106,8 +116,8 @@ profile 表保存在 `$OMI_LOCAL_STATE_DIR/deployment_profiles.generated.json`�
 `fork/tests/test_account_deletion.py` 10 passed。
 
 仍然需要 amd64 通道的场景:`deploy/self-host/build-images.sh`(镜像交付)与完整
-profile(speech/LLM 模型库:`prepare-speech.py` 目前因上游 TTS 归档 digest 与固定值不符而
-无法完成,见下)。
+profile 的 Linux 模型运行时验收。2026-09-21 已按发布方实际归档重新核验并更新
+Kokoro TTS 与完整模型库 digest;原生 TTS→ASR 实际推理通过,不再以缺失语音模型缩减 profile。
 
 ### 1.3 设计约束
 
@@ -116,7 +126,7 @@ profile(speech/LLM 模型库:`prepare-speech.py` 目前因上游 TTS 归档 dige
    `dev/local.sh ports` 打印占用者并在冲突时拒绝启动。
 3. **失败闭合**：真实 HTTP/数据库就绪失败会报错；不写 readiness sentinel，不以 `pid=-1` 代表容器。
 4. **子进程隔离**：显式白名单环境、独立 HOME，使用现有 env-loader admission 跳过 backend dotenv；
-   core-only 不读取 shell 的 AI key，operator-AI 也只收到显式 local-scoped 的选中 key。
+   native 不读取 shell 的 AI key，operator-AI 也只收到显式 local-scoped 的选中 key。
 
 ## 2. 阶段 2 —— CI
 
@@ -372,7 +382,7 @@ gh workflow run fork-cd-server.yml     --ref main -f delivery_run_id=<RELEASE_RU
 
 | # | 生产目标 | 本地对应环境 | 命令 | 实测结果 |
 |---|---|---|---|---|
-| 1 | **Server OS 自托管** | 数据面 + core-only 自托管后端 | `dev/local.sh up` ; `dev/selfhost-local.sh up` | ✅ `verify` 6/6(含产品级往返);业务接口 401 → 200 `[]` |
+| 1 | **Server OS 自托管** | 历史已撤销的 core-only 后端（非完整 profile） | 当时的 `dev/local.sh up` ; `dev/selfhost-local.sh up` | 历史 `verify` 6/6 和业务接口 401 → 200 `[]`；未证明完整 AI/语音能力，不作为当前验收 |
 | 2 | **Cloudflare** | 本地 target(workers + 本地绑定 + Provider 替身) | `npm run dev:product -- --output <dir>` | ✅ `/health` `/v1/health` `/` = 200;业务路由 401 |
 | 3 | **客户端** | 各自 fork stage 在构建时解析 `<target>.local` 并注入端点 | 见下 | web ✅;desktop 已接线未构建;flutter 阻塞在 SDK 版本 |
 
@@ -587,8 +597,9 @@ FAIL: backend route inventory is stale:
 - 原样 `backend/testing/listen_pusher_stack/run.sh --state-dir /tmp/omi-boundary-pusher-proof`
   全部 gauntlet 通过，随后 emulator concurrency 6 passed。安装仓库锁定的 npm 工具、
   Redis 后运行，未替换上游场景。
-- 独立端口/状态目录启动 `dev/local.sh up --core-only`，实际 PostgreSQL 迁移、
-  Redis、MinIO、Auth signup/JWT/JWKS、API health、鉴权 action-item CRUD：6/6。
+- **历史不完整证明，core-only 模式及其完整验收资格已撤销**：独立端口/状态目录
+  当时使用 `dev/local.sh up --core-only`，实际 PostgreSQL 迁移、Redis、MinIO、
+  Auth signup/JWT/JWKS、API health、鉴权 action-item CRUD：6/6。
   显式托管选择保持同一 self_hosted.local 数据面；SiliconFlow embedding 返回 200，
   chat 返回供应商 429，未计作成功。显式选择 OpenRouter 后真实 `/v2/messages`
   返回与随机标记匹配的模型回复，再切回 core-only，API/worker 恢复健康。
@@ -610,10 +621,14 @@ FAIL: backend route inventory is stale:
   表示合法 no-op；fork 包装层现在原样保留该结果，不创建空 mutation。
   `test_canonical_mutations.py` 新增重复 review 与两个注册入口的无写入回归：
   修复前 3 failed / 5 passed，修复后 8 passed。原有反馈 identity/replay 测试保持通过。
-  再次执行 `deploy/self-host/ci/product.sh`：fixture 单测 11 passed，真实 Linux ARM64
-  产品合同 **16/16 passed**；未修改 E2E 场景或上游代码。报告保存在本机
-  `omi-linux-noop-fixed-n71_0509/server/core-results.json`。此证明限 core-only 产品路径，
+  当时再次执行 `deploy/self-host/ci/product.sh`：fixture 单测 11 passed，Linux ARM64
+  受限产品合同 **16/16 passed（历史、不完整，已撤销完整产品验收资格）**；
+  未修改 E2E 场景或上游代码。报告保存在本机
+  `omi-linux-noop-fixed-n71_0509/server/core-results.json`。此证明限已删除的 core-only 路径，
   embedding 为受控 HTTP，未覆盖真实模型推理、聊天、语音或客户端 UI。
+  当前 fixture 不再提供该路径：native 必须提供全部三套真实模型库，显式 MiMo
+  必须提供真实 embedding 模型库和密钥；规范能力全部保留，无模型参数会拒绝启动。
+  CI 使用现有 `prepare-model.py` / `prepare-speech.py` 预置 native 模型后再验收。
   同次修复的 `BACKEND_PYTEST_WORKERS=8 bash backend/test.sh` 完整执行 1154 个文件，
   exit 0；fork startup（26 文件）与 backend seams（3 文件）两项 gate 也通过。
 - 组合 preflight 的上游 dev-harness 测试 128 passed / 6 skipped / 1 failed：

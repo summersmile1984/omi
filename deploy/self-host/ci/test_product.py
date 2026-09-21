@@ -14,11 +14,74 @@ import tempfile
 import threading
 import unittest
 
-from product import Fixture, core_only_profile
+from product import Fixture, ROOT, render
 from loopback import handler as proxy_handler
 
 
 class FixtureHTTP(unittest.TestCase):
+    def test_options_preserves_upstream_cors_approval_and_denial(self):
+        seen = []
+        allowed_origin = 'http://127.0.0.1:34900'
+
+        class CorsOwner(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_OPTIONS(self):
+                request = (
+                    self.path,
+                    self.headers.get('Origin'),
+                    self.headers.get('Access-Control-Request-Method'),
+                    self.headers.get('Access-Control-Request-Headers'),
+                )
+                seen.append(request)
+                allowed = request[1] == allowed_origin
+                body = b'' if allowed else b'origin rejected'
+                self.send_response(204 if allowed else 403)
+                if allowed:
+                    self.send_header('Access-Control-Allow-Origin', allowed_origin)
+                    self.send_header('Access-Control-Allow-Methods', 'POST')
+                    self.send_header('Access-Control-Allow-Headers', 'authorization,content-type')
+                    self.send_header('Vary', 'Origin')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        with ExitStack() as stack:
+            upstream = ThreadingHTTPServer(('127.0.0.1', 0), CorsOwner)
+            proxy = ThreadingHTTPServer(('127.0.0.1', 0), proxy_handler('127.0.0.1', upstream.server_port))
+            for server in (upstream, proxy):
+                thread = threading.Thread(target=lambda server=server: server.serve_forever(poll_interval=0.01))
+                thread.start()
+                stack.callback(server.server_close)
+                stack.callback(thread.join, 5)
+                stack.callback(server.shutdown)
+            for origin in (allowed_origin, 'https://untrusted.example.invalid'):
+                with closing(HTTPConnection('127.0.0.1', proxy.server_port, timeout=3)) as client:
+                    client.request(
+                        'OPTIONS',
+                        '/v2/messages',
+                        headers={
+                            'Origin': origin,
+                            'Access-Control-Request-Method': 'POST',
+                            'Access-Control-Request-Headers': 'authorization,content-type',
+                        },
+                    )
+                    response = client.getresponse()
+                    self.assertEqual(response.status, 204 if origin == allowed_origin else 403)
+                    self.assertEqual(
+                        response.getheader('Access-Control-Allow-Origin'),
+                        allowed_origin if origin == allowed_origin else None,
+                    )
+                    self.assertEqual(response.read(), b'' if origin == allowed_origin else b'origin rejected')
+            self.assertEqual(
+                seen,
+                [
+                    ('/v2/messages', origin, 'POST', 'authorization,content-type')
+                    for origin in (allowed_origin, 'https://untrusted.example.invalid')
+                ],
+            )
+
     def test_http10_complete_body_is_finalized_after_upstream_socket_closes(self):
         body = b'complete response'
 
@@ -254,7 +317,12 @@ class FixtureOwnership(unittest.TestCase):
             marker = output / 'existing-state'
             marker.write_text('retained')
             with self.assertRaises(FileExistsError):
-                Fixture(output, 'fixture-proof', 34800)
+                Fixture(
+                    output,
+                    'fixture-proof',
+                    34800,
+                    model_stores={kind: output for kind in ('embedding', 'llm', 'speech')},
+                )
             self.assertEqual(marker.read_text(), 'retained')
 
     def test_actual_http_suite_cancellation_uses_the_owned_process_boundary(self):
@@ -262,7 +330,12 @@ class FixtureOwnership(unittest.TestCase):
             stalled_auth.bind(('127.0.0.1', 0))
             stalled_auth.listen(1)
             stalled_auth.settimeout(10)
-            fixture = Fixture(Path(directory) / 'owned', 'fixture-proof', 34800)
+            fixture = Fixture(
+                Path(directory) / 'owned',
+                'fixture-proof',
+                34800,
+                model_stores={kind: Path(directory) for kind in ('embedding', 'llm', 'speech')},
+            )
             origin = f'http://127.0.0.1:{stalled_auth.getsockname()[1]}'
             (fixture.output / 'metadata.json').write_text(
                 json.dumps(
@@ -298,7 +371,12 @@ class FixtureOwnership(unittest.TestCase):
             ready.bind(('127.0.0.1', 0))
             ready.listen(1)
             ready.settimeout(10)
-            fixture = Fixture(Path(directory) / 'owned', 'fixture-proof', 34800)
+            fixture = Fixture(
+                Path(directory) / 'owned',
+                'fixture-proof',
+                34800,
+                model_stores={kind: Path(directory) for kind in ('embedding', 'llm', 'speech')},
+            )
             code = '''
 import signal,socket,subprocess,sys
 child=subprocess.Popen([sys.executable,'-c','import signal; signal.pause()'])
@@ -325,11 +403,13 @@ signal.pause()
 
 
 class FixtureProfile(unittest.TestCase):
-    def test_mimo_mode_requires_only_local_embedding_and_rejects_ambiguous_stores(self):
+    def test_mimo_requires_local_embedding_and_rejects_ambiguous_stores(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             secret = root / 'secret.json'
-            secret.write_text(json.dumps({'MIMO_API_KEY': 'synthetic'}))
+            from fork.operator_ai import MiMo
+
+            secret.write_text(json.dumps({'MIMO_API_KEY': 'synthetic', 'MIMO_BASE_URL': MiMo().base_url}))
             fixture = Fixture(
                 root / 'mimo', 'fixture-mimo', 34800, model_stores={'embedding': root}, mimo_secret_file=secret
             )
@@ -348,7 +428,7 @@ class FixtureProfile(unittest.TestCase):
                 )
             self.assertFalse((root / 'bad').exists())
 
-    def test_model_capacity_rejects_the_observed_oom_host_and_leaves_core_mode_unchanged(self):
+    def test_model_capacity_rejects_the_observed_oom_host(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             stores = {kind: root for kind in ('embedding', 'llm', 'speech')}
@@ -369,14 +449,13 @@ class FixtureProfile(unittest.TestCase):
             fixture.command = lambda *args, **kwargs: str(16 * 1024**3)
             fixture.admit_model_capacity(services)
             self.assertTrue(json.loads((fixture.output / 'model-capacity.json').read_text())['admitted'])
-            core = Fixture(root / 'core', 'fixture-core', 34800)
-            core.command = lambda *args, **kwargs: self.fail('core mode acquired real-model resource requirements')
-            core.admit_model_capacity({})
 
     def test_partial_or_missing_model_stores_fail_before_creating_fixture_state(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for stores in (
+                None,
+                {},
                 {'speech': root},
                 {'embedding': root, 'llm': None, 'speech': root},
                 {'embedding': root, 'llm': root, 'speech': root / 'missing'},
@@ -385,25 +464,71 @@ class FixtureProfile(unittest.TestCase):
                     Fixture(root / 'output', 'fixture-models', 34800, model_stores=stores)
                 self.assertFalse((root / 'output').exists())
 
-    def test_core_contract_disables_unowned_media_and_llm_capabilities(self):
-        profile = core_only_profile(
-            {
-                'llm': {'unvalidated': 'removed before admission'},
-                'speech': {'unvalidated': 'removed before admission'},
-                'capabilities': {
-                    'llm_provider': 'ollama',
-                    'stt_providers': ['sensevoice'],
-                    'tts_provider': 'kokoro',
-                    'push_provider': 'disabled',
-                },
-            }
-        )
+    def test_mimo_missing_embedding_or_invalid_credential_fails_before_creating_state(self):
+        from fork.operator_ai import MiMo
 
-        self.assertNotIn('llm', profile)
-        self.assertNotIn('speech', profile)
-        self.assertEqual(profile['capabilities']['llm_provider'], 'disabled')
-        self.assertEqual(profile['capabilities']['stt_providers'], [])
-        self.assertEqual(profile['capabilities']['tts_provider'], 'disabled')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = root / 'secret.json'
+            for credential, stores in (
+                ({'MIMO_API_KEY': 'synthetic', 'MIMO_BASE_URL': MiMo().base_url}, None),
+                ({'MIMO_BASE_URL': MiMo().base_url}, {'embedding': root}),
+                ({'MIMO_API_KEY': 'synthetic', 'MIMO_BASE_URL': 'https://example.invalid'}, {'embedding': root}),
+            ):
+                secret.write_text(json.dumps(credential))
+                with self.subTest(credential=list(credential), stores=stores), self.assertRaises(ValueError):
+                    Fixture(root / 'output', 'fixture-mimo', 34800, model_stores=stores, mimo_secret_file=secret)
+                self.assertFalse((root / 'output').exists())
+
+    def test_prepare_preserves_complete_rendered_capabilities_and_real_embedding_service(self):
+        from fork.operator_ai import MiMo
+
+        for operator in (None, 'mimo-cn'):
+            with self.subTest(operator=operator), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                secret = root / 'secret.json'
+                secret.write_text(json.dumps({'MIMO_API_KEY': 'synthetic', 'MIMO_BASE_URL': MiMo().base_url}))
+                stores = {kind: root for kind in (('embedding',) if operator else ('embedding', 'llm', 'speech'))}
+                fixture = Fixture(
+                    root / 'output',
+                    'fixture-models',
+                    34800,
+                    model_stores=stores,
+                    mimo_secret_file=secret if operator else None,
+                )
+                # Only Docker IO is controlled. Profile resolution and fixture
+                # preparation execute normally, retaining every capability.
+                services = render.load_yaml(ROOT / 'deploy/self-host/compose.production.yml')['services']
+                for service in services.values():
+                    service['environment'] = {}
+                    if 'mem_limit' in service:
+                        service['mem_limit'] = str(4 * 1024**3)
+
+                def command(args, **kwargs):
+                    if args[:2] == ['docker', 'info']:
+                        return str(16 * 1024**3)
+                    return json.dumps({'services': services})
+
+                fixture.command = command
+                fixture.prepare()
+                expected = render.resolve('self_hosted', None, fixture.output / 'brand.json', 'local', operator)
+                self.assertEqual(json.loads((fixture.output / 'profile.json').read_text()), expected)
+                profile = expected['profiles']['self_hosted.local']
+                self.assertNotEqual(profile['capabilities']['llm_provider'], 'disabled')
+                self.assertTrue(profile['capabilities']['stt_providers'])
+                self.assertNotEqual(profile['capabilities']['tts_provider'], 'disabled')
+                composed = json.loads(fixture.compose_file.read_text())['services']
+                self.assertEqual(composed['embedding']['image'], services['embedding']['image'])
+                self.assertIn('embedding-artifact-check', composed)
+                if not operator:
+                    self.assertIn('llm-artifact-check', composed)
+                    self.assertIn('llm', composed)
+                else:
+                    for name in ('backend', 'memory-maintenance-worker'):
+                        self.assertIn('client', composed[name]['networks'])
+                        self.assertEqual(composed[name]['environment']['MIMO_API_KEY'], 'synthetic')
+                        self.assertNotIn('LLM_ENDPOINT', composed[name]['environment'])
+                    self.assertNotIn('MIMO_API_KEY', composed['queue-worker']['environment'])
 
 
 if __name__ == '__main__':

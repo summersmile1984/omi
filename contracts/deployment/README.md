@@ -55,20 +55,14 @@ Docker network; a fixed two-port HTTP proxy exposes Auth/API on loopback. A
 fresh random Compose project owns all state and removes its own containers,
 volumes and networks on exit. No production container is selected or reused.
 
-The core slice explicitly generates a **speech-disabled test profile** from the
-real profile renderer and validates it through the normal capability owner.
-An isolated HTTP embedding fixture returns deterministic vectors through the
-real model-identity/dimension adapter. This is controlled inference for product
-state tests; it is not model quality, speech, external egress, or production
-configuration evidence. LLM routes on this fixture remain unavailable.
-
-For real speech and text-model verification, supply **all three** existing,
-absolute model-store directories. The runner preserves the complete rendered
-Server profile, mounts stores read-only, builds the normal `Dockerfile.llm`,
-runs both production Ollama artifact checks, and starts actual BGE-M3/Qwen
-services. Backend admission verifies the speech bundle and executes real
-Kokoro/SenseVoice and Qwen readiness. This mode does not start the controlled
-embedding provider. Incomplete store selections are rejected.
+The fixture preserves the **complete canonical rendered profile**. It never
+removes speech/LLM contracts or substitutes an embedding HTTP fake. Native
+startup requires **all three** existing, absolute model-store directories.
+Stores are mounted read-only, the normal `Dockerfile.llm` is built, both
+production Ollama artifact checks run, and actual BGE-M3/Qwen services start.
+Backend admission verifies the speech bundle and executes real
+Kokoro/SenseVoice and Qwen readiness. Missing or incomplete stores are rejected
+before fixture state is created.
 
 ```bash
 python3 deploy/self-host/ci/product.py \
@@ -78,28 +72,44 @@ python3 deploy/self-host/ci/product.py \
   --speech-store /absolute/speech-store
 ```
 
-The same local/CI shell entry accepts `SELF_HOST_CI_EMBEDDING_STORE`,
-`SELF_HOST_CI_LLM_STORE` and `SELF_HOST_CI_SPEECH_STORE` together. Provision the
-models with the normal Server commands beforehand; startup/tests never download
-them. Before building or starting application containers, real-model mode
-checks Docker's memory allocation against the two Compose model limits plus
-4 GiB application/engine headroom (currently 12 GiB required).
-`model-capacity.json` records the decision. This rejects the actual 2026-09-05
-8 GiB VM that killed `llama-server` during finalization; it is an admission
-floor, not a throughput or concurrent-workload guarantee. Existing core mode
-keeps its original requirements.
+The same local/CI shell entry requires `SELF_HOST_CI_EMBEDDING_STORE`,
+`SELF_HOST_CI_LLM_STORE` and `SELF_HOST_CI_SPEECH_STORE` together. Provision with
+`deploy/self-host/prepare-model.py --kind embedding --output ...`,
+`prepare-model.py --kind llm --output ...`, and
+`deploy/self-host/prepare-speech.py --output ...` beforehand. The fork CI
+workflow runs these existing digest-verifying provisioners when the product
+check is selected; runtime startup never downloads or substitutes models.
+CI therefore needs model-registry/release-download access, disk space for the
+stores and images, and at least 12 GiB of Docker memory. Insufficient resources
+fail the gate; no reduced-capability runner is selected instead.
 
-Both modes expose actual WebSocket Upgrade through the same Auth/API proxy.
+An explicitly selected [MiMo fixture](../../deploy/self-host/mimo-local.md)
+requires only the embedding store and a private `--mimo-secret-file` credential
+file (shell entry: `SELF_HOST_CI_MIMO_SECRET_FILE`). Do not also select native
+LLM/speech stores. Only the API and canonical-memory maintenance worker receive
+that selected credential and outbound network access. CI uses native models and
+needs no hosted-provider credential.
+
+Before building or starting application containers, the fixture checks Docker's
+memory against selected Compose model limits plus 4 GiB application/engine
+headroom (currently 12 GiB native, 8 GiB MiMo).
+`model-capacity.json` records the decision. This rejects the actual 2026-09-05
+8 GiB native VM that killed `llama-server` during finalization; it is an admission
+floor, not a throughput or concurrent-workload guarantee.
+
+Both native and MiMo selections expose actual WebSocket Upgrade through the same Auth/API proxy.
 The upstream server owns authentication and the handshake response. The tunnel
 preserves parser-buffered first frames and binary PCM in both directions, and
 closes both sockets on disconnect, 30-second inactivity, its 15-minute deadline
 or its 64 MiB per-direction bound. It never synthesizes transcripts. Real socket
 tests run in the existing `product.sh` lane alongside HTTP-framing and process
 ownership tests.
+HTTP OPTIONS is forwarded to the same upstream owner, preserving both CORS
+approval and denial; the proxy never manufactures a permissive preflight.
 
-`--self-test` executes sixteen common core cases, including when
-real models are enabled. Enabling this runtime is not evidence that recording,
-finalization, canonical-memory retrieval or the complete CI-1 qualifier passed.
+`--self-test` executes sixteen common core cases on this complete runtime.
+“Core” names that HTTP case inventory, not a runtime mode. Starting real models
+is not evidence that recording, finalization, canonical-memory retrieval or the complete CI-1 qualifier passed.
 See the [real-model execution record](../../dev/unified-main/implementation-2026-09-05/server-real-model-product.md).
 
 For local iteration, `SELF_HOST_CI_RUNTIME_IMAGE` may name a previously built

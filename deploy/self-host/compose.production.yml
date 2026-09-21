@@ -501,6 +501,13 @@ services:
       - SELF_HOST_EGRESS_ALLOWLIST=${SELF_HOST_EGRESS_ALLOWLIST:?SELF_HOST_EGRESS_ALLOWLIST is required}
       - FIRESTORE_PG_DSN=postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
       - EMBEDDING_ENDPOINT=http://embedding:11434
+      - LLM_ENDPOINT=http://llm:11434
+      - MEMORY_ENABLED=on
+      - MEMORY_CANONICAL_CONSOLIDATION_ENABLED=true
+      - ENCRYPTION_SECRET=${ENCRYPTION_SECRET:?ENCRYPTION_SECRET is required}
+      - REDIS_DB_HOST=redis
+      - REDIS_DB_PORT=6379
+      - REDIS_DB_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
       - VECTOR_STORE_PROVIDER=qdrant
       - VECTOR_PROJECTION_MODE=${VECTOR_PROJECTION_MODE:?VECTOR_PROJECTION_MODE is required}
       - VECTOR_PROJECTION_ACTIVE_VERSION=${VECTOR_PROJECTION_ACTIVE_VERSION:?VECTOR_PROJECTION_ACTIVE_VERSION is required}
@@ -521,6 +528,10 @@ services:
       - MEMORY_OUTBOX_UID_LIMIT=${MEMORY_OUTBOX_UID_LIMIT:-50}
     depends_on:
       embedding:
+        condition: service_healthy
+      llm:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       firestore-pg-migrate:
         condition: service_completed_successfully

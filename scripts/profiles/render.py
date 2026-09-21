@@ -142,12 +142,9 @@ def resolve(
     manifest_path: Path | None = None,
     stage: str | None = None,
     operator_ai: str | None = None,
-    core_only: bool = False,
 ) -> dict:
     if operator_ai is not None and (target != 'self_hosted' or stage is None):
         raise ProfileError('operator AI selection requires --target self_hosted and an explicit stage')
-    if core_only and (target != 'self_hosted' or stage != 'local' or operator_ai is not None):
-        raise ProfileError('core-only requires self_hosted.local without operator AI')
     if target not in ("omi_cloud", "self_hosted", "cloudflare") or (stage is not None and stage not in STAGES):
         raise ProfileError("unknown deployment target or stage")
     try:
@@ -246,12 +243,6 @@ def resolve(
         if operator_ai and declared_ai and declared_ai != operator_ai:
             raise ProfileError('operator AI argument conflicts with the brand manifest')
         selected_ai = operator_ai or declared_ai
-        if core_only:
-            if declared_ai and declared_ai != 'native':
-                raise ProfileError('core-only conflicts with the brand manifest operator AI')
-            row.pop('speech', None)
-            row.pop('llm', None)
-            row['capabilities'].update(stt_providers=[], tts_provider='disabled', llm_provider='disabled')
         if selected_ai and selected_ai != 'native':
             from fork.operator_ai import configure
 
@@ -438,14 +429,13 @@ def main() -> int:
         choices=['mimo-cn', 'openrouter', 'cloudflare-gateway', 'siliconflow'],
         help='explicit hosted AI for one Server OS stage',
     )
-    parser.add_argument('--core-only', action='store_true', help='local Server OS without speech or chat models')
     parser.add_argument("--output-root", type=Path, default=REPO_ROOT, help="isolated build tree for generated files")
     parser.add_argument("--check", action="store_true", help="fail if generated files differ from source")
     parser.add_argument("--emit-json", action="store_true", help="print the resolved table and write nothing")
     args = parser.parse_args()
 
     try:
-        resolved = resolve(args.target, args.brand, args.manifest, args.stage, args.operator_ai, args.core_only)
+        resolved = resolve(args.target, args.brand, args.manifest, args.stage, args.operator_ai)
     except ProfileError as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1

@@ -2,8 +2,12 @@
 
 from dataclasses import replace
 import hashlib
+from importlib.util import module_from_spec, spec_from_file_location
+import io
 import json
 from pathlib import Path
+import sys
+import tarfile
 from types import SimpleNamespace
 from unittest import mock
 
@@ -290,6 +294,49 @@ def test_url_egress_redirect_and_unsupported_options_never_reach_inference(monke
     with pytest.raises(httpx.HTTPStatusError):
         provider.transcribe_url('http://minio:9000/audio.wav')
     assert network.call_args.kwargs['follow_redirects'] is False
+
+
+def test_provisioning_publishes_bundle_readable_by_container_user(monkeypatch, tmp_path):
+    root = Path(__file__).resolve().parents[3]
+    with monkeypatch.context() as context:
+        context.setattr(sys, 'path', list(sys.path))
+        spec = spec_from_file_location('speech_public_provision_test', root / 'deploy/self-host/prepare-speech.py')
+        provision = module_from_spec(spec)
+        spec.loader.exec_module(provision)
+    contract = validate_speech(selected()['speech'])
+    seed = tmp_path / 'seed'
+    downloads = {}
+    digests = {}
+    for kind, model in (('asr', contract.stt_model), ('tts', contract.tts_model)):
+        directory = seed / model
+        directory.mkdir(parents=True, mode=0o700)
+        artifact = directory / 'model.onnx'
+        artifact.write_bytes(b'controlled model artifact')
+        artifact.chmod(0o600)
+        encoded = io.BytesIO()
+        with tarfile.open(fileobj=encoded, mode='w:bz2') as archive:
+            archive.add(directory, arcname=model)
+        downloads[model] = encoded.getvalue()
+        digests[kind] = 'sha256:' + hashlib.sha256(encoded.getvalue()).hexdigest()
+    contract = replace(
+        contract,
+        stt_archive_digest=digests['asr'],
+        tts_archive_digest=digests['tts'],
+        bundle_digest='sha256:' + hashlib.sha256(manifest_bytes(seed, contract)).hexdigest(),
+    )
+    monkeypatch.setattr(
+        provision.urllib.request,
+        'urlopen',
+        lambda url, **kwargs: io.BytesIO(downloads[url.rsplit('/', 1)[1].removesuffix('.tar.bz2')]),
+    )
+    output = tmp_path / 'published'
+    provision.provision(output, contract)
+    verify(output, contract)
+    # Image users do not share the provisioner's uid/gid: every directory must
+    # be traversable, and public model bytes readable, by an unrelated principal.
+    for path in (output, *output.rglob('*')):
+        required = 0o005 if path.is_dir() else 0o004
+        assert path.stat().st_mode & required == required
 
 
 def test_provisioning_rejects_archive_path_escape(tmp_path):

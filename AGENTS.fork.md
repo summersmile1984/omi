@@ -92,8 +92,12 @@ wrapper, not a second configuration or process owner. Do not fork the upstream
 dev-harness CLI/config/safety implementation. Render profiles through
 `scripts/profiles/render.py`, never a second hand-maintained profile table.
 
-- Default to core-only. Hosted AI requires explicit selection and a selected
-  `OMI_LOCAL_*` credential; never inherit ambient cloud/provider authority.
+- The user requires the complete canonical native profile by default: chat,
+  STT, TTS and embedding stay enabled. Never add a core-only mode or a renamed
+  reduced-capability substitute, or strip capabilities to make a gate pass.
+  Missing model requirements fail explicitly. Hosted AI requires explicit
+  selection and a selected `OMI_LOCAL_*` credential; never inherit ambient
+  cloud/provider authority. Retired selectors are errors, not migration aliases.
 - Own processes by instance state and process identity, never by port alone.
   Stop/reset only that instance's processes, containers and volumes.
 - Qdrant admission must verify exact embedding identity, not just dimensions.

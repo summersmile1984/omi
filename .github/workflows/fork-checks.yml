@@ -199,6 +199,7 @@ jobs:
               output.write(f'enabled={str(enabled).lower()}\n')
               output.write(f"electron={str(any(check['id'] == 'fork-electron-native-identity' for check in selected)).lower()}\n")
               output.write(f"raster={str(any(check['id'] in {'fork-brand-raster', 'fork-flutter-native-identity', 'fork-electron-native-identity'} for check in selected)).lower()}\n")
+              output.write(f"server_models={str(any(check['id'] == 'fork-selfhost-product-core' for check in selected)).lower()}\n")
           PY
 
       - name: Provision shared brand raster dependencies
@@ -229,6 +230,16 @@ jobs:
         working-directory: desktop/windows
         run: pnpm install --frozen-lockfile
 
+      # Product cases always run with the complete canonical native profile.
+      # Untrusted PRs need no hosted-provider secret; all downloaded bytes are
+      # verified by the existing provisioners and admitted again at startup.
+      - name: Provision complete Server model stores
+        if: steps.flutter.outputs.server_models == 'true'
+        run: |
+          python3 deploy/self-host/prepare-model.py --kind embedding --output "$RUNNER_TEMP/selfhost-models/embedding"
+          python3 deploy/self-host/prepare-model.py --kind llm --output "$RUNNER_TEMP/selfhost-models/llm"
+          python3 deploy/self-host/prepare-speech.py --output "$RUNNER_TEMP/selfhost-models/speech"
+
       # Portable contracts run on either host; macOS-only checks run below.
       # The self-host fixture runs on this same Linux host, natively amd64, so its
       # image builds and compose stack are no longer emulated.
@@ -240,6 +251,9 @@ jobs:
           # (fork-selfhost-product-core reported "inspect command-09.log" for days
           # with nothing diagnosable anywhere).
           SELF_HOST_CI_REPORT_DIR: ${{ runner.temp }}/selfhost-fixture-report
+          SELF_HOST_CI_EMBEDDING_STORE: ${{ runner.temp }}/selfhost-models/embedding
+          SELF_HOST_CI_LLM_STORE: ${{ runner.temp }}/selfhost-models/llm
+          SELF_HOST_CI_SPEECH_STORE: ${{ runner.temp }}/selfhost-models/speech
         run: |
           python3 scripts/fork/run_checks.py \
             --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux

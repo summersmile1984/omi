@@ -23,7 +23,9 @@ def extract(archive, output):
         total = 0
         members = bundle.getmembers()
         for member in members:
-            if not (member.isfile() or member.isdir()) or not (output / member.name).resolve().is_relative_to(output.resolve()):
+            if not (member.isfile() or member.isdir()) or not (output / member.name).resolve().is_relative_to(
+                output.resolve()
+            ):
                 raise ValueError('model archive contains unsafe paths or non-file entries')
             total += member.size
             if total > 1_500_000_000:
@@ -58,6 +60,10 @@ def provision(output: Path, contract):
             archive.unlink()
         (staging / 'manifest.json').write_bytes(manifest_bytes(staging, contract))
         verify(staging, contract)
+        # Public model assets must remain readable by the non-root runtime UID
+        # after the private staging directory becomes the read-only host mount.
+        for entry in [staging, *staging.rglob('*')]:
+            entry.chmod(0o755 if entry.is_dir() else 0o644)
         # Never overwrite/rebind an existing model directory.
         os.rename(staging, output)
     print('Verified speech bundle ready for a read-only runtime mount.')

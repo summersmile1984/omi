@@ -98,6 +98,30 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(row["llm"]["parallel_requests"], 1)
         self.assertEqual(row["llm"]["request_timeout_seconds"], 300)
 
+    def test_local_default_retains_all_native_inference_capabilities(self):
+        self.write()
+        selected = self.cli('self_hosted', '--stage', 'local', '--emit-json')
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        row = json.loads(selected.stdout)['profiles']['self_hosted.local']
+        self.assertEqual(row['capabilities']['llm_provider'], row['llm']['provider'])
+        self.assertEqual(row['llm']['model'], 'qwen3:1.7b')
+        self.assertEqual(row['capabilities']['stt_providers'], ['sensevoice'])
+        self.assertEqual(row['capabilities']['tts_provider'], 'kokoro')
+        self.assertIn('speech', row)
+        self.assertEqual(row['embedding']['model'], 'bge-m3:latest')
+        self.assertEqual(row['capabilities']['embedding_dims'], row['embedding']['dimension'])
+
+    def test_retired_selector_is_rejected_by_cli_and_manifest(self):
+        self.write()
+        rejected = self.cli('self_hosted', '--stage', 'local', '--core-only', '--emit-json')
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(rejected.stdout, '')
+        self.manifest['self_hosted_inference'] = {'local': 'core-only'}
+        self.write()
+        rejected = self.cli('self_hosted', '--stage', 'local', '--emit-json')
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertEqual(rejected.stdout, '')
+
     def test_mimo_selection_is_explicit_and_leaves_embedding_unchanged(self):
         self.configure()
         baseline = json.loads(self.cli('self_hosted', '--stage', 'local', '--emit-json').stdout)

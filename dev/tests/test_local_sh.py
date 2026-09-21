@@ -11,9 +11,11 @@ Run: python3 dev/tests/test_local_sh.py   (or: make -f Makefile.fork local-selft
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -141,7 +143,7 @@ class LocalShTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("OMI_LOCAL_BACKEND_PORT is empty", result.stderr)
 
-    def child_environment(self, profile: str, extra: dict[str, str]) -> dict[str, str]:
+    def child_environment(self, profile: str | None, extra: dict[str, str]) -> dict[str, str]:
         with tempfile.TemporaryDirectory() as state:
             result = subprocess.run(
                 [
@@ -152,10 +154,11 @@ class LocalShTests(unittest.TestCase):
                     str(LOCAL_SH),
                 ],
                 env={
-                    **os.environ,
+                    **{key: value for key, value in os.environ.items() if not key.startswith("OMI_LOCAL_")},
                     "OMI_LOCAL_STATE_DIR": state,
                     "OMI_LOCAL_ENV_FILE": str(REPO_ROOT / "dev" / "local.env.example"),
-                    "OMI_LOCAL_AI_PROFILE": profile,
+                    "OMI_LOCAL_SPEECH_MODEL_STORE": state,
+                    **({"OMI_LOCAL_AI_PROFILE": profile} if profile is not None else {}),
                     **extra,
                 },
                 capture_output=True,
@@ -165,15 +168,17 @@ class LocalShTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return dict(line.split("=", 1) for line in result.stdout.splitlines())
 
-    def test_core_only_child_does_not_inherit_provider_or_cloud_authority(self) -> None:
+    def test_native_child_does_not_inherit_provider_or_cloud_authority(self) -> None:
         child = self.child_environment(
-            "core-only",
+            None,
             {
                 "OPENAI_API_KEY": "ambient-openai",
                 "MIMO_API_KEY": "ambient-mimo",
                 "GOOGLE_APPLICATION_CREDENTIALS": "/ambient/credentials",
                 "OMI_LOCAL_OPENROUTER_API_KEY": "unselected-local",
                 "OMI_LOCAL_MIMO_API_KEY": "unselected-mimo",
+                "OMI_LOCAL_LLM_ENDPOINT": "http://127.0.0.1:11435",
+                "OMI_LOCAL_EMBEDDING_ENDPOINT": "http://127.0.0.1:11436",
             },
         )
         for key in ("OPENAI_API_KEY", "MIMO_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "OPENROUTER_API_KEY"):
@@ -181,6 +186,69 @@ class LocalShTests(unittest.TestCase):
         self.assertEqual(child["OMI_DEPLOYMENT_TARGET"], "self_hosted")
         self.assertEqual(child["AUTH_PROVIDER"], "better_auth")
         self.assertIn("OMI_HARNESS_INSTANCE", child)  # Disables backend dotenv loading.
+        self.assertEqual(child["LLM_ENDPOINT"], "http://127.0.0.1:11435")
+        self.assertEqual(child["EMBEDDING_ENDPOINT"], "http://127.0.0.1:11436")
+        self.assertTrue(Path(child["SPEECH_MODEL_STORE"]).is_absolute())
+
+    def test_local_lifecycle_renders_full_native_profile_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as state:
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    '. "$1" help >/dev/null; PYTHON_BIN="$2"; select_ai; render_profile',
+                    "local-render-test",
+                    str(LOCAL_SH),
+                    sys.executable,
+                ],
+                env={
+                    **{key: value for key, value in os.environ.items() if not key.startswith("OMI_LOCAL_")},
+                    "OMI_LOCAL_STATE_DIR": state,
+                    "OMI_LOCAL_ENV_FILE": str(REPO_ROOT / "dev/local.env.example"),
+                },
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            row = json.loads((Path(state) / "deployment_profiles.generated.json").read_text())["profiles"][
+                "self_hosted.local"
+            ]
+        self.assertEqual(row["capabilities"]["llm_provider"], "ollama")
+        self.assertEqual(row["capabilities"]["stt_providers"], ["sensevoice"])
+        self.assertEqual(row["capabilities"]["tts_provider"], "kokoro")
+        self.assertEqual(row["embedding"]["model"], "bge-m3:latest")
+
+    def test_retired_selectors_fail_before_starting_services(self) -> None:
+        for args, config in (
+            (("up", "--core-only"), {}),
+            (("restart", "--core-only"), {}),
+            (("up",), {"OMI_LOCAL_AI_PROFILE": "core-only"}),
+            (("up", "--operator-ai", "mimo-cn"), {"OMI_LOCAL_AI_PROFILE": "core-only"}),
+        ):
+            with self.subTest(args=args, config=config):
+                result = run_local(*args, env=config)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("invalid local AI profile" if config else "unknown option", result.stderr)
+
+    def test_native_requires_explicit_speech_store_without_ambient_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as state:
+            result = subprocess.run(
+                ["bash", "-c", '. "$1" help >/dev/null; select_ai; write_child_env', "local-env-test", str(LOCAL_SH)],
+                env={
+                    **{key: value for key, value in os.environ.items() if not key.startswith("OMI_LOCAL_")},
+                    "OMI_LOCAL_STATE_DIR": state,
+                    "OMI_LOCAL_ENV_FILE": str(REPO_ROOT / "dev/local.env.example"),
+                    "SPEECH_MODEL_STORE": state,
+                    "OMI_LOCAL_SPEECH_MODEL_STORE": "",
+                },
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((Path(state) / "child.env").exists())
+            self.assertIn("OMI_LOCAL_SPEECH_MODEL_STORE", result.stderr)
 
     def test_operator_ai_child_receives_only_scoped_selected_credential(self) -> None:
         child = self.child_environment(
@@ -196,6 +264,21 @@ class LocalShTests(unittest.TestCase):
         self.assertNotIn("MIMO_API_KEY", child)
         self.assertEqual(child["OMI_DEPLOYMENT_PROFILE"], "self_hosted.local")
         self.assertTrue(child["FIRESTORE_PG_DSN"].startswith("postgresql+psycopg://"))
+
+    def test_mimo_uses_scoped_key_and_real_embedding_endpoint(self) -> None:
+        child = self.child_environment(
+            "mimo-cn",
+            {
+                "MIMO_API_KEY": "ambient-wrong",
+                "OMI_LOCAL_MIMO_API_KEY": "explicit-local",
+                "OMI_LOCAL_EMBEDDING_ENDPOINT": "http://127.0.0.1:11436",
+                "OMI_LOCAL_SPEECH_MODEL_STORE": "",
+            },
+        )
+        self.assertEqual(child["MIMO_API_KEY"], "explicit-local")
+        self.assertEqual(child["EMBEDDING_ENDPOINT"], "http://127.0.0.1:11436")
+        self.assertNotIn("LLM_ENDPOINT", child)
+        self.assertNotIn("SPEECH_MODEL_STORE", child)
 
     def test_ambient_provider_key_cannot_authorize_operator_ai(self) -> None:
         with tempfile.TemporaryDirectory() as state:
@@ -215,16 +298,18 @@ class LocalShTests(unittest.TestCase):
             )
         self.assertNotEqual(result.returncode, 0)
 
-    def test_restart_retains_namespace_unless_configuration_explicitly_replaces_it(self) -> None:
+    def test_restart_retains_selection_and_namespace_unless_configuration_replaces_them(self) -> None:
         for command in ("cmd_restart", "cmd_backend_restart"):
-            for source in ("retained", "ambient", "file"):
+            for source in ("retained", "ambient", "file", "profile-ambient", "profile-file"):
                 with self.subTest(command=command, source=source), tempfile.TemporaryDirectory() as tmp:
                     state = Path(tmp)
                     (state / "ai-profile").write_text("openrouter\n")
                     (state / "qdrant-prefix").write_text("existing_hosted_vectors\n")
                     config = state / "local.env"
                     config.write_text(
-                        "OMI_LOCAL_QDRANT_COLLECTION_PREFIX=explicit_vectors\n" if source == "file" else ""
+                        "OMI_LOCAL_QDRANT_COLLECTION_PREFIX=explicit_vectors\n"
+                        if source == "file"
+                        else "OMI_LOCAL_AI_PROFILE=mimo-cn\n" if source == "profile-file" else ""
                     )
                     environment = {key: value for key, value in os.environ.items() if not key.startswith("OMI_LOCAL_")}
                     environment.update(
@@ -232,10 +317,13 @@ class LocalShTests(unittest.TestCase):
                             "OMI_LOCAL_STATE_DIR": tmp,
                             "OMI_LOCAL_ENV_FILE": str(config),
                             "OMI_LOCAL_OPENROUTER_API_KEY": "synthetic-key",
+                            "OMI_LOCAL_MIMO_API_KEY": "synthetic-mimo-key",
                         }
                     )
                     if source == "ambient":
                         environment["OMI_LOCAL_QDRANT_COLLECTION_PREFIX"] = "explicit_vectors"
+                    if source == "profile-ambient":
+                        environment["OMI_LOCAL_AI_PROFILE"] = "mimo-cn"
                     result = subprocess.run(
                         [
                             "bash",
@@ -255,9 +343,13 @@ class LocalShTests(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
                     child = dict(line.split("=", 1) for line in result.stdout.splitlines())
-                    expected = "existing_hosted_vectors" if source == "retained" else "explicit_vectors"
+                    expected = "explicit_vectors" if source in ("ambient", "file") else "existing_hosted_vectors"
                     self.assertEqual(child["QDRANT_COLLECTION_PREFIX"], expected)
-                    self.assertIn("OPENROUTER_API_KEY", child)
+                    if source.startswith("profile-"):
+                        self.assertIn("MIMO_API_KEY", child)
+                        self.assertNotIn("OPENROUTER_API_KEY", child)
+                    else:
+                        self.assertIn("OPENROUTER_API_KEY", child)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,11 @@
 # Common core product contract
 
+Historical record only: the reduced Server fixture described below has been
+removed and its results are withdrawn as full-capability runtime evidence.
+The current product lane preserves the complete canonical profile, requires
+prepared real model stores (or explicit MiMo plus BGE-M3), and rejects missing
+requirements. See `contracts/deployment/README.md` for the current contract.
+
 The same public HTTP suite now exercises disposable Server OS and Cloudflare
 targets. It covers eight identity/onboarding/Tasks cases and always records
 `release_qualified: false`. This is the core slice of CI-1; recording, models,
@@ -15,14 +21,12 @@ updates, Tasks create/read/complete, cross-account denial, invalid-description
 FastAPI `ActionItemCreateRequest` contract. The first real CF run returned 400
 and failed; the typed validation repair is integrated as `1272c0e2c1`.
 
-The Server runner builds the unchanged standard backend Dockerfile and real
-Auth image, renders an explicit core-only profile, and starts fresh normal
-Compose services and migrations. Auth, PG, Redis, MinIO, Qdrant, FastAPI and
-the four queue consumers are real. Speech is explicitly disabled. The
-embedding HTTP provider is controlled; no inference quality or complete
-production-profile claim follows from this test. Application containers use
-an internal Docker network, with a fixed Auth/API loopback ingress. A random
-Compose project owns its containers, volumes and networks.
+The historical Server runner built the unchanged standard backend Dockerfile
+and real Auth image but stripped capabilities and used controlled embedding
+responses. Auth, PG, Redis, MinIO, Qdrant, FastAPI and queue consumers were real;
+model inference and speech were not. That unauthorized reduced fixture has
+been deleted. Its archived results below do not qualify the current complete
+runtime or a release.
 
 ## Recorded local execution
 

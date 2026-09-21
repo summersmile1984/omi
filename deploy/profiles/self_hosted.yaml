@@ -84,7 +84,7 @@ speech:
   runtime_version: 1.13.4
   stt_model: sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17
   tts_model: kokoro-multi-lang-v1_0
-  bundle_digest: sha256:75734cf4e9c25611e1c4676ce37b5946eb12fa22c03a41a794371cfea0031b0a
+  bundle_digest: sha256:1ad3ab7c443e7d87cc3203c11567ed8b9acfc0b2e9c06a3a003cd1b0aa68e66f
   stt_archive_digest: sha256:7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e
-  tts_archive_digest: sha256:c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046
+  tts_archive_digest: sha256:c5f7e2d2caf082bc1d20fb70334a61d99d20b484500aad32e7cf84c128ea3298
   vad_digest: sha256:1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3

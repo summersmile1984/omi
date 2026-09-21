@@ -108,10 +108,21 @@ class SelfhostLocalShTests(unittest.TestCase):
         self.record_pid(process)
         for suffix in (".pid", ".pid.started"):
             (self.state / f"pids/queue-worker{suffix}").write_bytes((self.state / f"pids/backend{suffix}").read_bytes())
-        (self.state / "ai-profile").write_text("core-only\n")
+        (self.state / "ai-profile").write_text("native\n")
         result = self.run_selfhost("up")
         self.assertNotEqual(result.returncode, 0)
         self.assertIsNone(process.poll())
+
+    def test_retired_restart_selection_does_not_stop_the_owned_process(self) -> None:
+        process = self.sleeper()
+        self.record_pid(process)
+        config = self.state / "local.env"
+        config.write_text("")
+        self.env["OMI_LOCAL_ENV_FILE"] = str(config)
+        (self.state / "ai-profile").write_text("core-only\n")
+        result = self.run_selfhost("restart")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIsNone(process.poll(), "reject retired selection before stopping the active instance")
 
 
 if __name__ == "__main__":

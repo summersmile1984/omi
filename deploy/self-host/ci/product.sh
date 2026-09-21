@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # LIFECYCLE: permanent
-# Same bounded product slice on a local Docker engine and the existing CI lane.
+# Same product cases on a complete real-model runtime locally and in CI.
 #
 # The workflow pins SELF_HOST_CI_REPORT_DIR and uploads it as the
 # fork-selfhost-fixture-report-<sha> artifact, so a failing command-NN.log survives the run
@@ -12,10 +12,16 @@ args=(--output "$REPORT/server" --brand-id core-server-fixture --port "${SELF_HO
 if [ -n "${SELF_HOST_CI_RUNTIME_IMAGE:-}" ]; then
   args+=(--runtime-image "$SELF_HOST_CI_RUNTIME_IMAGE")
 fi
-if [ -n "${SELF_HOST_CI_EMBEDDING_STORE:-}${SELF_HOST_CI_LLM_STORE:-}${SELF_HOST_CI_SPEECH_STORE:-}" ]; then
-  args+=(--embedding-store "${SELF_HOST_CI_EMBEDDING_STORE:?all three model stores are required}"
-    --llm-store "${SELF_HOST_CI_LLM_STORE:?all three model stores are required}"
-    --speech-store "${SELF_HOST_CI_SPEECH_STORE:?all three model stores are required}")
+args+=(--embedding-store "${SELF_HOST_CI_EMBEDDING_STORE:?prepare the BGE-M3 model store first}")
+if [ -n "${SELF_HOST_CI_MIMO_SECRET_FILE:-}" ]; then
+  if [ -n "${SELF_HOST_CI_LLM_STORE:-}${SELF_HOST_CI_SPEECH_STORE:-}" ]; then
+    echo 'MiMo requires only the embedding store; do not select native LLM/speech stores' >&2
+    exit 2
+  fi
+  args+=(--mimo-secret-file "$SELF_HOST_CI_MIMO_SECRET_FILE")
+else
+  args+=(--llm-store "${SELF_HOST_CI_LLM_STORE:?prepare the Qwen model store first}"
+    --speech-store "${SELF_HOST_CI_SPEECH_STORE:?prepare the SenseVoice/Kokoro model store first}")
 fi
 
 # The fixture reports a failed step as "inspect command-NN.log", but those logs live

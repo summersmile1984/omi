@@ -219,7 +219,7 @@ def handler(host, port):
                 self.wfile.write(b'0\r\n\r\n')
                 self.wfile.flush()
 
-        do_GET = do_POST = do_PATCH = do_DELETE = dispatch
+        do_GET = do_POST = do_PATCH = do_DELETE = do_OPTIONS = dispatch
 
     return Proxy
 

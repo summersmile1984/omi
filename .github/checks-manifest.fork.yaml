@@ -17,9 +17,9 @@ checks:
 
   - id: fork-selfhost-product-core
     command: ["bash", "deploy/self-host/ci/product.sh"]
-    triggers: ["contracts/deployment/**", "deploy/self-host/**", "backend/fork/**", "backend/firestore_pg/**", "auth-server/**", "auth/shared/**", "runtime/shared/**", "backend/routers/action_items.py", "backend/routers/users.py", "backend/models/action_item.py"]
+    triggers: ["contracts/deployment/**", "deploy/self-host/**", "deploy/profiles/**", "scripts/profiles/**", ".github/workflows/fork-checks.yml", "backend/fork/**", "backend/firestore_pg/**", "auth-server/**", "auth/shared/**", "runtime/shared/**", "backend/routers/action_items.py", "backend/routers/users.py", "backend/models/action_item.py"]
     lanes: ["local", "ci"]
-    reason: "The 2026-09-04 real Android onboarding request failed on the missing dynamic PG owner, while the same invalid task body returned Server422/CF400. Run shared HTTP product cases through actual Auth/API/PG/Redis/MinIO/Qdrant and fresh migrations; this tests existing product owners instead of adding another state or validation primitive."
+    reason: "Run shared HTTP product cases through actual Auth/API/PG/Redis/MinIO/Qdrant, fresh migrations and the complete rendered model profile. CI provisions pinned native BGE-M3/Qwen/SenseVoice/Kokoro stores; missing stores or insufficient Docker capacity fail rather than stripping capabilities or substituting fake inference. Core names the HTTP case inventory, not a reduced runtime."
   - id: fork-electron-native-identity
     command: ["bash", "desktop/windows/fork/test.sh"]
     triggers: ["desktop/windows/**", "scripts/profiles/**", "deploy/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
