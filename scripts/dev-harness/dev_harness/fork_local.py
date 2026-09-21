@@ -130,10 +130,17 @@ _upstream_self_hosted_profile = None
 # env dict without recursing into itself.
 _original_harness_service_extra = None
 
+# Same pattern for ``_start_process``: ``_fork_start_process`` calls the
+# captured reference so the fork wrapper can delegate to upstream after
+# rewriting the supervised command (injects fork.bootstrap call for the
+# backend service so the firestore_pg compat layer installs before any
+# business module captures ``firestore.Client`` at function-body level).
+_original_start_process = None
+
 
 def _bootstrap_upstream() -> None:
     """Load upstream dev_harness.cli / config / self_hosted_profile."""
-    global _upstream_cli, _upstream_config, _upstream_self_hosted_profile, _original_harness_service_extra
+    global _upstream_cli, _upstream_config, _upstream_self_hosted_profile, _original_harness_service_extra, _original_start_process
     if _upstream_cli is not None:
         return
     # ``dev_harness`` is the package; ensure scripts/dev-harness is on sys.path.
@@ -150,6 +157,19 @@ def _bootstrap_upstream() -> None:
     # monkey-patches it. The fork wrapper needs to call the unpatched version
     # to avoid infinite recursion (patch-into-patched).
     _original_harness_service_extra = _upstream_config._harness_service_extra
+    # Same pattern for ``_start_process``: ``_fork_start_process`` delegates
+    # to upstream's original spawn logic after rewriting the supervised
+    # command (injects fork.bootstrap call for the backend service so the
+    # firestore_pg compat layer installs before any business module captures
+    # ``firestore.Client`` at function-body level).
+    _original_start_process = _upstream_cli._start_process
+    # Extend the safety allowlist at runtime so ``REDIS_DB_PASSWORD`` (which
+    # bootstrap's ``_require`` gate reads) survives the upstream
+    # ``build_child_env`` parent-env filter. The list is a module-level set
+    # in ``dev_harness.safety``; mutating it here is a runtime-only patch (no
+    # upstream file edit).
+    from dev_harness import safety as _safety
+    _safety._ALLOWED_ENV_KEYS.add("REDIS_DB_PASSWORD")
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +651,15 @@ def _fork_harness_service_extra(cfg) -> dict:
         # we set it unconditionally under fork-local because the harness
         # never reaches a real STT provider in this entry.
         "STT_SERVICE_MODELS": "parakeet",
+        # REDIS_DB_HOST and REDIS_DB_PASSWORD for bootstrap's _require gate.
+        # safety.py strips non-OMI keys; we extend _ALLOWED_ENV_KEYS above so
+        # these survive build_child_env.
+        "REDIS_DB_HOST": "127.0.0.1",
+        "REDIS_DB_PORT": "6380",
+        "REDIS_DB_PASSWORD": "local-dev-harness-placeholder",
+        # Override upstream's gateway mode default (which conflicts with
+        # bootstrap's hardcoded 'off' expectation).
+        "OMI_LLM_GATEWAY_FEATURE_MODE": "off",
         "MINIO_ENDPOINT": f"http://127.0.0.1:{minio_port}",
         "MINIO_PUBLIC_ENDPOINT": f"http://127.0.0.1:{minio_port}",
         "MINIO_ACCESS_KEY": MINIO_ACCESS_KEY,
@@ -639,6 +668,78 @@ def _fork_harness_service_extra(cfg) -> dict:
     }
     base.update(fork_extra)
     return base
+
+
+def _fork_start_process(
+    cfg,
+    service: str,
+    command: list[str],
+    *,
+    cwd,
+    log_name: str,
+    port: int,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Replacement for upstream ``_start_process`` that injects
+    ``fork.bootstrap()`` into the backend supervised child BEFORE uvicorn loads.
+
+    PR-A reverted ``backend/main.py``'s inline ``fork.bootstrap()`` call back
+    to upstream byte-identical content (T2 forbidden). This wrapper rewrites
+    the supervised command for the backend service so the bootstrap runs at
+    process startup, installing the firestore_pg compat layer (replaces
+    ``firestore.Client`` with the PG-backed shim), the Better Auth JWT verifier
+    patch, and the MinIO storage hooks. None of these can run after business
+    modules capture ``firestore.Client`` at function-body level, hence the
+    integration must happen at process start.
+
+    For non-backend services (llm-gateway, desktop-backend, typesense) the
+    wrapper passes the upstream command unchanged.
+    """
+    if service != "backend":
+        _original_start_process(
+            cfg, service, command, cwd=cwd, log_name=log_name, port=port, env=env
+        )
+        return
+    bootstrap_call = (
+        # Re-run the safety allowlist extension so the child Python process
+        # inherits the same set as the parent fork_local.py process (safety
+        # module is reloaded in the child subprocess).
+        "import dev_harness.safety as _s; "
+        "_s._ALLOWED_ENV_KEYS.add('REDIS_DB_PASSWORD');"
+        # Run the fork bootstrap, which fails closed if profile is bad.
+        "import fork.bootstrap as _fb; "
+        "_fb.bootstrap();"
+    )
+    # The child subprocess must have backend/ and scripts/dev-harness/ on its
+    # PYTHONPATH to import the safety and fork.bootstrap modules. The upstream
+    # harness's child_env (passed via env=) already contains PYTHONPATH with
+    # backend/ prepended; we read it from env so the bootstrap_call's imports
+    # resolve. The fallback uses sys.path to discover the same paths.
+    child_pythonpath = (
+        env.get("PYTHONPATH", "")
+        if env is not None
+        else ""
+    )
+    bootstrap_cmd = [
+        sys.executable,
+        "-c",
+        "import sys; sys.path[:0] = (r'" + str(_PKG_DIR.parent) + "',);"
+        + bootstrap_call
+        + " import sys, runpy;"
+        + " sys.argv = " + repr(list(command)) + ";"
+        + " runpy.run_module('uvicorn', run_name='__main__')",
+    ]
+    # Pass child env merged with PYTHONPATH so the bootstrap imports resolve
+    # even when upstream's child_env hasn't been built yet. PYTHONPATH takes
+    # lower priority than sys.path[:0] but ensures ``backend`` site-packages
+    # are accessible after the bootstrap returns and runpy hands off to
+    # uvicorn (which needs firebase_admin, fastapi, etc.).
+    child_env = dict(env) if env is not None else {}
+    if child_pythonpath:
+        child_env["PYTHONPATH"] = child_pythonpath
+    _original_start_process(
+        cfg, service, bootstrap_cmd, cwd=cwd, log_name=log_name, port=port, env=child_env
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +830,7 @@ def main(argv: list[str] | None = None) -> int:
     # container prerequisites (docker daemon + python-dotenv + images) instead
     # of the host-binary prereqs that no longer apply under this entry.
     _upstream_cli._start_infrastructure = _fork_start_infrastructure
+    _upstream_cli._start_process = _fork_start_process
     _upstream_config._harness_service_extra = _fork_harness_service_extra
     _upstream_cli.prerequisite_report = _fork_prerequisite_report
     return _upstream_cli.main(argv)
