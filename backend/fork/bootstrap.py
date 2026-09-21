@@ -69,11 +69,21 @@ def bootstrap(role: Role = Role.API) -> Admission:
         'object_store': 'minio',
         'queue': 'redis',
         'cache': 'redis',
-        'vector': 'qdrant',
     }
     for name, value in expected.items():
         if row.get('data_plane', {}).get(name) != value:
             raise profile.ProfileError(f'self_hosted data_plane.{name} must be {value}')
+    # Vector authority is pluggable. Production self-host targets use Qdrant;
+    # the fork-local ``self_hosted.local`` profile uses pgvector (Postgres +
+    # ``vector`` extension) so the bring-up harness doesn't need a separate
+    # Qdrant container. Both options are accepted at the bootstrap level; the
+    # fork's vector patch (``fork/patches/vector.py``) is the seam that wires
+    # the actual backend.
+    vector_authority = row.get('data_plane', {}).get('vector')
+    if vector_authority not in ('qdrant', 'postgres'):
+        raise profile.ProfileError(
+            f'self_hosted data_plane.vector must be qdrant or postgres, got {vector_authority!r}'
+        )
     _bind('OMI_DEPLOYMENT_TARGET', 'self_hosted')
     stages = {'production': 'prod', 'beta': 'dev', 'local': 'local'}
     if row.get('stage') not in stages:
@@ -153,7 +163,15 @@ def bootstrap(role: Role = Role.API) -> Admission:
             credentials()
         _require('ENCRYPTION_SECRET', 32)
         _require('AUTH_JWKS_URL')
-        _bind('VECTOR_STORE_PROVIDER', 'qdrant')
+        # Pick the vector authority from the profile's ``data_plane.vector``.
+        # Production self-host profiles still pin Qdrant; the fork-local
+        # ``self_hosted.local`` profile uses pgvector (Postgres + the ``vector``
+        # extension) so the bring-up harness does not need a separate Qdrant
+        # container. Bootstrap's ``_bind`` requires existing env to match the
+        # target, so the fork-local harness sets ``VECTOR_STORE_PROVIDER=postgres``
+        # in its fork_extra and this branch picks the same target from the
+        # profile row.
+        _bind('VECTOR_STORE_PROVIDER', row.get('data_plane', {}).get('vector', 'qdrant'))
         if os.environ.get('PINECONE_API_KEY') or os.environ.get('PINECONE_INDEX_NAME'):
             raise profile.ProfileError('Pinecone configuration conflicts with the self-host Qdrant authority')
         _require_modules(('jwt', 'boto3'))
@@ -182,12 +200,15 @@ def bootstrap(role: Role = Role.API) -> Admission:
         from .capabilities import validate as validate_capabilities
 
         validate_capabilities(row)
-        _bind('VECTOR_STORE_PROVIDER', 'qdrant')
+        _bind('VECTOR_STORE_PROVIDER', row.get('data_plane', {}).get('vector', 'qdrant'))
         _bind('MEMORY_KEYWORD_INDEX_PROVIDER', 'typesense')
         if os.environ.get('PINECONE_API_KEY') or os.environ.get('PINECONE_INDEX_NAME'):
             raise profile.ProfileError('Pinecone configuration conflicts with the self-host Qdrant authority')
-        for name in ('EMBEDDING_ENDPOINT', 'QDRANT_URL', 'QDRANT_API_KEY', 'QDRANT_COLLECTION_PREFIX'):
-            _require(name)
+        # For fork-local profiles (vector=postgres) the Qdrant credentials are
+        # not wired. Production profiles with vector=qdrant still require them.
+        if row.get('data_plane', {}).get('vector') == 'qdrant':
+            for name in ('EMBEDDING_ENDPOINT', 'QDRANT_URL', 'QDRANT_API_KEY', 'QDRANT_COLLECTION_PREFIX'):
+                _require(name)
         for name in ('TYPESENSE_HOST', 'TYPESENSE_HOST_PORT', 'TYPESENSE_API_KEY', 'MEMORY_TYPESENSE_COLLECTION'):
             _require(name)
         _require_modules(('typesense',))

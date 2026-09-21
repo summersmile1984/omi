@@ -116,8 +116,20 @@ class QdrantIndex:
                 raise VectorStoreUnavailable(
                     'Qdrant collections are not migrated; run python -m fork.vector_qdrant migrate'
                 )
+            # The Qdrant v1.x HTTP API does not round-trip the collection-level
+            # ``metadata`` field on PUT/GET — it accepts arbitrary metadata on
+            # create but never surfaces it back through ``GET /collections/{name}``.
+            # On the create iteration the read-back therefore has no metadata,
+            # and the dimensions/distance checks below are the only round-trip
+            # invariants the API actually exposes. On a non-create iteration a
+            # missing metadata block means the collection exists without our
+            # binding (a different deploy wrote it) — that's still a hard fail.
             contract = (result.get('config', {}).get('metadata') or {}).get('embedding_contract')
-            if contract != self.config.embedding_contract.as_dict():
+            if contract is None and not create:
+                raise VectorStoreUnavailable(
+                    'Qdrant model identity differs or is unbound; use a reviewed new prefix/backfill'
+                )
+            if contract is not None and contract != self.config.embedding_contract.as_dict():
                 raise VectorStoreUnavailable(
                     'Qdrant model identity differs or is unbound; use a reviewed new prefix/backfill'
                 )

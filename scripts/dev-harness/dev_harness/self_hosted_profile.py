@@ -65,8 +65,28 @@ REQUIRED_DATA_PLANE = {
     "store": "firestore_pg",
     "object_store": "minio",
     "queue": "redis",
-    "vector": "qdrant",
+    "vector": "postgres",
     "cache": "redis",
+}
+
+# Local Ollama embedding contract. ``backend/fork/bootstrap.py`` calls
+# ``fork.embedding.selected_contract()`` which validates ``row['embedding']``
+# against ``EmbeddingContract(provider, model, manifest_digest,
+# artifact_digest, dimension, context_length)``. The dimension must match
+# ``REQUIRED_CAPABILITIES['embedding_dims']`` (the latter is legacy and
+# surfaced to clients; the contract is the authoritative spec). Digests are
+# well-known canonical placeholders for the local Ollama qwen3-embedding
+# bundle — the local dev harness never validates these against a registry,
+# but the regex ``sha256:[0-9a-f]{64}`` requires a syntactically-valid SHA-256
+# digest string. These values mirror what ``deploy/profiles/self_hosted.yaml``
+# encodes for the same target.
+EMBEDDING_CONTRACT = {
+    "provider": "ollama",
+    "model": "qwen3-embedding:8b",
+    "manifest_digest": "sha256:" + "0" * 64,
+    "artifact_digest": "sha256:" + "0" * 64,
+    "dimension": 3072,
+    "context_length": 8192,
 }
 
 LOCAL_STAGE = {
@@ -101,6 +121,7 @@ def render_self_hosted_local_profile() -> dict:
                     **LOCAL_STAGE,
                     "capabilities": dict(REQUIRED_CAPABILITIES),
                     "data_plane": dict(REQUIRED_DATA_PLANE),
+                    "embedding": dict(EMBEDDING_CONTRACT),
                 },
             },
         }

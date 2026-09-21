@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -138,6 +139,34 @@ _original_harness_service_extra = None
 _original_start_process = None
 
 
+def _resolve_venv_python() -> str:
+    """Return the canonical backend venv interpreter for child subprocesses.
+
+    Mirrors ``dev_harness_canonical_python`` from
+    ``scripts/dev-harness/_resolve_python.sh`` so the Python interpreter used
+    to launch supervised children is the locked venv (which has firebase_admin,
+    fastapi, sqlalchemy, psycopg, fork.bootstrap, etc.) regardless of how the
+    harness process itself was launched. Honors ``$PYTHON`` for explicit
+    overrides, then falls back to ``backend/.venv/bin/python`` and
+    ``backend/venv/bin/python``.
+    """
+    explicit = os.environ.get("PYTHON", "").strip()
+    if explicit:
+        return explicit
+    repo_root = _PKG_DIR.parents[2]  # .../scripts/dev-harness/dev_harness -> repo root
+    for candidate in (
+        repo_root / "backend" / ".venv" / "bin" / "python",
+        repo_root / "backend" / ".venv" / "Scripts" / "python.exe",
+        repo_root / "backend" / "venv" / "bin" / "python",
+        repo_root / "backend" / "venv" / "Scripts" / "python.exe",
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    # Fall back to sys.executable; the child will fail clearly if it's missing
+    # deps rather than silently using a half-broken interpreter.
+    return sys.executable
+
+
 def _bootstrap_upstream() -> None:
     """Load upstream dev_harness.cli / config / self_hosted_profile."""
     global _upstream_cli, _upstream_config, _upstream_self_hosted_profile, _original_harness_service_extra, _original_start_process
@@ -170,6 +199,21 @@ def _bootstrap_upstream() -> None:
     # upstream file edit).
     from dev_harness import safety as _safety
     _safety._ALLOWED_ENV_KEYS.add("REDIS_DB_PASSWORD")
+    # Queue handler URLs and worker secrets. Fork's queue_config.validate
+    # requires these to reach the API and authenticate workers. safety.py
+    # strips non-OMI keys; we extend the allowlist so they survive
+    # build_child_env when the harness's parent loop scans os.environ.
+    for _key in (
+        "SYNC_TASKS_HANDLER_URL",
+        "AUDIO_MERGE_HANDLER_URL",
+        "ACCOUNT_DELETION_HANDLER_URL",
+        "LISTEN_FINALIZATION_TASKS_HANDLER_URL",
+        "QUEUE_REDIS_SYNC_WORKER_SECRET",
+        "QUEUE_REDIS_AUDIO_MERGE_WORKER_SECRET",
+        "QUEUE_REDIS_ACCOUNT_DELETION_WORKER_SECRET",
+        "QUEUE_REDIS_FINALIZATION_WORKER_SECRET",
+    ):
+        _safety._ALLOWED_ENV_KEYS.add(_key)
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +287,44 @@ def _start_postgres_container(cfg, harness_network) -> None:
     _upstream_cli._save_manifests(cfg, records)
     (cfg.layout.services_dir / "pg_port.txt").write_text(f"{pg_port}\n", encoding="utf-8")
     print(f"postgres: started (testcontainers {POSTGRES_IMAGE}) -> 127.0.0.1:{pg_port}")
+
+
+def _run_firestore_pg_migrations(cfg) -> None:
+    """Apply the firestore_pg schema migrations to the testcontainers Postgres.
+
+    ``backend/fork/bootstrap.py`` calls ``firestore_pg.migrations.check_schema()``
+    at API/worker role startup; without a current schema, the bootstrap raises
+    ``SchemaNotCurrent('firestore_pg schema is not migrated; ...')`` and the
+    backend uvicorn child exits before serving HTTP. Running ``migrate()`` from
+    the harness process — same as the upstream test-suite entry point — keeps
+    the bring-up path independent of how the upstream render step stages the
+    schema (no raw DDL files in the deployed image).
+    """
+    pg_port_file = cfg.layout.services_dir / "pg_port.txt"
+    pg_port = int(pg_port_file.read_text(encoding="utf-8").strip()) if pg_port_file.is_file() else 5443
+    env = os.environ.copy()
+    env["FIRESTORE_PG_DSN"] = _upstream_self_hosted_profile.self_hosted_local_dsn(pg_port)
+    venv_python = _resolve_venv_python()
+    migrate_log_path = cfg.layout.logs_dir / "firestore_pg-migrate.log"
+    cfg.layout.logs_dir.mkdir(parents=True, exist_ok=True)
+    with migrate_log_path.open("a", encoding="utf-8") as migrate_log:
+        result = subprocess.run(
+            [venv_python, "-c",
+             "import sys; sys.path[:0] = ('backend',); "
+             "import firestore_pg.migrations as m; m.migrate(); print('firestore_pg: schema migration OK')"],
+            env=env,
+            cwd=str(cfg.repo_root),
+            stdout=migrate_log,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=60,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"firestore_pg schema migration failed (exit {result.returncode}); "
+            f"see {migrate_log_path}"
+        )
+    print(f"firestore_pg: schema migration OK")
 
 
 def _start_minio_container(cfg) -> int:
@@ -592,6 +674,15 @@ def _fork_start_infrastructure(cfg) -> None:
     Brings up Postgres, MinIO, Firebase Auth, Better Auth, Redis, Typesense
     via Testcontainers + Docker SDK. Writes pg_port.txt and minio_port.txt
     that ``_harness_service_extra`` reads to wire env into the backend child.
+
+    The local dev harness intentionally does NOT bring up a vector authority
+    container (Qdrant or pgvector). The fork's vector patch
+    (``fork/patches/vector.py``) sets ``applies_to=lambda row: False`` for
+    this profile, leaving ``database.vector_db.index = None`` (the upstream
+    default when no Pinecone credentials are present). Vector-backed
+    business operations fail closed at request time; the backend still
+    serves ``/health`` and non-vector routes, which is the local bring-up
+    surface this harness promises.
     """
     _preclean_stale_containers()
     from testcontainers.core.network import Network
@@ -600,6 +691,7 @@ def _fork_start_infrastructure(cfg) -> None:
     profile_path = _upstream_self_hosted_profile.write_self_hosted_local_profile(cfg.layout.services_dir)
     harness_network = Network().create()
     _start_postgres_container(cfg, harness_network)
+    _run_firestore_pg_migrations(cfg)
     _start_minio_container(cfg)
     _start_auth_container(cfg)
     _start_better_auth_container(cfg, harness_network)
@@ -623,8 +715,12 @@ def _fork_harness_service_extra(cfg) -> dict:
     """Replacement for upstream ``_harness_service_extra``.
 
     Adds fork-only env vars (FIRESTORE_PG_DSN, AUTH_JWKS_URL, STORAGE_BACKEND=minio,
-    MinIO credentials, VECTOR_STORE_PROVIDER=qdrant, Better Auth env) on top of
-    the upstream-supplied base dict.
+    MinIO credentials, VECTOR_STORE_PROVIDER=postgres, Better Auth env) on
+    top of the upstream-supplied base dict. The vector provider is declared
+    as ``postgres`` so business modules that read
+    ``os.environ['VECTOR_STORE_PROVIDER']`` branch on the pgvector path;
+    the actual pgvector binding is out of scope for local bring-up and is
+    the responsibility of a future patch (similar to how Qdrant was wired).
     """
     # ``_upstream_config._harness_service_extra`` is replaced by ``main()`` so we
     # capture the ORIGINAL upstream function before patching to avoid recursion.
@@ -643,28 +739,61 @@ def _fork_harness_service_extra(cfg) -> dict:
         "AUTH_JWKS_URL": f"http://127.0.0.1:{BETTER_AUTH_PORT}/api/auth/jwks",
         "STORAGE_BACKEND": "minio",
         "QUEUE_BACKEND": "redis",
-        "VECTOR_STORE_PROVIDER": "qdrant",
-        # Pin STT to the in-tree parakeet stub so the backend's
-        # ``validate_streaming_stt_env`` (in ``utils/stt/streaming.py``)
-        # does not demand real SONIOX / DEEPGRAM credentials. This is
-        # the same override the prior fork used under ``provider_mode=offline``;
-        # we set it unconditionally under fork-local because the harness
-        # never reaches a real STT provider in this entry.
-        "STT_SERVICE_MODELS": "parakeet",
+        # Declared as ``postgres`` to match the pivot to pgvector; the fork's
+        # vector patch is a no-op in this profile so the actual pgvector
+        # backend binding is a follow-up. Production self-host targets that
+        # need a working vector store should set ``VECTOR_STORE_PROVIDER=qdrant``
+        # in their profile and re-enable the Qdrant patch.
+        "VECTOR_STORE_PROVIDER": "postgres",
+        # NOTE: STT_SERVICE_MODELS, STT_PRERECORDED_MODEL, TTS_PROVIDER,
+        # SPEAKER_EMBEDDING_PROVIDER are bound by ``fork.bootstrap.bootstrap()``
+        # from the selected deployment profile. Setting them here would conflict
+        # with bootstrap's ``_bind`` logic (raise ``ProfileError: ... conflicts
+        # with the selected deployment profile``). Letting bootstrap own these
+        # keys is the only safe choice; the profile's ``self_hosted.local``
+        # sets ``tts_provider='disabled'`` and empty ``stt_providers``, so
+        # bootstrap binds ``STT_SERVICE_MODELS='disabled'`` and the backend's
+        # ``validate_streaming_stt_env`` short-circuits without demanding
+        # SONIOX/DEEPGRAM credentials.
+        #
+        # OMI_LLM_GATEWAY_FEATURE_MODE is also bound by bootstrap to ``off``,
+        # but the upstream ``_harness_service_extra`` sets it to ``gateway`` for
+        # provider_mode='real'. bootstrap's ``_bind`` raises when existing
+        # differs from new, so we override upstream's value here to ``off`` to
+        # match bootstrap's target — same value, no conflict.
+        "OMI_LLM_GATEWAY_FEATURE_MODE": "off",
+        #
         # REDIS_DB_HOST and REDIS_DB_PASSWORD for bootstrap's _require gate.
         # safety.py strips non-OMI keys; we extend _ALLOWED_ENV_KEYS above so
         # these survive build_child_env.
         "REDIS_DB_HOST": "127.0.0.1",
         "REDIS_DB_PORT": "6380",
         "REDIS_DB_PASSWORD": "local-dev-harness-placeholder",
-        # Override upstream's gateway mode default (which conflicts with
-        # bootstrap's hardcoded 'off' expectation).
-        "OMI_LLM_GATEWAY_FEATURE_MODE": "off",
+        # ENCRYPTION_SECRET must be ≥32 bytes for ``utils/encryption.py`` and
+        # ``fork.bootstrap._require('ENCRYPTION_SECRET', 32)``. Synthetic
+        # dev-only value; never reuse in production environments. The same
+        # upstream-local key pattern that the harness's offline provider-mode
+        # placeholder uses for OPENAI/DEEPGRAM/etc. credentials.
+        "ENCRYPTION_SECRET": "omi-local-dev-harness-encryption-secret-key-32-bytes!",
         "MINIO_ENDPOINT": f"http://127.0.0.1:{minio_port}",
         "MINIO_PUBLIC_ENDPOINT": f"http://127.0.0.1:{minio_port}",
         "MINIO_ACCESS_KEY": MINIO_ACCESS_KEY,
         "MINIO_SECRET_KEY": MINIO_SECRET_KEY,
         "MINIO_REGION": "us-east-1",
+        # Fork's queue handlers (sync, audio-merge, account-deletion, listen
+        # finalization) call back into the backend's own HTTP routes. The
+        # bootstrap ``queue_config.Queue.validate`` requires a credential-free
+        # ``*_HANDLER_URL`` matching the registered path and a 32+ char
+        # ``*_WORKER_SECRET`` so workers authenticate to the API. Both use the
+        # synthetic dev-only secret pattern.
+        "SYNC_TASKS_HANDLER_URL": f"http://127.0.0.1:8000/v2/sync-jobs/run",
+        "AUDIO_MERGE_HANDLER_URL": f"http://127.0.0.1:8000/v2/audio-merge-jobs/run",
+        "ACCOUNT_DELETION_HANDLER_URL": f"http://127.0.0.1:8000/v1/users/account-deletion-wipes/run",
+        "LISTEN_FINALIZATION_TASKS_HANDLER_URL": f"http://127.0.0.1:8000/v1/conversation-finalization-jobs/run",
+        "QUEUE_REDIS_SYNC_WORKER_SECRET": "omi-local-dev-harness-sync-worker-secret-32-chars!",
+        "QUEUE_REDIS_AUDIO_MERGE_WORKER_SECRET": "omi-local-dev-harness-audio-merge-worker-secret-32!",
+        "QUEUE_REDIS_ACCOUNT_DELETION_WORKER_SECRET": "omi-local-dev-harness-account-deletion-worker-secret!",
+        "QUEUE_REDIS_FINALIZATION_WORKER_SECRET": "omi-local-dev-harness-finalization-worker-secret-32",
     }
     base.update(fork_extra)
     return base
@@ -720,25 +849,54 @@ def _fork_start_process(
         if env is not None
         else ""
     )
+    # Resolve the venv interpreter explicitly. ``sys.executable`` is the
+    # harness process's interpreter — when the harness was launched with the
+    # system Python (e.g. ``make`` invoked with no venv activation), that
+    # interpreter lacks ``firebase_admin`` / ``fastapi`` / etc. and the child
+    # subprocess fails with ``ModuleNotFoundError`` before bootstrap returns.
+    # Mirror ``dev_harness_canonical_python`` from scripts/dev-harness/
+    # ``_resolve_python.sh`` so the child picks up the locked venv.
+    venv_python = _resolve_venv_python()
+    # The bootstrap child runs the upstream command (typically
+    # ``[<python>, "-m", "uvicorn", "main:app", "--host", ..., "--port", ...]``)
+    # AFTER fork.bootstrap.bootstrap() returns. The simplest, most reliable
+    # pattern is to invoke ``uvicorn.main()`` directly with the command args
+    # passed via ``sys.argv[1:]`` (uvicorn reads its own argv). This avoids the
+    # brittle ``runpy.run_module('uvicorn', run_name='__main__')`` indirection
+    # which causes uvicorn to be invoked with a doubled argv and Click's ``-m``
+    # option rejection (``Error: No such option: -m``).
+    #
+    # Strip ``<python>``, ``-m``, and the module name (``uvicorn``) from the
+    # front of upstream's command before passing to uvicorn.main() — those
+    # are python interpreter flags, not uvicorn CLI flags. The stripped
+    # command becomes uvicorn's argv[1:]:
+    # ``["main:app", "--host", ..., "--port", ...]``.
+    stripped = list(command)
+    if stripped and stripped[0] in (sys.executable, venv_python):
+        stripped = stripped[1:]
+    if stripped and stripped[0] == "-m":
+        stripped = stripped[1:]
+    if stripped and stripped[0] == "uvicorn":
+        stripped = stripped[1:]
+    upstream_argv_repr = repr(stripped)
     bootstrap_cmd = [
-        sys.executable,
+        venv_python,
         "-c",
         "import sys; sys.path[:0] = (r'" + str(_PKG_DIR.parent) + "',);"
         + bootstrap_call
-        + " import sys, runpy;"
-        + " sys.argv = " + repr(list(command)) + ";"
-        + " runpy.run_module('uvicorn', run_name='__main__')",
+        + " import sys;"
+        + " sys.argv = ['uvicorn'] + " + upstream_argv_repr + ";"
+        + " import uvicorn.main; uvicorn.main()",
     ]
-    # Pass child env merged with PYTHONPATH so the bootstrap imports resolve
-    # even when upstream's child_env hasn't been built yet. PYTHONPATH takes
-    # lower priority than sys.path[:0] but ensures ``backend`` site-packages
-    # are accessible after the bootstrap returns and runpy hands off to
-    # uvicorn (which needs firebase_admin, fastapi, etc.).
-    child_env = dict(env) if env is not None else {}
-    if child_pythonpath:
-        child_env["PYTHONPATH"] = child_pythonpath
+    # Forward the env arg to upstream's _start_process unchanged. Upstream
+    # builds ``child_env = config.child_env_for(cfg)`` when env is None, and
+    # that built env includes ENCRYPTION_SECRET, REDIS_DB_*, OMI_LLM_* and
+    # everything else fork.bootstrap requires. Passing an empty dict here
+    # would strip all of that, which is what caused the previous
+    # ``ENCRYPTION_SECRET not set`` failure (child had no encryption secret
+    # and bootstrap's _require would have caught it too).
     _original_start_process(
-        cfg, service, bootstrap_cmd, cwd=cwd, log_name=log_name, port=port, env=child_env
+        cfg, service, bootstrap_cmd, cwd=cwd, log_name=log_name, port=port, env=env
     )
 
 

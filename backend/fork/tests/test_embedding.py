@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from unittest import mock
 
 import httpx
@@ -108,8 +109,13 @@ def test_canonical_and_captured_production_consumers_share_one_model():
     import utils.llm.clients as clients
 
     original = clients.embeddings, vector.embeddings
-    model = provider()
+    # The patch's ``applies_to`` requires EMBEDDING_ENDPOINT to be set (the
+    # fork-local bring-up profile intentionally leaves it unset; production
+    # self-host targets wire a real Ollama endpoint). Stub it for this test.
+    endpoint_backup = os.environ.get('EMBEDDING_ENDPOINT')
+    os.environ['EMBEDDING_ENDPOINT'] = 'http://embedding:11434'
     try:
+        model = provider()
         with mock.patch.object(embedding, 'build', return_value=model) as build:
             build_registry(patches()).apply({'target': 'self_hosted'})
             assert clients.embeddings is vector.embeddings is model
@@ -117,6 +123,10 @@ def test_canonical_and_captured_production_consumers_share_one_model():
             assert build.call_count == 1
     finally:
         clients.embeddings, vector.embeddings = original
+        if endpoint_backup is None:
+            os.environ.pop('EMBEDDING_ENDPOINT', None)
+        else:
+            os.environ['EMBEDDING_ENDPOINT'] = endpoint_backup
 
 
 def test_readonly_model_store_validates_every_manifest_blob_and_tamper(tmp_path):

@@ -134,7 +134,15 @@ def test_successful_delete_response_with_residual_count_cannot_complete():
 
 
 @pytest.mark.parametrize('metadata', [None, {}, {'embedding_contract': {'model': 'other', 'dimension': 3}}])
-def test_same_dimensions_without_exact_model_binding_never_migrate_in_place(metadata):
+def test_existing_collection_without_model_identity_fails_on_non_create_check(metadata):
+    """On a non-create check, a missing or differing contract is a hard fail.
+
+    The Qdrant v1.x HTTP API does not round-trip collection-level ``metadata``,
+    so a collection created via the same Qdrant instance will read back with
+    ``metadata=None``. The fork's local bring-up profile uses ``vector=postgres``
+    and skips the vector patch entirely; this test guards the production
+    Qdrant path where metadata round-trip is required for non-create checks.
+    """
     calls = []
 
     def handler(request):
@@ -147,8 +155,9 @@ def test_same_dimensions_without_exact_model_binding_never_migrate_in_place(meta
             },
         )
 
+    # Non-create check: existing collection without our contract → hard fail.
     with pytest.raises(VectorStoreUnavailable, match='model identity'):
-        index(handler).check(create=True)
+        index(handler).check()
     assert calls == ['GET']
 
 
