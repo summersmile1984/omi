@@ -126,3 +126,40 @@ def test_feedback_commits_and_replays_through_real_server_owners(registered, mon
             'u1', item.memory_id, **{**request, 'feedback': {**request['feedback'], 'action': 'disable'}}
         )
     assert db.docs == committed
+
+
+def test_repeated_review_preserves_memory_and_durable_state(registered, store):
+    item = _target_item(promotion={'reviewed': True, 'user_review': True})
+    db = _db_with(target_items=[item])
+    db.docs[canonical_memory_maintenance_registry_path('u1')] = {
+        'uid': 'u1',
+        'schema_version': CANONICAL_MEMORY_MAINTENANCE_REGISTRY_SCHEMA_VERSION,
+    }
+    before = deepcopy(db.docs)
+
+    updated = owner.update_canonical_memory_review('u1', item.memory_id, True, db_client=db)
+
+    assert updated == item
+    assert db.docs == before
+
+
+@pytest.mark.parametrize('entrypoint', ['_apply_canonical_user_mutation', 'apply_canonical_user_mutation'])
+def test_noop_mutation_preserves_memory_and_durable_state(registered, store, entrypoint):
+    item = _target_item()
+    db = _db_with(target_items=[item])
+    db.docs[canonical_memory_maintenance_registry_path('u1')] = {
+        'uid': 'u1',
+        'schema_version': CANONICAL_MEMORY_MAINTENANCE_REGISTRY_SCHEMA_VERSION,
+    }
+    before = deepcopy(db.docs)
+
+    previous, updated = getattr(owner, entrypoint)(
+        'u1',
+        item.memory_id,
+        mutation_kind='noop',
+        build_patch=lambda *_: None,
+        db_client=db,
+    )
+
+    assert previous == updated == item
+    assert db.docs == before

@@ -596,7 +596,7 @@ FAIL: backend route inventory is stale:
   同维度跨 provider 仍拒绝复用集合。回归：vector 15 passed、operator AI 28 passed；
   重启保留已选 namespace，显式配置优先，local lifecycle 10 passed。
   独立 GateReview 已审查该边界与 namespace 重启修复。
-- 27 个命中的 fork gate 均已执行（失败不阻断后续单项执行）；除下述 self-host
+- 该轮 27 个命中的 fork gate 均已执行（失败不阻断后续单项执行）；除当时失败的 self-host
   产品合同和 Cloudflare projection 名称检查外，其余 25 项通过。包含真实 Cloudflare
   产品合同、Web build/client、Auth、overlay owner audit、两个 macOS staged debug build。
   Electron 改用仓库要求的 Node 22 后，两目标测试及完整构建通过；macOS identity
@@ -604,13 +604,18 @@ FAIL: backend route inventory is stale:
   上游剩余 26 个 gate 也逐项执行，唯一新增要求是为恢复 desktop 文档提交内部
   `kind: none` changelog fragment；没有更改或绕过上游检查。
 
-不能报告全绿的既有问题：
+该轮失败及后续修复：
 
-- Linux `deploy/self-host/ci/product.sh`：fixture 单测 11 passed，真实产品合同 15/16。
-  memory review HTTP 500：`backend/fork/canonical_mutations.py` 将合法 no-op 的
-  `build_patch(...) -> None` 解包；相同代码已存在于 `origin/main`，本次未修改该文件。
-  尝试开跟踪 issue，但 `summersmile1984/omi` 禁用了 Issues；保留在此交付记录，
-  owner 为 fork canonical mutation adapter，待独立修复及再次实测。
+- Linux memory review HTTP 500 已在后续修复中解决。上游 builder 用 `None`
+  表示合法 no-op；fork 包装层现在原样保留该结果，不创建空 mutation。
+  `test_canonical_mutations.py` 新增重复 review 与两个注册入口的无写入回归：
+  修复前 3 failed / 5 passed，修复后 8 passed。原有反馈 identity/replay 测试保持通过。
+  再次执行 `deploy/self-host/ci/product.sh`：fixture 单测 11 passed，真实 Linux ARM64
+  产品合同 **16/16 passed**；未修改 E2E 场景或上游代码。报告保存在本机
+  `omi-linux-noop-fixed-n71_0509/server/core-results.json`。此证明限 core-only 产品路径，
+  embedding 为受控 HTTP，未覆盖真实模型推理、聊天、语音或客户端 UI。
+  同次修复的 `BACKEND_PYTEST_WORKERS=8 bash backend/test.sh` 完整执行 1154 个文件，
+  exit 0；fork startup（26 文件）与 backend seams（3 文件）两项 gate 也通过。
 - 组合 preflight 的上游 dev-harness 测试 128 passed / 6 skipped / 1 failed：
   `test_nondefault_port_offset_propagates_to_every_harness_service` 期待 gateway，
   但恢复后的上游 offline 配置及同文件其他测试明确使用 off。

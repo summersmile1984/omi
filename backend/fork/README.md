@@ -6,6 +6,11 @@
 `omi_cloud` keeps upstream behavior. The fork startup test runs real feedback,
 receipt persistence, replay and conflicting reuse with controlled storage.
 Cloudflare's `memory_apply_mutation.py` retains the equivalent D1 mutation rule.
+The builder's `None` result is an admitted no-op, not an empty patch or an
+error. Preserve it unchanged so the upstream owner returns the current item
+without committing a mutation. `tests/test_canonical_mutations.py` covers
+repeated review and both registered no-op entrypoints with unchanged durable
+state; the real Linux product contract exercises the HTTP review path.
 
 ## Hosted operator AI owners
 
