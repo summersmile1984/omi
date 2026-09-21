@@ -112,7 +112,7 @@ def pg_for_shim() -> Iterator[str]:
         host = container.get_container_host_ip()
         port = int(container.get_exposed_port(_POSTGRES_INTERNAL_PORT))
         _wait_for_tcp(host, port)
-        dsn = f"postgresql://omi:omi_dev_only_local_dev_password@{host}:{port}/omi"
+        dsn = f"postgresql+psycopg://omi:omi_dev_only_local_dev_password@{host}:{port}/omi"
         yield dsn
     finally:
         container.stop()
