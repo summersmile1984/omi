@@ -14,7 +14,8 @@ For an accepted beta/production image, store `MIMO_API_KEY` in the private host
 `runtime.env` and provision only `EMBEDDING_MODEL_STORE`. The canonical Compose
 wrapper removes the unused LLM services and speech mount before interpolation;
 the startup checker therefore requires the selected provider's actual inputs.
-MiMo credentials reach only the API service, never images or client profiles.
+MiMo credentials reach only the API and canonical-memory maintenance worker,
+never images or client profiles.
 The historical zero-vendor/cutover attestation intentionally does not certify
 a hosted MiMo deployment; CD runs its separately documented public acceptance.
 
@@ -39,13 +40,28 @@ python3 deploy/self-host/ci/product.py --output /absolute/private/new-local-run 
 
 Do not pass `--llm-store` or `--speech-store` in this mode. The fixture builds
 the ordinary backend image, renders the selected public profile, runs the normal
-database migrations and starts the real product services. Only the API receives
-the MiMo credential and an outbound network; storage and embedding stay internal.
+database migrations and starts the real product services. The API and canonical
+maintenance worker receive the MiMo credential and outbound network access;
+storage and embedding stay internal.
 The private generated Compose file contains credentials and has mode 0600.
 The Python HTTP guard grants only the exact selected HTTPS Chat Completions
 endpoint; it does not grant every Xiaomi hostname or a different provider.
 
-Both audio models use `/chat/completions`. ASR sends base64 WAV/MP3 input;
+Both audio models use `/chat/completions`. ASR sends base64 WAV/MP3 input.
+The fork adapter inspects actual audio bytes rather than trusting upload names
+or MIME hints: complete PCM WAV windows remain unchanged; FFprobe/FFmpeg decode
+WebM/Opus, M4A, Ogg, FLAC, AAC and AIFF into mono 16 kHz PCM WAV. Valid MP3 stays
+compressed, including recordings whose decoded WAV would exceed the provider
+limit. Input and converted WAV are capped at 10 MiB; oversized conversions fail
+rather than silently truncating speech. Invalid containers return typed
+`invalid_input`, decoder deadlines return `timeout`, and missing audio tools
+return `config_error`. Private temporary input is removed on every exit, and
+decoding cannot follow playlists or network protocols.
+Captured-file transcription uses the upload bytes already held by the server,
+through the existing byte-provider entrypoint. It does not download the
+client-facing signed object URL from inside Docker, where a public loopback
+address identifies the wrong process. Upload retention, VAD, language selection,
+transcript postprocessing and cleanup stay with their existing owners.
 TTS sends the requested text as an assistant message and receives base64 WAV.
 The public TTS routes retain authentication, rate limits and MP3 conversion.
 ASR supports the documented `auto`, `zh` and `en` language options. Live listen

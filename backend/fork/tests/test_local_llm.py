@@ -606,3 +606,81 @@ def test_captured_memory_extractor_uses_native_original_schema_and_preserves_par
     finally:
         for module, name, value in originals:
             setattr(module, name, value)
+
+
+@pytest.mark.parametrize('timeout', [False, True])
+def test_real_action_extractor_preserves_success_and_provider_timeout(monkeypatch, timeout):
+    from datetime import datetime, timezone
+    from fork import mimo_chat, operator_ai, profile
+    from fork.patches.llm import patches
+    from utils.llm import conversation_processing as owner
+
+    row = operator_ai.configure({'target': 'self_hosted', 'stage': 'local', 'capabilities': {}}, 'mimo-cn')
+    monkeypatch.setattr(profile, 'current', lambda: row)
+    monkeypatch.setattr(local_llm, 'current', lambda: row)
+    monkeypatch.setenv('MIMO_API_KEY', 'synthetic')
+    monkeypatch.delenv('MIMO_SECRET_FILE', raising=False)
+    for name, value in (
+        ('OMI_LLM_GATEWAY_FEATURE_MODE', 'off'),
+        ('OMI_LLM_CHAT_AGENT_ROUTE', 'direct'),
+        ('OMI_LLM_GATEWAY_DEV_SHADOW_ALL_ENABLED', '0'),
+        ('OMI_LLM_GATEWAY_CONVERSATION_ACTION_ITEMS_SHADOW_ENABLED', '0'),
+    ):
+        monkeypatch.setenv(name, value)
+    for patch in patches():
+        if patch.module == 'utils.retrieval.agentic':
+            continue
+        module, original = patch.target()
+        monkeypatch.setattr(module, patch.attribute, patch.build(original))
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if timeout:
+            raise httpx.ReadTimeout('controlled timeout', request=request)
+        return httpx.Response(
+            200,
+            json={
+                'id': 'controlled',
+                'object': 'chat.completion',
+                'created': 1,
+                'model': 'mimo-v2.5',
+                'choices': [
+                    {
+                        'index': 0,
+                        'finish_reason': 'stop',
+                        'message': {
+                            'role': 'assistant',
+                            'content': json.dumps({'action_items': [{'description': 'Send the release notes'}]}),
+                        },
+                    }
+                ],
+            },
+        )
+
+    constructor = mimo_chat.MiMoChat
+    clients = []
+
+    def controlled_transport(**kwargs):
+        kwargs['http_client'].close()
+        kwargs['http_client'] = httpx.Client(transport=httpx.MockTransport(respond))
+        kwargs['callbacks'] = []
+        client = constructor(**kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(mimo_chat, 'MiMoChat', controlled_transport)
+    try:
+        result = owner.extract_action_items(
+            'Remind me to send the release notes tomorrow.', datetime.now(timezone.utc), 'en', 'UTC'
+        )
+        if timeout:
+            assert result == []
+        else:
+            assert [item.description for item in result] == ['Send the release notes']
+        assert len(requests) == 1
+    finally:
+        for client in clients:
+            client.http_client.close()
+            asyncio.run(client.http_async_client.aclose())
