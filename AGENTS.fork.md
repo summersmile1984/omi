@@ -34,6 +34,13 @@ and an unavailable `upstream/main` fails the lane instead of skipping. The
 per-platform techniques that replace an upstream edit are in
 [`dev/unified-main/00-upstream-touch-policy.md`](dev/unified-main/00-upstream-touch-policy.md).
 
+Current admitted seam: `app/lib/flavors.dart`, at most three added lines.
+Do not add allowances to make a failing audit pass. Restore upstream files
+byte-for-byte from `git merge-base HEAD upstream/main`, including final newlines;
+do not use `upstream/main` itself, which may contain changes not yet incorporated.
+After tests/builds, discard only their generated source changes and run the
+aggregate audit against the final committed HEAD.
+
 Which upstream workflows stay enabled, which checks gate `main`, and how the
 deployment environments are protected are declared in
 `config/repo-state.fork.json` and checked by `scripts/fork/check_repo_state.py`.
@@ -74,6 +81,30 @@ squash).
   isolated `.venv-fork-tests`, local fixtures under `dev/tests/containers/`, and
   explicit PG shadow tests. Docker is required, never imported by upstream unit
   conftest or implicitly selected by ordinary unit collection.
+- Keep upstream API E2E and listen/pusher scenarios intact. The fork E2E wrapper
+  may isolate the environment and forward options, but must always select
+  `backend/testing/e2e/`; flags must not broaden collection or drop scenarios.
+- Do not replace an upstream conftest, copy upstream modules, or add broad test
+  monkeypatches merely to obtain zero upstream diff or a green suite.
+
+Local runtime ownership stays in `dev/local.sh`; `dev/selfhost-local.sh` is its
+wrapper, not a second configuration or process owner. Do not fork the upstream
+dev-harness CLI/config/safety implementation. Render profiles through
+`scripts/profiles/render.py`, never a second hand-maintained profile table.
+
+- Default to core-only. Hosted AI requires explicit selection and a selected
+  `OMI_LOCAL_*` credential; never inherit ambient cloud/provider authority.
+- Own processes by instance state and process identity, never by port alone.
+  Stop/reset only that instance's processes, containers and volumes.
+- Qdrant admission must verify exact embedding identity, not just dimensions.
+  A provider/model change requires an explicitly reviewed namespace/backfill;
+  never relabel or delete existing collections automatically. No-option restart
+  retains the active selection and namespace unless configuration replaces it.
+- Mocked API E2E, container qualification and live runtime proof are distinct.
+  Exercise real Auth/JWT, persistence CRUD and lifecycle transitions; hosted chat
+  proof must demonstrate a model reply, not HTTP 200 with a canned fallback.
+- Report every failed gate. Do not weaken checks, expand baselines, or remove
+  scenarios to claim success; record out-of-scope failures and their evidence.
 
 ## 5. Weekly upstream sync
 
@@ -104,3 +135,7 @@ retains its metadata checks and uses `upstream_checks.py` to adapt only
 diff-hygiene: upstream-owned paths compare with the incorporated upstream
 ancestor, fork paths with the event base, and all changed text is checked for
 conflict markers. The same fork hygiene check runs in the required fork CI lane.
+The tracked upstream manifest, checker, triggers and other gate commands must
+remain unchanged. Use the existing fork fan-out runner to finish the selected
+check inventory when an unrelated failure stops the combined preflight.
+Never report the combined gate as passed when only individual checks passed.
