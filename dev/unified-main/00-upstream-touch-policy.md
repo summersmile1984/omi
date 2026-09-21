@@ -1,7 +1,7 @@
 # 00 · 上游文件零改动策略（fork 纪律第一条）
 
-> 原则：**能不改上游代码就不改。** fork 的全部行为差异通过新文件、包/模块别名、入口封装、导入时补丁、构建期生成文件与环境变量实现；确实做不到的进白名单，单点、≤3 行、附上游 PR 链接，白名单只减不增。
-> 为什么值得这么严：这个 fork 每周合并上游。每一个被 fork 修改过的上游文件，都是未来某一周的冲突候选；而每一个新文件、别名或补丁，上游永远不会碰。
+> 原则：**能不改上游代码就不改。** 先复用配置、资源与现有 fork 入口；没有合理扩展口时，才保留单一职责、≤3 个新增行的配置接缝。白名单只记录实际使用的接缝，不预留未来权限。
+> 不为账面零 diff 复制整个上游模块、替换整个业务方法或增加源码重写。上游 PR 尚未创建时必须标为提案，不能把标题冒充链接。历史诊断保留如下；当前准入清单以 §4 和 YAML 为准。
 
 ## 1. 诊断：`feature/cloud-neutral-shim` 为什么改了 653 个上游文件
 
@@ -23,7 +23,7 @@
 | 级别 | 定义 | 例子 | 守卫 |
 |---|---|---|---|
 | **T0 零改动（默认）** | 上游文件一个字节不变；fork 行为来自新文件/别名/入口/补丁/生成物/环境变量 | `backend/fork/main.py`、`app/pubspec_overrides.yaml`、`vite.fork.config.ts`、`deploy/**`、`brand/**`、`*.fork.md`、`checks-manifest.fork.yaml`、`fork-*.yml` | `check-upstream-touch.py` 默认零 |
-| **T1 白名单钩子** | 上游文件里单点、≤3 行、只做"读配置/调用 fork 钩子"，附理由与上游 PR 链接；白名单只减不增 | `AppBuild.swift` 的生产族 bundle id 改读 Info.plist；`next.config.js` 的条件别名；`main.dart` 的 `localizationsDelegates` 包装一行；`app-config.sh` 前缀校验；`nfc.c` 配对 URL 改 Kconfig | `upstream-touch-allowlist.yaml` 逐条限行数 |
+| **T1 白名单钩子** | 上游文件里只读取配置，不承接业务逻辑；精确文件、有限行数、明确退役条件 | 当前仅 `app/lib/flavors.dart`：一个 import 与两个标题返回值 | `upstream-touch-allowlist.yaml` 逐条限新增行数 |
 | **T2 禁止** | 改上游测试、锁文件/依赖清单、生成文件、机器人写入文件、CI 工作流、`AGENTS.md` 正文、纯格式化、把业务实现内联进上游文件 | shim 分支的 164 个测试改动、`tts_provider.py` +345 | 同上，命中即失败 |
 
 ### 2.1 T2 的唯一开口：`forbidden_exceptions`
@@ -38,95 +38,48 @@ T2 原本是绝对的。M1 撞到一个它没预见的情形：**上游自身的
 
 入选门槛（三条同时成立才允许）：**(1)** 被改的是上游自身的缺陷，不是 fork 的需求；**(2)** fork 侧确实无合法修法，且已把不可行的替代方案写清楚；**(3)** 同一个 PR 里已把修复排进 `upstream-prs.md`，上游接受后立刻删除例外与改动。想让 CI 变绿、想省事、fork 自己的功能需求，都不构成理由。
 
-## 3. T0 技术目录（按平台）
+## 3. fork 功能的实际所有者
 
-### 后端（Python）——目标：`backend/**` 上游文件改动 = 0
+| 领域 | 源码与入口 | 边界 |
+|---|---|---|
+| 品牌 | `brand/<id>/manifest.yaml`、`scripts/brand/` | `flavors.brand.dart` 为消费端生成物；品牌条件不进入 `F.title` |
+| Flutter 身份 | `app/fork/identity/`、`app/fork/prepare.py` | staging 输出仍为 `lib/fork/identity/`，消费者统一使用同一个 package URI；测试模板在 `app/fork/tests/` |
+| 后端运行时 | `backend/fork/`、`backend/firestore_pg/` | 显式 `fork.main:app` 入口；只使用已有窄接缝，不复制上游业务模块 |
+| 本地开发 | `dev/local.sh`、`dev/selfhost-local.sh`、`dev/docker-compose.dev.yml` | 统一生命周期与 profile renderer；不另建 fork 版上游 harness |
+| 测试依赖 | `dev/requirements-test.*`、`scripts/fork/run-container-tests.py` | 独立 `.venv-fork-tests`；容器 fixtures 不进入上游 unit conftest；生产依赖仍归 `backend/requirements-fork.txt` |
+| 桌面与 Web 构建 | `desktop/macos/fork/`、`desktop/windows/fork/`、`web/app/fork/`、`deploy/web/` | 当前已有 staged 构建入口，不为过去的 Swift/Next.js 接缝预留许可 |
+| 部署 | `deploy/self-host/`、`deploy/cloudflare/`、`scripts/profiles/` | 普通 Linux 与 Cloudflare 是目录和 profile 维度；部署选择不等于 AI 供应商选择 |
+| CI 与文档 | `scripts/fork/`、`checks-manifest.fork.yaml`、`fork-*.yml`、`AGENTS.fork.md` | 上游 workflow、manifest、AGENTS 和纯空白不修改 |
 
-```
-backend/fork/
-├── main.py            # uvicorn 入口：from main import app; apply_patches(); mount_fork_routers(app)
-├── patches/           # 补丁注册表：每个补丁声明 target 符号、替换物、启用条件（profile/env），启动时断言目标存在
-│   ├── identity.py    # firebase_admin.auth.verify_id_token → auth_shim.verify_id_token；firebase_admin.initialize_app → no-op（better_auth 时）
-│   ├── storage.py     # utils.other.storage 的客户端工厂 → MinIO
-│   ├── queue.py       # utils.cloud_tasks 的派发函数 → cloud_tasks_redis
-│   ├── providers.py   # STT/TTS/翻译 provider 注册：向上游 provider 表追加 MiMo/MOSS/SenseVoice/…
-│   └── brand.py       # prompt 常量中的品牌词替换（直到上游接受 {product_name} 参数化 PR）
-├── sitecustomize.py   # 非入口进程（queue worker、jobs、modal 脚本）通过 PYTHONPATH 注入，等价于 main.py 的 apply_patches()
-├── routers/           # fork 新增路由（只允许上游没有的能力，且不改变上游路由语义）
-├── identity.py auth_shim.py push_provider.py egress_policy.py storage_minio.py cloud_tasks_redis.py
-├── stt/ tts/ translation/    # provider 实现（从上游文件里迁出）
-└── tests/             # 由 backend runner 发现（backend-test-discovery 清单要求）
-```
+上游已有测试继续保留原来的运行条件。`listen_pusher_stack` 仍使用宿主 Redis；
+不要为统一开发容器而复制整套测试，也不要用 Redis PING 代替 listen 业务场景。
 
-- 先例：`backend/firestore_pg/compat` 已用 `sys.modules` 别名做到 88 个业务模块零改动——同一思路推广到身份、存储、队列、provider。
-- 补丁只替换**模块级符号**（函数/工厂/注册表），不 monkeypatch 类内部；每个补丁在启动自检时 `assert hasattr(target_module, name)`，上游重命名即在 CI 第一时间失败，修补丁而不是改上游。
-- 环境变量优先：上游已支持的开关（`FIRESTORE_PG_DSN`、`FIRESTORE_EMULATOR_HOST`、`OMI_ENV_STAGE`、`CORS_ALLOWED_ORIGINS`、`BASE_API_URL`…）直接用，不加补丁。
-- 镜像：`deploy/self-host/Dockerfile` `FROM` 上游镜像层，`pip install -r backend/requirements-fork.txt`，`CMD uvicorn fork.main:app`。
+## 4. T1 白名单（当前仅一个实际接缝）
 
-### Flutter——目标：`app/lib/**` 上游文件改动 ≤ 白名单（1 行）
+| 文件 | 新增行上限 | 钩子内容 | 退役条件 |
+|---|---|---|---|
+| `app/lib/flavors.dart` | 3 | 一个 import；生产和开发标题读取 `kBrandDisplayName` | upstream 支持可配置标题后删除；`brand-configurable app title` 当前只是未提交提案 |
 
-- **包级 shim**：`app/pubspec_overrides.yaml`（Dart 官方机制，新文件）把 `firebase_auth`、`firebase_messaging`、`firebase_crashlytics`、`firebase_core`、`firebase_analytics` 指向 `fork/packages/<name>_shim/`，shim 暴露与官方包**同名的公开 API**（`FirebaseAuth.instance`、`User`、`FirebaseMessaging.onMessage`…），内部用 Better Auth / webhook 推送 / no-op 实现。上游 139 处调用零改动；`omi_cloud` profile 不启用 overrides，构建结果与上游一致。
-- URL 与开关：上游已有的 `--dart-define`（`OMI_API_BASE_URL`、`OMI_APP_PROFILE`）+ fork 新增 dart-define；profile 表是新文件 `app/lib/env/fork/deployment_profiles.g.dart`（`.gitignore` 之外，由 render 生成并提交）。
-- 品牌词：运行时 `LocalizationsDelegate` 包装（一行 T1 注入到 `localizationsDelegates`），同时向上游提 ARB `{appName}` 参数化 PR；不改 ARB。
-- 生成文件（`*.g.dart`、`app_localizations*.dart`）差异永不提交。
+其余九个旧预留条目已移除，包括 macOS 更新文档：Cloudflare staging 桥接说明归
+`deploy/cloudflare/release.md`。删除许可不删除现有 fork 功能。
 
-### Windows（Electron/Vite/TS）——目标：上游文件改动 = 0
-
-- `desktop/windows/vite.fork.config.ts`：`import base from './vite.config'`，追加 `resolve.alias`（`firebase/auth` → `@fork/firebase-auth-shim` 等）与 `define`；构建命令 `vite build --config vite.fork.config.ts`（fork 工作流与 `Makefile.fork`）。
-- `VITE_*` 环境变量已是上游机制；profile 表为新文件 `src/shared/fork/deploymentProfiles.generated.ts`，由 shim 包读取。
-- `electron-builder.fork.config.mjs` 同法 extend。
-
-### macOS（Swift）——无运行时补丁，T1 集中在 2~3 个文件
-
-- 生成文件放 `Desktop/Sources/Generated/`（SwiftPM 自动纳入、上游已排除格式化）：`Brand.generated.swift`、`DeploymentProfiles.generated.swift`。
-- 构建期用 `PlistBuddy` 写入 Info.plist 键（`run.sh` 与 Codemagic 已有此通道）：`OMIDeploymentProfile`、`OMIProductionFamilyBundleIdentifiers`、`SUFeedURL`、`SUPublicEDKey`、TCC 文案。
-- T1 白名单：`AppBuild.swift`（生产族 id 改读 Info.plist，≤3 行）、`DesktopBackendEnvironment.swift`（URL 常量改读生成表，≤3 行）、`scripts/app-config.sh`（前缀校验，≤3 行）。三者同时向上游提 PR（上游已用 Info.plist 标记控制 external preview，接受概率高）。
-- Better Auth 登录：新增 `Desktop/Sources/Fork/BetterAuthSession.swift`，接入点是 `AuthService.swift` 中 provider 选择的一处 `switch`（T1，≤3 行）。
-
-### Web（Next.js，与上游同步）
-
-- 保持上游 `next.config.js`，Cloudflare 的 vinext 别名是加法且条件化（`VINEXT_BUILD=1`）——T1 白名单项，同时向上游提"可插拔认证提供方"PR。
-- Better Auth 代理与 profile 对象是新文件（`src/app/api/better-auth/[...path]/route.ts`、`src/lib/fork/*`）；`firebase.ts` 的开关读 profile 是 ≤3 行 T1。
-- 自托管用上游 `web/app/Dockerfile`（Node standalone）原样运行，**不引入 Bun**。
-
-### 固件
-
-- `EXTRA_CONF_FILE=brand.conf`（广播名、DIS）与 `DTC_OVERLAY_FILE` 是 Zephyr 原生机制，零改动。
-- `nfc.c:94` 的配对 URL 是 C 字面量：T1 一行改为 `CONFIG_FORK_PAIR_URL`（Kconfig 新增在 fork 的 `Kconfig.fork`，由 `brand.conf` 赋值），同时提上游 PR。
-
-### CI、配置、文档
-
-- 全部走独立文件：`fork-*.yml`、`checks-manifest.fork.yaml`、`deployment-setting-classification.fork.json`、`Makefile.fork`、`AGENTS.fork.md`（**上游 `AGENTS.md` 零改动、不加指针**——预算无余量，见 §4 第 9 条）。
-
-## 4. T1 白名单（初始版，目标随上游 PR 接受逐条删除）
-
-| # | 文件 | 行数上限 | 钩子内容 | 上游 PR 主题 |
-|---|---|---|---|---|
-| 1 | `desktop/macos/Desktop/Sources/AppBuild.swift` | 3 | 生产族 bundle id 改读 Info.plist 键 | "make production-family identifiers Info.plist-driven" |
-| 2 | `desktop/macos/Desktop/Sources/DesktopBackendEnvironment.swift` | 3 | 四个 URL 常量改读生成表 | "backend endpoints from bundle configuration" |
-| 3 | `desktop/macos/scripts/app-config.sh` | 3 | bundle 前缀校验改读配置 | "configurable bundle-id prefix for named bundles" |
-| 4 | `desktop/macos/Desktop/Sources/AuthService.swift` | 3 | 身份提供方 `switch` 增加 Better Auth 分支 | "identity provider seam" |
-| 5 | `app/lib/main.dart` | 1 | `localizationsDelegates` 包装品牌委托 | "ARB {appName} parameterization"（接受后删除此项） |
-| 6 | `web/app/next.config.js` | 5 | vinext 条件别名 + 认证提供方开关 | "pluggable auth provider / Workers build" |
-| 7 | `web/app/src/lib/firebase.ts` | 3 | `isFirebaseAuthConfigured` 改读 profile | 同 6 |
-| 8 | `omi/firmware/omi/src/lib/core/nfc.c` | 1 | 配对 URL 改 Kconfig | "Kconfig-driven NFC pairing URL" |
-| ~~9~~ | ~~`AGENTS.md` 系列~~ | — | **已作废**（2026-09-03 实测）：上游把这些文件维护在预算天花板上（`app/AGENTS.md` 11288/11500、`backend/AGENTS.md` 38997/39000），加一行指针即触发 `agents-md-lean` 失败。fork 规则放独立的 `*.fork.md`，上游文件零改动、不加指针 | — |
-
-后端 `backend/**`：**0 条**。上游 CI/测试/锁文件：**0 条**。上游 `AGENTS.md`：**0 条**（见上）。
+后端、上游 CI/测试/锁文件、上游 AGENTS：**均为零条**。
 
 ## 5. 两条测试通道（上游测试永不修改）
 
 | 通道 | 运行什么 | 环境 | 证明什么 |
 |---|---|---|---|
 | 上游模式 | `backend/test.sh`、`app/test.sh`、Swift/Windows 测试、`web-checks` 原样 | 不设任何 shim/profile 变量；不启用 `pubspec_overrides`/`vite.fork.config` | fork 没有改变上游行为（等价性） |
-| fork 模式 | `backend/fork/tests/`、`app/test/fork/`、`Desktop/Tests/Fork*`、`windows/src/**/*.fork.test.ts`、`contracts/` | `OMI_DEPLOYMENT_PROFILE=self_hosted` 或 `cloudflare`；启用别名/补丁 | shim 与 profile 行为正确 |
+| fork 模式 | `backend/fork/tests/`、staged `app/fork/tests/`、`Desktop/Tests/Fork*`、`windows/src/**/*.fork.test.ts`、`contracts/` | 显式 self_hosted 或 cloudflare profile | fork 消费者与配置行为正确 |
+| fork 容器资格 | `dev/tests/containers/` 与现有 PG shadow 场景 | 独立测试 venv、明确 Docker 前提、局部 conftest | 真实 Redis/PG 语义；不改变普通上游 unit 收集 |
 
 shim 分支上那 164 个测试改动的等价断言，全部落到 fork 模式的测试目录；`backend-test-discovery` 清单检查保证它们被 runner 发现。
 
 ## 6. 守卫与度量
 
 - `scripts/fork/check-upstream-touch.py --aggregate --allowlist dev/unified-main/upstream-touch-allowlist.yaml`：对**完整分歧**（`merge-base(HEAD, upstream/main)` 起）中存在于 `upstream/main` 树的每个文件——不在白名单 → 失败；在白名单但超行数 → 失败；命中 T2 类别 → 失败，并输出对应的 T0 做法提示。`upstream/main` 缺失时 exit 2（无法评估不等于通过）。进 `checks-manifest.fork.yaml`（`fork-upstream-touch`，`triggers: all`）。
-- 每次上游同步 PR 自动评论"被 fork 修改的上游文件总数"（`comm -12 <(git log --no-merges --name-only --format= upstream/main..main | sort -u) <(git ls-tree -r --name-only upstream/main | sort)`），目标 = 白名单条目数（≤ 12），趋势只降不升。
+- 差异数量使用同一个 aggregate guard 的结果，不用提交历史中的改动路径数替代最终 blob 差异。当前目标为一个实际接缝、零违规。
+- `fork-diff-hygiene`：上游路径与已合入 upstream 祖先比较，fork 路径与事件基线比较；恢复上游字节不触发格式化循环，所有变更文本仍检查冲突标记。真实 Git 回归覆盖 `a41b07f2d1` 导入空行后被 `2ed93dbf52` 再次修改的实例。
 - 上游 PR 队列记录在 `dev/unified-main/upstream-prs.md`：每接受一个，删一条白名单。
 
 

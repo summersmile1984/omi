@@ -119,7 +119,7 @@
       {
         "file": "repo-checks.yml",
         "enforcement": "advisory",
-        "reason": "Upstream hygiene still runs over the fork's own diff (agents-md budget, manifests, lifecycle headers, docs) but no longer gates main: `dead-code-ratchet` inside it is red on main for eight findings the fork cannot clear, and its `backend/**/*.py` trigger would block every backend change. See the quarantine entry."
+        "reason": "Upstream hygiene stays enabled and advisory. Its raw event-diff whitespace check rejects restoring incorporated upstream EOF bytes; fork-diff-hygiene enforces fork-authored whitespace and all conflict markers without modifying upstream files. The former staged Flutter dead-code findings are removed by canonical fork source ownership, not allowlist exemptions."
       },
       {
         "file": "runtime_image_contracts.yml",
@@ -400,7 +400,7 @@
     },
     {
       "file": "repo-checks.yml",
-      "reason": "`dead-code-ratchet` in this job is red on main and cannot be satisfied from the fork. It reports seven `app/lib/fork/identity/*.dart` files that only the staged overlays import -- `app/fork/prepare.py` materialises them in a temporary copy, so upstream's static import graph cannot see the edge -- plus `desktop/windows/src/shared/fork/deploymentProfiles.generated.ts`, which no Electron consumer reads (`desktop/windows/fork/prepare.py` generates its own fork/native/profile.generated.ts). Its exemption channel (`.github/scripts/dead_code/*.allowlist.json`, `--update-baseline`) is hard-coded under `.github/scripts/`, an upstream path this fork does not modify. Because its triggers include `backend/**/*.py`, every backend change selects it -- including fork-owned shim and deployment-target work under `backend/fork/**`, which is the sanctioned seam -- so a required Hygiene blocked that work on findings unrelated to it. Kept enabled for signal. The Windows artifact was genuinely dead and is gone: scripts/profiles/render.py no longer emits it and the file is deleted, so dead-code[windows] is clean. The Flutter alternative was attempted on 2026-09-15 and fails: moving the runtime out of app/lib splits its Dart type identity between the relative staged copy and the package: URI, so the staged gateway test stops compiling (MemoryStore is no longer an OpaqueCredentialStore). Exempting fork-owned files via .github/scripts/dead_code/*.allowlist.json or --update-baseline is barred by the T2 admissibility test -- the paths are upstream and the need is the fork's own, with no upstream defect to fix -- so the seven stay recorded false positives while Hygiene remains advisory. Measurement is in the tracking document.",
+      "reason": "Historical dead-code findings came from seven stage-only Flutter identity files and an unused Electron generated table. The Electron table was removed; Flutter sources now live under app/fork/identity and are materialized at the original package:omi/fork/identity namespace with staged tests, avoiding the earlier mixed-URI type-identity failure. Neither requires an upstream dead-code exemption. Hygiene remains advisory because upstream diff-hygiene compares raw event bytes and rejects restoring inherited plugin EOF blank lines (a41b07f2d1 / 2ed93dbf52). The required fork-diff-hygiene lane checks provenance-aware whitespace and scans all changed text for conflicts; combined local preflight adapts only that command and retains every other upstream contract.",
       "tracking": "dev/ci-cd-three-stages.md"
     }
   ],

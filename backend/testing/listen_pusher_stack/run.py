@@ -33,7 +33,6 @@ import redis
 import websockets
 from google.cloud import firestore
 from google.cloud.firestore_v1 import FieldFilter
-from testcontainers.redis import RedisContainer
 from websockets.exceptions import ConnectionClosed
 
 from testing.listen_pusher_stack.cloud_tasks import FINALIZATION_HANDLER_PATH, LOCAL_TASK_TOKEN_ENV, TASK_EVENTS_FILE
@@ -184,7 +183,6 @@ class Stack:
         self.pusher_port = _free_port()
         self.parakeet_port = _free_port()
         self.children: dict[str, Child] = {}
-        self.redis_container: RedisContainer | None = None
         self.env = self._environment()
         self.firestore = firestore.Client(project=PROJECT)
 
@@ -301,35 +299,24 @@ class Stack:
         return child
 
     def start(self, *, pusher_drop_opcode: int | None = None) -> None:
-        # Bring up an isolated Redis via testcontainers-python so the runner
-        # has no host-binary dependency on ``redis-server``. The container is
-        # torn down by ``close()``; ``self.redis_port`` is the loopback port
-        # already chosen by ``__init__`` so backend children keep pointing at
-        # ``REDIS_DB_PORT=<self.redis_port>`` unchanged.
-        redis_log = self.state_dir / 'redis-testcontainer.log'
-        redis_log.parent.mkdir(parents=True, exist_ok=True)
-        redis_container = (
-            RedisContainer("redis:7-alpine")
-            .with_bind_ports(6379, self.redis_port)
-            .with_command(
-                [
-                    "redis-server",
-                    "--port",
-                    "6379",
-                    "--save",
-                    "",
-                    "--appendonly",
-                    "no",
-                    "--protected-mode",
-                    "yes",
-                ]
-            )
+        redis_binary = shutil.which('redis-server')
+        if not redis_binary:
+            raise StackFailure('redis-server is required; install Redis and retry')
+        redis_child = self._start(
+            'redis',
+            [
+                redis_binary,
+                '--port',
+                str(self.redis_port),
+                '--save',
+                '',
+                '--appendonly',
+                'no',
+                '--protected-mode',
+                'yes',
+            ],
         )
-        redis_container.start()
-        self.redis_container = redis_container
-        with redis_log.open("a", encoding="utf-8") as log:
-            log.write(f"[harness] started testcontainers redis -> 127.0.0.1:{self.redis_port}\n")
-        _wait_for_port(self.redis_port, label='isolated Redis')
+        _wait_for_port(self.redis_port, label='isolated Redis', child=redis_child)
         redis.Redis(host='127.0.0.1', port=self.redis_port).ping()
         parakeet_child = self._start(
             'parakeet',
@@ -446,13 +433,6 @@ class Stack:
     def close(self) -> None:
         for name in reversed(list(self.children)):
             self.stop(name)
-        # Tear down the testcontainers-managed Redis. ``self.redis_container``
-        # only holds the long-lived container reference; ``Child`` records in
-        # ``self.children`` are subprocesses (backend / pusher / etc.).
-        if self.redis_container is not None:
-            with suppress(Exception):
-                self.redis_container.stop()
-            self.redis_container = None
 
     @property
     def pusher_events(self) -> list[dict[str, Any]]:

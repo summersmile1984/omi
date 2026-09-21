@@ -105,6 +105,12 @@ checks:
     lanes: ["local", "ci"]
     reason: "Executes the profile/session/realtime boundary missing from main at the 2026-09-04 audit: fork callers retained Firebase credentials and direct Gemini controls despite their selected capability policy."
 
+  - id: fork-diff-hygiene
+    command: ["bash", "-c", "python3 scripts/fork/test_diff_hygiene.py && python3 scripts/fork/check_diff_hygiene.py --changed-files \"$1\" --base \"$2\" --head \"$3\"", "--", "{changed_files}", "{base}", "{head}"]
+    triggers: ["all"]
+    lanes: ["local", "ci"]
+    reason: "Upstream import a41b07f2d1 brought plugin EOF blank lines; formatting them to satisfy upstream diff-hygiene created four forbidden fork edits in 2ed93dbf52. Compare upstream-owned paths with the incorporated upstream ancestor, fork paths with the event base, and scan all changed text for conflict markers. Real Git fixtures also execute the adapted upstream manifest, preserving every other check."
+
   - id: fork-upstream-touch
     command: ["python3", "scripts/fork/check-upstream-touch.py", "--aggregate"]
     triggers: ["all"]
@@ -202,7 +208,13 @@ checks:
     reason: "The hosted operator vendors are selected only at render time, so a wire-shape drift in their OpenAI-compatible clients (chat, bge-m3 embeddings with the 1024-dimension invariant, multipart ASR, TTS with the WAV envelope) would otherwise be caught only by a live deployment with real credentials. The self-check runs the exact same call builders against controlled fake transports with no network; the real per-vendor four-call probe stays a documented live operation."
 
   - id: fork-local-dev-harness-e2e
-    command: ["bash", "-c", "set -e; cd backend && p=.venv/bin/python; [ -x \"$p\" ] || p=python3; \"$p\" ../scripts/dev-harness/dev_harness/run_e2e.py -q --tb=line; \"$p\" -m pytest firestore_pg/tests/test_shadow_e2e.py -v -m container_integration --confcutdir=firestore_pg/tests -p no:cacheprovider; \"$p\" -m pytest tests/unit/test_redis_container.py -v -p no:cacheprovider"]
-    triggers: ["scripts/dev-harness/dev_harness/run_e2e.py", "scripts/dev-harness/dev_harness/cli.py", "scripts/dev-harness/dev_harness/config.py", "scripts/dev-harness/dev_harness/safety.py", "scripts/dev-harness/dev_harness/self_hosted_profile.py", "backend/firestore_pg/tests/test_shadow_e2e.py", "backend/firestore_pg/tests/shadow_scenarios.py", "backend/tests/unit/test_redis_container.py", "backend/testing/listen_pusher_stack/run.py", "backend/requirements.txt", "backend/pylock.macos.toml", ".github/checks-manifest.fork.yaml"]
+    command: ["bash", "-c", "set -e; p=backend/.venv/bin/python; [ -x \"$p\" ] || p=python3; \"$p\" scripts/fork/test_run_e2e.py; \"$p\" scripts/fork/run_e2e.py -q --tb=line"]
+    triggers: ["scripts/fork/run_e2e.py", "scripts/fork/test_run_e2e.py", "backend/testing/e2e/**", "backend/requirements.txt", "backend/pylock*.toml", ".github/checks-manifest.fork.yaml"]
     lanes: ["local", "ci"]
-    reason: "The earlier goal series containerized the dev harness middleware (postgres, typesense, redis, firebase-auth emulator, omi-auth-server) via testcontainers, dropped the host binary dependencies (redis-server, java, firebase-tools) from the local dev path, and added two new pytest harnesses. The fork-owned scripts/dev-harness/dev_harness/run_e2e.py wraps the upstream backend/testing/e2e/ hermetic suite in a clean env (the e2e conftest's _set_e2e_env block is mirrored literally because the suite assumes those values without verifying that a developer's shell has not leaked conflicting state). The test_shadow_e2e module runs every entry of the upstream firestore_pg.tests.shadow_scenarios.SCENARIOS against the firestore_pg shim, proving the public google.cloud.firestore client API keeps working with the in-process shim. test_redis_container checks the testcontainers-managed Redis fixture used by both the dev-harness smoke and the listen_pusher_stack runner. All three are hermetic: no Docker, no backend listening, no network, no external providers."
+    reason: "CI passed flags to run_e2e.py and silently dropped testing/e2e/, broadening collection to unrelated tests. Run the unchanged upstream suite with an explicit path and clean environment; its own conftest owns fake services and outbound-network blocking. This is hermetic API behavior, not proof of local Compose or container readiness."
+
+  - id: fork-container-contracts
+    command: ["python3", "scripts/fork/run-container-tests.py"]
+    triggers: ["scripts/fork/run-container-tests.py", "dev/requirements-test.*", "dev/pytest-containers.ini", "dev/tests/containers/**", "backend/firestore_pg/**", "backend/database/redis_db.py", "backend/pylock*.toml", "backend/.python-version", "backend/scripts/sync-python-deps.sh", ".github/checks-manifest.fork.yaml"]
+    lanes: ["local", "ci"]
+    reason: "Backend unit CI 35382509859 failed during collection because the replaced upstream conftest imported unprovisioned Testcontainers. Execute scoped Redis and existing PG shadow scenarios in a separately locked fork test environment, never the upstream unit conftest or production dependency layer. Docker and image provisioning are required; real-SDK emulator parity remains a separate opt-in."

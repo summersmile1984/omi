@@ -9,6 +9,7 @@
 //
 // Env:
 //   PORT            (default 3000)
+//   HOST            bind address (default unspecified; local dev uses loopback)
 //   DATABASE_URL    postgres://... (default localhost:5434 omi)
 //   BETTER_AUTH_SECRET  signing secret for the session/JWT infrastructure
 //   BETTER_AUTH_URL     public base URL of this service
@@ -166,7 +167,7 @@ app.get("/ready", async (_req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, process.env.HOST || undefined, () => {
   console.log(
     `omi-auth-server listening on :${PORT} (JWKS at ${BASE_URL}/api/auth/jwks)`
   );

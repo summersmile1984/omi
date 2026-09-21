@@ -4,7 +4,7 @@ BASE ?= origin/main
 BRAND ?= omi-upstream
 
 .PHONY: help setup-fork preflight-fork upstream-touch sync-probe dev-shadow-diff run-canonical-promotion \
-	local-up local-status local-verify local-restart local-logs local-down local-reset local-selftest
+	local-up local-status local-verify local-restart local-logs local-down local-reset local-selftest local-e2e container-tests
 
 help:
 	@echo "make -f Makefile.fork setup-fork       # fork-local git config (no upstream tags)"
@@ -18,6 +18,8 @@ help:
 	@echo "make -f Makefile.fork local-down       # stop the stack (keeps data)"
 	@echo "make -f Makefile.fork local-reset      # stop and delete local data"
 	@echo "make -f Makefile.fork local-selftest   # hermetic tests for the local dev entry points and this checkout's git config"
+	@echo "make -f Makefile.fork local-e2e        # unchanged upstream API E2E in a clean environment"
+	@echo "make -f Makefile.fork container-tests  # isolated fork Redis/PG container qualification"
 
 setup-fork:
 	@git config remote.upstream.tagOpt --no-tags && \
@@ -67,3 +69,9 @@ local-selftest:
 	@python3 dev/tests/test_local_sh.py
 	@python3 dev/tests/test_selfhost_local_sh.py
 	@python3 dev/tests/test_git_hygiene.py
+
+local-e2e:
+	@backend/.venv/bin/python scripts/fork/run_e2e.py -q --tb=line
+
+container-tests:
+	@python3 scripts/fork/run-container-tests.py

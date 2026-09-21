@@ -94,6 +94,9 @@ def stage(manifest_path: Path, target: str, output: Path, dart: Path) -> dict:
         source = ROOT / relative
         if source.is_symlink():
             raise ValueError("Source symlinks are not admitted in a mobile artifact")
+        # Honor working-tree deletions before the relocation is committed.
+        if not source.exists():
+            continue
         # Never seed operator credentials or caches into an artifact. Frozen
         # dependency locks and the real native sources are copied unchanged.
         if any(part in {".dart_tool", "build", "Pods", ".gradle", "ephemeral"} for part in source.parts):
@@ -112,7 +115,7 @@ def stage(manifest_path: Path, target: str, output: Path, dart: Path) -> dict:
         dest = output / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, dest)
-    shutil.copytree(ROOT / "app/lib/fork", app / "lib/fork", dirs_exist_ok=True)
+    shutil.copytree(FORK / "identity", app / "lib/fork/identity", dirs_exist_ok=True)
     shutil.copytree(FORK, app / "fork", dirs_exist_ok=True)
     asset_input = output / "brand-asset-input.json"
     asset_input.write_text(json.dumps(manifest["assets"]))

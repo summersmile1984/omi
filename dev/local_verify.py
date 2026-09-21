@@ -8,11 +8,11 @@ round trip against a running service:
   2. redis      authenticated ping + write/read/delete round trip
   3. minio      S3 round trip (put, stat, get, delete) on a probe object
   4. auth       Better Auth signup, session-backed JWT issuance, JWKS served
-  5. backend    backend health, only when a backend is running
+  5. backend    required backend health
+  6. product    authenticated action-item create/read/delete
 
-The self-hosted backend is not part of this harness: it is an image whose
-profile, model stores and Qdrant/Typesense/SearXNG services are baked in
-(see `dev/local.sh selfhost`), so a checkout process cannot admit it.
+The checkout runtime is started by dev/local.sh up; a missing backend is a
+failed prerequisite, never a skipped success.
 """
 
 from __future__ import annotations
@@ -234,14 +234,10 @@ def check_auth() -> dict:
 
 
 def check_backend() -> dict:
-    """Health of a backend you started yourself; skipped when none is running."""
+    """Require the backend endpoint; absence is not a successful qualification."""
     status, payload = http("GET", f"{BACKEND_URL}/v1/health")
     if status == 0:
-        return {
-            "skipped": True,
-            "detail": f"no backend on {BACKEND_URL} — the self-hosted runtime is an image "
-            "(dev/local.sh selfhost), so the checkout harness does not start one",
-        }
+        raise CheckFailed(f"no backend on {BACKEND_URL} — run dev/local.sh up")
     if status != 200:
         raise CheckFailed(f"GET /v1/health returned {status}")
     return {"detail": f"GET /v1/health → {status}", "evidence": {"body": payload[:200]}}
@@ -259,10 +255,7 @@ def check_product() -> dict:
     """
     status, _ = http("GET", f"{BACKEND_URL}/v1/health")
     if status == 0:
-        return {
-            "skipped": True,
-            "detail": f"no backend on {BACKEND_URL} — start one with dev/selfhost-local.sh up",
-        }
+        raise CheckFailed(f"no backend on {BACKEND_URL} — run dev/local.sh up")
     uid, token, _ = issue_principal("product")
     headers = {"authorization": f"Bearer {token}"}
     description = f"local verify round trip {RUN_UID}"

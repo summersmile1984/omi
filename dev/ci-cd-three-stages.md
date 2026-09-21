@@ -33,21 +33,30 @@
 
 ## 1. 阶段 1 —— Local dev(编译 + 运行)
 
-> **2026-09-14 在 main 上复核后的口径**:上游 v0.12.348 合并进 main 之后,Server OS 的运行时
-> 是**镜像形态**——profile 表、语音/LLM 模型库、Qdrant/Typesense/SearXNG 都在镜像里
-> (`deploy/self-host/Dockerfile` 用 `scripts/profiles/render.py --target self_hosted --stage <stage>`
-> 渲染)。因此本地 dev 分成两条,别再混为一谈:
+> **当前入口（2026-09-21）**：`dev/local.sh` 同时管理 Compose 数据面、Better Auth、
+> `uvicorn fork.main:app` 和 Redis worker。镜像构建仍属于交付通道；checkout 无需复制上游 harness。
 
-### 1.1 数据面 harness(本机、无镜像,秒级)
+### 1.1 本地完整运行时
 
 ```bash
-dev/local.sh up        # postgres + redis(带密码) + minio + firebase emulators + 两个迁移 + auth-server
-dev/local.sh verify    # 4 项自证 + 1 项(backend)按需跳过,写 JSON 证据
-dev/local.sh selfhost  # 打印 Server OS 运行时需要什么、为什么 checkout 跑不起来
+dev/local.sh up                         # 默认 core-only；真实数据面、迁移、Auth、API、worker
+dev/local.sh up --no-backend             # 只启动数据面与 Auth
+OMI_LOCAL_QDRANT_COLLECTION_PREFIX=omi_local_openrouter dev/local.sh restart --operator-ai openrouter
+dev/local.sh restart --core-only         # 不继承任何 ambient provider 凭证
+dev/local.sh verify                     # 必须有本实例健康 API；真实产品读写，不跳过后端
 dev/local.sh status | restart | logs | ports | env | down | reset
 ```
 
-`make -f Makefile.fork local-up|local-verify|local-status|local-down|local-reset|local-selftest` 等价。
+配置唯一入口是 `dev/local.env`（模板 `dev/local.env.example`），优先级为
+`OMI_LOCAL_*` 环境变量 > 本地配置 > 模板。外部 AI 选项为 `mimo-cn` / `openrouter` /
+`siliconflow` / `cloudflare-gateway`；只把选中供应商的 `OMI_LOCAL_*` 凭证映射到子进程。
+Cloudflare 另需 `OMI_LOCAL_BRAND_MANIFEST` 指向包含 gateway 身份的私有品牌清单。
+不要再使用 `dev/selfhost-local.env` 或 `OMI_SELFHOST_*`；将端口及密钥迁移到统一配置。
+
+Compose project 从 checkout + `OMI_LOCAL_STATE_DIR` 派生，所有 published 端口只绑定 loopback。
+旧全局 `omi-*` 容器不会被接管或停止；迁移时先显式停止旧实例，或为新实例分配不同端口。
+进程仅由本实例 PID + 启动身份记录管理；丢失记录或 PID 被复用时拒绝误杀。
+`down` 保留本实例卷，`reset` 删除本实例卷；不影响其它 Compose project。
 
 自证内容(全部是真实往返):
 
@@ -57,24 +66,31 @@ dev/local.sh status | restart | logs | ports | env | down | reset
 | 2 | redis | 带密码认证的 PING + set/get/delete(与 `REDIS_DB_PASSWORD` 契约一致) |
 | 3 | storage | 直连 MinIO 的 put/head/get/delete 往返 |
 | 4 | auth | Better Auth **真实注册** → `/auth-issue` 签发会话 JWT → JWKS 可取 |
-| 5 | backend | 仅当你自己起了 backend 才检查,否则明确 SKIP(不是假装通过) |
+| 5 | backend / product | 本实例健康 API + JWT → PostgreSQL 写入、读取、删除 |
 
 **2026-09-14 在 main 上:4/4 PASSED,1 SKIPPED**(证据 `.local/local-dev/evidence/`)。
 
 ### 1.2 Server OS 运行时(本地已可跑通)
 
-镜像路径(`operations.sh start`)仍需要 amd64 构建通道;但在 checkout 上也能跑起来,
-用 core-only profile(**与 `deploy/self-host/ci/product.py::core_only_profile` 同一形状**:
-去掉 speech/LLM 模型库,保留 embedding):
+镜像路径仍由发布构建通道负责。checkout 的默认 core-only 通过规范渲染器
+`scripts/profiles/render.py --target self_hosted --stage local --core-only --emit-json`
+生成，不再手写 profile；它关闭 speech/chat，保留 embedding（本地 bge-m3 服务由
+`OMI_LOCAL_EMBEDDING_ENDPOINT` 指定）。外部 AI 使用同一渲染器 `--operator-ai`；
+两者始终保留 `self_hosted.local` 的 PostgreSQL / Redis / MinIO / Qdrant 数据面。
+Qdrant 集合绑定实际 embedding 权威与模型身份；相同维度不代表模型可互换。
+首次切换本地 / 托管 embedding 或托管供应商时，必须显式选择经审查的新
+`OMI_LOCAL_QDRANT_COLLECTION_PREFIX` 并按需回填数据，不能自动重标或删除旧集合。
+默认前缀仍为 `omi_local`；切回 core-only 时恢复该前缀。
 
 ```bash
-dev/local.sh up            # 数据面:postgres/redis/minio/qdrant/typesense/emulators + auth-server
-dev/selfhost-local.sh up   # 渲染 core-only profile → qdrant 迁移 → uvicorn fork.main:app
-dev/local.sh verify        # 6/6(含产品级往返:JWT → 建任务 → 读回)
-dev/selfhost-local.sh stop # 停后端(本地渲染的表在 .local/selfhost/,工作树保持干净)
+dev/local.sh up --no-backend # 数据面和 Auth
+dev/selfhost-local.sh up    # 同一配置/状态中的 API + worker；完整 up 已包含此步
+dev/local.sh verify         # 六项真实往返
+dev/selfhost-local.sh stop  # 只停本实例 API 和 worker
 ```
 
-env 模板:`dev/selfhost-local.env.example` → 复制为 `dev/selfhost-local.env`(gitignore)。
+profile 表保存在 `$OMI_LOCAL_STATE_DIR/deployment_profiles.generated.json`，
+默认 `.local/local-dev/`，不修改被跟踪的表。重启不带选项保留已运行的 AI profile。
 `up` 结束后可直接走真实业务链路:
 
 ```
@@ -98,8 +114,9 @@ profile(speech/LLM 模型库:`prepare-speech.py` 目前因上游 TTS 归档 dige
 1. **不依赖云凭证**:数据面 harness 不需要任何云 key。
 2. **端口可配**:`dev/local.env`(gitignore)覆盖 `dev/local.env.example`;优先级 `环境变量 > local.env > example`;
    `dev/local.sh ports` 打印占用者并在冲突时拒绝启动。
-3. **失败要说人话**:老本地库给出 `dev/local.sh reset`;harness 与运行时的边界写在 `dev/local.sh selfhost`。
-4. **自测无副作用**:`dev/tests/test_local_sh.py` 只跑只读命令(help/ports/env)。
+3. **失败闭合**：真实 HTTP/数据库就绪失败会报错；不写 readiness sentinel，不以 `pid=-1` 代表容器。
+4. **子进程隔离**：显式白名单环境、独立 HOME，使用现有 env-loader admission 跳过 backend dotenv；
+   core-only 不读取 shell 的 AI key，operator-AI 也只收到显式 local-scoped 的选中 key。
 
 ## 2. 阶段 2 —— CI
 
@@ -451,7 +468,7 @@ release admission 仍按前缀合并同一对 attestation。`runs-on` 用常量 
 上游 Repo Checks 的 actionlint 读 `.github/actionlint.yaml`(只认 `macos`),字面量自定义 label 会直接报
 `[runner-label]`;fork 自己的 lint 会解析该常量并按 fork 目录校验。
 
-**新的头号缺口(阶段 2)**:`dead-code-ratchet`(属上游 Hygiene)在 `main` 上就是红的 ——
+**历史问题（2026-09-15；已由下面的 2026-09-21 结构性迁移解决）**：当时 `dead-code-ratchet` 在 `main` 上是红的 ——
 7 个 `app/lib/fork/identity/*.dart`(只被 staged overlay 引用,上游分析器看不到)加 1 个
 `desktop/windows/src/shared/fork/deploymentProfiles.generated.ts`(render.py 产出、Electron 侧
 没有任何消费者)。
@@ -470,7 +487,7 @@ Windows 那份 profile 要么被 Electron 消费、要么 render 不再产出)�
 `check_repo_state.py --live` 均 OK,生产环境各自的 1 名 reviewer 未被改动。效果:Hygiene 继续跑、
 继续报红,但**不再挡合并**,于是 `backend/**` 的任何改动(含 shim/部署目标工作)可以正常落地。
 
-**2026-09-15 后续:8 条里能真修的那 1 条已修,剩下 7 条按政策不可修(附实测)。**
+**2026-09-15 当时的处置判断（不是当前限制）**：
 
 - **Windows 那条已删除**:`scripts/profiles/render.py` 不再产出
   `desktop/windows/src/shared/fork/deploymentProfiles.generated.ts`,该文件一并删除。它是真的死产物
@@ -495,6 +512,13 @@ Windows 那份 profile 要么被 Electron 消费、要么 render 不再产出)�
   `upstream-prs.md`):这里要豁免的是 **fork 自有文件**,属"fork 自己的需求",第一条就不成立,
   所以例外不可用。结论:那 7 条留作**已记录的假阳性**,Hygiene 保持 advisory;
   结构性迁移(让它们真绿、把 Hygiene 变回 required)仍待将来。
+
+**2026-09-21 当前结构**：七份 identity 源码已迁移到 `app/fork/identity/`，测试也作为
+staged 输入，由 `prepare.py` 一起落入同一 package URI 命名空间。运行时仍是
+`package:omi/fork/identity/...`；没有复制上游 app 模块，也不再依赖上游 allowlist。
+`.github/scripts/dead_code/flutter.allowlist.json` 已恢复 incorporated upstream baseline。
+上述 URI 混用失败保留为历史记录，不再是“不可修”的现状；当前 gate 策略由
+`config/repo-state.fork.json` 负责。
 
 **别把它误读成"不能改 backend"**。政策(`dev/unified-main/upstream-touch-allowlist.yaml`)的真实分工是:
 

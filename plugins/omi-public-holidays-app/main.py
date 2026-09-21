@@ -295,3 +295,5 @@ async def list_supported_countries() -> ChatToolResponse:
         return ChatToolResponse(result="\n".join(lines))
     except httpx.HTTPError as exc:
         return ChatToolResponse(error=f"country list request failed: {exc}")
+
+

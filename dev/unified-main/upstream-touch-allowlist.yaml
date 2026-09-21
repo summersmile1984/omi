@@ -2,7 +2,7 @@
 #
 # 规则（见 00-upstream-touch-policy.md）：
 #   - 默认零改动。不在本表中的上游文件出现在 PR diff 中 → fork-upstream-touch 失败。
-#   - 每条必须有 max_added_lines（≤3，AGENTS 指针类 ≤1）、reason、upstream_pr。
+#   - 每条必须有 max_added_lines（≤3）、reason、upstream_pr（提案须明确标记，不能冒充已开 PR）。
 #   - 只减不增：上游接受对应 PR 后，删除该条并回退 fork 的改动。
 #   - backend/**、上游测试、锁文件/依赖清单、生成文件、机器人写入文件、CI 工作流：永远不得入表。
 schema_version: 1
@@ -33,65 +33,11 @@ forbidden_exceptions:        # 精确路径（禁通配符）。豁免的只是"
                              # 只减不增：上游接受修复后立刻删除本条与对应改动。
 
 allow:
-  - path: desktop/macos/Desktop/Sources/AppBuild.swift
-    max_added_lines: 3
-    reason: 生产族 bundle id 与非生产判定改读 Info.plist 键（Swift 无运行时补丁能力）
-    upstream_pr: "make production-family identifiers Info.plist-driven"
-    owner: S3/B1
-
-  - path: desktop/macos/Desktop/Sources/DesktopBackendEnvironment.swift
-    max_added_lines: 3
-    reason: 四个后端 URL 常量改读 Sources/Generated 的 profile 表
-    upstream_pr: "backend endpoints from bundle configuration"
-    owner: S3
-
-  - path: desktop/macos/Desktop/Sources/AuthService.swift
-    max_added_lines: 3
-    reason: 身份提供方 switch 增加 Better Auth 分支（实现在 Sources/Fork/）
-    upstream_pr: "identity provider seam"
-    owner: M1-mac
-
-  - path: desktop/macos/scripts/app-config.sh
-    max_added_lines: 3
-    reason: 命名 bundle 的前缀校验改读品牌配置（当前硬拒非 omi- 前缀）
-    upstream_pr: "configurable bundle-id prefix for named bundles"
-    owner: B1
-
   - path: app/lib/flavors.dart
     max_added_lines: 3
-    reason: F.title 改读品牌显示名（当前写死 'Omi'/'Omi Dev'）
-    upstream_pr: "brand-configurable app title"
+    reason: 仅一个 import 与两个 F.title 返回值读取生成的品牌常量；品牌与生成逻辑归 fork，禁止扩展为业务入口
+    upstream_pr: "PROPOSED (not opened): brand-configurable app title; retire when upstream accepts configuration"
     owner: B2
-
-  - path: app/lib/main.dart
-    max_added_lines: 1
-    reason: localizationsDelegates 追加品牌委托（替代改 190 个 ARB 键）
-    upstream_pr: "ARB {appName} parameterization"   # 接受后删除本条
-    owner: B3
-
-  - path: web/app/next.config.js
-    max_added_lines: 5
-    reason: VINEXT_BUILD 条件别名（Cloudflare 构建）+ 认证提供方开关；纯加法
-    upstream_pr: "pluggable auth provider / Workers build"
-    owner: S4
-
-  - path: web/app/src/lib/firebase.ts
-    max_added_lines: 3
-    reason: isFirebaseAuthConfigured 改读 deployment profile
-    upstream_pr: "pluggable auth provider"
-    owner: S4
-
-  - path: desktop/macos/docs/desktop-updates.mdx
-    max_added_lines: 1
-    reason: 一句事实性说明——隔离的 Cloudflare staging 环境通过 API Core 把同一 /updates/releases 契约投影进 D1，不改变不可变清单或频道指针权威
-    upstream_pr: "note the isolated Cloudflare staging bridge in the desktop update-channel doc"
-    owner: M2
-
-  - path: omi/firmware/omi/src/lib/core/nfc.c
-    max_added_lines: 1
-    reason: NFC 配对 URL 改读 Kconfig（当前为写死的 friend.based.com 字面量）
-    upstream_pr: "Kconfig-driven NFC pairing URL"
-    owner: B7
 
   # AGENTS.md pointers were tried on 2026-09-03 and removed the same day.
   # Upstream keeps these files at their guardrail ceiling -- app/AGENTS.md was

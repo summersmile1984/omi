@@ -24,7 +24,8 @@ shrinks.
 
 Never allowlisted, whatever the reason: upstream tests, lockfiles and dependency
 manifests, generated output, bot-written files, upstream CI workflows, upstream
-`AGENTS.md`, and formatting-only changes.
+`AGENTS.md`, and formatting-only changes. Development/container dependencies go
+in `dev/requirements-test.*`, not the production `backend/requirements-fork.txt`.
 
 Enforced by `scripts/fork/check-upstream-touch.py --aggregate` via
 `.github/checks-manifest.fork.yaml`. The audit covers the complete divergence
@@ -65,9 +66,14 @@ squash).
   suites, `web-checks`, run with no shim/profile environment set. This proves
   the fork has not changed upstream behavior. Upstream test files are never
   modified.
-- **Fork mode** — `backend/fork/tests/`, `app/test/fork/`, desktop `Fork*`
-  tests, `contracts/`, run with `OMI_DEPLOYMENT_PROFILE` set. All fork behavior
-  is asserted here.
+- **Fork mode** — `backend/fork/tests/`, staged `app/fork/tests/`, desktop
+  `Fork*` tests, `contracts/`, run with an explicit deployment profile. Flutter
+  identity sources live in `app/fork/identity/` and stage to `lib/fork/identity/`;
+  never add an upstream dead-code exemption for stage-only source.
+- **Container qualification** — `scripts/fork/run-container-tests.py` owns an
+  isolated `.venv-fork-tests`, local fixtures under `dev/tests/containers/`, and
+  explicit PG shadow tests. Docker is required, never imported by upstream unit
+  conftest or implicitly selected by ordinary unit collection.
 
 ## 5. Weekly upstream sync
 
@@ -93,5 +99,8 @@ make -f Makefile.fork upstream-touch    # the zero-touch guard alone
 make -f Makefile.fork sync-probe        # real conflict count against upstream/main
 ```
 
-`make preflight` still runs the upstream gate only; `scripts/fork/preflight`
-runs both, which is what CI does.
+`make preflight` still runs the unmodified upstream gate. `scripts/fork/preflight`
+retains its metadata checks and uses `upstream_checks.py` to adapt only
+diff-hygiene: upstream-owned paths compare with the incorporated upstream
+ancestor, fork paths with the event base, and all changed text is checked for
+conflict markers. The same fork hygiene check runs in the required fork CI lane.
