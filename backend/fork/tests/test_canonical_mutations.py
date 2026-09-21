@@ -10,9 +10,10 @@ from fork.patches.canonical_memory import patches
 from models.jit_proactivity import JITProactivityEventReceipt
 from models.memory_apply import ApplyStatus, MemoryControlState, apply_long_term_patch_transaction
 from models.memory_operations import MemoryOperationType
-from models.product_memory import LedgerWriteReason, MemoryKind, MemorySubjectScope
-from tests.unit.test_memory_apply_store import _db_with, _stored_model, _target_item, store
+from models.product_memory import LedgerWriteReason, MemoryAccessPolicy, MemoryKind, MemorySubjectScope, ProcessingState
+from tests.unit.test_memory_apply_store import _db_with, _short_term_target, _stored_model, _target_item, store
 from utils.memory import canonical_memory_adapter as owner
+from utils.memory import canonical_required_processing as processing
 from utils.memory.memory_system import (
     CANONICAL_MEMORY_MAINTENANCE_REGISTRY_SCHEMA_VERSION,
     canonical_memory_maintenance_registry_path,
@@ -163,3 +164,42 @@ def test_noop_mutation_preserves_memory_and_durable_state(registered, store, ent
 
     assert previous == updated == item
     assert db.docs == before
+
+
+def test_accepted_edit_requires_receipted_processing_before_chat_visibility(registered, monkeypatch, store):
+    monkeypatch.setenv('MEMORY_MODE', 'read')
+    monkeypatch.setenv('MEMORY_BELIEF_MODEL_ENABLED', 'false')
+    item = _short_term_target(
+        user_asserted=True,
+        subject_entity_id='user',
+        promotion={'reviewed': True, 'user_review': True},
+    )
+    db = _db_with(target_items=[item])
+    db.docs[canonical_memory_maintenance_registry_path('u1')] = {
+        'uid': 'u1',
+        'schema_version': CANONICAL_MEMORY_MAINTENANCE_REGISTRY_SCHEMA_VERSION,
+    }
+    monkeypatch.setattr(
+        owner, 'apply_direct_user_long_term_patch_firestore', store.apply_direct_user_long_term_patch_firestore
+    )
+    monkeypatch.setattr(processing, 'apply_long_term_patch_firestore', store.apply_long_term_patch_firestore)
+    content = 'My verification color is amber.'
+    edited = owner.update_canonical_memory_content('u1', item.memory_id, content, db_client=db)
+    assert edited.processing_state == ProcessingState.pending
+    assert edited.promotion['user_review'] is True
+    policy = MemoryAccessPolicy.for_omi_chat()
+    assert owner.filter_canonical_default_visible_items([edited], policy=policy, now=datetime.now(timezone.utc)) == []
+    assert owner.read_canonical_memory_item('other-account', item.memory_id, db_client=db) is None
+
+    # This is the exact normalization/apply owner used by consolidation, not a
+    # reader fast-path or an assignment to processing_state.
+    processed = processing.commit_required_processing(
+        edited,
+        processing.ProcessedRequiredMemory(content=content),
+        db_client=db,
+        now=datetime.now(timezone.utc),
+    )
+    visible = owner.filter_canonical_default_visible_items([processed], policy=policy, now=datetime.now(timezone.utc))
+    assert [memory.content for memory in visible] == [content]
+    assert processed.promotion['processing_receipt']
+    assert owner.read_canonical_memory_item('other-account', item.memory_id, db_client=db) is None

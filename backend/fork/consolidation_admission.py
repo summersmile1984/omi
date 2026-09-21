@@ -22,6 +22,16 @@ class MemoryIdentity:
     def from_item(cls, item):
         attribution = (item.promotion or {}).get('source_attribution') or {}
         subject = item.subject_entity_id
+        # A content edit invalidates graph semantics, not its declared source.
+        # Unknown attribution cannot supply an identity; contradictory nonempty
+        # semantics remain for the original validator to reject.
+        if (
+            subject is None
+            and isinstance(attribution, dict)
+            and attribution.get('subject_attribution') in {'user', 'third_party'}
+            and isinstance(attribution.get('subject_entity_id'), str)
+        ):
+            subject = attribution['subject_entity_id']
         known = item.user_asserted or (
             isinstance(attribution, dict)
             and attribution.get('subject_attribution') in {'user', 'third_party'}

@@ -101,6 +101,42 @@ def test_existing_candidate_without_subject_provenance_remains_processable(monke
     assert consolidation_transport.validate(owner._validate_agent_batch)(context, captured_batch(pending)) is None
 
 
+@pytest.mark.parametrize(
+    'semantic_subject,decision_subject,error',
+    [
+        (None, 'user', None),
+        (None, 'person:alex', 'output_invalid:source_subject_contradiction:duplicate-source'),
+        ('person:alex', 'user', 'output_invalid:source_attribution_mismatch:duplicate-source'),
+    ],
+)
+def test_cleared_graph_subject_retains_source_authority_without_allowing_contradictions(
+    monkeypatch, semantic_subject, decision_subject, error
+):
+    pending, _, db = setup_context(monkeypatch, candidate_updates={'tier': MemoryTier.archive})
+    # Real content edits clear graph semantics but retain this source declaration.
+    # Treating the absent projection as a contradiction exhausted the real MiMo
+    # retry budget and archived an accepted allergy correction.
+    pending = pending.model_copy(
+        update={
+            'subject_entity_id': semantic_subject,
+            'promotion': {
+                **pending.promotion,
+                'source_attribution': {
+                    'subject_attribution': 'user',
+                    'subject_entity_id': 'user',
+                    'subject_kind': 'user',
+                },
+            },
+        }
+    )
+    context = consolidation_transport.gather(owner.gather_consolidation_candidates)(UID, [pending], db_client=db)
+    batch = captured_batch(pending)
+    batch.decisions[0].subject_entity_id = decision_subject
+    before = pending.model_dump(mode='json')
+    assert consolidation_transport.validate(owner._validate_agent_batch)(context, batch) == error
+    assert pending.model_dump(mode='json') == before
+
+
 def test_observed_invalid_create_uses_upstream_retry_and_never_applies(monkeypatch):
     pending, candidate, db = setup_context(monkeypatch)
     for patch in patches():

@@ -201,11 +201,13 @@ def test_worker_bootstrap_does_not_import_asgi_or_model_modules():
             bootstrap.bootstrap.cache_clear()
 
 
-def test_memory_maintenance_bootstrap_uses_projection_patches_without_redis_or_asgi():
-    from fork import capabilities
+def test_memory_maintenance_bootstrap_admits_the_model_without_asgi():
+    from fork import capabilities, local_llm, operator_ai
     from utils.memory import atom_keyword_index
 
     environment = {
+        'ENCRYPTION_SECRET': 'synthetic' * 4,
+        'MIMO_API_KEY': 'synthetic',
         'FIRESTORE_PG_DSN': 'postgresql+psycopg://unused',
         'EMBEDDING_ENDPOINT': 'http://embedding:11434',
         'QDRANT_URL': 'http://qdrant:6333',
@@ -216,19 +218,22 @@ def test_memory_maintenance_bootstrap_uses_projection_patches_without_redis_or_a
         'TYPESENSE_API_KEY': 'synthetic',
         'MEMORY_TYPESENSE_COLLECTION': 'canonical_memory_atoms',
     }
-    with mock.patch.object(profile, 'current', return_value=SELF_HOST), mock.patch.object(
+    selected = operator_ai.configure(SELF_HOST, 'mimo-cn')
+    with mock.patch.object(profile, 'current', return_value=selected), mock.patch.object(
         bootstrap, '_require_modules'
     ) as require_modules, mock.patch.object(migrations, 'check_schema'), mock.patch.object(
         capabilities, 'validate'
     ), mock.patch.object(
-        bootstrap, 'collect_memory_projection', return_value=[]
-    ) as collect_projection, mock.patch.object(
+        bootstrap, 'collect_memory_maintenance', return_value=[]
+    ) as collect_maintenance, mock.patch.object(
         bootstrap, 'collect', side_effect=AssertionError('API patches imported')
     ), mock.patch.object(
         atom_keyword_index, 'ensure_memories_collection'
     ) as ensure_collection, mock.patch.object(
         atom_keyword_index, 'ensure_ledger_keyword_schema'
-    ) as ensure_ledger, mock.patch.dict(
+    ) as ensure_ledger, mock.patch.object(
+        local_llm, 'check'
+    ) as check_llm, mock.patch.dict(
         os.environ, environment, clear=True
     ):
         bootstrap.bootstrap.cache_clear()
@@ -239,7 +244,8 @@ def test_memory_maintenance_bootstrap_uses_projection_patches_without_redis_or_a
 
     assert admitted.role == bootstrap.Role.MEMORY_MAINTENANCE
     assert admitted.patches == ()
-    collect_projection.assert_called_once_with()
+    collect_maintenance.assert_called_once_with()
+    check_llm.assert_called_once_with()
     ensure_collection.assert_called_once_with()
     ensure_ledger.assert_called_once_with()
     imported = {name for call in require_modules.call_args_list for name in call.args[0]}
