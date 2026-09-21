@@ -533,9 +533,9 @@ staged 输入，由 `prepare.py` 一起落入同一 package URI 命名空间。�
 
 政策文档自己的措辞就是"**能不改上游代码就不改**"(`dev/unified-main/00-upstream-touch-policy.md`):默认零改动是**取舍**,
 不是铁律 —— 代价是每周合并上游时的冲突面。`forbidden_exceptions` 就是给"这次确实没有别的缝"准备的一次性豁免通道
-(精确路径,禁通配符),走它仍然要登记预算与上游 PR,并且同步后重做。当前仓库实测:
-`check-upstream-touch.py --aggregate` → `OK: 2 upstream file(s) changed, all within the allowlist`
-(`app/lib/flavors.dart +3/3`、`desktop/macos/docs/desktop-updates.mdx +1/1`)。
+(精确路径,禁通配符),走它仍然要登记预算与上游 PR,并且同步后重做。2026-09-21 整改后:
+`check-upstream-touch.py --aggregate` → `OK: 1 upstream file(s) changed, all within the allowlist`
+(`app/lib/flavors.dart +3/3`)；desktop 更新说明已迁到 fork 文档。
 
 **第二个缺口(阶段 3 的 release 车道)**:完整清单(release lane)会在 `fork-cloudflare-routes` 停下,
 而 diff-scoped 的 PR/push 车道根本不会选中它 —— 所以它一直没露面:
@@ -565,3 +565,61 @@ FAIL: backend route inventory is stale:
 (正是 `backend/AGENTS.md` "Test isolation / import purity" 一节要防的那类)。现在两条车道各自用窄清单
 规避了它,所以 CI 是绿的;整目录执行的守卫因此没有采用。要不要修这个隔离问题由你定。
 
+## 2026-09-21 上游边界整改验证
+
+在独立工作树 `memweft-upstream-boundary`、分支 `fix/fork-upstream-boundary`
+执行；未 push、未开 PR、未修改 GitHub 设置。14 个上游文件恢复到已纳入祖先，
+只保留 `app/lib/flavors.dart` 的三行接缝。Flutter 身份源码由 `app/fork/identity`
+在 staging 时装入原命名空间；容器测试依赖、fixture、runner 与上游单元测试隔离。
+
+已执行的证明：
+
+- `backend/test-preflight.sh`：17 passed / 9 warnings / 0 failed。
+  `BACKEND_PYTEST_WORKERS=8 bash backend/test.sh` 执行 1154 个文件；
+  唯一失败文件因主机缺少 GNU `timeout`，安装 coreutils 后按原 runner 重跑 12/12 通过。
+- `TZ=UTC bash app/test.sh`：1983 tests passed。既有 search-rank UTC 时间夹具在
+  本机时区跨日，使用 UTC 执行；没有修改上游测试或分组行为。
+  `app/fork/test.sh`：self_hosted、cloudflare 两个 staged target 各 20 tests，
+  两个 debug bundle 均构建成功。Flutter dead-code ratchet 通过，无新增 allowlist。
+- `scripts/fork/run_e2e.py -q --tb=line`：上游 API E2E 119 passed / 3 skipped。
+  `scripts/fork/run-container-tests.py`：Redis 1 passed，PG shadow 2 passed；
+  真实 SDK/emulator 差分用例仍为显式 opt-in，默认 1 skipped。
+- 原样 `backend/testing/listen_pusher_stack/run.sh --state-dir /tmp/omi-boundary-pusher-proof`
+  全部 gauntlet 通过，随后 emulator concurrency 6 passed。安装仓库锁定的 npm 工具、
+  Redis 后运行，未替换上游场景。
+- 独立端口/状态目录启动 `dev/local.sh up --core-only`，实际 PostgreSQL 迁移、
+  Redis、MinIO、Auth signup/JWT/JWKS、API health、鉴权 action-item CRUD：6/6。
+  显式托管选择保持同一 self_hosted.local 数据面；SiliconFlow embedding 返回 200，
+  chat 返回供应商 429，未计作成功。显式选择 OpenRouter 后真实 `/v2/messages`
+  返回与随机标记匹配的模型回复，再切回 core-only，API/worker 恢复健康。
+- 实测发现托管 embedding 无本地模型契约，已修复 Qdrant 迁移的模型身份选择；
+  同维度跨 provider 仍拒绝复用集合。回归：vector 15 passed、operator AI 28 passed；
+  重启保留已选 namespace，显式配置优先，local lifecycle 10 passed。
+  独立 GateReview 已审查该边界与 namespace 重启修复。
+- 27 个命中的 fork gate 均已执行（失败不阻断后续单项执行）；除下述 self-host
+  产品合同和 Cloudflare projection 名称检查外，其余 25 项通过。包含真实 Cloudflare
+  产品合同、Web build/client、Auth、overlay owner audit、两个 macOS staged debug build。
+  Electron 改用仓库要求的 Node 22 后，两目标测试及完整构建通过；macOS identity
+  清除本工作树中带旧路径的 Swift 缓存后，16 Swift tests / 19 staging tests 通过。
+  上游剩余 26 个 gate 也逐项执行，唯一新增要求是为恢复 desktop 文档提交内部
+  `kind: none` changelog fragment；没有更改或绕过上游检查。
+
+不能报告全绿的既有问题：
+
+- Linux `deploy/self-host/ci/product.sh`：fixture 单测 11 passed，真实产品合同 15/16。
+  memory review HTTP 500：`backend/fork/canonical_mutations.py` 将合法 no-op 的
+  `build_patch(...) -> None` 解包；相同代码已存在于 `origin/main`，本次未修改该文件。
+  尝试开跟踪 issue，但 `summersmile1984/omi` 禁用了 Issues；保留在此交付记录，
+  owner 为 fork canonical mutation adapter，待独立修复及再次实测。
+- 组合 preflight 的上游 dev-harness 测试 128 passed / 6 skipped / 1 failed：
+  `test_nondefault_port_offset_propagates_to_every_harness_service` 期待 gateway，
+  但恢复后的上游 offline 配置及同文件其他测试明确使用 off。
+  未改上游测试、未屏蔽该 gate。元数据/failure-class 校验通过；组合 gate 不算通过。
+- `fork-cloudflare-routes` 的既有 projection 名称检查仍失败：
+  `memory_history_kernel.py: self`，`memory_history_wire.py` 的
+  `belief_classification_known`、`original_evidence_time`、`usable_evidence` 未绑定。
+  这些 stager/owner 未在本次修改；未更新 baseline 来掩盖问题。
+
+实测用 Compose 项目及卷已通过同一 `dev/local.sh down/reset` 清理，所有隔离端口
+均关闭；未停止或重启生产应用。临时探针及含测试凭证的 child.env 已删除，
+内容脱敏的 JSON 证据保留在本机 smoke state/evidence。
