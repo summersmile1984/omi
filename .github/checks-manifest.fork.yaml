@@ -19,7 +19,7 @@ checks:
     command: ["bash", "deploy/self-host/ci/product.sh"]
     triggers: ["contracts/deployment/**", "deploy/self-host/**", "deploy/profiles/**", "scripts/profiles/**", ".github/workflows/fork-checks.yml", "backend/fork/**", "backend/firestore_pg/**", "auth-server/**", "auth/shared/**", "runtime/shared/**", "backend/routers/action_items.py", "backend/routers/users.py", "backend/models/action_item.py"]
     lanes: ["local", "ci"]
-    reason: "Run shared HTTP product cases through actual Auth/API/PG/Redis/MinIO/Qdrant, fresh migrations and the complete rendered model profile. CI provisions pinned native BGE-M3/Qwen/SenseVoice/Kokoro stores; missing stores or insufficient Docker capacity fail rather than stripping capabilities or substituting fake inference. Core names the HTTP case inventory, not a reduced runtime."
+    reason: "Run shared HTTP product cases through actual Auth/API/PG/Redis/MinIO/Qdrant, fresh migrations and the complete rendered model profile. CI provisions pinned native BGE-M3/Qwen/SenseVoice/Kokoro stores; missing stores or insufficient Docker capacity fail rather than stripping capabilities or substituting fake inference. core names the HTTP case inventory, not a reduced runtime. The self-host fixture owns its own fresh Compose project; its earlier scripted provider fallback and ad-hoc accessibility probe are gone, so a runner without sufficient Docker capacity fails here rather than substituting a fake runtime."
   - id: fork-electron-native-identity
     command: ["bash", "desktop/windows/fork/test.sh"]
     triggers: ["desktop/windows/**", "scripts/profiles/**", "deploy/profiles/**", "scripts/brand/**", "brand/_schema/**", "brand/omi-upstream/**", ".github/workflows/fork-checks.yml"]
@@ -139,7 +139,7 @@ checks:
     command: ["python3", "scripts/fork/check_repo_state.py"]
     triggers: ["all"]
     lanes: ["local", "ci"]
-    reason: "Which upstream workflows are enabled, which checks gate main, and how the deployment environments are protected live only in GitHub's settings. Nothing in the tree recorded them, so a weekly sync could land new upstream workflows enabled and only somebody remembering `gh workflow disable` corrected it; the 2026-09-10 sync did exactly that for four gcp_* files by hand. The policy declares all three; the static lane checks the tree, the live lane (GITHUB_ACTIONS) compares the registered workflow states, and `apply_repo_state.py --verify` covers the ruleset and environments, which need an administration credential a GITHUB_TOKEN does not carry."
+    reason: "Which upstream workflows are enabled, which checks gate main, and how the deployment environments are protected live only in GitHub's settings. Nothing in the tree recorded them, so a weekly sync could land new upstream workflows enabled and only somebody remembering `gh workflow disable` corrected it; the 2026-09-10 sync did exactly that for four gcp_* files by hand. The policy declares all three; the static lane checks the tree, the live lane (GITHUB_ACTIONS) compares the registered workflow states, and `apply_repo_state.py --plan-only` lets a CI lane without an administration credential still produce a deterministic plan; the actual `--verify` reconciliation is operator-owned because it requires a credential a GITHUB_TOKEN does not carry."
 
   - id: fork-repo-state-tests
     command: ["bash", "-c", "python3 scripts/fork/test_check_repo_state.py && python3 scripts/fork/test_apply_repo_state.py"]
@@ -218,3 +218,15 @@ checks:
     triggers: ["scripts/fork/run-container-tests.py", "dev/requirements-test.*", "dev/pytest-containers.ini", "dev/tests/containers/**", "backend/firestore_pg/**", "backend/database/redis_db.py", "backend/pylock*.toml", "backend/.python-version", "backend/scripts/sync-python-deps.sh", ".github/checks-manifest.fork.yaml"]
     lanes: ["local", "ci"]
     reason: "Backend unit CI 35382509859 failed during collection because the replaced upstream conftest imported unprovisioned Testcontainers. Execute scoped Redis and existing PG shadow scenarios in a separately locked fork test environment, never the upstream unit conftest or production dependency layer. Docker and image provisioning are required; real-SDK emulator parity remains a separate opt-in."
+
+  - id: fork-repo-state-apply
+    command: ["python3", "scripts/fork/apply_repo_state.py", "--plan-only"]
+    triggers: ["config/repo-state.fork.json", "scripts/fork/apply_repo_state.py", "scripts/fork/test_apply_repo_state.py", "scripts/fork/check_repo_state.py", ".github/checks-manifest.fork.yaml"]
+    lanes: ["local", "ci"]
+    reason: "fork-repo-state proves the declaration against the tree and (in live mode) the registered workflows, but the ruleset and environment protections need an administration credential a GITHUB_TOKEN cannot carry; that half has only ever been operator-owned. Without a CI lane exercising the planner, a refactor of apply_repo_state.py can pass the unit tests and still leave the planner broken when an operator runs --apply, and the next sync would land a fork-main-gate that the operator cannot reconcile. --plan-only reads the declaration and never contacts GitHub, so it stays green in any lane; the actual --verify reconciliation remains operator-owned and continues to be the only way the ruleset and environment halves are confirmed."
+
+  - id: fork-staged-targets
+    command: ["bash", "-c", "p=backend/.venv/bin/python; [ -x \"$p\" ] || p=python3; bash deploy/cloudflare/ci/product.sh --help 2>&1 | head -1; bash deploy/self-host/ci/product.sh --help 2>&1 | head -1; node deploy/cloudflare/contracts/local-target.mjs --help 2>&1 | head -1; \"$p\" deploy/self-host/ci/product.py --help 2>&1 | grep -E 'stage|self-test|brand-id'"]
+    triggers: ["deploy/cloudflare/ci/product.sh", "deploy/self-host/ci/product.sh", "deploy/cloudflare/contracts/local-target.mjs", "deploy/self-host/ci/product.py", ".github/checks-manifest.fork.yaml"]
+    lanes: ["local", "ci"]
+    reason: "contracts/deployment/README.md promises stage-aware ready paths (boot/public for Server, frozen/local + frozen/private for Cloudflare), but neither deploy/cloudflare/ci/product.sh nor deploy/self-host/ci/product.sh currently expose a --stage argument; local-target.mjs and product.py do. This check is a thin tripwire: any future PR that adds or removes a stage/brand/flag in one of these four entry points surfaces here before the contracts/deployment docs lie about it. It does not exercise the runtime, only the entry-point argument parser."
