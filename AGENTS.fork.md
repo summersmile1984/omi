@@ -143,3 +143,23 @@ The tracked upstream manifest, checker, triggers and other gate commands must
 remain unchanged. Use the existing fork fan-out runner to finish the selected
 check inventory when an unrelated failure stops the combined preflight.
 Never report the combined gate as passed when only individual checks passed.
+
+## 7. CI 索引
+
+fork CI 的入口、命令、依赖、运行环境与本机可跑性，对外只有这一份索引：
+
+[`dev/unified-main/ci-coverage.md`](dev/unified-main/ci-coverage.md)
+
+它登记以下文件的对应关系，改任何一处都必须同步其余四处：
+
+| 文件 | 角色 |
+|---|---|
+| `.github/checks-manifest.fork.yaml` | 37 条 fork 检查的声明；`validate_manifest` 拒绝 lane / trigger / platforms 不一致。 |
+| `.github/workflows/fork-checks.yml` | PR / push / dispatch 三 lane；attestation 由它产出。 |
+| `.github/workflows/fork-release-prepare.yml` + `fork-cd-{cloudflare,server}.yml` | freeze + 两路发布；admission 由 `scripts/fork/release_ci.py` 把守。 |
+| `config/repo-state.fork.json` | workflow 启停、quarantine、required checks、environment 保护的声明。 |
+| `scripts/fork/{README.md,RELEASE.md}` | 入口文档；`scripts/fork/preflight` 跑上游 + fork 双门禁。 |
+| `dev/ci-cd-three-stages.md` | 当前事实：三阶段主线 + 真实模型验证记录。 |
+| `dev/unified-main/05-ci-matrix.md` | 2026-09-04 规划稿，§4/§5/§8 标**未实现**；实际由 `deploy/profiles/*.yaml` + `brand/*/manifest.yaml` 承担。 |
+
+变更本节任一文件前，回到 `dev/unified-main/ci-coverage.md` 第 7 节按它的清单执行；不在文档登记的新 manifest id / workflow 文件 / CD 入口会被 `fork-workflow-lint` + `fork-ci-diff-base` + `fork-repo-state-apply` + `fork-staged-targets` 兜底，但兜底无法替代正确的索引。
