@@ -311,6 +311,14 @@ jobs:
       # Portable contracts run on either host; macOS-only checks run below.
       # The self-host fixture runs on this same Linux host, natively amd64, so its
       # image builds and compose stack are no longer emulated.
+      # Portable contracts run on either host; macOS-only checks run below.
+      # The self-host fixture runs on this same Linux host, natively amd64, so its
+      # image builds and compose stack are no longer emulated.
+      #
+      # The runtime-shape branch from the Decide step above determines whether
+      # LLM / speech stores are exported to the lane. Compose the env from a
+      # small shell script so the YAML stays free of nested template expressions
+      # that the GitHub Actions parser refuses.
       - name: Fork manifest (ci lane)
         env:
           # The self-host fixture writes per-command logs; pin them to a stable path
@@ -320,10 +328,18 @@ jobs:
           # with nothing diagnosable anywhere).
           SELF_HOST_CI_REPORT_DIR: ${{ runner.temp }}/selfhost-fixture-report
           SELF_HOST_CI_EMBEDDING_STORE: ${{ runner.temp }}/selfhost-models/embedding
-          ${{ steps.server_runtime.outputs.shape == 'native' && format('SELF_HOST_CI_LLM_STORE={0}/selfhost-models/llm\nSELF_HOST_CI_SPEECH_STORE={0}/selfhost-models/speech', runner.temp) || '' }}
-          ${{ steps.server_runtime.outputs.shape == 'hosted' && format('SELF_HOST_CI_OPERATOR_SECRET_FILE={0}\nSELF_HOST_CI_OPERATOR_PROVIDER={1}', steps.server_runtime.outputs.secret, steps.server_runtime.outputs.provider) || '' }}
+          SERVER_RUNTIME_SHAPE: ${{ steps.server_runtime.outputs.shape }}
+          SERVER_RUNTIME_PROVIDER: ${{ steps.server_runtime.outputs.provider }}
+          SERVER_RUNTIME_SECRET: ${{ steps.server_runtime.outputs.secret }}
         run: |
-          python3 scripts/fork/run_checks.py \
+          if [ "$SERVER_RUNTIME_SHAPE" = "hosted" ]; then
+            export SELF_HOST_CI_OPERATOR_SECRET_FILE="$SERVER_RUNTIME_SECRET"
+            export SELF_HOST_CI_OPERATOR_PROVIDER="$SERVER_RUNTIME_PROVIDER"
+          else
+            export SELF_HOST_CI_LLM_STORE="$RUNNER_TEMP/selfhost-models/llm"
+            export SELF_HOST_CI_SPEECH_STORE="$RUNNER_TEMP/selfhost-models/speech"
+          fi
+          python3 scripts/fork/run_checks.py \\
             --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux
 
       - name: Upload the self-host fixture report
