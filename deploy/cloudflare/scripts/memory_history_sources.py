@@ -67,6 +67,13 @@ def history_sources():
         'from fastapi import HTTPException\nfrom pydantic import BaseModel,Field,computed_field,field_validator\n'
         'from memory_kernel_item import LedgerWriteReason,MemoryItem,MemoryItemStatus,MemoryKind,MemorySubjectScope,MemoryTier,ProcessingState,SourceState,RESTRICTED_SENSITIVITY_LABELS,MAX_MEMORY_ARGUMENTS_JSON_BYTES\n'
         'from memory_kernel_domain import tier_to_layer\nPayload=Dict[str,Any]\n'
+        # The wire decorates a class with @model_validator(mode='after'), so the symbol must\n'
+        # be in scope. selected_nodes below cannot pick it up from pydantic because the\n'
+        # baseline treats pydantic as a third-party module and the stager does not stage\n'
+        # symbols that resolve through any third-party star import. Importing it on the\n'
+        # import line is the only way to keep the unbound-references ratchet green\n'
+        # without expanding check_projection_names.py's third-party list.\n'
+        'from pydantic import model_validator\n'
     )
     wire = header + selected_nodes(MODELS, {'MemoryCategory', 'SubjectAttribution'})
     wire += schema_class('Memory', {'get_memories_as_str', 'render'})
@@ -92,6 +99,34 @@ def history_sources():
             '_record_category',
             'belief_view_for_record',
             'public_belief_overlay',
+            # memory_history_wire.py references this on the history path; the
+            # check_projection_names ratchet caught it as unbound on 2026-09-23
+            # because no caller exercised it through the CF lane, so the
+            # reference sat in main for ten days before this fix.
+            'belief_classification_known',
+        },
+    )
+    wire += selected_nodes(
+        'backend/utils/memory/belief_source_policy.py',
+        {
+            # Same rationale as belief_classification_known: wire references
+            # these helpers but the stager did not select them.
+            'original_evidence_time',
+            'usable_evidence',
+        },
+    )
+    wire += selected_nodes(
+        'backend/models/memory_evidence.py',
+        {
+            # Wire uses MemoryEvidence as a type annotation for usable_evidence's
+            # evidence parameter and for the isinstance check; RedactionStatus
+            # is the enum for the two .redaction_status comparisons;
+            # ProvenanceVisibility is the default for the provenance_visibility
+            # field. The model definitions must travel with the wire so the
+            # annotation resolves.
+            'MemoryEvidence',
+            'RedactionStatus',
+            'ProvenanceVisibility',
         },
     )
     wire += selected_nodes(ADAPTER, {'_payload_or_empty', '_bounded_memory_arguments', 'memory_item_to_memorydb'})

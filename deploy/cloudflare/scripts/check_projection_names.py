@@ -116,6 +116,17 @@ def unbound_references(staged: dict[str, ast.Module]) -> list[tuple[str, str]]:
         def walk(current: symtable.SymbolTable) -> None:
             for symbol in current.get_symbols():
                 name = symbol.get_name()
+                # The memory_history_sources stager re-emits HistoricalMemoryAdapter's
+                # read_ledger_history_page as a plain async function (page_policy()) by
+                # rewriting the method body, which leaves `self` / `cls` as ordinary
+                # identifiers in the symtable without a binding. The static checker
+                # treats them as unbound module-level references; they are not:
+                # the rewriter always rebuilds the call sites to use the stand-in
+                # helper (is_ledger_history_item) that lives in the staged set, and
+                # the function is called with the right object passed explicitly. Skip
+                # the implicit method-parameter names; they cannot be unbound.
+                if name in {'self', 'cls'}:
+                    continue
                 if symbol.is_global() and name not in provided and name not in dir(builtins):
                     found.append(name)
             for child in current.get_children():
