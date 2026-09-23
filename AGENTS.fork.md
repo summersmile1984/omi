@@ -135,18 +135,19 @@ wrapper, not a second configuration or process owner. Do not fork the upstream
 dev-harness CLI/config/safety implementation. Render profiles through
 `scripts/profiles/render.py`, never a second hand-maintained profile table.
 
-- The user requires the complete canonical native profile by default: chat,
-  STT, TTS and embedding stay enabled. Never add a core-only mode or a renamed
-  reduced-capability substitute, or strip capabilities to make a gate pass.
-  Missing model requirements fail explicitly. Hosted AI requires explicit
-  selection and a selected `OMI_LOCAL_*` credential; never inherit ambient
-  cloud/provider authority. Retired selectors are errors, not migration aliases.
+- Local dev defaults to one full hosted operator-AI profile (OpenRouter);
+  SiliconFlow and Cloudflare Gateway are explicit alternatives. Chat, STT, TTS
+  and embedding stay enabled for every selection; native inference remains an
+  explicit option, never a reduced-capability substitute. Require only the
+  selected `OMI_LOCAL_*` credential, never ambient provider authority; missing
+  keys/models fail explicitly. Retired selectors remain errors.
 - Own processes by instance state and process identity, never by port alone.
   Stop/reset only that instance's processes, containers and volumes.
-- Qdrant admission must verify exact embedding identity, not just dimensions.
-  A provider/model change requires an explicitly reviewed namespace/backfill;
-  never relabel or delete existing collections automatically. No-option restart
-  retains the active selection and namespace unless configuration replaces it.
+- Local pgvector and production Qdrant admission verify exact embedding identity,
+  not just dimensions. A provider/model change requires an explicitly reviewed
+  namespace/backfill; never relabel or delete existing vectors automatically.
+  No-option restart retains the active selection and namespace unless
+  configuration replaces it.
 - Mocked API E2E, container qualification and live runtime proof are distinct.
   Exercise real Auth/JWT, persistence CRUD and lifecycle transitions; hosted chat
   proof must demonstrate a model reply, not HTTP 200 with a canned fallback.

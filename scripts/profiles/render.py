@@ -203,6 +203,9 @@ def resolve(
         stage_values = target_doc.get("stages", {}).get(stage)
         if stage_values is None:
             raise ProfileError(f"{target}.yaml has no stage '{stage}'")
+        stage_plane = stage_values.get("data_plane", {})
+        if stage_plane and (target != "self_hosted" or stage != "local" or stage_plane != {"vector": "pgvector"}):
+            raise ProfileError(f"{target}.{stage}: only the local pgvector data-plane override is supported")
         stage_policy = stage_doc.get("stages", {}).get(stage, {})
         row = {
             "name": f"{target}.{stage}",
@@ -224,6 +227,8 @@ def resolve(
             "objects_base_url": "objects_base",
         }
         for key, value in stage_values.items():
+            if key == "data_plane":
+                continue
             row[key] = (
                 overrides[output_fields[key]]
                 if output_fields.get(key) in overrides
@@ -232,7 +237,7 @@ def resolve(
         row["capabilities"] = {k: substitute(caps[k], brand, target, stage) for k in REQUIRED_CAPABILITIES}
         if target == "self_hosted":
             row["capabilities"]["llm_provider"] = llm.provider if llm else "disabled"
-        row["data_plane"] = {k: plane[k] for k in REQUIRED_DATA_PLANE}
+        row["data_plane"] = {**{k: plane[k] for k in REQUIRED_DATA_PLANE}, **stage_plane}
         if embedding is not None:
             row["embedding"] = dict(embedding)
         if speech is not None:

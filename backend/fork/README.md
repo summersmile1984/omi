@@ -147,14 +147,15 @@ to upstream modules. See `firestore_pg/README.md` for ownership, key retention,
 control-state exclusions and live-versus-hermetic verification boundaries.
 
 
-`vector_qdrant.py` implements the existing `database.vector_db.index` boundary.
-Compose runs its `migrate` CLI before serving; `check` and API admission require
-all seven collections to have the exact public embedding contract metadata,
-its derived dimension and Cosine distance. An unbound collection or any changed
-model identity (even at the same dimension) requires a reviewed new prefix and backfill, never destructive
-in-place recreation. No Pinecone fallback is allowed. `vector_filter.py` maps
-only the filter operators used by this upstream revision and rejects unknown
-syntax. UUID points retain their upstream string IDs as payloads.
+`patches/vector.py` selects the existing `database.vector_db.index` boundary by
+profile. `self_hosted.local` uses `vector_pg.py` with the same PostgreSQL as
+`firestore_pg`: an explicit `python -m fork.vector_pg migrate` installs pgvector
+and binds all seven namespaces, dimension, and the exact embedding identity to
+`PGVECTOR_COLLECTION_PREFIX`; `check` never creates schema. Local cosine search
+filters by account before ranking. Production/beta keep `vector_qdrant.py` and
+the existing Qdrant migration. Neither adapter silently falls back to Pinecone
+or relabels a changed model; switch prefix and backfill under review. Local
+Qdrant volumes from older development runs are not imported or deleted.
 
 `storage_minio.py` / `storage_minio_blob.py` implement the actual audio/cache
 surface. `MINIO_ENDPOINT` is the internal origin; `MINIO_PUBLIC_ENDPOINT` is the
@@ -170,26 +171,29 @@ the same completion receipt owner as HTTP. Shared PostgreSQL advisory transactio
 locks cover admitted writes; the full wipe and its final provider proof take an
 exclusive lock. Contention fails for queue retry. The same-thread nested wipe /
 completion path reuses that ownership. `provider_objects.py` owns the declared
-UID-prefix inventory for purge and verification; Qdrant sweeps all namespaces by
-metadata.uid, including records absent from PG inventories. A failed proof retains
-the recoverable marker. This is not a distributed transaction after a lost PG
+UID-prefix inventory for purge and verification; the selected vector adapter
+sweeps all namespaces by metadata.uid, including records absent from PG inventories.
+A failed proof retains the recoverable marker. This is not a distributed
+transaction after a lost PG
 connection or unknown remote write outcome. Direct PG writers and unowned/global
 object paths remain separately tracked; see the dated SH2 provider evidence.
 
 
 `model_contract.py` is the dependency-free owner shared by the renderer, model
 store admission and vector migration. `deploy/profiles/self_hosted.yaml` pins
-BGE-M3's manifest/GGUF SHA-256, model, 1024 dimensions and 8192-token context.
-`embedding.py` binds both canonical/captured consumers, verifies the runtime
-model inventory and metadata, and uses native Ollama `/api/embed` without
-truncation. It requests four CPU threads, a 128-token evaluation batch, and
-read-only mmap; there is no model download, BYOK or vendor fallback. Async
-consumers use the repository's bounded `llm_executor`.
+BGE-M3's manifest/GGUF SHA-256, model, 1024 dimensions and 8192-token context
+for explicit native/MiMo mode. Local default OpenRouter, optional SiliconFlow
+and Cloudflare Gateway use their own pinned hosted embedding identity instead.
+`embedding.py` binds both canonical/captured consumers, verifies the selected
+authority, and in native mode uses Ollama `/api/embed` without truncation.
+It requests four CPU threads, a 128-token evaluation batch, and read-only mmap;
+there is no model download or vendor fallback. Async consumers use the
+repository's bounded `llm_executor`.
 
-`model_store.py` verifies the pinned manifest and every referenced blob before
-Compose starts Ollama. Collection creation stores the complete model identity
-atomically. Operators must use a reviewed new prefix and backfill for identity
-changes; never bind old vectors by patching metadata in place.
+For explicit native/MiMo mode, `model_store.py` verifies the pinned manifest
+and every referenced blob before Ollama starts. Vector migration binds the
+complete selected model identity atomically. Operators must use a reviewed new
+prefix and backfill for identity changes; never relabel old vectors in place.
 
 `speech.py` / `speech_assets.py` admit the complete pinned SenseVoice/Kokoro
 bundle before serving. The shared `model_contract.py` includes the runtime,

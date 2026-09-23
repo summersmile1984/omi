@@ -1,6 +1,6 @@
 # Omi cloud-neutral local dev stack:
 #   - Firebase emulator suite (Firestore 8080 + Auth 9099 + Storage 9199)
-#   - PostgreSQL 16 for the firestore-pg shim (same shape as production)
+#   - PostgreSQL 16 with pgvector for documents and local vector search
 #   - Redis for the backend's queue/cache needs
 #   - MinIO for object storage (replaces GCS: STORAGE_BACKEND=minio)
 #
@@ -30,7 +30,7 @@ services:
       start_period: 15s
 
   postgres:
-    image: "postgres:16-alpine"
+    image: "pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b"
     environment:
       POSTGRES_USER: ${DEV_POSTGRES_USER:-omi}
       POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:-omi-dev-password}
@@ -88,23 +88,6 @@ services:
       timeout: 3s
       retries: 10
 
-  # Qdrant: the self-hosted profile selects it for vector projections, so the
-  # local runtime needs it (backend/fork/bootstrap.py requires QDRANT_URL).
-  qdrant:
-    image: "qdrant/qdrant:v1.15.4"
-    environment:
-      QDRANT__SERVICE__API_KEY: ${DEV_QDRANT_API_KEY:-omi-local-qdrant-key}
-    ports:
-      - "127.0.0.1:${DEV_QDRANT_PORT:-6333}:6333"
-      - "127.0.0.1:${DEV_QDRANT_GRPC_PORT:-6334}:6334"
-    volumes:
-      - qdrant-data:/qdrant/storage
-    healthcheck:
-      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/6333' || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   # Typesense: the same profile binds keyword memory search to it
   # (MEMORY_KEYWORD_INDEX_PROVIDER=typesense).
   typesense:
@@ -121,7 +104,6 @@ services:
       retries: 20
 
 volumes:
-  qdrant-data:
   typesense-data:
   emulator-data:
   postgres-data:

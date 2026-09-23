@@ -69,11 +69,13 @@ def bootstrap(role: Role = Role.API) -> Admission:
         'object_store': 'minio',
         'queue': 'redis',
         'cache': 'redis',
-        'vector': 'qdrant',
     }
     for name, value in expected.items():
         if row.get('data_plane', {}).get(name) != value:
             raise profile.ProfileError(f'self_hosted data_plane.{name} must be {value}')
+    vector = 'pgvector' if row.get('stage') == 'local' else 'qdrant'
+    if row.get('data_plane', {}).get('vector') != vector:
+        raise profile.ProfileError(f"self_hosted.{row.get('stage')} data_plane.vector must be {vector}")
     _bind('OMI_DEPLOYMENT_TARGET', 'self_hosted')
     stages = {'production': 'prod', 'beta': 'dev', 'local': 'local'}
     if row.get('stage') not in stages:
@@ -153,9 +155,11 @@ def bootstrap(role: Role = Role.API) -> Admission:
             credentials()
         _require('ENCRYPTION_SECRET', 32)
         _require('AUTH_JWKS_URL')
-        _bind('VECTOR_STORE_PROVIDER', 'qdrant')
+        _bind('VECTOR_STORE_PROVIDER', vector)
         if os.environ.get('PINECONE_API_KEY') or os.environ.get('PINECONE_INDEX_NAME'):
-            raise profile.ProfileError('Pinecone configuration conflicts with the self-host Qdrant authority')
+            raise profile.ProfileError('Pinecone configuration conflicts with the selected self-host vector authority')
+        if vector == 'pgvector':
+            _require('PGVECTOR_COLLECTION_PREFIX')
         _require_modules(('jwt', 'boto3'))
         from .storage_minio import Config as ObjectConfig
 
@@ -198,11 +202,19 @@ def bootstrap(role: Role = Role.API) -> Admission:
 
             credentials()
         _require('ENCRYPTION_SECRET', 32)
-        _bind('VECTOR_STORE_PROVIDER', 'qdrant')
+        _bind('VECTOR_STORE_PROVIDER', vector)
         _bind('MEMORY_KEYWORD_INDEX_PROVIDER', 'typesense')
         if os.environ.get('PINECONE_API_KEY') or os.environ.get('PINECONE_INDEX_NAME'):
-            raise profile.ProfileError('Pinecone configuration conflicts with the self-host Qdrant authority')
-        for name in ('EMBEDDING_ENDPOINT', 'QDRANT_URL', 'QDRANT_API_KEY', 'QDRANT_COLLECTION_PREFIX'):
+            raise profile.ProfileError('Pinecone configuration conflicts with the selected self-host vector authority')
+        from .operator_ai import HostedOperatorAI
+
+        required = () if isinstance(operator_ai, HostedOperatorAI) else ('EMBEDDING_ENDPOINT',)
+        required += (
+            ('PGVECTOR_COLLECTION_PREFIX',)
+            if vector == 'pgvector'
+            else ('QDRANT_URL', 'QDRANT_API_KEY', 'QDRANT_COLLECTION_PREFIX')
+        )
+        for name in required:
             _require(name)
         for name in ('TYPESENSE_HOST', 'TYPESENSE_HOST_PORT', 'TYPESENSE_API_KEY', 'MEMORY_TYPESENSE_COLLECTION'):
             _require(name)

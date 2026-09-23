@@ -28,8 +28,8 @@ OMI_LOCAL_MINIO_CONSOLE_PORT OMI_LOCAL_FIRESTORE_PORT OMI_LOCAL_FIREBASE_AUTH_PO
 OMI_LOCAL_FIREBASE_STORAGE_PORT OMI_LOCAL_AUTH_PORT OMI_LOCAL_BACKEND_PORT
 OMI_LOCAL_BETTER_AUTH_SECRET OMI_LOCAL_AUTH_DEV_ISSUER_SECRET OMI_LOCAL_QUEUE_WORKER_SECRET
 OMI_LOCAL_ENCRYPTION_SECRET OMI_LOCAL_REDIS_PASSWORD OMI_LOCAL_INTERNAL_ADMIN_SECRET
-OMI_LOCAL_QDRANT_PORT OMI_LOCAL_QDRANT_GRPC_PORT OMI_LOCAL_TYPESENSE_PORT
-OMI_LOCAL_QDRANT_API_KEY OMI_LOCAL_QDRANT_COLLECTION_PREFIX OMI_LOCAL_TYPESENSE_API_KEY OMI_LOCAL_EMBEDDING_ENDPOINT
+OMI_LOCAL_TYPESENSE_PORT OMI_LOCAL_TYPESENSE_API_KEY OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX
+OMI_LOCAL_EMBEDDING_ENDPOINT
 OMI_LOCAL_LLM_ENDPOINT OMI_LOCAL_SPEECH_MODEL_STORE
 OMI_LOCAL_SHARE_PORT OMI_LOCAL_AI_PROFILE OMI_LOCAL_BRAND_MANIFEST
 OMI_LOCAL_MIMO_API_KEY OMI_LOCAL_OPENROUTER_API_KEY OMI_LOCAL_SILICONFLOW_API_KEY
@@ -42,19 +42,19 @@ for key in $_CONFIG_KEYS; do
   fi
 done
 . "$ENV_EXAMPLE"
-_default_prefix="$OMI_LOCAL_QDRANT_COLLECTION_PREFIX"
+_default_prefix="$OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX"
 _default_profile="$OMI_LOCAL_AI_PROFILE"
-unset OMI_LOCAL_QDRANT_COLLECTION_PREFIX
+unset OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX
 unset OMI_LOCAL_AI_PROFILE
 _config_source="$ENV_EXAMPLE"
 if [ -f "$ENV_FILE" ]; then . "$ENV_FILE"; _config_source="$ENV_FILE"; fi
-_prefix_explicit="${OMI_LOCAL_QDRANT_COLLECTION_PREFIX+x}"
+_prefix_explicit="${OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX+x}"
 _profile_explicit="${OMI_LOCAL_AI_PROFILE+x}"
 OMI_LOCAL_AI_PROFILE="${OMI_LOCAL_AI_PROFILE-$_default_profile}"
-OMI_LOCAL_QDRANT_COLLECTION_PREFIX="${OMI_LOCAL_QDRANT_COLLECTION_PREFIX-$_default_prefix}"
+OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX="${OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX-$_default_prefix}"
 for ((i=0; i<${#_ambient_keys[@]}; i++)); do
   printf -v "${_ambient_keys[$i]}" '%s' "${_ambient_values[$i]}"
-  if [ "${_ambient_keys[$i]}" = OMI_LOCAL_QDRANT_COLLECTION_PREFIX ]; then _prefix_explicit=x; fi
+  if [ "${_ambient_keys[$i]}" = OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX ]; then _prefix_explicit=x; fi
   if [ "${_ambient_keys[$i]}" = OMI_LOCAL_AI_PROFILE ]; then _profile_explicit=x; fi
 done
 for key in $_CONFIG_KEYS; do
@@ -87,8 +87,6 @@ compose() {
     "FIRESTORE_EMULATOR_PORT=$OMI_LOCAL_FIRESTORE_PORT" \
     "FIREBASE_AUTH_EMULATOR_PORT=$OMI_LOCAL_FIREBASE_AUTH_PORT" \
     "FIREBASE_STORAGE_EMULATOR_PORT=$OMI_LOCAL_FIREBASE_STORAGE_PORT" \
-    "DEV_QDRANT_PORT=$OMI_LOCAL_QDRANT_PORT" "DEV_QDRANT_GRPC_PORT=$OMI_LOCAL_QDRANT_GRPC_PORT" \
-    "DEV_QDRANT_API_KEY=$OMI_LOCAL_QDRANT_API_KEY" \
     "DEV_TYPESENSE_PORT=$OMI_LOCAL_TYPESENSE_PORT" "DEV_TYPESENSE_API_KEY=$OMI_LOCAL_TYPESENSE_API_KEY" \
     docker compose --env-file /dev/null -p "$INSTANCE" -f "$DEV_DIR/docker-compose.dev.yml" "$@"
 }
@@ -175,11 +173,9 @@ backend_env() {
     'MINIO_REGION=us-east-1' 'MINIO_ACCESS_KEY=minioadmin' 'MINIO_SECRET_KEY=minioadmin' \
     'QUEUE_BACKEND=redis' 'REDIS_DB_HOST=127.0.0.1' "REDIS_DB_PORT=$OMI_LOCAL_REDIS_PORT" \
     "REDIS_DB_PASSWORD=$OMI_LOCAL_REDIS_PASSWORD" \
-    "QDRANT_URL=http://127.0.0.1:$OMI_LOCAL_QDRANT_PORT" "QDRANT_API_KEY=$OMI_LOCAL_QDRANT_API_KEY" \
-    "QDRANT_COLLECTION_PREFIX=$OMI_LOCAL_QDRANT_COLLECTION_PREFIX" 'TYPESENSE_HOST=127.0.0.1' \
+    "PGVECTOR_COLLECTION_PREFIX=$OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX" 'TYPESENSE_HOST=127.0.0.1' \
     "TYPESENSE_HOST_PORT=$OMI_LOCAL_TYPESENSE_PORT" 'TYPESENSE_PROTOCOL=http' \
     "TYPESENSE_API_KEY=$OMI_LOCAL_TYPESENSE_API_KEY" 'MEMORY_TYPESENSE_COLLECTION=memories' \
-    "EMBEDDING_ENDPOINT=$OMI_LOCAL_EMBEDDING_ENDPOINT" \
     "OMI_LOCAL_BACKEND_URL=$BACKEND_URL" "OMI_LOCAL_AUTH_URL=$AUTH_URL"
   local key
   for key in SPEECH_PROFILES POSTPROCESSING MEMORIES_RECORDINGS PRIVATE_CLOUD_SYNC TEMPORAL_SYNC_LOCAL PLUGINS_LOGOS APP_THUMBNAILS CHAT_FILES DESKTOP_UPDATES; do
@@ -197,9 +193,10 @@ backend_env() {
       [ -n "$OMI_LOCAL_SPEECH_MODEL_STORE" ] || die 'native inference requires OMI_LOCAL_SPEECH_MODEL_STORE'
       case "$OMI_LOCAL_SPEECH_MODEL_STORE" in /*) ;; *) die 'OMI_LOCAL_SPEECH_MODEL_STORE must be absolute' ;; esac
       [ -d "$OMI_LOCAL_SPEECH_MODEL_STORE" ] || die 'OMI_LOCAL_SPEECH_MODEL_STORE must be a provisioned speech bundle directory'
-      printf '%s\n' "LLM_ENDPOINT=$OMI_LOCAL_LLM_ENDPOINT" "SPEECH_MODEL_STORE=$OMI_LOCAL_SPEECH_MODEL_STORE"
+      printf '%s\n' "LLM_ENDPOINT=$OMI_LOCAL_LLM_ENDPOINT" "EMBEDDING_ENDPOINT=$OMI_LOCAL_EMBEDDING_ENDPOINT" \
+        "SPEECH_MODEL_STORE=$OMI_LOCAL_SPEECH_MODEL_STORE"
       ;;
-    mimo-cn) key=MIMO_API_KEY ;;
+    mimo-cn) key=MIMO_API_KEY; printf '%s\n' "EMBEDDING_ENDPOINT=$OMI_LOCAL_EMBEDDING_ENDPOINT" ;;
     openrouter) key=OPENROUTER_API_KEY ;;
     siliconflow) key=SILICONFLOW_API_KEY ;;
     cloudflare-gateway) key=CLOUDFLARE_API_TOKEN ;;
@@ -239,8 +236,6 @@ container_owns_port() {
     firebase-emulators:"$OMI_LOCAL_FIRESTORE_PORT") internal=8080 ;;
     firebase-emulators:"$OMI_LOCAL_FIREBASE_AUTH_PORT") internal=9099 ;;
     firebase-emulators:*) internal=9199 ;;
-    qdrant:"$OMI_LOCAL_QDRANT_PORT") internal=6333 ;;
-    qdrant:*) internal=6334 ;;
     typesense:*) internal=8108 ;;
     *) return 1 ;;
   esac
@@ -252,8 +247,7 @@ cmd_ports() {
   for pair in "postgres:$OMI_LOCAL_POSTGRES_PORT" "redis:$OMI_LOCAL_REDIS_PORT" \
     "minio:$OMI_LOCAL_MINIO_API_PORT" "minio:$OMI_LOCAL_MINIO_CONSOLE_PORT" \
     "firebase-emulators:$OMI_LOCAL_FIRESTORE_PORT" "firebase-emulators:$OMI_LOCAL_FIREBASE_AUTH_PORT" \
-    "firebase-emulators:$OMI_LOCAL_FIREBASE_STORAGE_PORT" "qdrant:$OMI_LOCAL_QDRANT_PORT" \
-    "qdrant:$OMI_LOCAL_QDRANT_GRPC_PORT" "typesense:$OMI_LOCAL_TYPESENSE_PORT" \
+    "firebase-emulators:$OMI_LOCAL_FIREBASE_STORAGE_PORT" "typesense:$OMI_LOCAL_TYPESENSE_PORT" \
     "auth-server:$OMI_LOCAL_AUTH_PORT" "backend:$OMI_LOCAL_BACKEND_PORT"; do
     service="${pair%%:*}"; port="${pair#*:}"
     if ! port_busy "$port"; then printf '  %-20s %s free\n' "$service" "$port"
@@ -276,7 +270,7 @@ cmd_backend_up() {
   port_busy "$OMI_LOCAL_BACKEND_PORT" && die 'backend port is occupied by an unowned process'
   render_profile
   write_child_env
-  run_backend "$PYTHON_BIN" -m fork.vector_qdrant migrate >"$LOG_DIR/qdrant-migrate.log" 2>&1 || die 'Qdrant migration failed; see logs'
+  run_backend "$PYTHON_BIN" -m fork.vector_pg migrate >"$LOG_DIR/pgvector-migrate.log" 2>&1 || die 'pgvector migration failed; see logs'
   start_process backend "${CLEAN_ENV[@]}" bash -ec 'cd "$1"; . "$2"; shift 2; exec "$@"' local-backend \
     "$BACKEND_DIR" "$CHILD_ENV_FILE" "$PYTHON_BIN" -m uvicorn fork.main:app --host 127.0.0.1 --port "$OMI_LOCAL_BACKEND_PORT"
   if ! wait_for backend 90 http_ok "$BACKEND_URL/v1/health" || ! pid_alive backend; then
@@ -288,11 +282,12 @@ cmd_backend_up() {
     "$BACKEND_DIR" "$CHILD_ENV_FILE" "$PYTHON_BIN" -m fork.worker
   pid_alive queue-worker || die 'queue worker exited; see logs'
   printf '%s\n' "$OMI_LOCAL_AI_PROFILE" >"$STATE_DIR/ai-profile"
-  printf '%s\n' "$OMI_LOCAL_QDRANT_COLLECTION_PREFIX" >"$STATE_DIR/qdrant-prefix"
+  printf '%s\n' "$OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX" >"$STATE_DIR/pgvector-prefix"
   log "backend healthy: $BACKEND_URL ($OMI_LOCAL_AI_PROFILE; self_hosted.local persistence)"
 }
 cmd_up() {
   select_ai "$@"
+  if [ "$NO_BACKEND" = false ]; then backend_env >/dev/null; fi
   if pid_alive backend; then
     [ -f "$STATE_DIR/ai-profile" ] && [ "$(cat "$STATE_DIR/ai-profile")" = "$OMI_LOCAL_AI_PROFILE" ] ||
       die 'running backend has a different AI profile; use restart with explicit options'
@@ -302,11 +297,10 @@ cmd_up() {
   [ -x "$PYTHON_BIN" ] || die "backend venv missing: $PYTHON_BIN (make setup-backend)"
   [ -d "$AUTH_DIR/node_modules" ] || die 'run npm ci in auth-server first'
   cmd_ports || die 'resolve port collisions before starting'
-  compose up -d
+  compose up -d --remove-orphans
   wait_for postgres 60 compose exec -T postgres pg_isready -U omi -d omi || die 'postgres not ready'
   wait_for redis 30 compose exec -T redis redis-cli -a "$OMI_LOCAL_REDIS_PASSWORD" ping || die 'redis not ready'
   wait_for minio 60 http_ok "$MINIO_ENDPOINT/minio/health/live" || die 'minio not ready'
-  wait_for qdrant 60 curl --noproxy '*' -fsS -m 3 -H "api-key: $OMI_LOCAL_QDRANT_API_KEY" "http://127.0.0.1:$OMI_LOCAL_QDRANT_PORT/collections" || die 'qdrant not ready'
   wait_for typesense 60 http_ok "http://127.0.0.1:$OMI_LOCAL_TYPESENSE_PORT/health" || die 'typesense not ready'
   wait_for emulators 120 http_ok "http://127.0.0.1:$OMI_LOCAL_FIRESTORE_PORT/" || die 'emulators not ready'
   local fingerprint
@@ -316,9 +310,8 @@ cmd_up() {
     stop_process auth-server
     compose exec -T postgres psql -U omi -d omi -c 'TRUNCATE jwks' >/dev/null
   fi
-  render_profile
-  write_child_env
-  run_backend "$PYTHON_BIN" -m fork.migrate migrate >"$LOG_DIR/firestore-pg-migrate.log" 2>&1 || die 'firestore-pg migration failed; see logs (legacy disposable DB: reset)'
+  (cd "$BACKEND_DIR" && "${CLEAN_ENV[@]}" "FIRESTORE_PG_DSN=$PG_DSN_SQLALCHEMY" "$PYTHON_BIN" -m fork.migrate migrate) \
+    >"$LOG_DIR/firestore-pg-migrate.log" 2>&1 || die 'firestore-pg migration failed; see logs (legacy disposable DB: reset)'
   start_process auth-server "${CLEAN_ENV[@]}" "DATABASE_URL=$PG_DSN" "BETTER_AUTH_SECRET=$OMI_LOCAL_BETTER_AUTH_SECRET" \
     "BETTER_AUTH_URL=$AUTH_URL" "PORT=$OMI_LOCAL_AUTH_PORT" 'HOST=127.0.0.1' \
     "AUTH_DEV_ISSUER_SECRET=$OMI_LOCAL_AUTH_DEV_ISSUER_SECRET" "AUTH_INTERNAL_ADMIN_SECRET=$OMI_LOCAL_INTERNAL_ADMIN_SECRET" \
@@ -334,8 +327,8 @@ restore_selection() {
     if [ -z "$_profile_explicit" ] && [ -f "$STATE_DIR/ai-profile" ]; then
       OMI_LOCAL_AI_PROFILE="$(cat "$STATE_DIR/ai-profile")"
     fi
-    if [ -z "$_prefix_explicit" ] && [ -f "$STATE_DIR/qdrant-prefix" ]; then
-      OMI_LOCAL_QDRANT_COLLECTION_PREFIX="$(cat "$STATE_DIR/qdrant-prefix")"
+    if [ -z "$_prefix_explicit" ] && [ -f "$STATE_DIR/pgvector-prefix" ]; then
+      OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX="$(cat "$STATE_DIR/pgvector-prefix")"
     fi
   fi
 }
@@ -371,7 +364,7 @@ cmd_env() {
 }
 cmd_logs() {
   local service="${1:-backend}"
-  case "$service" in backend|auth-server|queue-worker|firestore-pg-migrate|qdrant-migrate) tail -n 200 -f "$LOG_DIR/$service.log" ;; *) compose logs --tail 200 -f "$service" ;; esac
+  case "$service" in backend|auth-server|queue-worker|firestore-pg-migrate|pgvector-migrate) tail -n 200 -f "$LOG_DIR/$service.log" ;; *) compose logs --tail 200 -f "$service" ;; esac
 }
 cmd_help() {
   cat <<'EOF'
@@ -386,9 +379,10 @@ Omi local dev — fork runtime, isolated by OMI_LOCAL_STATE_DIR.
   dev/local.sh down
   dev/local.sh reset
   dev/local.sh selfhost [--operator-ai PROVIDER]
-Default: canonical native profile (chat, STT, TTS and embedding enabled).
-Native requires OMI_LOCAL_SPEECH_MODEL_STORE and the configured LLM/embedding services.
-Operator providers: mimo-cn, openrouter, siliconflow, cloudflare-gateway.
+Default: OpenRouter hosted chat, embeddings, STT and TTS; select SiliconFlow or
+Cloudflare Gateway with --operator-ai or OMI_LOCAL_AI_PROFILE. Native and MiMo
+remain explicit options and need local model/embedding services.
+AI providers: openrouter, siliconflow, cloudflare-gateway (plus native, mimo-cn).
 All use self_hosted.local persistence. Credentials must be OMI_LOCAL_* scoped.
 Config: ambient local-scoped variables > dev/local.env > dev/local.env.example.
 EOF

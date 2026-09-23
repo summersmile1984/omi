@@ -39,23 +39,26 @@
 ### 1.1 本地完整运行时
 
 ```bash
-dev/local.sh up                         # 默认规范 native：完整 chat/STT/TTS/embedding + 数据面
-dev/local.sh up --no-backend             # 只启动数据面与 Auth
-OMI_LOCAL_QDRANT_COLLECTION_PREFIX=omi_local_openrouter dev/local.sh restart --operator-ai openrouter
-OMI_LOCAL_AI_PROFILE=native OMI_LOCAL_QDRANT_COLLECTION_PREFIX=omi_local dev/local.sh restart
+dev/local.sh up                         # 默认 OpenRouter：完整 chat/STT/TTS/embedding + 数据面
+dev/local.sh up --no-backend             # 只启动数据面与 Auth，无需 AI 凭证
+OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX=omi_local_sf dev/local.sh restart --operator-ai siliconflow
+OMI_LOCAL_AI_PROFILE=native OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX=omi_local_native dev/local.sh restart
 dev/local.sh verify                     # 必须有本实例健康 API；真实产品读写，不跳过后端
 dev/local.sh status | restart | logs | ports | env | down | reset
 ```
 
 配置唯一入口是 `dev/local.env`（模板 `dev/local.env.example`），优先级为
-`OMI_LOCAL_*` 环境变量 > 本地配置 > 模板。外部 AI 选项为 `mimo-cn` / `openrouter` /
-`siliconflow` / `cloudflare-gateway`；只把选中供应商的 `OMI_LOCAL_*` 凭证映射到子进程。
-Cloudflare 另需 `OMI_LOCAL_BRAND_MANIFEST` 指向包含 gateway 身份的私有品牌清单。
+`OMI_LOCAL_*` 环境变量 > 本地配置 > 模板。默认 OpenRouter；另外可选
+`siliconflow` / `cloudflare-gateway`，`native` / `mimo-cn` 需显式选择。
+只把选中供应商的 `OMI_LOCAL_*` 凭证映射到后端子进程；完整 `up` 缺少
+凭证会在启动容器前失败，不从 ambient 生产凭证回退。`--no-backend`
+不需要 AI 凭证。Cloudflare 后端另需 `OMI_LOCAL_BRAND_MANIFEST`
+指向包含 gateway 身份的私有品牌清单。
 不要再使用 `dev/selfhost-local.env` 或 `OMI_SELFHOST_*`；将端口及密钥迁移到统一配置。
 旧 `--core-only` 参数、`OMI_LOCAL_AI_PROFILE=core-only` 和保留的旧选择均已撤销，
 会报错而不是静默切换。先删除本地配置中的旧值，再显式选择现有 `native` 或托管供应商；
 旧状态目录无需删除，不带选项重启遇到旧选择时不会停止正在运行的实例。
-默认 native 需要 `OMI_LOCAL_LLM_ENDPOINT`（默认 `http://127.0.0.1:11434`）、
+显式 native 需要 `OMI_LOCAL_LLM_ENDPOINT`（默认 `http://127.0.0.1:11434`）、
 `OMI_LOCAL_EMBEDDING_ENDPOINT`（同默认地址）以及显式绝对路径
 `OMI_LOCAL_SPEECH_MODEL_STORE`。模型按 `deploy/self-host/model-runtime.md`、
 `deploy/self-host/speech-runtime.md` 预置；缺少服务/模型会失败，不禁用能力、不下载替代模型。
@@ -81,15 +84,16 @@ Compose project 从 checkout + `OMI_LOCAL_STATE_DIR` 派生，所有 published �
 
 ### 1.2 Server OS 完整运行时
 
-镜像路径仍由发布构建通道负责。checkout 默认使用既有规范 native profile，
-由 `scripts/profiles/render.py --target self_hosted --stage local --emit-json`
-生成，不再手写或裁剪 profile。chat、STT、TTS、embedding 全部保留；
-外部 AI 使用同一渲染器 `--operator-ai`。两者始终保留 `self_hosted.local`
-的 PostgreSQL / Redis / MinIO / Qdrant 数据面。
-Qdrant 集合绑定实际 embedding 权威与模型身份；相同维度不代表模型可互换。
-首次切换本地 / 托管 embedding 或托管供应商时，必须显式选择经审查的新
-`OMI_LOCAL_QDRANT_COLLECTION_PREFIX` 并按需回填数据，不能自动重标或删除旧集合。
-默认前缀仍为 `omi_local`；重启保留已选前缀，配置显式指定时才替换。
+镜像路径仍由发布构建通道负责。checkout 默认使用 OpenRouter，profile
+由 `scripts/profiles/render.py --target self_hosted --stage local --operator-ai openrouter`
+生成，不再手写或裁剪。chat、STT、TTS、embedding 全部保留；另可显式选择
+SiliconFlow、Cloudflare Gateway 或原生模型。`self_hosted.local` 数据面为
+PostgreSQL（含 pgvector）/ Redis / MinIO，不启动 Qdrant；生产和 beta 保持
+Qdrant。pgvector 前缀绑定实际 embedding 权威与模型身份；相同维度不代表
+模型可互换。首次切换本地 / 托管 embedding 或托管供应商时，必须显式选择
+经审查的新 `OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX` 并按需回填数据，
+不能自动重标或删除旧数据。默认前缀为 `omi_local`，旧 Qdrant 卷不导入、
+不自动删除；重启保留已选前缀，配置显式指定时才替换。
 
 ```bash
 dev/local.sh up --no-backend # 数据面和 Auth
