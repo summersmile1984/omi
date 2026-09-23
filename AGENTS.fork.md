@@ -41,6 +41,18 @@ do not use `upstream/main` itself, which may contain changes not yet incorporate
 After tests/builds, discard only their generated source changes and run the
 aggregate audit against the final committed HEAD.
 
+### Upstream modification records
+
+| Path | Purpose |
+|---|---|
+| [`dev/unified-main/upstream-touch-allowlist.yaml`](dev/unified-main/upstream-touch-allowlist.yaml) | Current, authoritative list of upstream files the fork may change, with line budgets and retirement conditions. |
+| [`dev/unified-main/09-upstream-diverged-files.md`](dev/unified-main/09-upstream-diverged-files.md) | Dated divergence snapshots and dispositions; its older snapshots are not the current allowlist. |
+| [`dev/unified-main/sync-log.md`](dev/unified-main/sync-log.md) | Per-sync upstream revisions, conflict counts and resolutions. |
+| [`dev/unified-main/06-upstream-sync.md`](dev/unified-main/06-upstream-sync.md) | Procedure for regenerating the inventory and recording each sync. |
+
+Git history remains the record of individual file edits; the aggregate
+`scripts/fork/check-upstream-touch.py` check enforces the current state.
+
 Which upstream workflows stay enabled, which checks gate `main`, and how the
 deployment environments are protected are declared in
 `config/repo-state.fork.json` and checked by `scripts/fork/check_repo_state.py`.
