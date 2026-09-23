@@ -82,6 +82,13 @@ Upstream-owned paths stay in place and byte-identical except the registered
 three-line `app/lib/flavors.dart` seam. Generated source goes only into an
 isolated build stage, not the tracked upstream tree.
 
+Put new fork-wide architecture, integration, sync, and decision documents in
+[`dev/unified-main/`](dev/unified-main/README.md), indexed by its README. Keep
+`AGENTS.fork.md` at the repository root as the agent entry point, and keep
+component-specific README, verification, and `AGENTS.fork.md` files beside the
+code and commands they describe. Link to them from the central index when a
+cross-component reader needs them; do not duplicate their contents.
+
 ## 2. Formatting: two opposite rules
 
 - **The repository's pinned formatter** (`scripts/backend-python-format`, the
