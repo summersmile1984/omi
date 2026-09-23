@@ -33,6 +33,9 @@ from the upstream revision actually incorporated, not the event's commit range,
 and an unavailable `upstream/main` fails the lane instead of skipping. The
 per-platform techniques that replace an upstream edit are in
 [`dev/unified-main/00-upstream-touch-policy.md`](dev/unified-main/00-upstream-touch-policy.md).
+For the current code paths that implement those replacements (backend admission,
+Web staging, native clients, and Cloudflare routing), use the
+[`fork integration points` map](dev/unified-main/fork-integration-points.md).
 
 Current admitted seam: `app/lib/flavors.dart`, at most three added lines.
 Do not add allowances to make a failing audit pass. Restore upstream files

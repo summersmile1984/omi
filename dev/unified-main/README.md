@@ -16,6 +16,7 @@
 | [architecture/three-track-architecture.md](architecture/three-track-architecture.md) | 整体系统如何在一个主线、两个部署目标和白牌客户端之间组织；数据、实体、处理和删除边界如何流动 | 架构文档 + 图集 |
 | [Cloudflare Candidates 与推荐](../../docs/doc/developer/ForkCloudflareRecommendations.mdx) | fork 的候选建议、反馈、D1 事务与验证范围；通过 fork 索引访问，保持上游 Mintlify 导航不变 | 开发者文档 |
 | [00-upstream-touch-policy.md](00-upstream-touch-policy.md) | 为什么"能不改上游代码就不改"、shim 分支 653 个上游文件改动的诊断、T0 技术目录（每个平台）、T1 白名单、T2 禁改、两条测试通道 | 纪律 + 技术目录 |
+| [fork-integration-points.md](fork-integration-points.md) | **现行代码入口**：profile 如何选目标，后端在导入上游前如何接管依赖，Web/原生端如何只在构建副本替换，Cloudflare 如何独立分发 | 可跳转的调用链与边界；以代码为准，勿将本目录历史规划当成已交付行为 |
 | [01-branch-consolidation.md](01-branch-consolidation.md) | 两条分支怎么收敛到 main：冻结、先同步上游、接缝 PR（S 系列）、新增目录合入（M 系列）、20 个冲突文件归属、门禁命令、回滚 | 操作手册 |
 | [02-deployment-profile.md](02-deployment-profile.md) | 客户端与后端如何用同一份 profile 同时支持 `omi_cloud / self_hosted / cloudflare`；身份契约 v1（Better Auth 两种部署同一契约）；能力开关默认值；两分支现有代码的迁移映射 | 设计 + 生成器规范 |
 | [03-deploy-targets.md](03-deploy-targets.md) | `deploy/self-host/` 与 `deploy/cloudflare/` 各自的目录契约、合入时的调整、混合部署、共享服务端资产、Web 运行时决策 D3、Cloudflare 未移植清单 | 目录契约 |
