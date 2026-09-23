@@ -288,4 +288,3 @@ class PlanOnlyTests(unittest.TestCase):
             AssertionError('plan-only must not call registered_workflows')
         )
         self.assertEqual(module.main_with_argv(['--plan-only']), 0)
-
