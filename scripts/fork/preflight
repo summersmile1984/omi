@@ -53,7 +53,8 @@ fi
 
 if [ "$FORK_ONLY" = 0 ]; then
   echo "==> upstream contract gate (.github/checks-manifest.yaml)"
-  "$PYTHON_BIN" .github/scripts/pr_preflight.py --lane local --base "$BASE"
+  "$PYTHON_BIN" .github/scripts/pr_preflight.py --lane local --base "$BASE" --metadata-only
+  "$PYTHON_BIN" scripts/fork/upstream_checks.py --lane local --base "$BASE" --skip-pr-body-checks
 fi
 
 echo

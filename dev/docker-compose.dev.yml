@@ -14,12 +14,11 @@ services:
       context: .
       dockerfile: emulators.Dockerfile
     image: "omi-emulators:local"
-    container_name: ${DEV_FIREBASE_CONTAINER_NAME:-omi-emulators}
     working_dir: /srv/firebase
     ports:
-      - "${FIRESTORE_EMULATOR_PORT:-8080}:8080"
-      - "${FIREBASE_AUTH_EMULATOR_PORT:-9099}:9099"
-      - "${FIREBASE_STORAGE_EMULATOR_PORT:-9199}:9199"
+      - "127.0.0.1:${FIRESTORE_EMULATOR_PORT:-8080}:8080"
+      - "127.0.0.1:${FIREBASE_AUTH_EMULATOR_PORT:-9099}:9099"
+      - "127.0.0.1:${FIREBASE_STORAGE_EMULATOR_PORT:-9199}:9199"
     volumes:
       - ./firebase.json:/srv/firebase/firebase.json:ro
       - emulator-data:/root/.cache/firebase
@@ -32,7 +31,6 @@ services:
 
   postgres:
     image: "postgres:16-alpine"
-    container_name: ${DEV_POSTGRES_CONTAINER_NAME:-omi-postgres}
     environment:
       POSTGRES_USER: ${DEV_POSTGRES_USER:-omi}
       POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:-omi-dev-password}
@@ -41,7 +39,7 @@ services:
       # Host ports are overridable from dev/local.env: a machine that already
       # runs another Postgres (another project, another compose stack) must not
       # force the local stack to be stopped. See dev/local.env.example.
-      - "${DEV_POSTGRES_PORT:-5434}:5432"
+      - "127.0.0.1:${DEV_POSTGRES_PORT:-5434}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -52,13 +50,14 @@ services:
 
   redis:
     image: "redis:7-alpine"
-    container_name: ${DEV_REDIS_CONTAINER_NAME:-omi-redis}
     # The self-hosted runtime requires REDIS_DB_PASSWORD (backend/fork/bootstrap.py
     # demands it for the API and worker roles), so the local server authenticates
     # too instead of silently dropping the AUTH the client sends.
     command: ["redis-server", "--requirepass", "${DEV_REDIS_PASSWORD:-omi-local-redis-password}"]
+    environment:
+      DEV_REDIS_PASSWORD: ${DEV_REDIS_PASSWORD:-omi-local-redis-password}
     ports:
-      - "${DEV_REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${DEV_REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -74,14 +73,13 @@ services:
     # serving this repository on Docker Hub, and local dev should run the object store the
     # self-host target runs rather than a moving :latest.
     image: "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e"
-    container_name: ${DEV_MINIO_CONTAINER_NAME:-omi-minio}
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: ${DEV_MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${DEV_MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
-      - "${DEV_MINIO_API_PORT:-9000}:9000"
-      - "${DEV_MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${DEV_MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${DEV_MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio-data:/data
     healthcheck:
@@ -94,14 +92,13 @@ services:
   # local runtime needs it (backend/fork/bootstrap.py requires QDRANT_URL).
   qdrant:
     image: "qdrant/qdrant:v1.15.4"
-    container_name: ${DEV_QDRANT_CONTAINER_NAME:-omi-qdrant}
     environment:
       QDRANT__SERVICE__API_KEY: ${DEV_QDRANT_API_KEY:-omi-local-qdrant-key}
     ports:
-      - "${DEV_QDRANT_PORT:-6333}:6333"
-      - "${DEV_QDRANT_GRPC_PORT:-6334}:6334"
+      - "127.0.0.1:${DEV_QDRANT_PORT:-6333}:6333"
+      - "127.0.0.1:${DEV_QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
-      - qdrant-data:/data
+      - qdrant-data:/qdrant/storage
     healthcheck:
       test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/6333' || exit 1"]
       interval: 5s
@@ -112,10 +109,9 @@ services:
   # (MEMORY_KEYWORD_INDEX_PROVIDER=typesense).
   typesense:
     image: "typesense/typesense:29.0"
-    container_name: ${DEV_TYPESENSE_CONTAINER_NAME:-omi-typesense}
     command: ["--data-dir", "/data", "--api-key", "${DEV_TYPESENSE_API_KEY:-omi-local-typesense-key}", "--enable-cors", "false"]
     ports:
-      - "${DEV_TYPESENSE_PORT:-8108}:8108"
+      - "127.0.0.1:${DEV_TYPESENSE_PORT:-8108}:8108"
     volumes:
       - typesense-data:/data
     healthcheck:

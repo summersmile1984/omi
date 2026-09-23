@@ -85,3 +85,59 @@ Content-Length 后关闭上游 socket，继续设置 socket 超时会漏发下�
 [Chat Completions](https://mimo.mi.com/docs/en-US/api/chat/openai-api)、
 [ASR](https://mimo.mi.com/docs/en-US/api/audio/Speech-Recognition)、
 [TTS](https://mimo.mi.com/docs/usage-guide/speech-synthesis-v2.5)。
+
+## 2026-09-21：移除未授权缩减模式后的 Web 复验
+
+删除 `core-only` 选择器、能力剥离逻辑、替代 embedding 服务及相应 CI 路径。
+默认仍是规范定义的完整 `native`；缺模型库直接失败，不降级。
+本次 Web 使用明确选择的 MiMo CN LLM/ASR/TTS 与真实本地 BGE-M3。
+后端为标准 Dockerfile 构建、源码字节校验通过的 Linux amd64 镜像；
+前端是 macOS 上运行的最终 Bun 1.3.14 生产产物，不冒称 Linux 前端验收。
+
+修复的实际边界：
+
+- Bun 的默认空闲超时截断首次聊天历史。仅代理请求在完整入站体 EOF 后
+  交由后端推理期限负责；无请求体时立即生效。独立 HTTP 客户端等待
+  22 秒后仍收到 POST 200，普通请求仍超时关闭。最终 Web 的无效凭据、
+  未完成上传在 11.58 秒关闭，未放开慢上传保护。
+- WebM 按真实容器解码；捕获文件直接走已有字节转写入口，不让容器
+  重新下载面向客户端的 MinIO 回环签名 URL。原上传、VAD、后处理和清理保留。
+- 维护 worker 运行原规范处理所有者，再投影结果；隔离单用户故障，
+  保留 recurrence 的持久化交接和消费。没有绕过 pending 过滤。
+- 内容编辑清空派生图主体后，验证仍保留明确来源声明的权威性；
+  不修改源快照，不接受模型主体矛盾或已知身份冲突。修复前新增反例
+  2 failed / 1 passed，修复后完整身份准入文件 14 passed。
+
+最终真实业务观测：
+
+| 路径 | 结果 |
+|---|---|
+| 新账号与首次历史 | 第二个全新账号收到真实模型欢迎语，输入框正常启用 |
+| 普通聊天 | 真实回答 `17 + 26 = 43`，保留请求中的校验码 |
+| 手动记忆 | UI 接受、编辑、刷新后，独立问题正确召回“对开心果过敏” |
+| TTS → 短录音 | 真实 MiMo TTS 音频进入浏览器 MediaRecorder；119,953 字节 WebM 返回 HTTP 200，转写出现在聊天框 |
+| 会话录音 | 原 PCM/AudioWorklet/WebSocket 路径保存完整 11 秒转写，并生成茉莉花茶及 release notes 摘要 |
+| 自动记忆与任务 | UI 显示三条录音提取记忆；自动创建 `Send release notes`，截止次日；完成后刷新仍为 completed |
+| 身份隔离与恢复 | 第二账号记忆、任务、会话均为空；登出后受保护页回到登录；重新登录并刷新恢复原会话 |
+
+音频来自真实 TTS，在 `getUserMedia` 输入边界接入；未伪造转写、
+模型响应、提取结果或数据库业务数据。物理麦克风未验收。
+一次 TTS 调用返回 503，具体错误码未保留，后续同参数独立请求为 200；
+没有添加自动重试，也不声称全程零失败。ASR 控制样式文本仍曾出现在
+独立诊断调用中，上一节的模型识别质量限制并未撤销。
+
+验证命令及范围：
+
+- `bash backend/test.sh`：本轮完整 1,154 个文件的 runner 通过；
+  最终 fork startup 清单 27 个文件执行，唯一新断言的大小写差异修正后，
+  失败文件经相同 runner 定向复测 28 passed，其余 26 个文件已通过。
+- `bash deploy/web/ci.sh`：10 passed / 88 assertions；最终 Web 构建 28 routes。
+- `contracts/deployment/core.py --metadata ...`：完整 native 与 MiMo
+  运行时各 16 个真实 HTTP 合同通过，没有关闭模型能力。
+- 更新固定 Kokoro 归档及 387 文件 inventory digest；实际 provisioner
+  校验通过。离线 Linux amd64、2 CPU / 2 GiB 下真实 TTS→ASR readiness 通过。
+- 独立只读复核通过；没有推送、开 PR、合并或部署到生产。
+
+本轮私有截图、音频、源码 hash、模型归档 receipt 和运行记录保存在
+`/Users/macstudio/.codex/eddy-production/web-full-repaired-20260921/`；
+包含隔离账号数据，不纳入仓库。

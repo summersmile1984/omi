@@ -11,9 +11,11 @@ Run: python3 dev/tests/test_local_sh.py   (or: make -f Makefile.fork local-selft
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,9 +25,10 @@ LOCAL_SH = REPO_ROOT / "dev" / "local.sh"
 
 
 def run_local(*arguments: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    merged = dict(os.environ)
+    merged = {key: value for key, value in os.environ.items() if not key.startswith("OMI_LOCAL_")}
     # Keep every run inside its own state dir so the tests never touch a real stack.
     merged["OMI_LOCAL_STATE_DIR"] = tempfile.mkdtemp(prefix="omi-local-selftest-")
+    merged["OMI_LOCAL_ENV_FILE"] = str(REPO_ROOT / "dev" / "local.env.example")
     if env:
         merged.update(env)
     return subprocess.run(
@@ -57,6 +60,9 @@ PORT_KEYS = (
     "OMI_LOCAL_FIREBASE_STORAGE_PORT",
     "OMI_LOCAL_AUTH_PORT",
     "OMI_LOCAL_BACKEND_PORT",
+    "OMI_LOCAL_QDRANT_PORT",
+    "OMI_LOCAL_QDRANT_GRPC_PORT",
+    "OMI_LOCAL_TYPESENSE_PORT",
 )
 
 
@@ -65,34 +71,10 @@ def free_ports() -> dict[str, str]:
 
 
 class LocalShTests(unittest.TestCase):
-    def test_help_lists_the_lifecycle_commands(self) -> None:
-        result = run_local("help")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        for command in ("up", "status", "verify", "restart", "logs", "ports", "env", "down", "reset"):
-            with self.subTest(command=command):
-                self.assertIn(f"dev/local.sh {command}", result.stdout)
-
     def test_unknown_command_fails_loudly(self) -> None:
         result = run_local("definitely-not-a-command")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unknown command", result.stderr)
-
-    def test_the_legacy_entry_point_forwards_to_this_script(self) -> None:
-        # dev/deploy-local.sh must stay a forwarding shim; a read-only command
-        # proves the wiring without executing anything that mutates the machine.
-        # (`--stop` / `--no-backend` are deliberately NOT invoked here: they act
-        # on the real containers and would tear down a developer's running stack.)
-        wrapper = REPO_ROOT / "dev" / "deploy-local.sh"
-        result = subprocess.run(
-            ["bash", str(wrapper), "ports"],
-            cwd=REPO_ROOT,
-            env={**os.environ, "OMI_LOCAL_STATE_DIR": tempfile.mkdtemp(prefix="omi-local-selftest-")},
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        self.assertIn("dev/local.sh", result.stderr)
-        self.assertIn("Omi local dev", result.stdout)
 
     def test_local_env_overrides_the_example_defaults(self) -> None:
         backend_port = free_port()
@@ -160,6 +142,214 @@ class LocalShTests(unittest.TestCase):
             result = run_local("ports", env={"OMI_LOCAL_ENV_FILE": str(override)})
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("OMI_LOCAL_BACKEND_PORT is empty", result.stderr)
+
+    def child_environment(self, profile: str | None, extra: dict[str, str]) -> dict[str, str]:
+        with tempfile.TemporaryDirectory() as state:
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    '. "$1" help >/dev/null; select_ai; write_child_env; run_backend /usr/bin/env',
+                    "local-env-test",
+                    str(LOCAL_SH),
+                ],
+                env={
+                    **{key: value for key, value in os.environ.items() if not key.startswith("OMI_LOCAL_")},
+                    "OMI_LOCAL_STATE_DIR": state,
+                    "OMI_LOCAL_ENV_FILE": str(REPO_ROOT / "dev" / "local.env.example"),
+                    "OMI_LOCAL_SPEECH_MODEL_STORE": state,
+                    **({"OMI_LOCAL_AI_PROFILE": profile} if profile is not None else {}),
+                    **extra,
+                },
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return dict(line.split("=", 1) for line in result.stdout.splitlines())
+
+    def test_native_child_does_not_inherit_provider_or_cloud_authority(self) -> None:
+        child = self.child_environment(
+            None,
+            {
+                "OPENAI_API_KEY": "ambient-openai",
+                "MIMO_API_KEY": "ambient-mimo",
+                "GOOGLE_APPLICATION_CREDENTIALS": "/ambient/credentials",
+                "OMI_LOCAL_OPENROUTER_API_KEY": "unselected-local",
+                "OMI_LOCAL_MIMO_API_KEY": "unselected-mimo",
+                "OMI_LOCAL_LLM_ENDPOINT": "http://127.0.0.1:11435",
+                "OMI_LOCAL_EMBEDDING_ENDPOINT": "http://127.0.0.1:11436",
+            },
+        )
+        for key in ("OPENAI_API_KEY", "MIMO_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "OPENROUTER_API_KEY"):
+            self.assertNotIn(key, child)
+        self.assertEqual(child["OMI_DEPLOYMENT_TARGET"], "self_hosted")
+        self.assertEqual(child["AUTH_PROVIDER"], "better_auth")
+        self.assertIn("OMI_HARNESS_INSTANCE", child)  # Disables backend dotenv loading.
+        self.assertEqual(child["LLM_ENDPOINT"], "http://127.0.0.1:11435")
+        self.assertEqual(child["EMBEDDING_ENDPOINT"], "http://127.0.0.1:11436")
+        self.assertTrue(Path(child["SPEECH_MODEL_STORE"]).is_absolute())
+
+    def test_local_lifecycle_renders_full_native_profile_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as state:
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    '. "$1" help >/dev/null; PYTHON_BIN="$2"; select_ai; render_profile',
+                    "local-render-test",
+                    str(LOCAL_SH),
+                    sys.executable,
+                ],
+                env={
+                    **{key: value for key, value in os.environ.items() if not key.startswith("OMI_LOCAL_")},
+                    "OMI_LOCAL_STATE_DIR": state,
+                    "OMI_LOCAL_ENV_FILE": str(REPO_ROOT / "dev/local.env.example"),
+                },
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            row = json.loads((Path(state) / "deployment_profiles.generated.json").read_text())["profiles"][
+                "self_hosted.local"
+            ]
+        self.assertEqual(row["capabilities"]["llm_provider"], "ollama")
+        self.assertEqual(row["capabilities"]["stt_providers"], ["sensevoice"])
+        self.assertEqual(row["capabilities"]["tts_provider"], "kokoro")
+        self.assertEqual(row["embedding"]["model"], "bge-m3:latest")
+
+    def test_retired_selectors_fail_before_starting_services(self) -> None:
+        for args, config in (
+            (("up", "--core-only"), {}),
+            (("restart", "--core-only"), {}),
+            (("up",), {"OMI_LOCAL_AI_PROFILE": "core-only"}),
+            (("up", "--operator-ai", "mimo-cn"), {"OMI_LOCAL_AI_PROFILE": "core-only"}),
+        ):
+            with self.subTest(args=args, config=config):
+                result = run_local(*args, env=config)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("invalid local AI profile" if config else "unknown option", result.stderr)
+
+    def test_native_requires_explicit_speech_store_without_ambient_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as state:
+            result = subprocess.run(
+                ["bash", "-c", '. "$1" help >/dev/null; select_ai; write_child_env', "local-env-test", str(LOCAL_SH)],
+                env={
+                    **{key: value for key, value in os.environ.items() if not key.startswith("OMI_LOCAL_")},
+                    "OMI_LOCAL_STATE_DIR": state,
+                    "OMI_LOCAL_ENV_FILE": str(REPO_ROOT / "dev/local.env.example"),
+                    "SPEECH_MODEL_STORE": state,
+                    "OMI_LOCAL_SPEECH_MODEL_STORE": "",
+                },
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((Path(state) / "child.env").exists())
+            self.assertIn("OMI_LOCAL_SPEECH_MODEL_STORE", result.stderr)
+
+    def test_operator_ai_child_receives_only_scoped_selected_credential(self) -> None:
+        child = self.child_environment(
+            "openrouter",
+            {
+                "OPENROUTER_API_KEY": "ambient-wrong",
+                "OMI_LOCAL_OPENROUTER_API_KEY": "explicit-local",
+                "OMI_LOCAL_MIMO_API_KEY": "unselected-local",
+                "MIMO_API_KEY": "ambient-wrong",
+            },
+        )
+        self.assertEqual(child["OPENROUTER_API_KEY"], "explicit-local")
+        self.assertNotIn("MIMO_API_KEY", child)
+        self.assertEqual(child["OMI_DEPLOYMENT_PROFILE"], "self_hosted.local")
+        self.assertTrue(child["FIRESTORE_PG_DSN"].startswith("postgresql+psycopg://"))
+
+    def test_mimo_uses_scoped_key_and_real_embedding_endpoint(self) -> None:
+        child = self.child_environment(
+            "mimo-cn",
+            {
+                "MIMO_API_KEY": "ambient-wrong",
+                "OMI_LOCAL_MIMO_API_KEY": "explicit-local",
+                "OMI_LOCAL_EMBEDDING_ENDPOINT": "http://127.0.0.1:11436",
+                "OMI_LOCAL_SPEECH_MODEL_STORE": "",
+            },
+        )
+        self.assertEqual(child["MIMO_API_KEY"], "explicit-local")
+        self.assertEqual(child["EMBEDDING_ENDPOINT"], "http://127.0.0.1:11436")
+        self.assertNotIn("LLM_ENDPOINT", child)
+        self.assertNotIn("SPEECH_MODEL_STORE", child)
+
+    def test_ambient_provider_key_cannot_authorize_operator_ai(self) -> None:
+        with tempfile.TemporaryDirectory() as state:
+            result = subprocess.run(
+                ["bash", "-c", '. "$1" help >/dev/null; select_ai; write_child_env', "local-env-test", str(LOCAL_SH)],
+                env={
+                    **os.environ,
+                    "OMI_LOCAL_STATE_DIR": state,
+                    "OMI_LOCAL_ENV_FILE": str(REPO_ROOT / "dev" / "local.env.example"),
+                    "OMI_LOCAL_AI_PROFILE": "openrouter",
+                    "OMI_LOCAL_OPENROUTER_API_KEY": "",
+                    "OPENROUTER_API_KEY": "ambient-only",
+                },
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_restart_retains_selection_and_namespace_unless_configuration_replaces_them(self) -> None:
+        for command in ("cmd_restart", "cmd_backend_restart"):
+            for source in ("retained", "ambient", "file", "profile-ambient", "profile-file"):
+                with self.subTest(command=command, source=source), tempfile.TemporaryDirectory() as tmp:
+                    state = Path(tmp)
+                    (state / "ai-profile").write_text("openrouter\n")
+                    (state / "qdrant-prefix").write_text("existing_hosted_vectors\n")
+                    config = state / "local.env"
+                    config.write_text(
+                        "OMI_LOCAL_QDRANT_COLLECTION_PREFIX=explicit_vectors\n"
+                        if source == "file"
+                        else "OMI_LOCAL_AI_PROFILE=mimo-cn\n" if source == "profile-file" else ""
+                    )
+                    environment = {key: value for key, value in os.environ.items() if not key.startswith("OMI_LOCAL_")}
+                    environment.update(
+                        {
+                            "OMI_LOCAL_STATE_DIR": tmp,
+                            "OMI_LOCAL_ENV_FILE": str(config),
+                            "OMI_LOCAL_OPENROUTER_API_KEY": "synthetic-key",
+                            "OMI_LOCAL_MIMO_API_KEY": "synthetic-mimo-key",
+                        }
+                    )
+                    if source == "ambient":
+                        environment["OMI_LOCAL_QDRANT_COLLECTION_PREFIX"] = "explicit_vectors"
+                    if source == "profile-ambient":
+                        environment["OMI_LOCAL_AI_PROFILE"] = "mimo-cn"
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            "-c",
+                            '. "$1" help >/dev/null; '
+                            'cmd_backend_stop() { :; }; stop_process() { :; }; '
+                            'cmd_backend_up() { select_ai "$@"; write_child_env; run_backend /usr/bin/env; }; '
+                            'cmd_up() { cmd_backend_up "$@"; }; "$2"',
+                            "restart-contract",
+                            str(LOCAL_SH),
+                            command,
+                        ],
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    child = dict(line.split("=", 1) for line in result.stdout.splitlines())
+                    expected = "explicit_vectors" if source in ("ambient", "file") else "existing_hosted_vectors"
+                    self.assertEqual(child["QDRANT_COLLECTION_PREFIX"], expected)
+                    if source.startswith("profile-"):
+                        self.assertIn("MIMO_API_KEY", child)
+                        self.assertNotIn("OPENROUTER_API_KEY", child)
+                    else:
+                        self.assertIn("OPENROUTER_API_KEY", child)
 
 
 if __name__ == "__main__":

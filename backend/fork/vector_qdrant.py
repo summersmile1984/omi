@@ -5,7 +5,7 @@ schemas. No Pinecone credentials, provider fallback or successful empty result
 is synthesized when Qdrant is unavailable.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import math
 import os
 import re
@@ -16,6 +16,9 @@ import httpx
 
 from .vector_filter import translate
 from .model_contract import EmbeddingContract
+from .embedding import selected_contract
+from .operator_ai import HostedOperatorAI, select as select_operator_ai
+from .profile import current
 
 NAMESPACES = ('ns1', 'ns2', 'ns3', 'ns4', 'ns_tchunks', 'ns_x', 'workstream-association-v1')
 _POINT_NAMESPACE = uuid.UUID('b35f5a23-436a-4504-8eb6-274e1f22d3e0')
@@ -26,11 +29,22 @@ class VectorStoreUnavailable(RuntimeError):
 
 
 @dataclass(frozen=True)
+class _HostedEmbeddingIdentity:
+    provider: str
+    model: str
+    endpoint: str
+    dimension: int
+
+    def as_dict(self):
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class Config:
     url: str
     api_key: str = field(repr=False)
     prefix: str
-    embedding_contract: EmbeddingContract
+    embedding_contract: EmbeddingContract | _HostedEmbeddingIdentity
 
     @property
     def dimension(self):
@@ -55,9 +69,16 @@ class Config:
         key = os.environ.get('QDRANT_API_KEY', '')
         if not key:
             raise ValueError('QDRANT_API_KEY is required')
-        from .embedding import selected_contract
-
-        model = selected_contract()
+        row = current()
+        selected = select_operator_ai(row)
+        if isinstance(selected, HostedOperatorAI):
+            if row.get('capabilities', {}).get('embedding_dims') != selected.embedding_dimension:
+                raise ValueError('profile embedding capability differs from its hosted model contract')
+            model = _HostedEmbeddingIdentity(
+                selected.provider, selected.embedding_model, selected.embedding_base_url, selected.embedding_dimension
+            )
+        else:
+            model = selected_contract()
         return cls(url, key, prefix, model)
 
 

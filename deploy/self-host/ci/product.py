@@ -3,9 +3,17 @@
 
 LIFECYCLE: permanent
 This owns a fresh Compose project, normal migrations and application images.
-Its default core-only profile disables speech and controls embedding HTTP IO.
-Supplying all three model stores selects the unmodified speech/LLM/embedding
-profile and real admitted CPU runtimes. Neither mode replaces product state.
+The complete rendered profile runs with one of two real runtime shapes:
+
+  - native: local BGE-M3 / Qwen / SenseVoice / Kokoro stores, prepared by
+    prepare-model.py and prepare-speech.py before the fixture starts.
+  - hosted operator AI: a single OpenAI-compatible vendor (openrouter /
+    siliconflow / cloudflare-gateway / mimo-cn) declared by the brand
+    manifest supplies LLM / ASR / TTS over the wire; only the local BGE-M3
+    embedding store is still required (none of the hosted vendors own that
+    model).
+
+Missing model requirements fail before fixture state is created.
 """
 
 from __future__ import annotations
@@ -32,37 +40,54 @@ sys.path.insert(0, str(ROOT / 'scripts/profiles'))
 import render  # noqa: E402
 
 
-def core_only_profile(row):
-    """Limit the shared product contract to the services its fixture owns."""
-    result = copy.deepcopy(row)
-    result.pop('speech', None)
-    result.pop('llm', None)
-    result['capabilities'].update(stt_providers=[], tts_provider='disabled', llm_provider='disabled')
-    from fork.capabilities import validate
-
-    validate(result)
-    return result
-
-
 class Fixture:
-    def __init__(self, output, brand_id, port, runtime_image=None, *, model_stores=None, mimo_secret_file=None):
+    def __init__(self, output, brand_id, port, runtime_image=None, *, model_stores=None, mimo_secret_file=None, operator_secret_file=None, operator_provider=None):
         if not re.fullmatch(r'[a-z][a-z0-9-]{2,40}', brand_id) or not 1024 <= port <= 65000:
             raise ValueError('fixture needs a safe brand id and unprivileged port')
         self.model_stores = {}
+        # mimo_secret_file is the legacy single-provider form; operator_secret_file
+        # generalises it to every HostedOperatorAI vendor registered in
+        # backend/fork/operator_ai.py. The two are mutually exclusive.
         self.mimo_secret_file = Path(mimo_secret_file).resolve() if mimo_secret_file else None
+        self.operator_secret_file = Path(operator_secret_file).resolve() if operator_secret_file else None
+        self.operator_provider = operator_provider
+        if self.mimo_secret_file and self.operator_secret_file:
+            raise ValueError('pass either --mimo-secret-file or --operator-secret-file, not both')
+        if self.operator_secret_file:
+            if self.operator_provider is None:
+                raise ValueError('--operator-provider is required with --operator-secret-file')
+            if self.operator_provider not in {'mimo-cn', 'openrouter', 'cloudflare-gateway', 'siliconflow'}:
+                raise ValueError(f'unsupported operator provider: {self.operator_provider}')
+            if not self.operator_secret_file.is_file():
+                raise ValueError('operator secret file must exist')
         if self.mimo_secret_file and not self.mimo_secret_file.is_file():
             raise ValueError('MiMo secret file must exist')
-        required_stores = {'embedding'} if self.mimo_secret_file else {'embedding', 'llm', 'speech'}
-        if self.mimo_secret_file and model_stores is None:
-            raise ValueError('MiMo mode requires the local embedding store')
-        if model_stores is not None:
-            if set(model_stores) != required_stores or not all(model_stores.values()):
-                raise ValueError('real-model fixture requires embedding, llm and speech stores together')
-            for kind, path in model_stores.items():
-                path = Path(path)
-                if not path.is_absolute() or not path.is_dir():
-                    raise ValueError(f'{kind} model store must be an existing absolute directory')
-                self.model_stores[kind] = path.resolve()
+        required_stores = {'embedding'} if (self.mimo_secret_file or self.operator_secret_file) else {'embedding', 'llm', 'speech'}
+        if model_stores is None or set(model_stores) != required_stores or not all(model_stores.values()):
+            requirement = (
+                'embedding store only' if (self.mimo_secret_file or self.operator_secret_file) else 'embedding, llm and speech stores together'
+            )
+            raise ValueError(f'real-model fixture requires {requirement}')
+        if self.mimo_secret_file:
+            from fork.operator_ai import MiMo
+
+            credential = json.loads(self.mimo_secret_file.read_text())
+            if credential.get('MIMO_BASE_URL') != MiMo().base_url or not credential.get('MIMO_API_KEY'):
+                raise ValueError('MiMo credential must select the China Token Plan endpoint')
+        elif self.operator_secret_file:
+            # Every hosted vendor authenticates with one bearer; the per-provider
+            # env var name is in fork.operator_ai.CREDENTIAL_ENV. The secret file
+            # carries only the key for the vendor that the brand manifest already
+            # declared, so there is nothing else to validate here -- the operator
+            # AI module does that when it reads the key at runtime.
+            credential = json.loads(self.operator_secret_file.read_text())
+            if not isinstance(credential, dict) or not credential:
+                raise ValueError('operator secret file must be a non-empty JSON object')
+        for kind, path in model_stores.items():
+            path = Path(path)
+            if not path.is_absolute() or not path.is_dir():
+                raise ValueError(f'{kind} model store must be an existing absolute directory')
+            self.model_stores[kind] = path.resolve()
         os.umask(0o077)
         output.mkdir(parents=True, exist_ok=False)
         self.output = output.resolve()
@@ -136,8 +161,6 @@ class Fixture:
         )
 
     def admit_model_capacity(self, services):
-        if not self.model_stores:
-            return
         limits = {name: services[name].get('mem_limit') for name in ('embedding', 'llm') if name in self.model_stores}
         # `docker compose config --format json` emits byte counts as decimal
         # strings, including the production YAML's `4g` model limits.
@@ -182,8 +205,6 @@ class Fixture:
         table = render.resolve(
             'self_hosted', None, manifest_file, 'local', 'mimo-cn' if self.mimo_secret_file else None
         )
-        if not self.model_stores:
-            table['profiles']['self_hosted.local'] = core_only_profile(table['profiles']['self_hosted.local'])
         profile_file = self.output / 'profile.json'
         profile_file.write_text(json.dumps(table, indent=2) + '\n')
         # The public profile is bind-mounted into a different Linux UID. The
@@ -209,12 +230,12 @@ class Fixture:
             OMI_SHARE_BASE_URL=api,
             CORS_ALLOWED_ORIGINS=auth,
             BETTER_AUTH_TRUSTED_ORIGINS=auth,
-            SELF_HOST_EGRESS_ALLOWLIST='embedding,llm' if self.model_stores else 'embedding',
+            SELF_HOST_EGRESS_ALLOWLIST='embedding' if self.mimo_secret_file else 'embedding,llm',
             BACKEND_RUNTIME_IMAGE=self.runtime_image,
             BACKEND_IMAGE=self.api_image,
             AUTH_SERVER_IMAGE=self.auth_image,
             LLM_IMAGE=self.llm_image,
-            EMBEDDING_MODEL_STORE=str(self.model_stores.get('embedding', self.output / 'unused-model-store')),
+            EMBEDDING_MODEL_STORE=str(self.model_stores['embedding']),
             SPEECH_MODEL_STORE=str(self.model_stores.get('speech', self.output / 'unused-speech-store')),
             LLM_MODEL_STORE=str(self.model_stores.get('llm', self.output / 'unused-llm-store')),
             GENERIC_OPENAI_BASE_URL='http://embedding:11434/v1',
@@ -267,8 +288,7 @@ class Fixture:
             'queue-worker',
             'memory-maintenance-worker',
         )
-        if self.model_stores:
-            selected += ('embedding-artifact-check', 'embedding')
+        selected += ('embedding-artifact-check', 'embedding')
         if 'llm' in self.model_stores:
             selected += ('llm-artifact-check', 'llm')
         services = {name: config['services'][name] for name in selected}
@@ -290,26 +310,31 @@ class Fixture:
             credential = json.loads(self.mimo_secret_file.read_text())
             if credential.get('MIMO_BASE_URL') != MiMo().base_url or not credential.get('MIMO_API_KEY'):
                 raise ValueError('MiMo credential must select the China Token Plan endpoint')
-            services['backend']['networks'].append('client')
-            services['backend']['environment']['MIMO_API_KEY'] = credential['MIMO_API_KEY']
-        controlled_embedding = {
-            'image': self.api_image,
-            'platform': 'linux/amd64',
-            'command': ['python', '/contract/providers.py'],
-            'volumes': [
-                f'{profile_file}:/contract/profile.json:ro',
-                f'{ROOT / "deploy/self-host/ci/providers.py"}:/contract/providers.py:ro',
-            ],
-            'networks': ['default'],
-            'healthcheck': {
-                'test': ['CMD', 'curl', '-fsS', 'http://127.0.0.1:11434/api/tags'],
-                'interval': '2s',
-                'timeout': '2s',
-                'retries': 30,
-            },
-        }
-        if not self.model_stores:
-            services['embedding'] = controlled_embedding
+            for name in ('backend', 'memory-maintenance-worker'):
+                services[name]['networks'].append('client')
+                services[name]['environment']['MIMO_API_KEY'] = credential['MIMO_API_KEY']
+                services[name]['environment'].pop('LLM_ENDPOINT', None)
+        elif self.operator_secret_file:
+            # Every hosted vendor authenticates with one bearer; the per-provider
+            # env var name is in fork.operator_ai.CREDENTIAL_ENV. The brand manifest
+            # has already declared which provider this stage selects, so the
+            # secret file only carries the matching key.
+            from fork.operator_ai import CREDENTIAL_ENV, FROZEN, CLOUDFLARE_GATEWAY, cloudflare_spec
+
+            credential = json.loads(self.operator_secret_file.read_text())
+            if self.operator_provider == 'mimo-cn':
+                env_var = 'MIMO_API_KEY'
+            elif self.operator_provider == 'cloudflare-gateway':
+                env_var = 'CLOUDFLARE_API_TOKEN'
+            else:
+                env_var = CREDENTIAL_ENV[self.operator_provider]
+            key = credential.get(env_var)
+            if not key:
+                raise ValueError(f'operator secret file missing {env_var}')
+            for name in ('backend', 'memory-maintenance-worker'):
+                services[name]['networks'].append('client')
+                services[name]['environment'][env_var] = key
+                services[name]['environment'].pop('LLM_ENDPOINT', None)
         services['loopback'] = {
             'image': self.api_image,
             'platform': 'linux/amd64',
@@ -350,21 +375,11 @@ class Fixture:
         (self.output / 'fixture-scope.json').write_text(
             json.dumps(
                 {
-                    'scope': 'real-model-product-runtime' if self.model_stores else 'identity-onboarding-tasks',
+                    'scope': 'real-model-product-runtime',
                     'profile_sha256': hashlib.sha256(profile_file.read_bytes()).hexdigest(),
-                    'speech': (
-                        'MiMo-CN-ASR-TTS'
-                        if self.mimo_secret_file
-                        else 'admitted-local-SenseVoice-Kokoro' if self.model_stores else 'explicitly-disabled'
-                    ),
-                    'llm': (
-                        'MiMo-CN-mimo-v2.5'
-                        if self.mimo_secret_file
-                        else 'admitted-local-Qwen-Ollama' if self.model_stores else 'explicitly-disabled'
-                    ),
-                    'embedding': (
-                        'admitted-local-BGE-M3-Ollama' if self.model_stores else 'controlled-HTTP-no-model-inference'
-                    ),
+                    'speech': ('MiMo-CN-ASR-TTS' if self.mimo_secret_file else 'admitted-local-SenseVoice-Kokoro'),
+                    'llm': ('MiMo-CN-mimo-v2.5' if self.mimo_secret_file else 'admitted-local-Qwen-Ollama'),
+                    'embedding': 'admitted-local-BGE-M3-Ollama',
                     'application_network': 'API-outbound-selected-MiMo' if self.mimo_secret_file else 'internal-only',
                     'http_ingress': 'isolated-two-port-loopback-proxy',
                     'websocket_ingress': 'same-proxy-bounded-bidirectional-tunnel',
@@ -467,27 +482,6 @@ class Fixture:
             ],
             timeout=60,
         )
-        if not self.model_stores:
-            self.command(
-                [
-                    'docker',
-                    'run',
-                    '--rm',
-                    '--network=none',
-                    '--platform=linux/amd64',
-                    '--user=0:0',
-                    '--volume',
-                    f'{self.output / "profile.json"}:/proof/profile.json:ro',
-                    '--volume',
-                    f'{ROOT / "deploy/self-host/ci/providers.py"}:/contract/providers.py:ro',
-                    '--volume',
-                    f'{ROOT / "deploy/self-host/ci/test_provider_access.py"}:/proof/test_provider_access.py:ro',
-                    self.api_image,
-                    'python',
-                    '/proof/test_provider_access.py',
-                ],
-                timeout=30,
-            )
         if 'llm' in self.model_stores:
             self.command(
                 [
@@ -507,10 +501,9 @@ class Fixture:
 
     def start(self):
         self.created = True
-        if self.model_stores:
-            for service in ('embedding-artifact-check', 'llm-artifact-check'):
-                if service.removesuffix('-artifact-check') in self.model_stores:
-                    self.compose('run', '--rm', service)
+        for service in ('embedding-artifact-check', 'llm-artifact-check'):
+            if service.removesuffix('-artifact-check') in self.model_stores:
+                self.compose('run', '--rm', service)
         self.compose(
             'up',
             '-d',
@@ -532,12 +525,12 @@ class Fixture:
             '-d',
             '--wait',
             '--wait-timeout',
-            '600' if self.model_stores else '180',
+            '600',
             'auth-server',
             'backend',
             'queue-worker',
             'memory-maintenance-worker',
-            timeout=630 if self.model_stores else 300,
+            timeout=630,
         )
         self.compose('up', '-d', '--wait', '--wait-timeout', '90', 'loopback')
         (self.output / 'metadata.json').write_text(json.dumps(self.metadata, indent=2))
@@ -575,7 +568,17 @@ def main():
     parser.add_argument(
         '--mimo-secret-file', type=Path, help='local MiMo CN LLM/ASR/TTS; requires only --embedding-store'
     )
-    parser.add_argument('--embedding-store', type=Path, help='admitted BGE-M3 store; requires both other stores')
+    parser.add_argument(
+        '--operator-secret-file',
+        type=Path,
+        help='hosted operator AI secret JSON; one bearer per the chosen provider, requires --operator-provider and --embedding-store',
+    )
+    parser.add_argument(
+        '--operator-provider',
+        choices=['mimo-cn', 'openrouter', 'cloudflare-gateway', 'siliconflow'],
+        help='provider declared by the brand manifest under self_hosted_inference.<stage>; the secret file must carry its matching env var',
+    )
+    parser.add_argument('--embedding-store', type=Path, required=True, help='admitted BGE-M3 store')
     parser.add_argument('--llm-store', type=Path, help='admitted Qwen store; requires both other stores')
     parser.add_argument(
         '--speech-store', type=Path, help='admitted SenseVoice/Kokoro store; requires both other stores'
@@ -583,15 +586,17 @@ def main():
     parser.add_argument('--self-test', action='store_true', help='run common HTTP contract and clean up')
     args = parser.parse_args()
     stores = {kind: getattr(args, kind + '_store') for kind in ('embedding', 'llm', 'speech')}
-    if args.mimo_secret_file:
+    if args.mimo_secret_file or args.operator_secret_file:
         stores = {kind: value for kind, value in stores.items() if value is not None}
     fixture = Fixture(
         args.output,
         args.brand_id,
         args.port,
         args.runtime_image,
-        model_stores=stores if any(stores.values()) else None,
+        model_stores=stores,
         mimo_secret_file=args.mimo_secret_file,
+        operator_secret_file=args.operator_secret_file,
+        operator_provider=args.operator_provider,
     )
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, fixture.stop)

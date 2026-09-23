@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from functools import wraps
+from pathlib import Path
 import re
 import subprocess
 from time import monotonic
+from types import FunctionType
 
 from fastapi import HTTPException
 from starlette.responses import Response
@@ -147,6 +150,31 @@ async def prerecorded(request, uid, x_app_platform=None):
         # The upstream selector runs before its provider try/except. Local
         # language/disabled admission must retain that same typed HTTP contract.
         raise chat._transcription_http_error(failure) from failure
+
+
+def captured_file_transcription(original):
+    """Use the owned upload bytes, not a client-facing object-store URL."""
+    from_bytes = original.__globals__['prerecorded_from_bytes']
+
+    @wraps(original)
+    def wrapped(url, path, language, detect_language=True):
+        def transcribe_file(_url, **kwargs):
+            source = Path(path)
+            return from_bytes(source.read_bytes(), encoding=source.suffix.lstrip('.') or None, **kwargs)
+
+        # Preserve the existing language, postprocessing and typed-error owner.
+        # Bind only this invocation; no global mutation, URL rewrite or retry.
+        invoke = FunctionType(
+            original.__code__,
+            {**original.__globals__, 'prerecorded': transcribe_file},
+            original.__name__,
+            original.__defaults__,
+            original.__closure__,
+        )
+        invoke.__kwdefaults__ = original.__kwdefaults__
+        return invoke(url, path, language, detect_language)
+
+    return wrapped
 
 
 async def ptt(

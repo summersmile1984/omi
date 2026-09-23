@@ -4,7 +4,7 @@ from ..registry import Patch
 
 
 def patches():
-    from .. import operator_ai, speech
+    from .. import operator_ai, speech, speech_transport
 
     def prerecorded(original):
         from utils.sensevoice.prerecorded_provider import SenseVoicePrerecordedProvider
@@ -58,6 +58,7 @@ def patches():
     targets = [
         ('utils.stt.pre_recorded', 'get_prerecorded_service', lambda original: speech.prerecorded_selection),
         ('utils.chat', 'get_prerecorded_service', lambda original: speech.prerecorded_selection),
+        ('utils.chat', '_transcribe_voice_message_url', speech_transport.captured_file_transcription),
         ('routers.chat', 'get_prerecorded_service', lambda original: speech.prerecorded_selection),
         ('utils.sync.pipeline', 'get_prerecorded_service', lambda original: speech.prerecorded_selection),
         ('utils.stt.pre_recorded', 'get_prerecorded_provider', prerecorded),

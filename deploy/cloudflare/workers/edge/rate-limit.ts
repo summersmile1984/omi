@@ -366,6 +366,7 @@ const EXACT_ROUTE_POLICIES = new Map<string, EdgeRateLimitPolicy>([
   ["POST /v1/conversations/merge", EDGE_RATE_LIMIT_POLICIES["conversations:merge"]],
   ["POST /v3/memories", EDGE_RATE_LIMIT_POLICIES["memories:create"]],
   ["POST /v3/memories/batch", EDGE_RATE_LIMIT_POLICIES["memories:batch"]],
+  ["POST /v3/memories/sample-id/use", EDGE_RATE_LIMIT_POLICIES["memories:modify"]],
   [
     "GET /v3/memories/review-queue",
     EDGE_RATE_LIMIT_POLICIES["memories:modify"],

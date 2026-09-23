@@ -18,6 +18,7 @@ from . import llm as _llm
 from . import capabilities as _capabilities
 from . import consolidation as _consolidation
 from . import canonical_memory as _canonical_memory
+from . import conversation_search as _conversation_search
 from . import memory_clock as _memory_clock
 from . import speech as _speech
 from . import provider_guard as _provider_guard
@@ -34,6 +35,7 @@ ALL = (
     _capabilities,
     _consolidation,
     _canonical_memory,
+    _conversation_search,
     _memory_clock,
     _speech,
     _account_deletion,
@@ -52,13 +54,12 @@ def collect() -> List[Patch]:
     return found
 
 
-def collect_memory_projection() -> List[Patch]:
-    """Return only the seams needed by the canonical-memory outbox process.
+def collect_memory_maintenance() -> List[Patch]:
+    """Admit the existing consolidation and projection owners without ASGI.
 
-    The projection worker does not serve HTTP, consume Redis jobs, or touch
-    object storage. Keeping its registry narrow prevents those workloads from
-    becoming accidental startup dependencies while preserving the existing
-    embedding, vector, and account-deletion fence authorities.
+    Pending user submissions require canonical processing before chat may read
+    them. The worker uses the same selected model and apply fences as the API;
+    it does not serve HTTP, consume Redis jobs, or touch object storage.
     """
     provider_names = {
         'provider.receipt-fence.database.vector_db',
@@ -66,6 +67,9 @@ def collect_memory_projection() -> List[Patch]:
     }
     return [
         *_memory_clock.patches(),
+        *_canonical_memory.patches(),
+        *_consolidation.patches(),
+        *(patch for patch in _llm.patches() if patch.module != 'utils.retrieval.agentic'),
         *_embedding.patches(),
         *_vector.patches(),
         *(patch for patch in _provider_guard.patches() if patch.name in provider_names),

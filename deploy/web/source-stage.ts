@@ -7,9 +7,18 @@ import {
   realpath,
   symlink,
   writeFile,
-} from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { createRequire } from 'node:module';
+} from "node:fs/promises";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
+import { createRequire } from "node:module";
+import type * as TypeScript from "../../web/app/node_modules/typescript";
 
 export interface OverlayManifest {
   schema_version: 1;
@@ -23,7 +32,7 @@ export function confinedPath(root: string, path: string): string {
     isAbsolute(path) ||
     !relative(root, output) ||
     relative(root, output).startsWith(`..${sep}`) ||
-    relative(root, output) === '..'
+    relative(root, output) === ".."
   ) {
     throw new Error(`Overlay must name a file inside its source root: ${path}`);
   }
@@ -33,53 +42,66 @@ export function confinedPath(root: string, path: string): string {
 export async function stageSources(
   webRoot: string,
   stage: string,
-  manifest: OverlayManifest,
+  manifest: OverlayManifest
 ) {
   webRoot = await realpath(webRoot);
-  if (manifest.schema_version !== 1 || !manifest.files || Array.isArray(manifest.files)) {
-    throw new Error('Web overlays require version 1 and an exact source-path mapping');
+  if (
+    manifest.schema_version !== 1 ||
+    !manifest.files ||
+    Array.isArray(manifest.files)
+  ) {
+    throw new Error(
+      "Web overlays require version 1 and an exact source-path mapping"
+    );
   }
   const denied = new Set([
-    'node_modules',
-    '.moonshine',
-    '.next',
-    '.wrangler',
-    '.git',
-    '.DS_Store',
+    "node_modules",
+    ".moonshine",
+    ".next",
+    ".wrangler",
+    ".git",
+    ".DS_Store",
   ]);
   await cp(webRoot, stage, {
     recursive: true,
     filter: async (path) => {
-      if (denied.has(basename(path)) || basename(path).startsWith('.env')) return false;
+      if (denied.has(basename(path)) || basename(path).startsWith(".env"))
+        return false;
       if ((await lstat(path)).isSymbolicLink())
-        throw new Error(`Source symlinks must be resolved before staging: ${path}`);
+        throw new Error(
+          `Source symlinks must be resolved before staging: ${path}`
+        );
       return true;
     },
   });
-  await symlink(join(webRoot, 'node_modules'), join(stage, 'node_modules'), 'dir');
+  await symlink(
+    join(webRoot, "node_modules"),
+    join(stage, "node_modules"),
+    "dir"
+  );
   const additions = manifest.additions ?? {};
   if (!additions || Array.isArray(additions))
-    throw new Error('Web additions require an exact source-path mapping');
+    throw new Error("Web additions require an exact source-path mapping");
   const entries = [
     ...Object.entries(manifest.files).map(
-      ([source, replacement]) => [source, replacement, 'replace'] as const,
+      ([source, replacement]) => [source, replacement, "replace"] as const
     ),
     ...Object.entries(additions).map(
-      ([source, replacement]) => [source, replacement, 'add'] as const,
+      ([source, replacement]) => [source, replacement, "add"] as const
     ),
   ];
   if (new Set(entries.map(([source]) => source)).size !== entries.length)
-    throw new Error('A Web source path cannot be replaced and added');
+    throw new Error("A Web source path cannot be replaced and added");
   const applied: {
     source: string;
     replacement: string;
     sha256: string;
-    mode: 'replace' | 'add';
+    mode: "replace" | "add";
   }[] = [];
   for (const [source, replacement, mode] of entries) {
     const sourcePath = confinedPath(webRoot, source);
     const replacementPath = confinedPath(webRoot, replacement);
-    for (const path of mode === 'replace'
+    for (const path of mode === "replace"
       ? [sourcePath, replacementPath]
       : [replacementPath]) {
       const resolved = await realpath(path);
@@ -87,15 +109,19 @@ export async function stageSources(
         !resolved.startsWith(`${resolve(webRoot)}${sep}`) ||
         !(await lstat(resolved)).isFile()
       ) {
-        throw new Error(`Overlay references a file outside the source tree: ${path}`);
+        throw new Error(
+          `Overlay references a file outside the source tree: ${path}`
+        );
       }
     }
-    if (mode === 'add') {
+    if (mode === "add") {
       try {
         await lstat(sourcePath);
-        throw new Error(`Web addition would replace an existing source: ${source}`);
+        throw new Error(
+          `Web addition would replace an existing source: ${source}`
+        );
       } catch (error: any) {
-        if (error.code !== 'ENOENT') throw error;
+        if (error.code !== "ENOENT") throw error;
       }
       await mkdir(dirname(confinedPath(stage, source)), { recursive: true });
     }
@@ -104,7 +130,7 @@ export async function stageSources(
     applied.push({
       source,
       replacement,
-      sha256: new Bun.CryptoHasher('sha256').update(bytes).digest('hex'),
+      sha256: new Bun.CryptoHasher("sha256").update(bytes).digest("hex"),
       mode,
     });
   }
@@ -114,22 +140,25 @@ export async function stageSources(
 export function rewriteMcpUrl(source: string, typescript: any): string {
   const ts = typescript;
   const file = ts.createSourceFile(
-    'SettingsPage.tsx',
+    "SettingsPage.tsx",
     source,
     ts.ScriptTarget.Latest,
     true,
-    ts.ScriptKind.TSX,
+    ts.ScriptKind.TSX
   );
   const candidates: any[] = [];
   const visit = (node: any) => {
-    if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'mcpServerUrl')
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(file) === "mcpServerUrl"
+    )
       candidates.push(node);
     ts.forEachChild(node, visit);
   };
   visit(file);
   if (candidates.length !== 1 || !candidates[0].initializer) {
     throw new Error(
-      'Settings MCP owner changed: expected exactly one mcpServerUrl initializer',
+      "Settings MCP owner changed: expected exactly one mcpServerUrl initializer"
     );
   }
   const initializer = candidates[0].initializer;
@@ -137,17 +166,17 @@ export function rewriteMcpUrl(source: string, typescript: any): string {
   const expected =
     "`${process.env.NEXT_PUBLIC_API_BASE_URL || 'https://api.omi.me'}/v1/mcp/sse`";
   if (initializer.getText(file) !== expected)
-    throw new Error('Settings MCP source contract changed');
+    throw new Error("Settings MCP source contract changed");
   const replaced =
     source.slice(0, initializer.getStart(file)) +
-    'profileMcpServerUrl()' +
+    "profileMcpServerUrl()" +
     source.slice(initializer.end);
   const directiveEnd =
     file.statements.find(
       (statement: any) =>
         ts.isExpressionStatement(statement) &&
         ts.isStringLiteral(statement.expression) &&
-        statement.expression.text === 'use client',
+        statement.expression.text === "use client"
     )?.end ?? 0;
   return (
     replaced.slice(0, directiveEnd) +
@@ -157,42 +186,47 @@ export function rewriteMcpUrl(source: string, typescript: any): string {
 }
 
 export async function applyMcpOverlay(stage: string, webRoot: string) {
-  const path = join(stage, 'src/components/settings/SettingsPage.tsx');
-  const typescript = createRequire(join(webRoot, 'package.json'))('typescript');
-  await writeFile(path, rewriteMcpUrl(await readFile(path, 'utf8'), typescript));
+  const path = join(stage, "src/components/settings/SettingsPage.tsx");
+  const typescript = createRequire(join(webRoot, "package.json"))("typescript");
+  await writeFile(
+    path,
+    rewriteMcpUrl(await readFile(path, "utf8"), typescript)
+  );
 }
 
 export function rewriteBrandMetadata(
   source: string,
   productName: string,
   tagline: string,
-  ts: any,
+  ts: any
 ): string {
-  if (!productName?.trim() || typeof tagline !== 'string')
-    throw new Error('Web metadata needs a product name and optional tagline');
-  const description = tagline.trim() ? `${productName} - ${tagline}` : productName;
+  if (!productName?.trim() || typeof tagline !== "string")
+    throw new Error("Web metadata needs a product name and optional tagline");
+  const description = tagline.trim()
+    ? `${productName} - ${tagline}`
+    : productName;
   const required = new Map([
-    ['Sign In to Omi', `Sign In to ${productName}`],
-    ['Omi - Your AI Companion', description],
-    ['Omi - Your AI companion that turns thoughts into action.', description],
+    ["Sign In to Omi", `Sign In to ${productName}`],
+    ["Omi - Your AI Companion", description],
+    ["Omi - Your AI companion that turns thoughts into action.", description],
   ]);
   const presentation = new Map([
     ...required,
     ...[
-      'Explore and install AI-powered apps for Omi. Enhance your experience with productivity tools, conversation insights, and more.',
-      'Omi App Store - Discover AI-Powered Apps',
-      'Omi App Store',
-      ' Apps - Omi App Store',
-      ' apps for your Omi.',
-      ' Available on Omi, the AI-powered wearable platform.',
-    ].map((text) => [text, text.replaceAll('Omi', productName)] as const),
+      "Explore and install AI-powered apps for Omi. Enhance your experience with productivity tools, conversation insights, and more.",
+      "Omi App Store - Discover AI-Powered Apps",
+      "Omi App Store",
+      " Apps - Omi App Store",
+      " apps for your Omi.",
+      " Available on Omi, the AI-powered wearable platform.",
+    ].map((text) => [text, text.replaceAll("Omi", productName)] as const),
   ]);
   const file = ts.createSourceFile(
-    'server.ts',
+    "server.ts",
     source,
     ts.ScriptTarget.Latest,
     true,
-    ts.ScriptKind.TS,
+    ts.ScriptKind.TS
   );
   const edits: { start: number; end: number; value: string }[] = [];
   const counts = new Map<string, number>();
@@ -209,7 +243,8 @@ export function rewriteBrandMetadata(
   };
   visit(file);
   for (const text of required.keys())
-    if (counts.get(text) !== 1) throw new Error('Generated Web metadata owner changed');
+    if (counts.get(text) !== 1)
+      throw new Error("Generated Web metadata owner changed");
   for (const edit of edits.sort((a, b) => b.start - a.start))
     source = source.slice(0, edit.start) + edit.value + source.slice(edit.end);
   return source;
@@ -218,19 +253,80 @@ export function rewriteBrandMetadata(
 export async function applyBrandMetadata(
   generated: string,
   webRoot: string,
-  input: { brand_id: string; product_name: string; tagline: string },
+  input: { brand_id: string; product_name: string; tagline: string }
 ) {
-  if (input.brand_id === 'omi-upstream') return;
-  const path = join(generated, 'server.ts');
-  const ts = createRequire(join(webRoot, 'package.json'))('typescript');
+  if (input.brand_id === "omi-upstream") return;
+  const path = join(generated, "server.ts");
+  const ts = createRequire(join(webRoot, "package.json"))("typescript");
   await writeFile(
     path,
     rewriteBrandMetadata(
-      await readFile(path, 'utf8'),
+      await readFile(path, "utf8"),
       input.product_name,
       input.tagline,
-      ts,
-    ),
+      ts
+    )
+  );
+}
+
+export function rewriteBunServerTimeout(
+  source: string,
+  ts: typeof TypeScript
+): string {
+  const file = ts.createSourceFile(
+    "bun-runtime.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  );
+  const calls: TypeScript.CallExpression[] = [];
+  const visit = (node: TypeScript.Node) => {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(file) === "Bun.serve"
+    )
+      calls.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  const options = calls[0]?.arguments[0];
+  if (
+    calls.length !== 1 ||
+    calls[0].arguments.length !== 1 ||
+    !options ||
+    !ts.isObjectLiteralExpression(options) ||
+    options.properties.some(
+      (property) =>
+        ts.isSpreadAssignment(property) ||
+        property.name?.getText(file).replace(/['"]/g, "") === "idleTimeout"
+    )
+  )
+    throw new Error("Bun startup timeout owner changed");
+  const handlers = options.properties.filter(
+    (property) => property.name?.getText(file) === "fetch"
+  );
+  if (handlers.length !== 1 || !ts.isShorthandPropertyAssignment(handlers[0]))
+    throw new Error("Bun startup timeout owner changed");
+  // Inference deadlines start only after the inbound body has arrived. Preserve
+  // Bun's idle protection for unauthenticated/slow uploads without buffering a
+  // second body. Native inference allows 300s, beyond Bun's 255s idle maximum.
+  const handler = handlers[0];
+  return (
+    source.slice(0, handler.getStart(file)) +
+    `fetch(request, server) {
+      if (!new URL(request.url).pathname.startsWith("/api/proxy/"))
+        return fetch(request);
+      if (!request.body) {
+        server.timeout(request, 0);
+        return fetch(request);
+      }
+      const body = request.body.pipeThrough(new TransformStream({
+        flush() { server.timeout(request, 0); }
+      }));
+      return fetch(new Request(request, { body }));
+    }` +
+    source.slice(handler.end)
   );
 }
 
@@ -243,20 +339,27 @@ export async function emptyOutput(path: string, sourceRoot: string) {
       await lstat(ancestor);
       break;
     } catch (error: any) {
-      if (error.code !== 'ENOENT') throw error;
+      if (error.code !== "ENOENT") throw error;
       ancestor = dirname(ancestor);
     }
   }
-  const canonical = resolve(await realpath(ancestor), relative(ancestor, output));
+  const canonical = resolve(
+    await realpath(ancestor),
+    relative(ancestor, output)
+  );
   if (
     source === canonical ||
     source.startsWith(canonical + sep) ||
     canonical.startsWith(source + sep)
   ) {
-    throw new Error('Web artifact output must be outside the upstream web source tree');
+    throw new Error(
+      "Web artifact output must be outside the upstream web source tree"
+    );
   }
   await mkdir(canonical, { recursive: true });
   if ((await readdir(canonical)).length)
-    throw new Error('Web artifact output must be empty; choose a fresh directory');
+    throw new Error(
+      "Web artifact output must be empty; choose a fresh directory"
+    );
   return realpath(canonical);
 }

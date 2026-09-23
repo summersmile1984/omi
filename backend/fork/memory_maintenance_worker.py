@@ -1,4 +1,4 @@
-"""Supervised self-host owner for canonical-memory projection outbox delivery.
+"""Supervised self-host owner for canonical-memory processing and projections.
 
 Canonical source replacement, leases, retries, acknowledgements and provider
 mutations remain in their existing upstream owners. This process contributes
@@ -57,6 +57,7 @@ class CycleReport:
     dead_letter_count: int
     ack_failed_count: int
     error_count: int
+    decisions_applied: int = 0
 
     @property
     def succeeded(self) -> bool:
@@ -117,9 +118,42 @@ _production_inventory = RegistryPager()
 
 
 def _production_drain(uid: str, *, db_client: Any, run_id: str, now: datetime) -> Mapping[str, Any]:
-    from utils.memory.short_term_promotion import _drain_canonical_outbox
+    from utils.memory.short_term_promotion import run_canonical_short_term_maintenance
+    from utils.task_intelligence.workstream_association import (
+        drain_recurrence_inbox_for_maintenance,
+        persist_recurrence_signals_for_maintenance,
+    )
 
-    return _drain_canonical_outbox(uid, db_client=db_client, run_id=run_id, now=now)
+    # The same owner drains old projections, normalizes pending submissions in
+    # consolidation, atomically applies its route, then projects the new head.
+    # Do not pass a frozen clock: post-commit events must be due in this pass.
+    report = run_canonical_short_term_maintenance(
+        uid,
+        db_client=db_client,
+        run_id=run_id,
+        recurrence_signal_sink=persist_recurrence_signals_for_maintenance,
+    )
+    drain_recurrence_inbox_for_maintenance(uid, firestore_client=db_client)
+    summary = dict(report.outbox or {})
+    errors = list(summary.get('errors') or [])
+    consolidation = report.consolidation
+    if consolidation is None:
+        errors.append('consolidation_report_missing')
+    else:
+        errors.extend(consolidation.errors)
+        if consolidation.skipped_reason not in (None, 'consolidation_not_due'):
+            errors.append(consolidation.skipped_reason)
+        if (
+            consolidation.watermark_blocked
+            or consolidation.retryable_memory_ids
+            or consolidation.quarantined_memory_ids
+        ):
+            errors.append('consolidation_incomplete')
+        summary['decisions_applied'] = consolidation.decisions_applied
+    if report.skipped_reason:
+        errors.append(report.skipped_reason)
+    summary['errors'] = errors
+    return summary
 
 
 def run_cycle(
@@ -131,9 +165,9 @@ def run_cycle(
     now: datetime | None = None,
     run_id: str | None = None,
 ) -> CycleReport:
-    """Drain one bounded registry page through the existing outbox authority."""
+    """Process one bounded registry page through canonical maintenance."""
     observed = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    cycle_id = run_id or f'self-host-outbox:{uuid.uuid4().hex}'
+    cycle_id = run_id or f'self-host-maintenance:{uuid.uuid4().hex}'
     uids = tuple(inventory(db_client, config.uid_limit))
     totals = {
         'delivered_count': 0,
@@ -141,11 +175,20 @@ def run_cycle(
         'dead_letter_count': 0,
         'ack_failed_count': 0,
         'error_count': 0,
+        'decisions_applied': 0,
     }
     for uid in uids:
-        summary = drain(uid, db_client=db_client, run_id=cycle_id, now=observed)
+        try:
+            summary = drain(uid, db_client=db_client, run_id=cycle_id, now=observed)
+        except Exception as error:
+            # A malformed user's canonical state must fail that user, not
+            # starve every later registry entry in the same bounded page.
+            totals['error_count'] += 1
+            logger.warning('canonical memory maintenance user failed error_type=%s', type(error).__name__)
+            continue
         for key in ('delivered_count', 'retryable_failure_count', 'dead_letter_count', 'ack_failed_count'):
             totals[key] += int(summary.get(key) or 0)
+        totals['decisions_applied'] += int(summary.get('decisions_applied') or 0)
         errors = summary.get('errors')
         totals['error_count'] += len(errors) if isinstance(errors, list) else int(bool(errors))
     return CycleReport(user_count=len(uids), **totals)
@@ -163,19 +206,20 @@ def run_loop(
             report = cycle(db_client=db_client, config=config)
             log = logger.info if report.succeeded else logger.warning
             log(
-                'canonical memory outbox cycle users=%d delivered=%d retryable=%d dead_letter=%d ack_failed=%d errors=%d',
+                'canonical memory maintenance users=%d delivered=%d retryable=%d dead_letter=%d ack_failed=%d errors=%d decisions=%d',
                 report.user_count,
                 report.delivered_count,
                 report.retryable_failure_count,
                 report.dead_letter_count,
                 report.ack_failed_count,
                 report.error_count,
+                report.decisions_applied,
             )
         except Exception as error:
             # Do not expose provider bodies, memory content, UIDs or DSNs. A
             # supervised process remains alive so transient inventory/PG faults
             # can recover; --once remains the fail-fast operator probe.
-            logger.warning('canonical memory outbox cycle failed error_type=%s', type(error).__name__)
+            logger.warning('canonical memory maintenance cycle failed error_type=%s', type(error).__name__)
         stop.wait(config.poll_seconds)
 
 
@@ -193,7 +237,9 @@ def run(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true', help='validate deployment and provider admission, then exit')
     parser.add_argument('--health', action='store_true', help='check that the supervised worker remains PID 1')
-    parser.add_argument('--once', action='store_true', help='run one bounded cycle and fail if delivery reports errors')
+    parser.add_argument(
+        '--once', action='store_true', help='run one bounded processing/projection cycle; fail on errors'
+    )
     args = parser.parse_args(argv)
     if args.health:
         return 0 if _process_is_running() else 1
@@ -201,7 +247,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     config = Config.from_env()
     bootstrap(Role.MEMORY_MAINTENANCE)
     if args.check:
-        print('canonical memory outbox admission OK')
+        print('canonical memory maintenance admission OK')
         return 0
 
     from database._client import db
@@ -209,10 +255,10 @@ def run(argv: Sequence[str] | None = None) -> int:
     if args.once:
         report = run_cycle(db_client=db, config=config)
         print(
-            'canonical memory outbox cycle '
+            'canonical memory maintenance cycle '
             f'users={report.user_count} delivered={report.delivered_count} '
             f'retryable={report.retryable_failure_count} dead_letter={report.dead_letter_count} '
-            f'ack_failed={report.ack_failed_count} errors={report.error_count}'
+            f'ack_failed={report.ack_failed_count} errors={report.error_count} decisions={report.decisions_applied}'
         )
         return 0 if report.succeeded else 1
 

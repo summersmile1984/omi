@@ -37,11 +37,21 @@ export async function runServerRegression(context) {
         ...(process.env.SELF_HOST_CI_RUNTIME_IMAGE
           ? ["--runtime-image", process.env.SELF_HOST_CI_RUNTIME_IMAGE]
           : []),
+        ...(process.env.SELF_HOST_CI_EMBEDDING_STORE
+          ? ["--embedding-store", process.env.SELF_HOST_CI_EMBEDDING_STORE]
+          : []),
+        ...(process.env.SELF_HOST_CI_MIMO_SECRET_FILE
+          ? ["--mimo-secret-file", process.env.SELF_HOST_CI_MIMO_SECRET_FILE]
+          : []),
+        ...(["llm", "speech"].flatMap((kind) => {
+          const store = process.env[`SELF_HOST_CI_${kind.toUpperCase()}_STORE`];
+          return store ? [`--${kind}-store`, store] : [];
+        })),
       ],
       {
         cwd: context.root,
         env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
-        timeout: 14 * 60 * 1000,
+        timeout: 30 * 60 * 1000,
         stdio: ["ignore", fd, fd],
       }
     );

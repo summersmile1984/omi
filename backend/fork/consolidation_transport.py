@@ -1,6 +1,6 @@
 """Retain hydrated candidate identities across the upstream planner boundary."""
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from functools import wraps
 from types import FunctionType, MappingProxyType
 from typing import Mapping
@@ -48,10 +48,21 @@ def gather(original):
 def validate(original):
     @wraps(original)
     def wrapped(context, batch):
-        error = original(context, batch)
+        identities = getattr(context, 'admission_memories', None)
+        pending = None
+        for index, item in enumerate(context.pending_items):
+            identity = identities.get(item.memory_id) if identities is not None else None
+            if item.subject_entity_id is None and identity is not None and identity.subject:
+                if pending is None:
+                    pending = list(context.pending_items)
+                pending[index] = item.model_copy(update={'subject_entity_id': identity.subject})
+        # Validate against the authoritative source identity when its derived
+        # graph subject was cleared. Never change the source snapshot, bypass
+        # the remaining attribution checks, or synthesize a routing decision.
+        validation_context = replace(context, pending_items=pending) if pending is not None else context
+        error = original(validation_context, batch)
         if error is not None:
             return error
-        identities = getattr(context, 'admission_memories', None)
         if identities is None:
             return 'output_invalid:hydrated_identity_context_missing'
         return validate_duplicate_creates(context, batch, identities)

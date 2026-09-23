@@ -1,11 +1,19 @@
 """Hermetic contracts; actual licensed-model inference is a separate Docker probe."""
 
+import asyncio
+import base64
 from dataclasses import replace
 import hashlib
+from importlib.util import module_from_spec, spec_from_file_location
+import io
 import json
 from pathlib import Path
+import subprocess
+import sys
+import tarfile
 from types import SimpleNamespace
 from unittest import mock
+import wave
 
 import numpy as np
 import pytest
@@ -15,6 +23,8 @@ from fork.model_contract import validate_speech
 from fork.speech_assets import manifest_bytes, verify
 from utils.sensevoice.socket import SenseVoiceSocket, decode_pcm
 from utils.sensevoice.prerecorded_provider import SenseVoicePrerecordedProvider
+from utils.mimo_pipeline.socket import pcm16_to_wav
+from utils.stt.outcomes import TranscriptionFailure, failure_from_exception
 
 
 def selected():
@@ -58,6 +68,22 @@ def test_explicit_mimo_profile_preserves_embedding_and_bounds_egress(monkeypatch
         assert_http_endpoint_allowed(endpoint)
 
 
+def _tone_wav(seconds=2):
+    samples = (12000 * np.sin(2 * np.pi * 440 * np.arange(16000) / 16000)).astype('<i2')
+    return pcm16_to_wav(samples.tobytes() * seconds, 16000, 1)
+
+
+def _encode_audio(audio, *output_args):
+    return subprocess.run(
+        ['ffmpeg', '-v', 'error', '-nostdin', '-i', 'pipe:0', *output_args, 'pipe:1'],
+        input=audio,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=20,
+        check=True,
+    ).stdout
+
+
 def test_mimo_speech_uses_documented_audio_protocol_and_hides_provider_error(monkeypatch):
     import httpx
     from fork import operator_ai, mimo_speech
@@ -87,7 +113,7 @@ def test_mimo_speech_uses_documented_audio_protocol_and_hides_provider_error(mon
     monkeypatch.setattr(
         mimo_speech, 'request', lambda payload: request(payload, transport=httpx.MockTransport(handler))
     )
-    result = mimo_speech.Client().transcribe_audio(b'controlled-audio', language='zh-CN')
+    result = mimo_speech.Client().transcribe_audio(_tone_wav(), language='zh-CN')
     assert result.text == '茉莉花茶' and result.duration == 2
     assert sent[0]['asr_options'] == {'language': 'zh'}
     assert sent[0]['messages'][0]['content'][0]['input_audio']['data'].startswith('data:audio/wav;base64,')
@@ -98,6 +124,120 @@ def test_mimo_speech_uses_documented_audio_protocol_and_hides_provider_error(mon
         )
     assert 'synthetic-secret' not in str(failure.value)
     assert not failure.value.retryable
+
+
+def test_mimo_conversion_rejects_decoded_overflow_without_silent_truncation(monkeypatch):
+    from fork import mimo_speech
+
+    flac = _encode_audio(_tone_wav(330), '-f', 'flac')
+    provider = mock.Mock(side_effect=AssertionError('truncated audio reached MiMo'))
+    monkeypatch.setattr(mimo_speech, 'request', provider)
+    with pytest.raises(TranscriptionFailure) as failure:
+        mimo_speech.Client().transcribe_audio(flac, filename='recording.flac')
+    assert failure.value.outcome.value == 'invalid_input' and not failure.value.retryable
+    provider.assert_not_called()
+
+
+def test_mimo_prerecorded_decodes_real_webm_before_provider_request(monkeypatch, tmp_path):
+    from fork import mimo_speech, operator_ai
+
+    row = operator_ai.configure(selected(), 'mimo-cn')
+    monkeypatch.setattr(profile, 'current', lambda: row)
+    webm = _encode_audio(_tone_wav(), '-c:a', 'libopus', '-f', 'webm')
+
+    def provider(payload):
+        data = payload['messages'][0]['content'][0]['input_audio']['data']
+        prefix, encoded = data.split(',', 1)
+        assert prefix == 'data:audio/wav;base64'
+        with wave.open(io.BytesIO(base64.b64decode(encoded))) as decoded:
+            assert decoded.getnchannels() == 1 and decoded.getsampwidth() == 2
+            assert decoded.getnframes() / decoded.getframerate() == pytest.approx(2, abs=0.03)
+            samples = np.frombuffer(decoded.readframes(decoded.getnframes()), dtype='<i2')
+            assert np.std(samples) > 5000
+            frequencies = np.fft.rfftfreq(len(samples), 1 / decoded.getframerate())
+            assert frequencies[np.argmax(np.abs(np.fft.rfft(samples)))] == pytest.approx(440, abs=2)
+        return {'choices': [{'message': {'content': 'decoded recording'}}], 'usage': {'seconds': 2}}
+
+    monkeypatch.setattr(mimo_speech, 'request', provider)
+    # The upstream bytes adapter loses the WebM hint and defaults to WAV.
+    # Container normalization must therefore inspect bytes, not trust that hint.
+    segments = mimo_speech.prerecorded().transcribe_bytes(webm, encoding='audio/webm;codecs=opus', language='en')
+    assert segments == [{'timestamp': [0.0, 2.0], 'speaker': 'SPEAKER_00', 'text': 'decoded recording'}]
+    result = mimo_speech.Client().transcribe_audio(
+        webm, filename='audio.webm', content_type='audio/webm;codecs=opus', language='en'
+    )
+    assert result.text == 'decoded recording'
+
+    from fork.patches.speech import patches
+    from utils import chat
+    from utils.stt import pre_recorded
+
+    monkeypatch.setattr(chat, 'get_prerecorded_service', speech.prerecorded_selection)
+    monkeypatch.setattr(pre_recorded, 'get_prerecorded_provider', lambda language: mimo_speech.prerecorded())
+    monkeypatch.setattr(
+        chat, 'prerecorded', mock.Mock(side_effect=AssertionError('captured audio fetched via public object URL'))
+    )
+    capture = tmp_path / 'capture.webm'
+    capture.write_bytes(webm)
+    boundary = next(patch for patch in patches() if patch.attribute == '_transcribe_voice_message_url')
+    transcribe = boundary.build(chat._transcribe_voice_message_url)
+    text, language = transcribe('https://client-only.invalid/signed-audio', str(capture), 'en')
+    assert (text.casefold(), language) == ('decoded recording', 'en')
+
+
+def test_mimo_preserves_long_mp3_without_imposing_decoded_wav_limit(monkeypatch):
+    from fork import mimo_speech, operator_ai
+
+    row = operator_ai.configure(selected(), 'mimo-cn')
+    monkeypatch.setattr(profile, 'current', lambda: row)
+    # This exceeds the 10 MiB decoded WAV bound, but is a supported MP3 upload.
+    mp3 = _encode_audio(_tone_wav(330), '-c:a', 'libmp3lame', '-b:a', '32k', '-f', 'mp3')
+
+    def provider(payload):
+        data = payload['messages'][0]['content'][0]['input_audio']['data']
+        prefix, encoded = data.split(',', 1)
+        assert prefix == 'data:audio/mpeg;base64'
+        assert base64.b64decode(encoded) == mp3
+        return {'choices': [{'message': {'content': 'complete recording'}}], 'usage': {'seconds': 330}}
+
+    monkeypatch.setattr(mimo_speech, 'request', provider)
+    result = mimo_speech.Client().transcribe_audio(mp3, filename='untrusted.wav', language='en')
+    assert result.text == 'complete recording' and result.duration == 330
+
+
+def test_mimo_malformed_container_is_invalid_input_not_provider_failure(monkeypatch):
+    from fork import mimo_speech
+
+    provider = mock.Mock(side_effect=AssertionError('invalid audio reached MiMo'))
+    monkeypatch.setattr(mimo_speech, 'request', provider)
+    with pytest.raises(TranscriptionFailure) as rejected:
+        mimo_speech.Client().transcribe_audio(b'\x1a\x45\xdf\xa3truncated private audio', filename='audio.wav')
+    failure = failure_from_exception(rejected.value, provider='mimo')
+    assert failure.outcome.value == 'invalid_input'
+    assert failure.status_code == 400 and failure.retryable is False
+    assert 'private audio' not in str(failure)
+    provider.assert_not_called()
+
+
+@pytest.mark.parametrize('cancelled', [False, True])
+def test_mimo_decoder_interruption_cleans_private_input(monkeypatch, cancelled):
+    from fork import mimo_speech
+
+    private_inputs = []
+
+    def interrupt(command, **kwargs):
+        private_inputs.append(Path(command[command.index('-i') + 1]))
+        assert private_inputs[-1].read_bytes() == b'encoded audio'
+        if cancelled:
+            raise asyncio.CancelledError()
+        raise subprocess.TimeoutExpired(command, 20)
+
+    monkeypatch.setattr(mimo_speech.subprocess, 'run', interrupt)
+    with pytest.raises(asyncio.CancelledError if cancelled else TranscriptionFailure) as failure:
+        mimo_speech.Client().transcribe_audio(b'encoded audio')
+    if not cancelled:
+        assert failure.value.outcome.value == 'timeout' and failure.value.retryable
+    assert not private_inputs[0].parent.exists()
 
 
 @pytest.mark.asyncio
@@ -290,6 +430,49 @@ def test_url_egress_redirect_and_unsupported_options_never_reach_inference(monke
     with pytest.raises(httpx.HTTPStatusError):
         provider.transcribe_url('http://minio:9000/audio.wav')
     assert network.call_args.kwargs['follow_redirects'] is False
+
+
+def test_provisioning_publishes_bundle_readable_by_container_user(monkeypatch, tmp_path):
+    root = Path(__file__).resolve().parents[3]
+    with monkeypatch.context() as context:
+        context.setattr(sys, 'path', list(sys.path))
+        spec = spec_from_file_location('speech_public_provision_test', root / 'deploy/self-host/prepare-speech.py')
+        provision = module_from_spec(spec)
+        spec.loader.exec_module(provision)
+    contract = validate_speech(selected()['speech'])
+    seed = tmp_path / 'seed'
+    downloads = {}
+    digests = {}
+    for kind, model in (('asr', contract.stt_model), ('tts', contract.tts_model)):
+        directory = seed / model
+        directory.mkdir(parents=True, mode=0o700)
+        artifact = directory / 'model.onnx'
+        artifact.write_bytes(b'controlled model artifact')
+        artifact.chmod(0o600)
+        encoded = io.BytesIO()
+        with tarfile.open(fileobj=encoded, mode='w:bz2') as archive:
+            archive.add(directory, arcname=model)
+        downloads[model] = encoded.getvalue()
+        digests[kind] = 'sha256:' + hashlib.sha256(encoded.getvalue()).hexdigest()
+    contract = replace(
+        contract,
+        stt_archive_digest=digests['asr'],
+        tts_archive_digest=digests['tts'],
+        bundle_digest='sha256:' + hashlib.sha256(manifest_bytes(seed, contract)).hexdigest(),
+    )
+    monkeypatch.setattr(
+        provision.urllib.request,
+        'urlopen',
+        lambda url, **kwargs: io.BytesIO(downloads[url.rsplit('/', 1)[1].removesuffix('.tar.bz2')]),
+    )
+    output = tmp_path / 'published'
+    provision.provision(output, contract)
+    verify(output, contract)
+    # Image users do not share the provisioner's uid/gid: every directory must
+    # be traversable, and public model bytes readable, by an unrelated principal.
+    for path in (output, *output.rglob('*')):
+        required = 0o005 if path.is_dir() else 0o004
+        assert path.stat().st_mode & required == required
 
 
 def test_provisioning_rejects_archive_path_escape(tmp_path):

@@ -6,14 +6,14 @@ import pytest
 from pydantic import ValidationError
 
 from fork import memory_operation_clock
-from fork.patches import collect, collect_memory_projection
+from fork.patches import collect, collect_memory_maintenance
 from models.memory_operations import MemoryOperation, MemoryOperationStatus, MemoryOperationType
 
 
 @pytest.mark.parametrize('backwards', [timedelta(microseconds=1), timedelta(seconds=2)])
 def test_registered_operation_transition_remains_monotonic_without_relaxing_decoding(monkeypatch, backwards):
     patch = next(p for p in collect() if p.name == 'canonical-memory.operation-clock')
-    assert patch.name in {p.name for p in collect_memory_projection()}
+    assert patch.name in {p.name for p in collect_memory_maintenance()}
     assert patch.applies_to({'target': 'self_hosted'})
     assert not patch.applies_to({'target': 'omi_cloud'})
     module, original = patch.target()

@@ -11,10 +11,14 @@ white-label acceptance result.
 
 ## Owners and credential boundary
 
-- `app/lib/fork/identity/`: the production HTTP protocol, opaque session owner,
-  secure storage and public deployment decoder. Only an opaque session with its
-  server-confirmed UID can restore a login. A JWT-only legacy cache is not a
-  session. The session namespace binds package, target/stage and auth authority.
+- `app/fork/identity/`: the canonical production HTTP protocol, opaque session
+  owner, secure storage and public deployment decoder. `prepare.py` materializes
+  these sources at `lib/fork/identity/` in both target stages; runtime and test
+  imports use only `package:omi/fork/identity/`, never the staging-input path.
+  The original `app/lib/` tree contains no stage-only identity sources. Only an
+  opaque session with its server-confirmed UID can restore a login. A JWT-only
+  legacy cache is not a session. The session namespace binds package,
+  target/stage and auth authority.
 - `AuthService` remains the typed JWT refresh/401/replay owner. The staged
   constructor selects `IdentityOwner` at its existing `AuthTokenGateway` seam;
   its generation checks, request timeouts, retry budget and terminal event are
@@ -34,16 +38,15 @@ white-label acceptance result.
   uses the analyzer already locked by upstream build_runner to select actual
   declaration spans. It does not scan braces or edit tracked source files.
 - `overlays/*.dart.txt` are compiled production input, materialized only in the
-  stage. `tests/gateway_test.dart.txt` executes the resulting AuthService and
-  authenticated request replayer. `.txt` prevents the
-  upstream analyzer from type-checking an overlay against the wrong, unmodified
-  source owners; a staged-only test left as a live `.dart` file fails the
-  upstream `dart analyze` job for every pull request that touches `app/`.
-  `tests/better_auth_token_test.dart.txt` used to cover the staged
-  `parseBetterAuthDevCredential` and `AuthenticationProvider.betterAuthDevSignInEnabled`;
-  the opaque-credential rework deleted both symbols, and `test/fork/native_identity_test.dart`
-  now owns that contract ("unconfigured topology fails", "legacy JWT-only stored shape
-  cannot become an opaque session"), so the obsolete staged test is gone.
+  stage. `tests/native_identity_test.dart.txt` exercises the opaque identity
+  owner; `tests/gateway_test.dart.txt` executes the resulting AuthService and
+  authenticated request replayer using the same staged identity namespace.
+  `test.sh` materializes these templates and `tests/assets_test.dart.txt` under
+  each stage's `test/fork/`, then runs them for both deployment targets before
+  compiling the actual staged main bundle. Stage-only tests do not run in the
+  original app tree; unrelated `app/test/fork/` tests remain there unchanged.
+  `.txt` prevents the upstream analyzer from type-checking a staged-only test
+  against the wrong, unmodified source owners.
 
 The local artifact materializes its fork-owned basic local-notification service
 with a neutral color and never initializes Firebase/FCM, Intercom or remote

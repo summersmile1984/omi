@@ -19,6 +19,7 @@ import {
   confinedPath,
   emptyOutput,
   rewriteBrandMetadata,
+  rewriteBunServerTimeout,
   rewriteMcpUrl,
   stageSources,
 } from "./source-stage";
@@ -59,30 +60,140 @@ const presentation = {
 };
 
 describe("the shared Web build boundary", () => {
-  test("readiness executes the Edge binding and cannot certify missing or unhealthy dependencies", async () => {
-    const request = new Request("https://web.fixture.invalid/api/worker-ready", {
-      headers: { Authorization: "Bearer private-client-token" },
+  test("rejects changed Bun startup ownership instead of silently retaining the default timeout", () => {
+    const ts = createRequire(
+      resolve(import.meta.dir, "../../web/app/package.json")
+    )("typescript");
+    for (const source of [
+      "startServer(options)",
+      "Bun.serve(options)",
+      "Bun.serve({ ...options })",
+      "Bun.serve({ idleTimeout: 10, fetch })",
+      "Bun.serve({ fetch: handler })",
+      "Bun.serve({ fetch }); Bun.serve({ fetch });",
+    ]) {
+      expect(() => rewriteBunServerTimeout(source, ts)).toThrow(
+        "Bun startup timeout owner changed"
+      );
+    }
+  });
+  test("keeps upload protection until EOF, then permits backend inference without copying the body", async () => {
+    const ts = createRequire(
+      resolve(import.meta.dir, "../../web/app/package.json")
+    )("typescript");
+    type Server = { timeout(request: Request, seconds: number): void };
+    type Handler = (request: Request, server: Server) => Promise<Response>;
+    let input!: ReadableStreamDefaultController<Uint8Array>;
+    let entered!: () => void;
+    let consumed!: () => void;
+    let finishInference!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      entered = resolve;
     });
+    const bodyRead = new Promise<void>((resolve) => {
+      consumed = resolve;
+    });
+    const inference = new Promise<void>((resolve) => {
+      finishInference = resolve;
+    });
+    const handler = new Function(
+      "Bun",
+      "fetch",
+      rewriteBunServerTimeout("return Bun.serve({ fetch });", ts)
+    )(
+      { serve: (options: { fetch: Handler }) => options.fetch },
+      async (request: Request) => {
+        entered();
+        const text = await request.text();
+        consumed();
+        await inference;
+        return new Response(text);
+      }
+    ) as Handler;
+    const bytes = new TextEncoder().encode("茉莉花茶");
+    const request = new Request("http://localhost/api/proxy/example", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          input = controller;
+          controller.enqueue(bytes.subarray(0, 2));
+        },
+      }),
+    });
+    let exemptions = 0;
+    const response = handler(request, {
+      timeout(original, seconds) {
+        expect(original).toBe(request);
+        expect(seconds).toBe(0);
+        exemptions++;
+      },
+    });
+    await reading;
+    expect(exemptions).toBe(0);
+    input.enqueue(bytes.subarray(2));
+    input.close();
+    await bodyRead;
+    expect(exemptions).toBe(1);
+    finishInference();
+    expect(await (await response).text()).toBe("茉莉花茶");
+  });
+  test("readiness executes the Edge binding and cannot certify missing or unhealthy dependencies", async () => {
+    const request = new Request(
+      "https://web.fixture.invalid/api/worker-ready",
+      {
+        headers: { Authorization: "Bearer private-client-token" },
+      }
+    );
     const calls: Request[] = [];
-    const edge = { async fetch(upstream: Request) {
-      calls.push(upstream);
-      return Response.json({ status: "ready", private: "dependency-only" });
-    } };
+    const edge = {
+      async fetch(upstream: Request) {
+        calls.push(upstream);
+        return Response.json({ status: "ready", private: "dependency-only" });
+      },
+    };
     const ready = await workerReadiness(request, edge);
     expect(ready?.status).toBe(200);
     expect(ready?.headers.get("cache-control")).toBe("no-store");
     expect(await ready?.json()).toEqual({ status: "ready" });
     expect(calls[0].url).toBe("https://edge.internal/ready");
     expect(calls[0].headers.get("authorization")).toBeNull();
-    expect(await workerReadiness(new Request("https://web.fixture.invalid/login"), edge)).toBeUndefined();
-    expect((await workerReadiness(new Request(request.url, { method: "POST" }), edge))?.status).toBe(405);
+    expect(
+      await workerReadiness(
+        new Request("https://web.fixture.invalid/login"),
+        edge
+      )
+    ).toBeUndefined();
+    expect(
+      (
+        await workerReadiness(
+          new Request(request.url, { method: "POST" }),
+          edge
+        )
+      )?.status
+    ).toBe(405);
     expect(calls).toHaveLength(1);
     for (const dependency of [
       undefined,
-      { async fetch() { throw new Error("private provider failure"); } },
-      { async fetch() { return new Response("<html>login</html>"); } },
-      { async fetch() { return Response.json({ status: "degraded" }); } },
-      { async fetch() { return Response.json({ status: "ready" }, { status: 503 }); } },
+      {
+        async fetch() {
+          throw new Error("private provider failure");
+        },
+      },
+      {
+        async fetch() {
+          return new Response("<html>login</html>");
+        },
+      },
+      {
+        async fetch() {
+          return Response.json({ status: "degraded" });
+        },
+      },
+      {
+        async fetch() {
+          return Response.json({ status: "ready" }, { status: 503 });
+        },
+      },
     ]) {
       const failed = await workerReadiness(request, dependency);
       expect(failed?.status).toBe(503);

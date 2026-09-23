@@ -135,6 +135,15 @@ pages use the same upstream route/renderer code on both targets.
 - Server OS bundles the generated server into one Bun executable module and
   ships only that module plus public assets. The Dockerfile consumes this
   artifact; an image build is separate evidence from a successful Bun run.
+  The staged Bun startup adapter retains the upstream static/SSR/request handler.
+  For `/api/proxy/`, Bun's idle timer is disabled only after the complete inbound
+  body arrives (immediately for bodyless requests). A streaming identity transform
+  observes EOF without buffering a second body; incomplete uploads retain Bun's
+  ordinary idle protection, even with bogus authorization. The default 10 seconds
+  otherwise disconnects first-account history during inference; native deadlines
+  can exceed Bun's maximum 255-second setting. Backend provider/stream deadlines
+  remain authoritative after ingestion. Other routes retain their ordinary timer.
+  No retry or substitute reply is introduced; startup-owner drift fails the build.
 
 `bash deploy/web/ci.sh` runs the same typecheck and behavioral build-boundary
 contract tests in the local and CI fork manifest. It covers public projection,

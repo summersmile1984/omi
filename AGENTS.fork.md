@@ -24,7 +24,8 @@ shrinks.
 
 Never allowlisted, whatever the reason: upstream tests, lockfiles and dependency
 manifests, generated output, bot-written files, upstream CI workflows, upstream
-`AGENTS.md`, and formatting-only changes.
+`AGENTS.md`, and formatting-only changes. Development/container dependencies go
+in `dev/requirements-test.*`, not the production `backend/requirements-fork.txt`.
 
 Enforced by `scripts/fork/check-upstream-touch.py --aggregate` via
 `.github/checks-manifest.fork.yaml`. The audit covers the complete divergence
@@ -32,6 +33,13 @@ from the upstream revision actually incorporated, not the event's commit range,
 and an unavailable `upstream/main` fails the lane instead of skipping. The
 per-platform techniques that replace an upstream edit are in
 [`dev/unified-main/00-upstream-touch-policy.md`](dev/unified-main/00-upstream-touch-policy.md).
+
+Current admitted seam: `app/lib/flavors.dart`, at most three added lines.
+Do not add allowances to make a failing audit pass. Restore upstream files
+byte-for-byte from `git merge-base HEAD upstream/main`, including final newlines;
+do not use `upstream/main` itself, which may contain changes not yet incorporated.
+After tests/builds, discard only their generated source changes and run the
+aggregate audit against the final committed HEAD.
 
 Which upstream workflows stay enabled, which checks gate `main`, and how the
 deployment environments are protected are declared in
@@ -65,9 +73,42 @@ squash).
   suites, `web-checks`, run with no shim/profile environment set. This proves
   the fork has not changed upstream behavior. Upstream test files are never
   modified.
-- **Fork mode** — `backend/fork/tests/`, `app/test/fork/`, desktop `Fork*`
-  tests, `contracts/`, run with `OMI_DEPLOYMENT_PROFILE` set. All fork behavior
-  is asserted here.
+- **Fork mode** — `backend/fork/tests/`, staged `app/fork/tests/`, desktop
+  `Fork*` tests, `contracts/`, run with an explicit deployment profile. Flutter
+  identity sources live in `app/fork/identity/` and stage to `lib/fork/identity/`;
+  never add an upstream dead-code exemption for stage-only source.
+- **Container qualification** — `scripts/fork/run-container-tests.py` owns an
+  isolated `.venv-fork-tests`, local fixtures under `dev/tests/containers/`, and
+  explicit PG shadow tests. Docker is required, never imported by upstream unit
+  conftest or implicitly selected by ordinary unit collection.
+- Keep upstream API E2E and listen/pusher scenarios intact. The fork E2E wrapper
+  may isolate the environment and forward options, but must always select
+  `backend/testing/e2e/`; flags must not broaden collection or drop scenarios.
+- Do not replace an upstream conftest, copy upstream modules, or add broad test
+  monkeypatches merely to obtain zero upstream diff or a green suite.
+
+Local runtime ownership stays in `dev/local.sh`; `dev/selfhost-local.sh` is its
+wrapper, not a second configuration or process owner. Do not fork the upstream
+dev-harness CLI/config/safety implementation. Render profiles through
+`scripts/profiles/render.py`, never a second hand-maintained profile table.
+
+- The user requires the complete canonical native profile by default: chat,
+  STT, TTS and embedding stay enabled. Never add a core-only mode or a renamed
+  reduced-capability substitute, or strip capabilities to make a gate pass.
+  Missing model requirements fail explicitly. Hosted AI requires explicit
+  selection and a selected `OMI_LOCAL_*` credential; never inherit ambient
+  cloud/provider authority. Retired selectors are errors, not migration aliases.
+- Own processes by instance state and process identity, never by port alone.
+  Stop/reset only that instance's processes, containers and volumes.
+- Qdrant admission must verify exact embedding identity, not just dimensions.
+  A provider/model change requires an explicitly reviewed namespace/backfill;
+  never relabel or delete existing collections automatically. No-option restart
+  retains the active selection and namespace unless configuration replaces it.
+- Mocked API E2E, container qualification and live runtime proof are distinct.
+  Exercise real Auth/JWT, persistence CRUD and lifecycle transitions; hosted chat
+  proof must demonstrate a model reply, not HTTP 200 with a canned fallback.
+- Report every failed gate. Do not weaken checks, expand baselines, or remove
+  scenarios to claim success; record out-of-scope failures and their evidence.
 
 ## 5. Weekly upstream sync
 
@@ -93,5 +134,32 @@ make -f Makefile.fork upstream-touch    # the zero-touch guard alone
 make -f Makefile.fork sync-probe        # real conflict count against upstream/main
 ```
 
-`make preflight` still runs the upstream gate only; `scripts/fork/preflight`
-runs both, which is what CI does.
+`make preflight` still runs the unmodified upstream gate. `scripts/fork/preflight`
+retains its metadata checks and uses `upstream_checks.py` to adapt only
+diff-hygiene: upstream-owned paths compare with the incorporated upstream
+ancestor, fork paths with the event base, and all changed text is checked for
+conflict markers. The same fork hygiene check runs in the required fork CI lane.
+The tracked upstream manifest, checker, triggers and other gate commands must
+remain unchanged. Use the existing fork fan-out runner to finish the selected
+check inventory when an unrelated failure stops the combined preflight.
+Never report the combined gate as passed when only individual checks passed.
+
+## 7. CI 索引
+
+fork CI 的入口、命令、依赖、运行环境与本机可跑性，对外只有这一份索引：
+
+[`dev/unified-main/ci-coverage.md`](dev/unified-main/ci-coverage.md)
+
+它登记以下文件的对应关系，改任何一处都必须同步其余四处：
+
+| 文件 | 角色 |
+|---|---|
+| `.github/checks-manifest.fork.yaml` | 37 条 fork 检查的声明；`validate_manifest` 拒绝 lane / trigger / platforms 不一致。 |
+| `.github/workflows/fork-checks.yml` | PR / push / dispatch 三 lane；attestation 由它产出。 |
+| `.github/workflows/fork-release-prepare.yml` + `fork-cd-{cloudflare,server}.yml` | freeze + 两路发布；admission 由 `scripts/fork/release_ci.py` 把守。 |
+| `config/repo-state.fork.json` | workflow 启停、quarantine、required checks、environment 保护的声明。 |
+| `scripts/fork/{README.md,RELEASE.md}` | 入口文档；`scripts/fork/preflight` 跑上游 + fork 双门禁。 |
+| `dev/ci-cd-three-stages.md` | 当前事实：三阶段主线 + 真实模型验证记录。 |
+| `dev/unified-main/05-ci-matrix.md` | 2026-09-04 规划稿，§4/§5/§8 标**未实现**；实际由 `deploy/profiles/*.yaml` + `brand/*/manifest.yaml` 承担。 |
+
+变更本节任一文件前，回到 `dev/unified-main/ci-coverage.md` 第 7 节按它的清单执行；不在文档登记的新 manifest id / workflow 文件 / CD 入口会被 `fork-workflow-lint` + `fork-ci-diff-base` + `fork-repo-state-apply` + `fork-staged-targets` 兜底，但兜底无法替代正确的索引。

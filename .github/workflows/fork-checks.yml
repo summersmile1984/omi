@@ -138,6 +138,22 @@ jobs:
           uv pip install --python backend/.venv/bin/python --no-deps --require-hashes -r backend/requirements-fork.txt
           echo "$GITHUB_WORKSPACE/backend/.venv/bin" >> "$GITHUB_PATH"
 
+      # fork-selfhost-startup runs fork/tests/test_speech_contract.py, which shells
+      # out to ffmpeg to build the encoded audio fixtures used by the MiMo
+      # converter regressions. The CI runner image (ubuntu-latest) does not ship
+      # ffmpeg by default; installing it here keeps the fixture bytes reproducible
+      # without touching the upstream test, which the T2 policy forbids. The
+      # `|| true` makes the failure soft: test_hosted_speech.py already gates its
+      # own ffmpeg-dependent cases with `pytest.mark.skipif(shutil.which('ffmpeg')
+      # is None)`, so a missing binary never breaks the rest of the lane.
+      - name: Provision ffmpeg for speech-contract fixtures
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+          command -v ffmpeg && ffmpeg -version | head -1
+
       - name: Select platform checks
         id: platforms
         env:
@@ -199,6 +215,7 @@ jobs:
               output.write(f'enabled={str(enabled).lower()}\n')
               output.write(f"electron={str(any(check['id'] == 'fork-electron-native-identity' for check in selected)).lower()}\n")
               output.write(f"raster={str(any(check['id'] in {'fork-brand-raster', 'fork-flutter-native-identity', 'fork-electron-native-identity'} for check in selected)).lower()}\n")
+              output.write(f"server_models={str(any(check['id'] == 'fork-selfhost-product-core' for check in selected)).lower()}\n")
           PY
 
       - name: Provision shared brand raster dependencies
@@ -229,9 +246,79 @@ jobs:
         working-directory: desktop/windows
         run: pnpm install --frozen-lockfile
 
+      # The product cases run against a real backend fixture. Two runtime
+      # shapes are possible:
+      #
+      #   - Complete canonical native profile: prepare-model.py /
+      #     prepare-speech.py download BGE-M3 / Qwen / SenseVoice / Kokoro and
+      #     product.sh starts the fixture with all three model stores. This is
+      #     the safe shape for untrusted PRs because no business secret leaks
+      #     and downloaded bytes are admitted again at startup. The download
+      #     is several gigabytes per lane and dominates the gate duration;
+      #     it is unavoidable until fork rules allow secrets on PR lanes.
+      #
+      #   - Hosted operator AI: an OpenAI-compatible vendor (openrouter /
+      #     siliconflow / cloudflare-gateway) supplies LLM / ASR / TTS over
+      #     the wire. The fixture still binds a local BGE-M3 embedding store
+      #     because none of them owns that model; everything else is one
+      #     bearer the brand manifest already declared. PR from forks cannot
+      #     read repo secrets, so this shape only runs on the trusted lanes
+      #     (push, workflow_dispatch).
+      - name: Decide Server model runtime
+        id: server_runtime
+        if: steps.flutter.outputs.server_models == 'true'
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "shape=native" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ secrets.FORK_OPERATOR_OPENROUTER_API_KEY }}" ]; then
+            printf '{"OPENROUTER_API_KEY":"%s"}\n' "${{ secrets.FORK_OPERATOR_OPENROUTER_API_KEY }}" \
+              > "$RUNNER_TEMP/selfhost-operator.json"
+            echo "shape=hosted provider=openrouter secret=$RUNNER_TEMP/selfhost-operator.json" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ secrets.FORK_OPERATOR_SILICONFLOW_API_KEY }}" ]; then
+            printf '{"SILICONFLOW_API_KEY":"%s"}\n' "${{ secrets.FORK_OPERATOR_SILICONFLOW_API_KEY }}" \
+              > "$RUNNER_TEMP/selfhost-operator.json"
+            echo "shape=hosted provider=siliconflow secret=$RUNNER_TEMP/selfhost-operator.json" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ secrets.FORK_OPERATOR_CLOUDFLARE_API_TOKEN }}" ]; then
+            printf '{"CLOUDFLARE_API_TOKEN":"%s"}\n' "${{ secrets.FORK_OPERATOR_CLOUDFLARE_API_TOKEN }}" \
+              > "$RUNNER_TEMP/selfhost-operator.json"
+            echo "shape=hosted provider=cloudflare-gateway secret=$RUNNER_TEMP/selfhost-operator.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "shape=native" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Native model stores. Skip the entire download when the hosted shape is
+      # selected above: the fixture no longer needs Qwen / SenseVoice / Kokoro,
+      # only BGE-M3 for the embedding dimension contract.
+      - name: Provision Server embedding store
+        if: steps.server_runtime.outputs.shape == 'native'
+        run: |
+          python3 deploy/self-host/prepare-model.py --kind embedding --output "$RUNNER_TEMP/selfhost-models/embedding"
+      - name: Provision Server LLM and speech stores
+        if: steps.server_runtime.outputs.shape == 'native'
+        run: |
+          python3 deploy/self-host/prepare-model.py --kind llm --output "$RUNNER_TEMP/selfhost-models/llm"
+          python3 deploy/self-host/prepare-speech.py --output "$RUNNER_TEMP/selfhost-models/speech"
+
+      - name: Provision hosted operator AI binding
+        if: steps.server_runtime.outputs.shape == 'hosted'
+        run: |
+          # The brand manifest has already declared which provider this stage
+          # selects; product.sh reads SELF_HOST_CI_OPERATOR_PROVIDER to mirror that
+          # decision. The manifest is the single source of truth, so this step
+          # does not need to inspect secrets.
+          echo "Operator provider for this lane: ${{ steps.server_runtime.outputs.provider }}"
+
       # Portable contracts run on either host; macOS-only checks run below.
       # The self-host fixture runs on this same Linux host, natively amd64, so its
       # image builds and compose stack are no longer emulated.
+      # Portable contracts run on either host; macOS-only checks run below.
+      # The self-host fixture runs on this same Linux host, natively amd64, so its
+      # image builds and compose stack are no longer emulated.
+      #
+      # The runtime-shape branch from the Decide step above determines whether
+      # LLM / speech stores are exported to the lane. Compose the env from a
+      # small shell script so the YAML stays free of nested template expressions
+      # that the GitHub Actions parser refuses.
       - name: Fork manifest (ci lane)
         env:
           # The self-host fixture writes per-command logs; pin them to a stable path
@@ -240,9 +327,19 @@ jobs:
           # (fork-selfhost-product-core reported "inspect command-09.log" for days
           # with nothing diagnosable anywhere).
           SELF_HOST_CI_REPORT_DIR: ${{ runner.temp }}/selfhost-fixture-report
+          SELF_HOST_CI_EMBEDDING_STORE: ${{ runner.temp }}/selfhost-models/embedding
+          SERVER_RUNTIME_SHAPE: ${{ steps.server_runtime.outputs.shape }}
+          SERVER_RUNTIME_PROVIDER: ${{ steps.server_runtime.outputs.provider }}
+          SERVER_RUNTIME_SECRET: ${{ steps.server_runtime.outputs.secret }}
         run: |
-          python3 scripts/fork/run_checks.py \
-            --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux
+          if [ "$SERVER_RUNTIME_SHAPE" = "hosted" ]; then
+            export SELF_HOST_CI_OPERATOR_SECRET_FILE="$SERVER_RUNTIME_SECRET"
+            export SELF_HOST_CI_OPERATOR_PROVIDER="$SERVER_RUNTIME_PROVIDER"
+          else
+            export SELF_HOST_CI_LLM_STORE="$RUNNER_TEMP/selfhost-models/llm"
+            export SELF_HOST_CI_SPEECH_STORE="$RUNNER_TEMP/selfhost-models/speech"
+          fi
+          python3 scripts/fork/run_checks.py --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux
 
       - name: Upload the self-host fixture report
         if: always()

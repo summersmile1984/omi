@@ -252,4 +252,39 @@ class ArmableTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main(verbosity=2)
+    # unittest.main() default discovery can miss classes defined after its first
+    # pass; force-load the module under a stable name so PlanOnlyTests is found.
+    import unittest as _unittest
+    import importlib.util as _importlib
+    _spec = _importlib.spec_from_file_location('apply_repo_state_tests', __file__)
+    _mod = _importlib.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    _unittest.main(module=_mod, argv=['apply_repo_state_tests'], verbosity=2)
+
+
+class PlanOnlyTests(unittest.TestCase):
+    """The --plan-only path runs in CI without admin credentials."""
+
+    def test_plan_only_does_not_contact_github(self):
+        # If registered_workflows is ever called, the test fails. The mock
+        # raises on any invocation and the assertion below also fails, so any
+        # network touch is observable as a failed test.
+        def fail_on_network(*args, **kwargs):
+            raise AssertionError('plan-only must not contact GitHub')
+
+        module = load_module()
+        module.api = fail_on_network
+        module.registered_workflows = lambda repository: fail_on_network(repository)
+        self.assertEqual(module.main_with_argv(['--plan-only']), 0)
+
+    def test_plan_only_emits_a_deterministic_declaration(self):
+        # A regression in plan() that breaks plan-only surfaces here without
+        # ever calling the API.
+        module = load_module()
+        module.api = lambda repository, path, **kwargs: (_ for _ in ()).throw(
+            AssertionError('plan-only must not contact GitHub')
+        )
+        module.registered_workflows = lambda repository: (_ for _ in ()).throw(
+            AssertionError('plan-only must not call registered_workflows')
+        )
+        self.assertEqual(module.main_with_argv(['--plan-only']), 0)

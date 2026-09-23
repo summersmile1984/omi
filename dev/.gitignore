@@ -2,5 +2,5 @@
 .env.dev
 # machine-local port allocation for dev/local.sh (committed example: local.env.example)
 local.env
-# local Server OS runtime env (committed example: selfhost-local.env.example)
+# Retired runtime config may still contain secrets; keep ignoring old copies.
 selfhost-local.env

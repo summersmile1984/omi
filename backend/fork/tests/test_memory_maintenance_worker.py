@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+from functools import partial
 from unittest import mock
 
 import pytest
 
 from fork import memory_maintenance_worker as worker
-from fork.patches import collect_memory_projection
 from fork.profile import ProfileError
+from models.memory_apply import MemoryControlState
+from tests.unit.test_workstream_association import _recurrence_signal
+from utils.memory import short_term_promotion as maintenance
+from utils.memory.canonical_consolidation import ConsolidationReport
+from utils.task_intelligence import workstream_association as recurrence
 
 
 class _Snapshot:
@@ -64,23 +69,135 @@ def test_registry_pager_rejects_a_malformed_identity():
         worker.RegistryPager()(db, 1)
 
 
-def test_projection_registry_contains_only_the_required_outbox_seams():
-    assert {patch.name for patch in collect_memory_projection()} == {
-        'canonical-memory.operation-clock',
-        'embedding.utils.llm.clients',
-        'embedding.database.vector_db',
-        'vector.qdrant-index',
-        'provider.receipt-fence.database.vector_db',
-        'provider.receipt-fence.utils.memory.atom_keyword_index',
-    }
+@pytest.mark.parametrize('blocked', [False, True])
+def test_processing_failure_cannot_be_hidden_by_successful_projection(monkeypatch, blocked):
+    monkeypatch.setattr(
+        maintenance,
+        'ensure_canonical_apply_control_state',
+        lambda uid, **_: MemoryControlState(uid=uid, head_commit_id='head0', account_generation=1, source_generation=1),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        'run_canonical_short_term_ttl_lifecycle',
+        lambda uid, **_: maintenance.CanonicalShortTermLifecycleReport(uid=uid),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        'run_canonical_consolidation',
+        lambda uid, **_: ConsolidationReport(
+            uid=uid,
+            pending_count=1,
+            watermark_blocked=blocked,
+            decisions_applied=0 if blocked else 1,
+            errors=['invoke_failed:TimeoutError'] if blocked else [],
+        ),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        'run_canonical_memory_outbox_worker_tick',
+        lambda **_: {'leased_count': 1, 'delivered_count': 1},
+    )
+    monkeypatch.setattr(recurrence, 'drain_recurrence_inbox_for_maintenance', lambda *args, **kwargs: 0)
+    report = worker.run_cycle(
+        db_client=mock.sentinel.db,
+        config=worker.Config(poll_seconds=5, uid_limit=1),
+        inventory=lambda db, limit: ('uid-a',),
+    )
+    assert report.delivered_count == 2
+    assert report.succeeded is not blocked
+    assert report.decisions_applied == (0 if blocked else 1)
 
 
-def test_production_drain_uses_the_existing_lease_and_projection_owner():
-    observed = datetime(2026, 9, 5, tzinfo=timezone.utc)
-    expected = {'delivered_count': 2, 'errors': []}
-    with mock.patch('utils.memory.short_term_promotion._drain_canonical_outbox', return_value=expected) as drain:
-        assert worker._production_drain('uid-a', db_client=mock.sentinel.db, run_id='cycle-a', now=observed) == expected
-    drain.assert_called_once_with('uid-a', db_client=mock.sentinel.db, run_id='cycle-a', now=observed)
+@pytest.mark.parametrize('storage_failure', [False, True])
+def test_recurrence_receipt_is_durable_before_watermark_and_consumed_afterward(monkeypatch, storage_failure):
+    signal = _recurrence_signal(distinct_days=3)
+    pending = {}
+    completed = []
+    watermark = []
+
+    def enqueue(uid, signal, **kwargs):
+        if storage_failure:
+            raise RuntimeError('inbox unavailable')
+        receipt = mock.Mock(receipt_id='receipt', signal=signal, account_generation=1)
+        pending[receipt.receipt_id] = receipt
+        return receipt
+
+    def complete(uid, receipt_id, **kwargs):
+        completed.append(pending.pop(receipt_id).signal.signal_id)
+
+    def consolidate(uid, *, recurrence_signal_sink=None, **kwargs):
+        if recurrence_signal_sink is not None:
+            recurrence_signal_sink(uid, [signal], firestore_client=mock.sentinel.db)
+        watermark.append('advanced')
+        return ConsolidationReport(uid=uid, recurrence_signals=[signal])
+
+    monkeypatch.setattr(
+        recurrence.workstreams_db, 'get_task_workflow_control', lambda *args, **kwargs: mock.Mock(account_generation=1)
+    )
+    monkeypatch.setattr(
+        recurrence,
+        'persist_recurrence_signals_for_maintenance',
+        partial(recurrence.persist_recurrence_signals_for_maintenance, enqueue=enqueue),
+    )
+    monkeypatch.setattr(
+        recurrence,
+        'drain_recurrence_inbox_for_maintenance',
+        partial(
+            recurrence.drain_recurrence_inbox_for_maintenance,
+            list_pending=lambda *args, **kwargs: list(pending.values()),
+            complete=complete,
+        ),
+    )
+    monkeypatch.setattr(
+        recurrence,
+        'consume_recurrence_signal',
+        lambda *args, **kwargs: mock.Mock(outcome=recurrence.RecurrenceOutcomeKind.candidate_created),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        'ensure_canonical_apply_control_state',
+        lambda uid, **kwargs: MemoryControlState(
+            uid=uid, head_commit_id='head0', account_generation=1, source_generation=1
+        ),
+    )
+    monkeypatch.setattr(
+        maintenance,
+        'run_canonical_short_term_ttl_lifecycle',
+        lambda uid, **kwargs: maintenance.CanonicalShortTermLifecycleReport(uid=uid),
+    )
+    monkeypatch.setattr(maintenance, 'run_canonical_consolidation', consolidate)
+    monkeypatch.setattr(maintenance, 'run_canonical_memory_outbox_worker_tick', lambda **kwargs: {})
+    report = worker.run_cycle(
+        db_client=mock.sentinel.db,
+        config=worker.Config(poll_seconds=5, uid_limit=1),
+        inventory=lambda db, limit: ('uid-a',),
+    )
+    assert completed == ([] if storage_failure else [signal.signal_id])
+    assert watermark == ([] if storage_failure else ['advanced'])
+    assert report.succeeded is not storage_failure
+    assert not pending
+
+
+def test_invalid_user_state_does_not_starve_later_users():
+    processed = []
+
+    def drain(uid, **_):
+        if uid == 'invalid-user':
+            raise ValueError('invalid canonical item')
+        processed.append(uid)
+        return {'delivered_count': 1, 'decisions_applied': 1}
+
+    report = worker.run_cycle(
+        db_client=mock.sentinel.db,
+        config=worker.Config(poll_seconds=5, uid_limit=3),
+        inventory=lambda db, limit: ('first-user', 'invalid-user', 'last-user'),
+        drain=drain,
+    )
+    assert processed == ['first-user', 'last-user']
+    assert report.user_count == 3
+    assert report.error_count == 1
+    assert report.delivered_count == report.decisions_applied == 2
+    assert not report.succeeded
 
 
 def test_cycle_drains_every_admitted_uid_and_reports_success():

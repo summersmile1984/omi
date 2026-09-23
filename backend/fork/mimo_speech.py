@@ -2,13 +2,83 @@
 
 import base64
 import io
+import json
+from pathlib import Path
+import subprocess
+import tempfile
 import wave
 
 import httpx
 
+from config.prerecorded_stt import TranscriptionOutcome
+from utils.mimo_pipeline.mimo_client import MAX_AUDIO_BYTES, MimoSegment, MimoTranscription
+from utils.mimo_pipeline.socket import pcm16_to_wav
+from utils.stt.outcomes import TranscriptionFailure
+
 from . import operator_ai
 from .egress_policy import assert_http_endpoint_allowed
 from .speech import SpeechError
+
+
+def _prepare_audio(audio):
+    """Identify real containers; never trust a filename or a default format hint."""
+    if not audio or len(audio) > MAX_AUDIO_BYTES:
+        raise TranscriptionFailure(TranscriptionOutcome.INVALID_INPUT, provider='mimo', retryable=False)
+    # Live PCM windows already have a canonical WAV envelope. Validate it without
+    # starting a decoder for every window, and leave its rate/channels unchanged.
+    try:
+        with wave.open(io.BytesIO(audio)) as decoded:
+            frames = decoded.getnframes()
+            if frames > 0 and len(decoded.readframes(frames)) == (
+                frames * decoded.getnchannels() * decoded.getsampwidth()
+            ):
+                return audio, 'audio/wav'
+    except (wave.Error, EOFError):
+        pass
+
+    # Reuse the installed FFmpeg boundary, with seekable private input for M4A
+    # files whose metadata follows the samples. No playlists or nested network
+    # protocols; both subprocess and temporary-file lifetimes are bounded.
+    formats = 'wav,mp3,mov,ogg,flac,matroska,webm,aac,aiff'
+    try:
+        with tempfile.TemporaryDirectory(prefix='mimo-audio-') as directory:
+            source = Path(directory) / 'input'
+            source.write_bytes(audio)
+            input_args = ['-protocol_whitelist', 'file', '-format_whitelist', formats, '-i', str(source)]
+            probe = subprocess.run(
+                ['ffprobe', '-v', 'error', *input_args, '-show_entries', 'format=format_name', '-of', 'json'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+                check=True,
+            )
+            is_mp3 = json.loads(probe.stdout)['format']['format_name'] == 'mp3'
+            # MP3 is already a documented MiMo container. Decode for validation
+            # but retain the original bytes, including long recordings that fit
+            # the compressed 10 MiB provider limit rather than the WAV limit.
+            output_args = (
+                ['-f', 'null', '-']
+                if is_mp3
+                else ['-t', str(MAX_AUDIO_BYTES / 32000 + 0.1), '-f', 's16le', '-ac', '1', '-ar', '16000', 'pipe:1']
+            )
+            decoded = subprocess.run(
+                ['ffmpeg', '-v', 'error', '-nostdin', '-xerror', *input_args, '-map', '0:a:0', *output_args],
+                stdout=subprocess.DEVNULL if is_mp3 else subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+                check=True,
+            )
+            if is_mp3:
+                return audio, 'audio/mpeg'
+            if not decoded.stdout or len(decoded.stdout) + 44 > MAX_AUDIO_BYTES:
+                raise ValueError('invalid decoded audio size')
+            return pcm16_to_wav(decoded.stdout, 16000, 1), 'audio/wav'
+    except subprocess.TimeoutExpired:
+        raise TranscriptionFailure(TranscriptionOutcome.TIMEOUT, provider='mimo') from None
+    except OSError:
+        raise TranscriptionFailure(TranscriptionOutcome.CONFIG_ERROR, provider='mimo', retryable=False) from None
+    except (subprocess.CalledProcessError, ValueError, KeyError, TypeError):
+        raise TranscriptionFailure(TranscriptionOutcome.INVALID_INPUT, provider='mimo', retryable=False) from None
 
 
 def request(payload, *, transport=None):
@@ -32,8 +102,6 @@ def request(payload, *, transport=None):
                     body.extend(chunk)
                     if len(body) > 4_000_000:
                         raise SpeechError('speech_provider_response_limit', retryable=True)
-                import json
-
                 result = json.loads(body)
         choice = result['choices'][0]
         if result.get('model') != payload['model'] or choice.get('finish_reason') != 'stop':
@@ -51,18 +119,10 @@ class Client:
     def transcribe_audio(
         self, audio_bytes, *, audio_format='wav', filename=None, content_type=None, language=None, **kwargs
     ):
-        from utils.mimo_pipeline.mimo_client import MimoSegment, MimoTranscription, infer_audio_format
-
-        if not audio_bytes or len(audio_bytes) > 10 * 1024 * 1024:
-            raise SpeechError('speech_invalid_input')
-        if filename or content_type:
-            audio_format = infer_audio_format(filename or '', content_type)
-        if audio_format not in ('wav', 'mp3'):
-            raise SpeechError('speech_invalid_audio_format')
+        audio_bytes, mime = _prepare_audio(audio_bytes)
         from .speech import prerecorded_selection
 
         language = prerecorded_selection(language)[1]
-        mime = 'audio/wav' if audio_format == 'wav' else 'audio/mpeg'
         result = request(
             {
                 'model': operator_ai.current().asr_model,

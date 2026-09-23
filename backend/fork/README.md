@@ -6,6 +6,11 @@
 `omi_cloud` keeps upstream behavior. The fork startup test runs real feedback,
 receipt persistence, replay and conflicting reuse with controlled storage.
 Cloudflare's `memory_apply_mutation.py` retains the equivalent D1 mutation rule.
+The builder's `None` result is an admitted no-op, not an empty patch or an
+error. Preserve it unchanged so the upstream owner returns the current item
+without committing a mutation. `tests/test_canonical_mutations.py` covers
+repeated review and both registered no-op entrypoints with unchanged durable
+state; the real Linux product contract exercises the HTTP review path.
 
 ## Hosted operator AI owners
 
@@ -56,17 +61,25 @@ supervises one process per queue. Any unexpectedly completed child fails the
 supervisor. `--check` validates admission and Redis connectivity without consuming.
 
 `python -m fork.memory_maintenance_worker` is the separate standard Server OS
-owner for canonical-memory projection delivery. It pages only the existing
-content-free canonical maintenance registry, then calls the existing leased
-outbox drain for each UID. PostgreSQL source replacement, outbox status, retry,
-dead-letter, Typesense writes and Qdrant writes retain their existing owners;
-this process adds only bounded scheduling and Compose supervision. It applies
-only the embedding/vector and captured provider-fence seams, with no Redis,
-ASGI, Auth, storage, TTL, consolidation, or chat-model dependency. `--once`
-fails when a bounded pass reports a provider or acknowledgement failure.
-The registry page cursor is process-local and wraps in UID order; restarting
-the process restarts discovery at the first page but cannot lose or acknowledge
-the durable outbox. The standard deployment runs one supervised instance.
+owner for canonical-memory processing and projection delivery. It pages the
+existing content-free registry and invokes `run_canonical_short_term_maintenance`:
+drain prior outbox events, run TTL and the sole consolidation planner, then
+project committed changes. Manual create/edit submissions remain unavailable to
+chat until the existing processing receipt and access policy admit them; review
+acceptance alone is not processing. No reader bypass or alternate promotion
+route exists. The worker admits the same selected text model and embedding
+identity as the API, plus its encryption secret, without ASGI/Auth/storage.
+`--once` executes one bounded registry page and fails on consolidation,
+projection, or acknowledgement errors; it does not promise every pending item
+will be promoted rather than archived, rejected, or routed to review.
+The registry cursor is process-local and wraps in UID order. Restarting repeats
+discovery but retains the canonical revision leases, decisions, and durable
+outbox. The standard deployment runs one supervised instance.
+
+`patches/conversation_search.py` resolves the selected lazy client factory before
+the existing Typesense conversation projector reads a document. Account policy,
+field allowlisting, privacy deletion, and provider errors stay with that owner.
+This conversation index is not the authority for manual-memory eligibility.
 
 `profile.py` reads the image's generated `deployment_profiles.generated.json`.
 Build with `render.py --target self_hosted --manifest ... --stage ... --emit-json`;

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { compileWorker, refreshBundleIntegrity } from "./compile-worker";
@@ -11,6 +12,7 @@ import {
   applyBrandMetadata,
   applyMcpOverlay,
   emptyOutput,
+  rewriteBunServerTimeout,
   stageSources,
 } from "./source-stage";
 import { applyRealtimeOverlay } from "../../web/app/fork/realtime-overlay";
@@ -164,12 +166,34 @@ export async function buildWeb(options: {
         environment
       )});\nawait import('./server.ts');\n`
     );
+    const require = createRequire(resolve(webRoot, "package.json"));
+    const runtime = resolve(generated, "bun-runtime.ts");
+    await writeFile(
+      runtime,
+      rewriteBunServerTimeout(
+        await readFile(require.resolve("@tschk/moonshine-deploy-bun"), "utf8"),
+        require("typescript")
+      )
+    );
     const bundled = await Bun.build({
       entrypoints: [resolve(generated, "start.ts")],
       outdir: generated,
       target: "bun",
       format: "esm",
       minify: true,
+      plugins: [
+        {
+          name: "fork-bun-timeout",
+          setup(build) {
+            build.onResolve(
+              { filter: /^@tschk\/moonshine-deploy-bun$/ },
+              () => ({
+                path: runtime,
+              })
+            );
+          },
+        },
+      ],
     });
     if (!bundled.success)
       throw new Error(bundled.logs.map((log) => log.message).join("\n"));
@@ -221,6 +245,9 @@ export async function buildWeb(options: {
       "HomePage/useGeminiLive -> direct-model capability",
       "public Chat/Tasks share routes -> controlled preview and authenticated acceptance",
       "allowlisted public environment",
+      ...(options.target === "self_hosted"
+        ? ["Bun API proxy request timeout -> backend-owned inference deadlines"]
+        : []),
       ...(brandAssets.mode === "manifest"
         ? [
             "generated server presentation metadata -> manifest product name and tagline",

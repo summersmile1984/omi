@@ -36,6 +36,13 @@ lane; it does not certify the separate upstream gate or production deployment.
 The child `python3` shim executes the original venv interpreter path; relocating
 it as a symlink loses virtual-environment package discovery on macOS.
 
+Combined preflight first runs upstream metadata contracts, then the unchanged
+upstream selector against a temporary manifest which adapts **only**
+`diff-hygiene`. Upstream paths compare with the incorporated upstream ancestor;
+fork paths compare with the event base. All changed text is still checked for
+conflict markers. `fork-diff-hygiene` runs the same checker in both local and CI
+fork lanes. Upstream workflow/manifest files and every other check stay intact.
+
 After `make setup-backend`, install the fork runtime layer with
 `uv pip install --python backend/.venv/bin/python --no-deps --require-hashes -r backend/requirements-fork.txt`.
 The upstream sync removes packages outside its lock. The fork file supplies
@@ -44,6 +51,29 @@ installs it after every upstream environment sync and selects that interpreter
 for subsequent Python checks. Both jobs bootstrap Python 3.12 through `uv` in
 the runner account; this avoids the non-relocatable macOS `setup-python` archive
 requiring `/Users/runner/hostedtoolcache` on a self-hosted Mac.
+
+Container test tooling is a separate development layer, not a runtime dependency:
+
+```sh
+# Provision an isolated environment without starting Docker:
+python3 scripts/fork/run-container-tests.py --setup-only
+# Real Redis admission-lock qualification and existing PG shadow scenarios:
+make -f Makefile.fork container-tests
+# Optional parity against a separately provisioned real SDK emulator:
+FIRESTORE_RUN_SHADOW_DIFF=1 python3 scripts/fork/run-container-tests.py
+# Unchanged upstream API E2E; its conftest owns all fake service configuration:
+make -f Makefile.fork local-e2e
+```
+
+The container runner syncs the canonical upstream platform lock into
+`.venv-fork-tests`, then installs `dev/requirements-test.txt` with hashes and no
+dependency resolution. Its input is `dev/requirements-test.in`; regenerate with
+`uv pip compile dev/requirements-test.in --python 3.11.15 --universal --generate-hashes --output-file dev/requirements-test.txt`.
+It never adds dependencies or fixtures to upstream unit collection. Docker and
+image provisioning are explicit prerequisites; missing Docker fails the
+container lane. The Redis and PG tests use separate collection roots and
+`dev/pytest-containers.ini`. The upstream listen/pusher gauntlet retains its
+original host Redis and emulator prerequisites; a Redis smoke is not a substitute.
 
 ## Runner and event routing
 
@@ -119,6 +149,14 @@ this manifest check before provisioning expensive dependencies. Its tests cover
 an upstream tip advancing after a clean sync, upstream independently adopting a
 still-unmerged fork edit, a violation committed before the event base, and a
 missing upstream ref.
+
+The only current allowance is `app/lib/flavors.dart`, capped at three added
+lines: import the generated brand constant and use it for the two titles.
+Unused future allowances were removed. The upstream title proposal is explicitly
+marked **not opened**, and the seam retires when upstream accepts configuration.
+Stage-only identity sources live under `app/fork/identity/` and compile at the
+same `lib/fork/identity/` package namespace; their tests are staged too. Do not
+restore dead-code exemptions or copy whole upstream owners to reduce the count.
 
 Weekly synchronization is separately owned by `upstream_sync_plan.py` and
 `fork-upstream-sync.yml`; it must produce a regular merge, never squash or reuse

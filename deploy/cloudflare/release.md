@@ -7,6 +7,11 @@ targets must be configured for the chosen stage. There is no separate target
 branch, retired framework publisher, hardcoded account/subdomain, automatic
 secret generation, or legacy snapshot compatibility format.
 
+In isolated Cloudflare staging, API Core serves the same `/updates/releases`
+POST/PATCH contract and projects it into D1 under `RELEASE_SECRET`. This staging
+bridge does not alter immutable release manifests or channel-pointer authority.
+Desktop pointer promotion never invokes or controls backend deployment.
+
 ## Local preparation and review
 
 Run from `deploy/cloudflare` with installed frozen dependencies and `make setup`:

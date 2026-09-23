@@ -23,7 +23,16 @@ Compose env file and build using `build-images.sh`; Compose mounts it read-only
 at `/models/speech`. No request or runtime startup downloads models. A bundle
 change is a reviewed profile change and a fresh provisioned directory.
 
-The verified unpacked bundle is 641,292,524 bytes / 387 files. Native inference
+On 2026-09-21 the Kokoro archive pin was refreshed from the publisher's
+[release asset](https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2):
+GitHub asset `549865473` was republished on 2026-09-08. Its downloaded bytes
+match the official SHA-256 `c5f7e2d2caf082bc1d20fb70334a61d99d20b484500aad32e7cf84c128ea3298`.
+The unchanged SenseVoice archive and those verified Kokoro bytes produce
+inventory SHA-256 `1ad3ab7c443e7d87cc3203c11567ed8b9acfc0b2e9c06a3a003cd1b0aa68e66f`
+(387 files). The real local TTS-to-ASR readiness check passed with that bundle;
+archive verification and runtime admission remain fail-closed.
+
+The verified unpacked bundle is 641,745,732 bytes / 387 files. Native inference
 has been exercised in a Linux amd64 container restricted to two CPUs and 2 GiB,
 with networking disabled. Those limits describe the isolated speech probe;
 size the complete API, embedding service and databases separately. Native ASR

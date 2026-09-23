@@ -7,7 +7,8 @@ the ruleset that makes the required checks binding, and the deployment
 environment protection -- need an administration credential, so no CI job can
 assert them. They are this command's job, run by an operator.
 
-  --dry-run  (default) print every change that would be made
+  --dry-run  (default; not a flag) print every change that would be made
+  --plan-only plan from the declaration alone, never contact GitHub
   --apply    make them
   --verify   read the repository back and report differences
 
@@ -295,6 +296,11 @@ def main() -> int:
     action = parser.add_mutually_exclusive_group()
     action.add_argument('--apply', action='store_true', help='make the changes (default is a dry run)')
     action.add_argument('--verify', action='store_true', help='read the repository back and compare')
+    action.add_argument(
+        '--plan-only',
+        action='store_true',
+        help='plan from the declaration alone, never contact GitHub; suitable for CI lanes without admin credentials',
+    )
     args = parser.parse_args()
 
     try:
@@ -318,12 +324,24 @@ def main() -> int:
         return 0
 
     try:
-        registered = registered_workflows(args.repository)
+        if args.plan_only:
+            # CI has no admin credential and cannot compare against the registered
+            # workflow state; print the plan as if every declared workflow was in
+            # the wrong state, so the run still produces a deterministic declaration.
+            registered = {entry['file']: 'unknown' for section in (policy['workflows']['keep'], policy['workflows']['disable']) for entry in section}
+        else:
+            registered = registered_workflows(args.repository)
     except Failure as error:
         print(f'ERROR: {error}', file=sys.stderr)
         return 2
 
     steps = plan(policy, registered)
+    if args.plan_only:
+        print(f'PLAN-ONLY against {args.repository}; {len(steps)} change(s):')
+        for step in steps:
+            print(f'  {step}')
+        print('\nRe-run without --plan-only to compare against the registered workflow state.')
+        return 0
     if not args.apply:
         print(f'DRY RUN against {args.repository}; {len(steps)} change(s):')
         for step in steps:
@@ -396,6 +414,17 @@ def main() -> int:
         return 1
     print(f'OK: {args.repository} now matches {args.policy}.')
     return 0
+
+
+def main_with_argv(argv: list[str]) -> int:
+    """Run main() with explicit argv; used by tests to inject --plan-only."""
+    import sys
+    saved = sys.argv
+    sys.argv = [str(__file__), *argv]
+    try:
+        return main()
+    finally:
+        sys.argv = saved
 
 
 if __name__ == '__main__':

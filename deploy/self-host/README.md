@@ -2,9 +2,10 @@
 
 The Docker product fixture keeps its directory, credentials and logs private.
 Its generated public profile is mode `0444`, readable by the non-root container
-UID on Linux. The existing product CI lane imports the actual controlled
-provider under that UID on the container filesystem, proving profile access
-and private-file denial even when Docker Desktop maps host permissions.
+UID on Linux. The product fixture always keeps the complete rendered profile
+and uses real admitted inference. Native startup requires prepared BGE-M3,
+Qwen and SenseVoice/Kokoro stores; explicit MiMo requires BGE-M3 plus a private
+credential file. Missing requirements fail rather than disabling capabilities.
 
 Current implementation: [local model/runtime boundaries](model-runtime.md).
 The sections below originated before the upstream runtime changed. Their
@@ -28,7 +29,7 @@ For CI delivery, `operations.sh deploy-images` instead verifies the accepted
 selected LLM provider services start before callers. `model_services.py` derives
 that service set from the same manifest/profile rendered into the accepted
 image. MiMo selections start only local Embedding and inject the required API
-credential into the backend. The two fork CD workflows, persistent
+credential into the backend and canonical-memory maintenance worker. The two fork CD workflows, persistent
 host directories, boot test and Tunnel gateway are documented in
 [`scripts/fork/RELEASE.md`](../../scripts/fork/RELEASE.md).
 
@@ -42,9 +43,11 @@ This covers the actual first-chat failure recorded in
 
 The API runs `fork.main:app`; queue consumers run `python -m fork.worker`, which
 validates per-queue credentials and supervises child failures. Canonical-memory
-projection delivery runs in `python -m fork.memory_maintenance_worker`: it pages
-the existing bounded registry and drains the existing leased PostgreSQL outbox
-into Typesense and Qdrant. It does not run TTL, consolidation, or model generation.
+maintenance runs in `python -m fork.memory_maintenance_worker`: it executes the
+existing canonical short-term lifecycle and consolidation owner, then drains
+the leased PostgreSQL projection outbox into Typesense and Qdrant. It uses the
+same selected LLM/embedding contracts as the API; pending facts cannot become
+retrieval-eligible merely because their projections were delivered.
 Self-host API and worker processes
 require schema v8 (including onboarding admission, legal-hold, canonical-memory and retained frame-vision receipt authorities), installed by `python -m fork.migrate migrate`.
 Auth serving and migration use the same stage-aware image entrypoint: `SELF_HOST_STAGE=local` selects development, while `beta` and `production` enforce production guards. Ambient `NODE_ENV` cannot relax those two stages.

@@ -173,3 +173,60 @@ def test_fresh_collection_identity_is_atomic_and_read_back():
     index(handler).check(create=True)
     assert len(created) == len(NAMESPACES)
     assert all(data['metadata']['embedding_contract']['model'] == 'synthetic:fixed' for data in created.values())
+
+
+def test_hosted_migration_admits_fresh_identity_but_never_relabels_existing_collections(monkeypatch):
+    from fork import vector_qdrant
+    from fork.operator_ai import configure
+
+    monkeypatch.setenv('QDRANT_URL', 'http://qdrant')
+    monkeypatch.setenv('QDRANT_API_KEY', 'synthetic-key')
+    monkeypatch.setenv('QDRANT_COLLECTION_PREFIX', 'hosted')
+    row = {'target': 'self_hosted', 'stage': 'local', 'capabilities': {'embedding_dims': 1024}}
+    selected = configure(row, 'siliconflow')
+    monkeypatch.setattr(vector_qdrant, 'current', lambda: selected)
+    created = {}
+    writes = []
+
+    def handler(request):
+        if request.method == 'PUT':
+            writes.append(request.url.path)
+            created[request.url.path] = json.loads(request.content)
+            return httpx.Response(200, json={'status': 'ok', 'result': True})
+        assert request.method == 'GET'
+        if request.url.path not in created:
+            return httpx.Response(404)
+        data = created[request.url.path]
+        return httpx.Response(
+            200,
+            json={
+                'status': 'ok',
+                'result': {
+                    'config': {
+                        'metadata': data['metadata'],
+                        'params': {'vectors': data['vectors']},
+                    }
+                },
+            },
+        )
+
+    def migrate():
+        q = QdrantIndex(Config.from_env(), transport=httpx.MockTransport(handler))
+        try:
+            q.check(create=True)
+            q.check()
+        finally:
+            q.close()
+
+    migrate()
+    assert len(writes) == len(NAMESPACES)
+    migrate()
+    assert len(writes) == len(NAMESPACES)
+    # Equal dimensionality is not permission to reuse a different authority's vectors.
+    selected = configure(row, 'openrouter')
+    with pytest.raises(VectorStoreUnavailable, match='model identity'):
+        migrate()
+    assert len(writes) == len(NAMESPACES)
+    monkeypatch.setenv('QDRANT_COLLECTION_PREFIX', 'reviewed_new_namespace')
+    migrate()
+    assert len(writes) == 2 * len(NAMESPACES)

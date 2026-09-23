@@ -14,7 +14,7 @@ from enum import Enum
 from functools import lru_cache
 
 from . import profile
-from .patches import collect, collect_memory_projection
+from .patches import collect, collect_memory_maintenance
 from .registry import build_registry
 
 
@@ -182,6 +182,22 @@ def bootstrap(role: Role = Role.API) -> Admission:
         from .capabilities import validate as validate_capabilities
 
         validate_capabilities(row)
+        if not (row.get('llm') or operator_ai):
+            raise profile.ProfileError('canonical memory maintenance requires the selected text model')
+        for name, value in {
+            'OMI_LLM_GATEWAY_FEATURE_MODE': 'off',
+            'OMI_LLM_CHAT_AGENT_ROUTE': 'direct',
+            'OMI_LLM_GATEWAY_DEV_SHADOW_ALL_ENABLED': '0',
+            'MEMORY_CANONICAL_CONSOLIDATION_ENABLED': 'true',
+        }.items():
+            _bind(name, value)
+        if row.get('llm'):
+            _require('LLM_ENDPOINT')
+        if operator_ai:
+            from .operator_ai import credentials
+
+            credentials()
+        _require('ENCRYPTION_SECRET', 32)
         _bind('VECTOR_STORE_PROVIDER', 'qdrant')
         _bind('MEMORY_KEYWORD_INDEX_PROVIDER', 'typesense')
         if os.environ.get('PINECONE_API_KEY') or os.environ.get('PINECONE_INDEX_NAME'):
@@ -191,12 +207,15 @@ def bootstrap(role: Role = Role.API) -> Admission:
         for name in ('TYPESENSE_HOST', 'TYPESENSE_HOST_PORT', 'TYPESENSE_API_KEY', 'MEMORY_TYPESENSE_COLLECTION'):
             _require(name)
         _require_modules(('typesense',))
-        registry = build_registry(collect_memory_projection()).apply(row)
+        registry = build_registry(collect_memory_maintenance()).apply(row)
         applied = tuple(registry.applied)
         from utils.memory.atom_keyword_index import ensure_ledger_keyword_schema, ensure_memories_collection
 
         ensure_memories_collection()
         ensure_ledger_keyword_schema()
+        from .local_llm import check as check_llm
+
+        check_llm()
 
     from firestore_pg.migrations import check_schema
 

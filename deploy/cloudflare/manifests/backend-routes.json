@@ -622,7 +622,9 @@
     {"method": "WEBSOCKET", "migration_state": "staging-owned", "owner": "realtime", "path": "/v1/omni/relay", "protocol": "websocket", "target_runtime": "realtime-do"},
     {"method": "WEBSOCKET", "migration_state": "staging-owned", "owner": "realtime", "path": "/v2/voice-message/transcribe-stream", "protocol": "websocket", "target_runtime": "realtime-do"},
     {"method": "WEBSOCKET", "migration_state": "staging-owned", "owner": "realtime", "path": "/v4/listen", "protocol": "websocket", "target_runtime": "realtime-do"},
-    {"method": "WEBSOCKET", "migration_state": "staging-owned", "owner": "realtime", "path": "/v4/web/listen", "protocol": "websocket", "target_runtime": "realtime-do"}
+    {"method": "WEBSOCKET", "migration_state": "staging-owned", "owner": "realtime", "path": "/v4/web/listen", "protocol": "websocket", "target_runtime": "realtime-do"},
+    {"method": "POST", "migration_state": "staging-owned", "owner": "api-core", "path": "/v3/memories/{memory_id}/use", "protocol": "http", "target_runtime": "python-worker"},
+    {"method": "PUT", "migration_state": "staging-owned", "owner": "api-core", "path": "/v1/users/time-zone", "protocol": "http", "target_runtime": "python-worker"}
   ],
   "source": "backend/main.py",
   "version": 1
