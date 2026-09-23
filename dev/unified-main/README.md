@@ -35,7 +35,7 @@
 ```
 main（fork of BasedHardware/omi）
 ├── app/ desktop/ web/            # 上游客户端（默认零改动）；Firebase 等通过包/模块别名换成 fork shim；少数 T1 钩子在白名单
-├── backend/                      # 上游单体（零改动）+ backend/fork/（入口、补丁注册表、provider、shim、tests）+ firestore_pg/
+├── backend/                      # 上游单体（零改动）+ backend/fork/（入口、补丁、firestore_pg、测试）
 ├── auth/shared/  auth-server/    # Better Auth 共享逻辑 + 自托管 adapter（Cloudflare adapter 在 deploy/cloudflare/workers/auth）
 ├── contracts/                    # 上游 parity 夹具 + fork 新增 auth/realtime/api-smoke 套件，对两个后端都跑
 ├── deploy/
@@ -46,8 +46,14 @@ main（fork of BasedHardware/omi）
 ├── brand/                        # 品牌清单与资产（可放私有 overlay）
 ├── scripts/{brand,profiles,fork}/ # apply/check/render/preflight/upstream-touch
 ├── .github/checks-manifest.fork.yaml  +  .github/workflows/fork-*.yml
-└── AGENTS.fork.md（及各组件 *.fork.md）  # fork 纪律；上游 AGENTS.md 只加一行指针
+└── AGENTS.fork.md（及各组件 *.fork.md）  # fork 纪律；上游 AGENTS.md 保持原样
 ```
+
+当前规范：fork 扩展放在所属组件的 `fork/` 下；后端 PostgreSQL 适配器
+使用 `backend/fork/firestore_pg/` 和唯一导入路径 `fork.firestore_pg`。
+独立的 `auth-server/`、部署目标 `deploy/`、品牌与契约目录以及 GitHub
+工作流保留工具链要求的位置，不为表面统一增加包别名。完整例外见
+`AGENTS.fork.md` 的 Fork path layout。
 
 ## 执行顺序与里程碑
 

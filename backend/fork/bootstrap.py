@@ -86,7 +86,7 @@ def bootstrap(role: Role = Role.API) -> Admission:
     _require_modules(('sqlalchemy', 'psycopg', 'httpx'))
     # Must precede any upstream database import: the facade replaces the SDK
     # module aliases that captured business modules resolve through.
-    from firestore_pg.compat import install as install_firestore_facade
+    from fork.firestore_pg.compat import install as install_firestore_facade
 
     install_firestore_facade()
 
@@ -217,7 +217,7 @@ def bootstrap(role: Role = Role.API) -> Admission:
 
         check_llm()
 
-    from firestore_pg.migrations import check_schema
+    from fork.firestore_pg.migrations import check_schema
 
     check_schema()
     result = Admission(row['name'], row['target'], role, applied)

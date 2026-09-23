@@ -10,8 +10,8 @@ from unittest import mock
 
 import pytest
 
-from firestore_pg import client, write_policy
-from firestore_pg.migrations import collection_table_name
+from fork.firestore_pg import client, write_policy
+from fork.firestore_pg.migrations import collection_table_name
 from fork import deletion_read, pg_write_policy, provider_guard
 
 

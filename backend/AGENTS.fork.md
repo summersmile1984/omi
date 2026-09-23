@@ -24,7 +24,7 @@ into the environment switches consumed at adapter call boundaries:
 
 | Variable | Effect |
 |---|---|
-| `FIRESTORE_PG_DSN` | Routes **both** customer and compute data through the `firestore_pg` PostgreSQL facade. Never split one process between PostgreSQL and Firestore. |
+| `FIRESTORE_PG_DSN` | Routes **both** customer and compute data through the `fork.firestore_pg` PostgreSQL facade. Never split one process between PostgreSQL and Firestore. |
 | `STORAGE_BACKEND=minio` | Selects the GCS-compatible MinIO adapter instead of Google Cloud Storage. |
 | `VECTOR_STORE_PROVIDER=qdrant` | Routes the existing vector index to the explicitly migrated Qdrant collections; dimension/schema mismatch is fatal. |
 | `QUEUE_BACKEND=redis` | Selects the Redis worker queue instead of Cloud Tasks; each queue authenticates with its `QUEUE_REDIS_{SYNC,AUDIO_MERGE,ACCOUNT_DELETION,FINALIZATION}_WORKER_SECRET`. |
@@ -113,10 +113,10 @@ The shared local/CI product contract exercises the public config/rating routes.
 
 
 - Self-host deletion changes use `fork/account_deletion.py` and
-  `firestore_pg/erasure.py`; the patch registry binds existing public users seams.
+  `fork/firestore_pg/erasure.py`; the patch registry binds existing public users seams.
   Keep receipt publication, access gating and retry mutations under one owner.
   The startup local/CI gate runs `fork/tests/test_account_deletion.py`; exercise
-  `firestore_pg/tests/test_transaction_semantics.py` separately against disposable
+  `fork/firestore_pg/tests/test_transaction_semantics.py` separately against disposable
   PG for actual serialization/worker evidence. Never interpret provider stubs or
   a minimal completion receipt as proof of complete external-account erasure.
 
@@ -146,12 +146,12 @@ The shared local/CI product contract exercises the public config/rating routes.
   semantics, and make provider failures visible without acknowledging them.
   Full TTL/consolidation maintenance and retrieval qualification remain separate.
 
-- PG write admission uses `firestore_pg/write_policy.py`, bound to the existing
+- PG write admission uses `fork/firestore_pg/write_policy.py`, bound to the existing
   deletion authority by the self-host registry. Keep every set/create/update,
   transaction and batch behind that boundary, including old and proposed owners.
   External fences use `fork/deletion_read.py`, never a caller's stale transaction
   snapshot. The startup lane runs the hermetic write-policy contracts; actual
-  PostgreSQL locks/snapshots require `firestore_pg/tests/test_deletion_write_fence.py`
+  PostgreSQL locks/snapshots require `fork/firestore_pg/tests/test_deletion_write_fence.py`
   against a disposable database. Do not weaken control-collection identity or
   release writer locks before SQL commit.
   Nested mutation values are normalized by that same document owner before

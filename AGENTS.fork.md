@@ -46,6 +46,27 @@ deployment environments are protected are declared in
 `config/repo-state.fork.json` and checked by `scripts/fork/check_repo_state.py`.
 Change the declaration, not the repository settings by hand.
 
+### Fork path layout
+
+Place fork-owned implementation under the owning component's `fork/` directory:
+`backend/fork/` (including `backend/fork/firestore_pg/`), `app/fork/`,
+`desktop/macos/fork/`, `desktop/windows/fork/`, `web/app/fork/`, and
+`omi/firmware/fork/`.
+Keep one canonical package/import path; do not leave an old import alias or
+duplicate upstream source to make a move appear conflict-free.
+
+Some entry points must remain where their toolchain or deployment contract finds
+them: `auth-server/` and `auth/shared/` are independent packages;
+`deploy/{self-host,cloudflare,web,profiles}/` are deployment targets/adapters;
+`brand/`, `contracts/`, `runtime/shared/`, `scripts/fork/`, `scripts/brand/`,
+`scripts/profiles/`, `backend/requirements-fork.txt` (image dependency layer),
+`config/*.fork.json`, `Makefile.fork`, `.github/workflows/fork-*.yml`, and
+`.github/checks-manifest.fork.yaml` keep their respective owners. These paths are
+explicit exceptions, not invitations to create more root-level fork packages.
+Upstream-owned paths stay in place and byte-identical except the registered
+three-line `app/lib/flavors.dart` seam. Generated source goes only into an
+isolated build stage, not the tracked upstream tree.
+
 ## 2. Formatting: two opposite rules
 
 - **The repository's pinned formatter** (`scripts/backend-python-format`, the

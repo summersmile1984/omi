@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 import httpx
 
-from firestore_pg.erasure import validate_uid
+from fork.firestore_pg.erasure import validate_uid
 from utils import auth_shim
 
 

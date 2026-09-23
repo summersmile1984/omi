@@ -4,7 +4,7 @@
 > import/cutover CLI below is not yet shipped on unified main; do not execute its
 > example until the source-freeze/authority tooling is restored and verified.
 
-# firestore_pg — PostgreSQL shim for `google.cloud.firestore`
+# fork.firestore_pg — PostgreSQL shim for `google.cloud.firestore`
 
 Nested write values are normalized before JSONB serialization. `set(merge=True)`
 walks map leaves, preserving siblings and treating a supplied empty map as a
@@ -19,10 +19,10 @@ this adds no second lock or retry policy. In self-host mode a contended document
 raises `ProviderOperationBusy`, including a not-yet-committed first usage row.
 Callers must handle that explicit rejection. `fork/tests/test_pg_nested_transforms.py`
 runs in the existing startup local/CI lane. The live suite
-`firestore_pg/tests/test_deletion_write_fence.py` additionally exercises actual
+`fork/firestore_pg/tests/test_deletion_write_fence.py` additionally exercises actual
 LLM/question usage owners and a first-use conflict followed by an explicit retry.
 See the recorded incident and verification in
-`../../dev/unified-main/implementation-2026-09-04/PG-nested-usage-verification.md`.
+`../../../dev/unified-main/implementation-2026-09-04/PG-nested-usage-verification.md`.
 
 A drop-in replacement for the Google Cloud Firestore client that backs the Omi
 backend's `database/*.py` modules against PostgreSQL instead of Firestore. The
@@ -32,13 +32,13 @@ still runs against real Firestore when the shim is not installed.
 ```
 database/*.py (unchanged)  ──►  google.cloud.firestore (facade)
                                         │
-                    firestore_pg: SQLAlchemy 2.0 → PostgreSQL (JSONB)
+                    fork.firestore_pg: SQLAlchemy 2.0 → PostgreSQL (JSONB)
 ```
 
 ## Why
 
 `database/*.py` (88 modules) imports `google.cloud.firestore` at module scope.
-`firestore_pg.compat.install()` overwrites `sys.modules["google.cloud.firestore"]`
+`fork.firestore_pg.compat.install()` overwrites `sys.modules["google.cloud.firestore"]`
 with a facade whose objects (`Client`, `CollectionReference`, `DocumentReference`,
 `Query`, `DocumentSnapshot`, `Transaction`, `FieldFilter`, `ArrayUnion`,
 `ArrayRemove`, `Increment`, `DELETE_FIELD`, `SERVER_TIMESTAMP`,
@@ -53,13 +53,13 @@ not reimplement still resolve.
 ./scripts/sync-python-deps.sh
 ```
 
-The shim is a plain package inside the repo (`firestore_pg/`); it needs
-`sqlalchemy` from upstream and the fork-owned `psycopg`/`psycopg-binary` wheels in `../requirements-fork.txt`.
+The shim is a plain package inside the repo (`fork/firestore_pg/`); it needs
+`sqlalchemy` from upstream and the fork-owned `psycopg`/`psycopg-binary` wheels in `../../requirements-fork.txt`.
 
 ## Running
 
 Set `FIRESTORE_PG_DSN` to a SQLAlchemy PostgreSQL URL. The self-host
-`fork.bootstrap.bootstrap()` entrypoint calls `firestore_pg.compat.install()` before
+`fork.bootstrap.bootstrap()` entrypoint calls `fork.firestore_pg.compat.install()` before
 it imports any upstream database module, so business code resolves to the shim.
 
 ```bash
@@ -197,14 +197,14 @@ it, and start the backend.
   parity (`123456000` versus `123456789` nanosecond inputs). Requires the dev
   stack (`dev/dev-up.sh --no-backend`). Current result: **29/29 match**.
 - **Transaction and production parity semantics** —
-  `firestore_pg/tests/test_transaction_semantics.py` (integration; skipped
+  `fork/firestore_pg/tests/test_transaction_semantics.py` (integration; skipped
   without `FIRESTORE_PG_DSN`): commit visibility, conflict retry without lost
   updates, complete nested namespaces, collection-group paths, atomic batches,
   snapshot/dict cursors, numeric ordering, missing/null query behavior, CAS,
   concurrent create, a live concurrent write-skew probe under `SERIALIZABLE`,
   recursive collection discovery, typed unsupported-order failures, and all
   compatibility methods used by backend business code.
-- **Composite indexes** — `firestore_pg/tests/test_composite_indexes.py`
+- **Composite indexes** — `fork/firestore_pg/tests/test_composite_indexes.py`
   (integration; skipped without `FIRESTORE_PG_DSN`): registry tables exist,
   composite indexes created from `firestore_index_registry`, dotted-path
   expressions use nested `#>>`, index creation idempotent.
@@ -275,7 +275,7 @@ deployment gate, backups, live source freeze, and rollback—not merely setting
 ## Self-hosted account deletion
 
 `fork.patches.account_deletion` attaches the upstream worker's existing database
-seams to `fork.account_deletion`. `firestore_pg.erasure` deletes registered
+seams to `fork.account_deletion`. `fork.firestore_pg.erasure` deletes registered
 `users/<uid>` namespaces (including orphaned descendants), the root user row,
 and top-level rows whose explicit `uid` or `user_uid` owns them. Conflicting
 owner fields fail before any deletion; document IDs own `users` rows. The
@@ -350,13 +350,13 @@ migration makes existing receipt identities unresolvable. Key rotation is not
 implemented by changing the environment variable.
 
 Hermetic guards: `fork/tests/test_account_deletion.py` (the existing fork startup
-local/CI check includes it). Live guards: `firestore_pg/tests/test_transaction_semantics.py`
+local/CI check includes it). Live guards: `fork/firestore_pg/tests/test_transaction_semantics.py`
 with a disposable `FIRESTORE_PG_DSN`. The live worker test isolates external
 providers; production Better Auth deletion, vector/object purge, backups and
 provider races require their own contracts before full account-deletion signoff.
 The startup local/CI lane also runs `fork/tests/test_pg_write_policy.py`.
-Run `firestore_pg/tests/test_deletion_write_fence.py` on disposable PostgreSQL
+Run `fork/firestore_pg/tests/test_deletion_write_fence.py` on disposable PostgreSQL
 for the actual snapshot, commit-lock, batch rollback, writer-pool saturation
 and existing deletion-worker contracts; it is deliberately not a hermetic CI
-claim. The [verification record](../../dev/unified-main/implementation-2026-09-04/SH2-pg-write-fence-verification.md)
+claim. The [verification record](../../../dev/unified-main/implementation-2026-09-04/SH2-pg-write-fence-verification.md)
 separates local/image evidence from full account/provider erasure acceptance.

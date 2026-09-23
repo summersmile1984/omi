@@ -21,10 +21,10 @@ from google.api_core import exceptions as api_exceptions
 
 cloud_firestore = sys.modules.get('google.cloud.firestore._real', cloud_firestore)
 
-from firestore_pg import ArrayRemove, ArrayUnion, FieldFilter, Increment  # noqa: E402
-from firestore_pg.client import Client, UnsupportedFirestoreQuery, transactional as pg_transactional  # noqa: E402
-from firestore_pg.importer import run_import, target_inventory  # noqa: E402
-from firestore_pg.migrations import (  # noqa: E402
+from fork.firestore_pg import ArrayRemove, ArrayUnion, FieldFilter, Increment  # noqa: E402
+from fork.firestore_pg.client import Client, UnsupportedFirestoreQuery, transactional as pg_transactional  # noqa: E402
+from fork.firestore_pg.importer import run_import, target_inventory  # noqa: E402
+from fork.firestore_pg.migrations import (  # noqa: E402
     STATIC_HASHED_COLLECTION_IDS_V2,
     STATIC_HASHED_COLLECTION_IDS_V7,
     check_schema,

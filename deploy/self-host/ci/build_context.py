@@ -16,7 +16,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
-RUNTIME_FILES = ("backend/fork/model_contract.py", "backend/firestore_pg/migrations.py")
+RUNTIME_FILES = ("backend/fork/model_contract.py", "backend/fork/firestore_pg/migrations.py")
 FILTERS = {
     "backend/Dockerfile.dockerignore": RUNTIME_FILES,
     "deploy/self-host/Dockerfile.dockerignore": RUNTIME_FILES,

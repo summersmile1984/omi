@@ -5,9 +5,9 @@
   "canonical_prevention": "Exercise the actual document set/create/update owner with real SDK and facade sentinels, preserve nested merge siblings and literal keys, and compare rejected delete placements with the installed SDK. Verify actual usage owners and existing mutation locks against disposable PostgreSQL.",
   "canonical_prevention_artifact": [
     "backend/fork/tests/test_pg_nested_transforms.py",
-    "backend/firestore_pg/tests/test_deletion_write_fence.py"
+    "backend/fork/firestore_pg/tests/test_deletion_write_fence.py"
   ],
   "evidence_prs": [],
-  "scope_hints": ["backend/firestore_pg/**", "backend/fork/tests/test_pg_nested_transforms.py"],
+  "scope_hints": ["backend/fork/firestore_pg/**", "backend/fork/tests/test_pg_nested_transforms.py"],
   "status": "open"
 }

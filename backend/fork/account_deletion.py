@@ -11,8 +11,8 @@ import os
 import uuid
 
 from database.account_deletion_policy import account_deletion_blocks_access, normalize_account_deletion_status
-from firestore_pg.client import transactional
-from firestore_pg.erasure import count_user_owned_rows, delete_user_owned_rows, validate_uid
+from fork.firestore_pg.client import transactional
+from fork.firestore_pg.erasure import count_user_owned_rows, delete_user_owned_rows, validate_uid
 
 RECEIPT_FIELDS = frozenset({'schema_version', 'wipe_status', 'wipe_job_id', 'wipe_completed_at'})
 

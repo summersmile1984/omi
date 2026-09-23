@@ -16,7 +16,7 @@ from starlette.requests import Request
 from fork import bootstrap, profile
 from fork.patches.queue import _route_worker_auth
 from fork.queue_config import QUEUES
-from firestore_pg import migrations
+from fork.firestore_pg import migrations
 
 ROOT = Path(__file__).resolve().parents[3]
 SELF_HOST = {
@@ -94,13 +94,13 @@ def test_unknown_profile_stops_real_entrypoint(entry):
 def test_self_host_admission_installs_firestore_facade_before_database_import():
     code = f'''from unittest import mock
 from fork import bootstrap
-from firestore_pg import migrations
+from fork.firestore_pg import migrations
 with mock.patch.object(bootstrap.profile, 'current', return_value={SELF_HOST!r}), mock.patch.object(
     bootstrap, '_require_modules'
 ), mock.patch.object(migrations, 'check_schema'):
     bootstrap.bootstrap(bootstrap.Role.WORKER)
 from database import _client
-from firestore_pg.client import Client
+from fork.firestore_pg.client import Client
 assert _client.firestore.Client is Client
 '''
     result = child(

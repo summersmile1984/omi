@@ -8,8 +8,8 @@ from unittest import mock
 import pytest
 from google.cloud.firestore_v1 import transforms as sdk
 
-from firestore_pg import client, write_policy
-from firestore_pg.codec import decode_stored_document, encode_document
+from fork.firestore_pg import client, write_policy
+from fork.firestore_pg.codec import decode_stored_document, encode_document
 
 
 class Row:

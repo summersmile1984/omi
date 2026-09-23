@@ -13,8 +13,8 @@ from unittest import mock
 import pytest
 from sqlalchemy import create_engine, event, text
 
-from firestore_pg.erasure import count_user_owned_rows, delete_user_owned_rows
-from firestore_pg.migrations import COLLECTION_TABLE, SchemaNotCurrent, collection_table_name
+from fork.firestore_pg.erasure import count_user_owned_rows, delete_user_owned_rows
+from fork.firestore_pg.migrations import COLLECTION_TABLE, SchemaNotCurrent, collection_table_name
 from fork import account_deletion as owner
 from tests.unit.fixtures.strict_firestore_transaction import StrictFirestore, StrictFirestoreTransaction
 

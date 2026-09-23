@@ -3,7 +3,7 @@
 import hashlib
 import os
 
-from firestore_pg.erasure import validate_uid
+from fork.firestore_pg.erasure import validate_uid
 from .storage_minio import get_minio_client
 
 

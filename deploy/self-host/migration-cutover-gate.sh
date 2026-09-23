@@ -8,9 +8,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/dev/docker-compose.dev.yml"
 CHECKER="$REPO_ROOT/deploy/self-host/check-config.py"
 INTEGRATION_TESTS=(
-  "$REPO_ROOT/backend/firestore_pg/tests/test_migration_import.py"
-  "$REPO_ROOT/backend/firestore_pg/tests/test_transaction_semantics.py"
-  "$REPO_ROOT/backend/firestore_pg/tests/test_composite_indexes.py"
+  "$REPO_ROOT/backend/fork/firestore_pg/tests/test_migration_import.py"
+  "$REPO_ROOT/backend/fork/firestore_pg/tests/test_transaction_semantics.py"
+  "$REPO_ROOT/backend/fork/firestore_pg/tests/test_composite_indexes.py"
 )
 FIRESTORE_PG_MIGRATOR="$REPO_ROOT/backend/fork/migrate.py"
 TARGET_SAFETY_CHECK="$REPO_ROOT/backend/scripts/validate_migration_test_targets.py"

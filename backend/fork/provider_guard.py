@@ -13,8 +13,8 @@ import threading
 
 from sqlalchemy import text
 
-from firestore_pg.engine import get_engine, get_tx_conn
-from firestore_pg.erasure import validate_uid
+from fork.firestore_pg.engine import get_engine, get_tx_conn
+from fork.firestore_pg.erasure import validate_uid
 from . import deletion_read
 
 _held = threading.local()

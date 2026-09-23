@@ -27,15 +27,15 @@ pytestmark = pytest.mark.skipif(
 
 from google.api_core import exceptions as api_exceptions  # noqa: E402
 
-from firestore_pg.compat import install  # noqa: E402
-from firestore_pg.field_path import UnsupportedFirestoreQuery  # noqa: E402
+from fork.firestore_pg.compat import install  # noqa: E402
+from fork.firestore_pg.field_path import UnsupportedFirestoreQuery  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def db():
     install()
     from google.cloud import firestore
-    from firestore_pg.migrations import migrate, provision_collections
+    from fork.firestore_pg.migrations import migrate, provision_collections
 
     migrate()
     provision_collections(
@@ -85,7 +85,7 @@ def _reset(db, doc_id):
 def test_csat_create_only_owner_and_erasure_use_real_postgres(db, monkeypatch):
     from types import SimpleNamespace
     from database import csat
-    from firestore_pg.erasure import delete_user_owned_rows
+    from fork.firestore_pg.erasure import delete_user_owned_rows
 
     uid = 'pg-csat-' + uuid4().hex
     monkeypatch.setattr(csat, 'get_firestore_client', lambda: db)
@@ -112,7 +112,7 @@ def test_csat_create_only_owner_and_erasure_use_real_postgres(db, monkeypatch):
 
 
 def test_v7_upgrade_adds_receipt_reads_and_preserves_existing_user_data(db):
-    from firestore_pg import migrations
+    from fork.firestore_pg import migrations
 
     uid = f'pg-v7-upgrade-{uuid4().hex}'
     user = db.collection('users').document(uid)
@@ -282,7 +282,7 @@ def test_client_collections_only_enumerates_live_top_level_namespaces(db):
 
 def test_account_deletion_reconciles_user_tree_and_top_level_owned_rows(db):
     from database import users as users_db
-    from firestore_pg.erasure import count_user_owned_rows
+    from fork.firestore_pg.erasure import count_user_owned_rows
 
     uid = 'pg-account-delete-user'
     other_uid = f'{uid}-other'
@@ -323,7 +323,7 @@ def test_existing_user_onboarding_admission_persists_and_stops_after_completion(
 
 def test_v5_upgrade_registers_memory_collections_without_rewriting_existing_rows(db):
     """The forward v6 admission must preserve data that was valid under v5."""
-    from firestore_pg.migrations import (
+    from fork.firestore_pg.migrations import (
         COLLECTION_TABLE,
         MIGRATION_TABLE,
         STATIC_HASHED_COLLECTION_IDS_V6,
@@ -370,7 +370,7 @@ def test_v5_upgrade_registers_memory_collections_without_rewriting_existing_rows
 
 def test_v6_upgrade_registers_feedback_collections_without_rewriting_existing_rows(db):
     """The v7 ledger admission preserves rows already valid under v6."""
-    from firestore_pg.migrations import (
+    from fork.firestore_pg.migrations import (
         COLLECTION_TABLE,
         MIGRATION_TABLE,
         STATIC_HASHED_COLLECTION_IDS_V7,
@@ -685,8 +685,8 @@ def test_collections_discovers_every_direct_child_for_recursive_delete(db):
 def test_explicit_provision_rejects_populated_unknown_legacy_collection(db):
     from sqlalchemy import text
 
-    from firestore_pg.engine import get_engine
-    from firestore_pg.migrations import SchemaNotCurrent, provision_collections
+    from fork.firestore_pg.engine import get_engine
+    from fork.firestore_pg.migrations import SchemaNotCurrent, provision_collections
 
     with get_engine().begin() as conn:
         conn.execute(text("DROP TABLE IF EXISTS pg_legacy_future"))
@@ -713,7 +713,7 @@ def test_explicit_provision_rejects_populated_unknown_legacy_collection(db):
 
 def test_account_deletion_preserves_legal_hold_lease_and_rejects_stale_reopening(db, monkeypatch):
     from database import legal_holds, users
-    from firestore_pg.erasure import count_user_owned_rows
+    from fork.firestore_pg.erasure import count_user_owned_rows
     from fork.account_deletion import receipt_id
 
     monkeypatch.setenv('ENCRYPTION_SECRET', 'test-account-deletion-receipt-secret-32-bytes')
@@ -751,8 +751,8 @@ def test_account_deletion_preserves_legal_hold_lease_and_rejects_stale_reopening
 
 def test_account_deletion_pg_fault_rolls_back_receipt_and_keeps_private_authority(db, monkeypatch):
     from database import users
-    from firestore_pg.engine import get_engine
-    from firestore_pg.migrations import collection_table_name
+    from fork.firestore_pg.engine import get_engine
+    from fork.firestore_pg.migrations import collection_table_name
     from fork.account_deletion import receipt_id
     from sqlalchemy import event
 

@@ -16,7 +16,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="$REPO_ROOT/backend"
 PY="$BACKEND_DIR/.venv/bin/python"
-DIFF="$BACKEND_DIR/firestore_pg/tests/shadow_diff.py"
+DIFF="$BACKEND_DIR/fork/firestore_pg/tests/shadow_diff.py"
 REAL_OUT="/tmp/shadow-real.json"
 SHIM_OUT="/tmp/shadow-shim.json"
 

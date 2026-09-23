@@ -24,10 +24,9 @@ import os
 import sys
 from typing import Any
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
-from firestore_pg.tests.shadow_scenarios import SCENARIOS  # noqa: E402
+from fork.firestore_pg.tests.shadow_scenarios import SCENARIOS  # noqa: E402
 
 
 def _run_scenarios(db: Any) -> dict:
@@ -46,7 +45,7 @@ def _make_client(mode: str):
 
         return firestore.Client()
     if mode == "shim":
-        from firestore_pg.compat import install
+        from fork.firestore_pg.compat import install
 
         install()
         from google.cloud import firestore

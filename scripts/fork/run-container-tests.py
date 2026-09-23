@@ -85,7 +85,7 @@ def main() -> int:
         # Separate collection roots keep backend/tests/conftest.py and cloud credentials out of this lane.
         for directory, test in (
             (ROOT / 'dev' / 'tests' / 'containers', 'test_redis_container.py'),
-            (BACKEND / 'firestore_pg' / 'tests', 'test_shadow_e2e.py'),
+            (BACKEND / 'fork' / 'firestore_pg' / 'tests', 'test_shadow_e2e.py'),
         ):
             run(
                 [

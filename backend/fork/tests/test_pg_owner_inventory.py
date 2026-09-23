@@ -77,7 +77,7 @@ def test_export_brand_follows_image_and_preserves_auth_body_and_upstream_mode(mo
 def test_complete_export_reads_admitted_collections_including_legacy_users(monkeypatch, with_receipt):
     monkeypatch.setenv('ENCRYPTION_SECRET', 'synthetic-export-contract-key-32-bytes')
     from services.users import data_export
-    from firestore_pg.migrations import SchemaNotCurrent
+    from fork.firestore_pg.migrations import SchemaNotCurrent
 
     rows = {
         ('users', 'owner', 'goals', 'goal'): {'title': 'Project'},

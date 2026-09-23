@@ -1,11 +1,11 @@
-"""End-to-end tests that prove the fork-owned ``firestore_pg`` shim is a
+"""End-to-end tests that prove the fork-owned ``fork.firestore_pg`` shim is a
 drop-in replacement for ``google.cloud.firestore.Client``.
 
 Two test layers share the same ``shadow_scenarios.SCENARIOS`` (33 scenarios)
 and the public ``google.cloud.firestore.Client`` API:
 
 - ``test_shadow_runs_against_shim`` — always-on. Brings up a testcontainers
-  ``postgres:16-alpine``, points ``firestore_pg.compat.install()`` at it,
+  ``postgres:16-alpine``, points ``fork.firestore_pg.compat.install()`` at it,
   and exercises every scenario through the shim. No host-side
   ``redis-server``, ``java``, or ``firebase-tools`` is required — this is
   the local-dev smoke that ``make dev-up`` already wires up via
@@ -43,7 +43,7 @@ from testcontainers.postgres import PostgresContainer
 # scenarios use only the public ``google.cloud.firestore`` client API and
 # the ``_norm`` helper that ``shadow_diff.py`` already relies on. Importing
 # them at collection time is safe; no module-level state is set.
-from firestore_pg.tests.shadow_scenarios import SCENARIOS  # noqa: E402
+from fork.firestore_pg.tests.shadow_scenarios import SCENARIOS  # noqa: E402
 
 pytestmark = pytest.mark.container_integration  # noqa: E402
 
@@ -148,27 +148,27 @@ _SHIM_SCRIPT = (
     # reference it captured at import time. Importing after ``install()``
     # forces the lookup to go through ``sys.modules`` and pick up the
     # facade we just registered.
-    "from firestore_pg.compat import install as install_firestore_facade\n"
+    "from fork.firestore_pg.compat import install as install_firestore_facade\n"
     "install_firestore_facade()\n"
-    # Run schema migrations BEFORE scenarios: ``firestore_pg.migrations.check_schema``
+    # Run schema migrations BEFORE scenarios: ``fork.firestore_pg.migrations.check_schema``
     # raises ``SchemaNotCurrent`` on a fresh database, otherwise scenarios can
     # only inspect the empty schema.
-    "from firestore_pg.migrations import check_schema, migrate, provision_collections\n"
+    "from fork.firestore_pg.migrations import check_schema, migrate, provision_collections\n"
     "migrate()\n"
     # Provision every collection the scenarios touch. The scenarios use
     # ``shadow_docs`` and a handful of sibling collections (``shadow_ac``,
     # ``shadow_cas``, etc.); parsing their module is the cheapest way to get
     # the full set.
     "import re\n"
-    "from firestore_pg.tests import shadow_scenarios\n"
+    "from fork.firestore_pg.tests import shadow_scenarios\n"
     "_collections = set()\n"
     "_src = open(shadow_scenarios.__file__).read()\n"
     "for _name in re.findall(r'[\"\\']([Ss]hadow[-_A-Za-z0-9]+)[\"\\']', _src):\n"
     "    _collections.add(_name)\n"
-    "from firestore_pg.engine import get_engine\n"
+    "from fork.firestore_pg.engine import get_engine\n"
     "provision_collections(sorted(_collections), get_engine())\n"
     "import google.cloud.firestore as firestore\n"
-    "from firestore_pg.tests import shadow_scenarios\n"
+    "from fork.firestore_pg.tests import shadow_scenarios\n"
     "results = {}\n"
     "for name, scenario in shadow_scenarios.SCENARIOS.items():\n"
     "    try:\n"
@@ -185,7 +185,7 @@ _SHIM_SCRIPT = (
 _REAL_SCRIPT = (
     "import json, sys\n"
     "from google.cloud import firestore\n"
-    "from firestore_pg.tests import shadow_scenarios\n"
+    "from fork.firestore_pg.tests import shadow_scenarios\n"
     "results = {}\n"
     "for name, scenario in shadow_scenarios.SCENARIOS.items():\n"
     "    try:\n"
@@ -203,7 +203,7 @@ _REAL_SCRIPT = (
 def _run_subprocess(script: str, env_extra: dict[str, str]) -> dict[str, Any]:
     env: dict[str, str] = {
         "PATH": os.environ.get("PATH", ""),
-        "PYTHONPATH": os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+        "PYTHONPATH": os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")),
         "HOME": os.environ.get("HOME", ""),
         "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
         **env_extra,

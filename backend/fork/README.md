@@ -143,7 +143,7 @@ Self-host account deletion is owned by `account_deletion.py` and
 `firestore_pg/erasure.py`, attached through `patches/account_deletion.py` before
 upstream routers/services import. The marker-to-receipt transaction, receipt-aware
 status and retries must evolve together; do not add missing historical aliases
-to upstream modules. See `../firestore_pg/README.md` for ownership, key retention,
+to upstream modules. See `firestore_pg/README.md` for ownership, key retention,
 control-state exclusions and live-versus-hermetic verification boundaries.
 
 
