@@ -138,6 +138,22 @@ jobs:
           uv pip install --python backend/.venv/bin/python --no-deps --require-hashes -r backend/requirements-fork.txt
           echo "$GITHUB_WORKSPACE/backend/.venv/bin" >> "$GITHUB_PATH"
 
+      # fork-selfhost-startup runs fork/tests/test_speech_contract.py, which shells
+      # out to ffmpeg to build the encoded audio fixtures used by the MiMo
+      # converter regressions. The CI runner image (ubuntu-latest) does not ship
+      # ffmpeg by default; installing it here keeps the fixture bytes reproducible
+      # without touching the upstream test, which the T2 policy forbids. The
+      # `|| true` makes the failure soft: test_hosted_speech.py already gates its
+      # own ffmpeg-dependent cases with `pytest.mark.skipif(shutil.which('ffmpeg')
+      # is None)`, so a missing binary never breaks the rest of the lane.
+      - name: Provision ffmpeg for speech-contract fixtures
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+          command -v ffmpeg && ffmpeg -version | head -1
+
       - name: Select platform checks
         id: platforms
         env:
