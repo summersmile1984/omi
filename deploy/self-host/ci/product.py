@@ -3,8 +3,16 @@
 
 LIFECYCLE: permanent
 This owns a fresh Compose project, normal migrations and application images.
-The complete rendered profile runs with prepared real model stores: native
-BGE-M3/Qwen/SenseVoice/Kokoro, or explicitly selected MiMo with local BGE-M3.
+The complete rendered profile runs with one of two real runtime shapes:
+
+  - native: local BGE-M3 / Qwen / SenseVoice / Kokoro stores, prepared by
+    prepare-model.py and prepare-speech.py before the fixture starts.
+  - hosted operator AI: a single OpenAI-compatible vendor (openrouter /
+    siliconflow / cloudflare-gateway / mimo-cn) declared by the brand
+    manifest supplies LLM / ASR / TTS over the wire; only the local BGE-M3
+    embedding store is still required (none of the hosted vendors own that
+    model).
+
 Missing model requirements fail before fixture state is created.
 """
 
@@ -33,17 +41,31 @@ import render  # noqa: E402
 
 
 class Fixture:
-    def __init__(self, output, brand_id, port, runtime_image=None, *, model_stores=None, mimo_secret_file=None):
+    def __init__(self, output, brand_id, port, runtime_image=None, *, model_stores=None, mimo_secret_file=None, operator_secret_file=None, operator_provider=None):
         if not re.fullmatch(r'[a-z][a-z0-9-]{2,40}', brand_id) or not 1024 <= port <= 65000:
             raise ValueError('fixture needs a safe brand id and unprivileged port')
         self.model_stores = {}
+        # mimo_secret_file is the legacy single-provider form; operator_secret_file
+        # generalises it to every HostedOperatorAI vendor registered in
+        # backend/fork/operator_ai.py. The two are mutually exclusive.
         self.mimo_secret_file = Path(mimo_secret_file).resolve() if mimo_secret_file else None
+        self.operator_secret_file = Path(operator_secret_file).resolve() if operator_secret_file else None
+        self.operator_provider = operator_provider
+        if self.mimo_secret_file and self.operator_secret_file:
+            raise ValueError('pass either --mimo-secret-file or --operator-secret-file, not both')
+        if self.operator_secret_file:
+            if self.operator_provider is None:
+                raise ValueError('--operator-provider is required with --operator-secret-file')
+            if self.operator_provider not in {'mimo-cn', 'openrouter', 'cloudflare-gateway', 'siliconflow'}:
+                raise ValueError(f'unsupported operator provider: {self.operator_provider}')
+            if not self.operator_secret_file.is_file():
+                raise ValueError('operator secret file must exist')
         if self.mimo_secret_file and not self.mimo_secret_file.is_file():
             raise ValueError('MiMo secret file must exist')
-        required_stores = {'embedding'} if self.mimo_secret_file else {'embedding', 'llm', 'speech'}
+        required_stores = {'embedding'} if (self.mimo_secret_file or self.operator_secret_file) else {'embedding', 'llm', 'speech'}
         if model_stores is None or set(model_stores) != required_stores or not all(model_stores.values()):
             requirement = (
-                'embedding store only' if self.mimo_secret_file else 'embedding, llm and speech stores together'
+                'embedding store only' if (self.mimo_secret_file or self.operator_secret_file) else 'embedding, llm and speech stores together'
             )
             raise ValueError(f'real-model fixture requires {requirement}')
         if self.mimo_secret_file:
@@ -52,6 +74,15 @@ class Fixture:
             credential = json.loads(self.mimo_secret_file.read_text())
             if credential.get('MIMO_BASE_URL') != MiMo().base_url or not credential.get('MIMO_API_KEY'):
                 raise ValueError('MiMo credential must select the China Token Plan endpoint')
+        elif self.operator_secret_file:
+            # Every hosted vendor authenticates with one bearer; the per-provider
+            # env var name is in fork.operator_ai.CREDENTIAL_ENV. The secret file
+            # carries only the key for the vendor that the brand manifest already
+            # declared, so there is nothing else to validate here -- the operator
+            # AI module does that when it reads the key at runtime.
+            credential = json.loads(self.operator_secret_file.read_text())
+            if not isinstance(credential, dict) or not credential:
+                raise ValueError('operator secret file must be a non-empty JSON object')
         for kind, path in model_stores.items():
             path = Path(path)
             if not path.is_absolute() or not path.is_dir():
@@ -282,6 +313,27 @@ class Fixture:
             for name in ('backend', 'memory-maintenance-worker'):
                 services[name]['networks'].append('client')
                 services[name]['environment']['MIMO_API_KEY'] = credential['MIMO_API_KEY']
+                services[name]['environment'].pop('LLM_ENDPOINT', None)
+        elif self.operator_secret_file:
+            # Every hosted vendor authenticates with one bearer; the per-provider
+            # env var name is in fork.operator_ai.CREDENTIAL_ENV. The brand manifest
+            # has already declared which provider this stage selects, so the
+            # secret file only carries the matching key.
+            from fork.operator_ai import CREDENTIAL_ENV, FROZEN, CLOUDFLARE_GATEWAY, cloudflare_spec
+
+            credential = json.loads(self.operator_secret_file.read_text())
+            if self.operator_provider == 'mimo-cn':
+                env_var = 'MIMO_API_KEY'
+            elif self.operator_provider == 'cloudflare-gateway':
+                env_var = 'CLOUDFLARE_API_TOKEN'
+            else:
+                env_var = CREDENTIAL_ENV[self.operator_provider]
+            key = credential.get(env_var)
+            if not key:
+                raise ValueError(f'operator secret file missing {env_var}')
+            for name in ('backend', 'memory-maintenance-worker'):
+                services[name]['networks'].append('client')
+                services[name]['environment'][env_var] = key
                 services[name]['environment'].pop('LLM_ENDPOINT', None)
         services['loopback'] = {
             'image': self.api_image,
@@ -516,6 +568,16 @@ def main():
     parser.add_argument(
         '--mimo-secret-file', type=Path, help='local MiMo CN LLM/ASR/TTS; requires only --embedding-store'
     )
+    parser.add_argument(
+        '--operator-secret-file',
+        type=Path,
+        help='hosted operator AI secret JSON; one bearer per the chosen provider, requires --operator-provider and --embedding-store',
+    )
+    parser.add_argument(
+        '--operator-provider',
+        choices=['mimo-cn', 'openrouter', 'cloudflare-gateway', 'siliconflow'],
+        help='provider declared by the brand manifest under self_hosted_inference.<stage>; the secret file must carry its matching env var',
+    )
     parser.add_argument('--embedding-store', type=Path, required=True, help='admitted BGE-M3 store')
     parser.add_argument('--llm-store', type=Path, help='admitted Qwen store; requires both other stores')
     parser.add_argument(
@@ -524,7 +586,7 @@ def main():
     parser.add_argument('--self-test', action='store_true', help='run common HTTP contract and clean up')
     args = parser.parse_args()
     stores = {kind: getattr(args, kind + '_store') for kind in ('embedding', 'llm', 'speech')}
-    if args.mimo_secret_file:
+    if args.mimo_secret_file or args.operator_secret_file:
         stores = {kind: value for kind, value in stores.items() if value is not None}
     fixture = Fixture(
         args.output,
@@ -533,6 +595,8 @@ def main():
         args.runtime_image,
         model_stores=stores,
         mimo_secret_file=args.mimo_secret_file,
+        operator_secret_file=args.operator_secret_file,
+        operator_provider=args.operator_provider,
     )
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, fixture.stop)

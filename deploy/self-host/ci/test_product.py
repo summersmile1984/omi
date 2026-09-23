@@ -530,6 +530,94 @@ class FixtureProfile(unittest.TestCase):
                         self.assertNotIn('LLM_ENDPOINT', composed[name]['environment'])
                     self.assertNotIn('MIMO_API_KEY', composed['queue-worker']['environment'])
 
+    def test_operator_secret_file_replaces_native_llm_and_speech_for_hosted_providers(self):
+        from fork.operator_ai import MiMo
+
+        for operator in ('openrouter', 'cloudflare-gateway', 'siliconflow'):
+            with self.subTest(operator=operator), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                secret = root / 'secret.json'
+                # Match fork.operator_ai.CREDENTIAL_ENV for each provider; MiMo is
+                # exercised by the prior subTest loop and intentionally excluded here.
+                credential = {
+                    'openrouter': {'OPENROUTER_API_KEY': 'synthetic'},
+                    'cloudflare-gateway': {'CLOUDFLARE_API_TOKEN': 'synthetic'},
+                    'siliconflow': {'SILICONFLOW_API_KEY': 'synthetic'},
+                }[operator]
+                secret.write_text(json.dumps(credential))
+                stores = {'embedding': root}  # hosted providers do not need llm/speech stores
+                fixture = Fixture(
+                    root / 'output',
+                    'fixture-models',
+                    34800,
+                    model_stores=stores,
+                    operator_secret_file=secret,
+                    operator_provider=operator,
+                )
+                services = render.load_yaml(ROOT / 'deploy/self-host/compose.production.yml')['services']
+                for service in services.values():
+                    service['environment'] = {}
+                    if 'mem_limit' in service:
+                        service['mem_limit'] = str(4 * 1024**3)
+
+                def command(args, **kwargs):
+                    if args[:2] == ['docker', 'info']:
+                        return str(16 * 1024**3)
+                    return json.dumps({'services': services})
+
+                fixture.command = command
+                fixture.prepare()
+                composed = json.loads(fixture.compose_file.read_text())['services']
+                expected_env = {
+                    'openrouter': 'OPENROUTER_API_KEY',
+                    'cloudflare-gateway': 'CLOUDFLARE_API_TOKEN',
+                    'siliconflow': 'SILICONFLOW_API_KEY',
+                }[operator]
+                for name in ('backend', 'memory-maintenance-worker'):
+                    self.assertIn('client', composed[name]['networks'])
+                    self.assertEqual(composed[name]['environment'][expected_env], 'synthetic')
+                    self.assertNotIn('LLM_ENDPOINT', composed[name]['environment'])
+                # Neither MiMo nor native LLM / speech env vars should leak.
+                self.assertNotIn('MIMO_API_KEY', composed['backend']['environment'])
+                self.assertNotIn('llm-artifact-check', composed)
+                self.assertNotIn('MIMO_API_KEY', composed['queue-worker']['environment'])
+
+    def test_operator_secret_file_without_provider_rejects_before_creating_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = root / 'secret.json'
+            secret.write_text(json.dumps({'OPENROUTER_API_KEY': 'synthetic'}))
+            with self.assertRaises(ValueError) as raised:
+                Fixture(
+                    root / 'output',
+                    'fixture-models',
+                    34800,
+                    model_stores={'embedding': root},
+                    operator_secret_file=secret,
+                )
+            self.assertIn('--operator-provider is required', str(raised.exception))
+
+    def test_operator_and_mimo_secret_files_are_mutually_exclusive(self):
+        from fork.operator_ai import MiMo
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mimo_secret = root / 'mimo.json'
+            mimo_secret.write_text(json.dumps({'MIMO_BASE_URL': MiMo().base_url, 'MIMO_API_KEY': 'x'}))
+            operator_secret = root / 'operator.json'
+            operator_secret.write_text(json.dumps({'OPENROUTER_API_KEY': 'x'}))
+            with self.assertRaises(ValueError) as raised:
+                Fixture(
+                    root / 'output',
+                    'fixture-models',
+                    34800,
+                    model_stores={'embedding': root},
+                    mimo_secret_file=mimo_secret,
+                    operator_secret_file=operator_secret,
+                    operator_provider='openrouter',
+                )
+            self.assertIn('not both', str(raised.exception))
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

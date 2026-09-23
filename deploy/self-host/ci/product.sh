@@ -19,6 +19,20 @@ if [ -n "${SELF_HOST_CI_MIMO_SECRET_FILE:-}" ]; then
     exit 2
   fi
   args+=(--mimo-secret-file "$SELF_HOST_CI_MIMO_SECRET_FILE")
+elif [ -n "${SELF_HOST_CI_OPERATOR_SECRET_FILE:-}" ]; then
+  # A hosted operator AI (openrouter / siliconflow / cloudflare-gateway / mimo-cn)
+  # replaces the native LLM and speech stores. The brand manifest declares which
+  # provider the stage selects; the secret file carries that provider's bearer.
+  if [ -n "${SELF_HOST_CI_LLM_STORE:-}${SELF_HOST_CI_SPEECH_STORE:-}" ]; then
+    echo 'Operator AI requires only the embedding store; do not select native LLM/speech stores' >&2
+    exit 2
+  fi
+  if [ -z "${SELF_HOST_CI_OPERATOR_PROVIDER:-}" ]; then
+    echo 'SELF_HOST_CI_OPERATOR_PROVIDER is required alongside SELF_HOST_CI_OPERATOR_SECRET_FILE' >&2
+    exit 2
+  fi
+  args+=(--operator-secret-file "$SELF_HOST_CI_OPERATOR_SECRET_FILE"
+    --operator-provider "$SELF_HOST_CI_OPERATOR_PROVIDER")
 else
   args+=(--llm-store "${SELF_HOST_CI_LLM_STORE:?prepare the Qwen model store first}"
     --speech-store "${SELF_HOST_CI_SPEECH_STORE:?prepare the SenseVoice/Kokoro model store first}")

@@ -246,15 +246,67 @@ jobs:
         working-directory: desktop/windows
         run: pnpm install --frozen-lockfile
 
-      # Product cases always run with the complete canonical native profile.
-      # Untrusted PRs need no hosted-provider secret; all downloaded bytes are
-      # verified by the existing provisioners and admitted again at startup.
-      - name: Provision complete Server model stores
+      # The product cases run against a real backend fixture. Two runtime
+      # shapes are possible:
+      #
+      #   - Complete canonical native profile: prepare-model.py /
+      #     prepare-speech.py download BGE-M3 / Qwen / SenseVoice / Kokoro and
+      #     product.sh starts the fixture with all three model stores. This is
+      #     the safe shape for untrusted PRs because no business secret leaks
+      #     and downloaded bytes are admitted again at startup. The download
+      #     is several gigabytes per lane and dominates the gate duration;
+      #     it is unavoidable until fork rules allow secrets on PR lanes.
+      #
+      #   - Hosted operator AI: an OpenAI-compatible vendor (openrouter /
+      #     siliconflow / cloudflare-gateway) supplies LLM / ASR / TTS over
+      #     the wire. The fixture still binds a local BGE-M3 embedding store
+      #     because none of them owns that model; everything else is one
+      #     bearer the brand manifest already declared. PR from forks cannot
+      #     read repo secrets, so this shape only runs on the trusted lanes
+      #     (push, workflow_dispatch).
+      - name: Decide Server model runtime
+        id: server_runtime
         if: steps.flutter.outputs.server_models == 'true'
         run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "shape=native" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ secrets.FORK_OPERATOR_OPENROUTER_API_KEY }}" ]; then
+            printf '{"OPENROUTER_API_KEY":"%s"}\n' "${{ secrets.FORK_OPERATOR_OPENROUTER_API_KEY }}" \
+              > "$RUNNER_TEMP/selfhost-operator.json"
+            echo "shape=hosted provider=openrouter secret=$RUNNER_TEMP/selfhost-operator.json" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ secrets.FORK_OPERATOR_SILICONFLOW_API_KEY }}" ]; then
+            printf '{"SILICONFLOW_API_KEY":"%s"}\n' "${{ secrets.FORK_OPERATOR_SILICONFLOW_API_KEY }}" \
+              > "$RUNNER_TEMP/selfhost-operator.json"
+            echo "shape=hosted provider=siliconflow secret=$RUNNER_TEMP/selfhost-operator.json" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ secrets.FORK_OPERATOR_CLOUDFLARE_API_TOKEN }}" ]; then
+            printf '{"CLOUDFLARE_API_TOKEN":"%s"}\n' "${{ secrets.FORK_OPERATOR_CLOUDFLARE_API_TOKEN }}" \
+              > "$RUNNER_TEMP/selfhost-operator.json"
+            echo "shape=hosted provider=cloudflare-gateway secret=$RUNNER_TEMP/selfhost-operator.json" >> "$GITHUB_OUTPUT"
+          else
+            echo "shape=native" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Native model stores. Skip the entire download when the hosted shape is
+      # selected above: the fixture no longer needs Qwen / SenseVoice / Kokoro,
+      # only BGE-M3 for the embedding dimension contract.
+      - name: Provision Server embedding store
+        if: steps.server_runtime.outputs.shape == 'native'
+        run: |
           python3 deploy/self-host/prepare-model.py --kind embedding --output "$RUNNER_TEMP/selfhost-models/embedding"
+      - name: Provision Server LLM and speech stores
+        if: steps.server_runtime.outputs.shape == 'native'
+        run: |
           python3 deploy/self-host/prepare-model.py --kind llm --output "$RUNNER_TEMP/selfhost-models/llm"
           python3 deploy/self-host/prepare-speech.py --output "$RUNNER_TEMP/selfhost-models/speech"
+
+      - name: Provision hosted operator AI binding
+        if: steps.server_runtime.outputs.shape == 'hosted'
+        run: |
+          # The brand manifest has already declared which provider this stage
+          # selects; product.sh reads SELF_HOST_CI_OPERATOR_PROVIDER to mirror that
+          # decision. The manifest is the single source of truth, so this step
+          # does not need to inspect secrets.
+          echo "Operator provider for this lane: ${{ steps.server_runtime.outputs.provider }}"
 
       # Portable contracts run on either host; macOS-only checks run below.
       # The self-host fixture runs on this same Linux host, natively amd64, so its
@@ -268,8 +320,8 @@ jobs:
           # with nothing diagnosable anywhere).
           SELF_HOST_CI_REPORT_DIR: ${{ runner.temp }}/selfhost-fixture-report
           SELF_HOST_CI_EMBEDDING_STORE: ${{ runner.temp }}/selfhost-models/embedding
-          SELF_HOST_CI_LLM_STORE: ${{ runner.temp }}/selfhost-models/llm
-          SELF_HOST_CI_SPEECH_STORE: ${{ runner.temp }}/selfhost-models/speech
+          ${{ steps.server_runtime.outputs.shape == 'native' && format('SELF_HOST_CI_LLM_STORE={0}/selfhost-models/llm\nSELF_HOST_CI_SPEECH_STORE={0}/selfhost-models/speech', runner.temp) || '' }}
+          ${{ steps.server_runtime.outputs.shape == 'hosted' && format('SELF_HOST_CI_OPERATOR_SECRET_FILE={0}\nSELF_HOST_CI_OPERATOR_PROVIDER={1}', steps.server_runtime.outputs.secret, steps.server_runtime.outputs.provider) || '' }}
         run: |
           python3 scripts/fork/run_checks.py \
             --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux
