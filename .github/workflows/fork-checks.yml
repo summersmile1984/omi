@@ -339,8 +339,7 @@ jobs:
             export SELF_HOST_CI_LLM_STORE="$RUNNER_TEMP/selfhost-models/llm"
             export SELF_HOST_CI_SPEECH_STORE="$RUNNER_TEMP/selfhost-models/speech"
           fi
-          python3 scripts/fork/run_checks.py \\
-            --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux
+          python3 scripts/fork/run_checks.py --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux
 
       - name: Upload the self-host fixture report
         if: always()
