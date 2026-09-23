@@ -95,7 +95,7 @@ checks:
 
   - id: fork-cloudflare-staged-owners
     command: ["bash", "-c", "p=backend/.venv/bin/python; [ -x \"$p\" ] || p=python3; \"$p\" deploy/cloudflare/scripts/check_staged_owner_coverage.py"]
-    triggers: ["deploy/cloudflare/scripts/**", ".github/checks-manifest.fork.yaml"]
+    triggers: ["deploy/cloudflare/scripts/**", "backend/models/memory_evidence.py", "backend/utils/memory/belief_source_policy.py", "backend/utils/memory/belief_model.py", ".github/checks-manifest.fork.yaml"]
     lanes: ["local", "ci"]
     reason: "Every upstream module the Cloudflare stagers project must be matched by a fork-cloudflare-* trigger, because a trigger is the only thing that makes a lane rebuild the projection. Upstream #12798 (2026-09-05) added _budget_authority to backend/utils/memory/jit_trigger_snapshot.py; jit_snapshot_sources.py projected the reader but not the helper, so the staged jit_trigger_snapshot_kernel.py called an undefined name, and because that owner was in no Cloudflare trigger no Cloudflare lane ran: the breakage stayed invisible in main for ten days, was first attributed to an unrelated manifest refresh that happened to select the lane, and blocked the next Cloudflare PR instead of the change that caused it. The check is not a shared primitive because the obligation is fork-specific: upstream has no Cloudflare Worker projection, so nothing upstream can express 'this module is staged into a Worker'. It is a static checker, not behavioral coverage; fork-cloudflare-routes builds and exercises the projections."
 
