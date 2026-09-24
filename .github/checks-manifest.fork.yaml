@@ -165,6 +165,18 @@ checks:
     lanes: ["local", "ci"]
     reason: "apply.py/check.py are the enforcement path for the trademark boundary between brands; a bug here is a leak or a false negative, not a cosmetic failure"
 
+  - id: fork-whitelabel-seam
+    command: ["python3", ".github/scripts/check_whitelabel_seam.py", "--base", "origin/main"]
+    triggers: ["brand/**", "scripts/brand/**", "scripts/profiles/**", "deploy/profiles/**", "backend/fork/**", "app/fork/**", "desktop/windows/fork/**", "omi/firmware/fork/**", "dev/unified-main/WHITELABEL-MODEL.md", ".github/scripts/check_whitelabel_seam.py", ".github/checks-manifest.fork.yaml"]
+    lanes: ["local", "ci"]
+    reason: "WHITELABEL-MODEL.md declares six paths as the only ones fork-owned code may write to main. This guard scans the diff between origin/main and HEAD and fails on any changed path under a brand-glob that is not a declared seam or an endorsed fork-owned path. Catches the anti-pattern of editing upstream source for brand work before upstream-touch ratchet does."
+
+  - id: fork-whitelabel-seam-tests
+    command: ["python3", ".github/scripts/test_check_whitelabel_seam.py"]
+    triggers: [".github/scripts/check_whitelabel_seam.py", ".github/scripts/test_check_whitelabel_seam.py", "dev/unified-main/WHITELABEL-MODEL.md"]
+    lanes: ["local", "ci"]
+    reason: "seam guard is a load-bearing contract; six tests pin the declared-seam count, brand-glob coverage, and the four apply/shim/stage/render patterns from WHITELABEL-MODEL.md"
+
   - id: fork-brand-raster
     command: ["npm", "test", "--prefix", "scripts/brand/raster"]
     triggers: ["scripts/brand/raster/**"]
