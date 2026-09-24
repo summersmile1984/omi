@@ -57,6 +57,51 @@ if [ "$FORK_ONLY" = 0 ]; then
   "$PYTHON_BIN" scripts/fork/upstream_checks.py --lane local --base "$BASE" --skip-pr-body-checks
 fi
 
+# White-label gates (fork constitution: dev/unified-main/WHITELABEL-MODEL.md).
+# These run before the fork manifest gate so a brand-template regression is
+# caught at the same level as upstream contract drift, not buried under 12
+# other checks. The brand/profile paths are anchored at $ROOT (resolved above
+# from BASH_SOURCE) so a CI lane that copies this script into an isolated
+# tree -- the fork-ci-diff-base fixture does exactly this to verify the
+# python3 shim -- still finds them via the source-tree root.
+echo
+echo "==> whitelabel gate (apply + profile + tooling)"
+WHITELABEL_PATHS_OK=1
+if [ -x "$ROOT/scripts/brand/apply.py" ]; then
+  "$PYTHON_BIN" "$ROOT/scripts/brand/apply.py" --brand omi-upstream --check-clean || WHITELABEL_PATHS_OK=0
+  "$PYTHON_BIN" "$ROOT/scripts/profiles/check_tables.py" || WHITELABEL_PATHS_OK=0
+  "$PYTHON_BIN" -m unittest discover -s "$ROOT/scripts/brand" -p 'test_*.py' 2>&1 | tail -5 || WHITELABEL_PATHS_OK=0
+  # Eddy-restore round-trip: prove the eddy switch leaves the two declared
+  # generated files byte-identical to omi-upstream after restoration. Any
+  # other path the apply phase touched is reported by name and fails the
+  # gate. Paths the user already had dirty before preflight started are
+  # tolerated; only paths newly added to the dirty set are rejected.
+  PRE_DIRTY=$(cd "$ROOT" && git diff --name-only)
+  "$PYTHON_BIN" "$ROOT/scripts/brand/apply.py" --brand eddy >/dev/null || WHITELABEL_PATHS_OK=0
+  "$PYTHON_BIN" "$ROOT/scripts/brand/apply.py" --brand omi-upstream >/dev/null || WHITELABEL_PATHS_OK=0
+  POST_DIRTY=$(cd "$ROOT" && git diff --name-only)
+  ALLOWED=('app/lib/flavors.brand.dart' 'backend/fork/firmware_brand.generated.json')
+  NEW_DIRTY=()
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    case " ${ALLOWED[*]} " in
+      *" $path "*) continue ;;
+    esac
+    case " $(echo "$PRE_DIRTY" | tr '\n' ' ') " in
+      *" $path "*) continue ;;
+    esac
+    NEW_DIRTY+=("$path")
+  done <<< "$POST_DIRTY"
+  if [ "${#NEW_DIRTY[@]}" -gt 0 ]; then
+    echo "FAIL: eddy -> omi-upstream round-trip wrote paths outside the two declared generated files:" >&2
+    printf '  %s\n' "${NEW_DIRTY[@]}" >&2
+    WHITELABEL_PATHS_OK=0
+  fi
+else
+  echo "skip: brand tooling not present in this tree (fork-ci-diff-base fixture)"
+fi
+[ "$WHITELABEL_PATHS_OK" = "1" ] || exit 1
+
 echo
 echo "==> fork gate (.github/checks-manifest.fork.yaml)"
 "$PYTHON_BIN" .github/scripts/run_checks.py \
