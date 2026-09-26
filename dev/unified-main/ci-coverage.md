@@ -162,6 +162,22 @@ admission 链：`release_ci.py verify` → `release_ci.py resolve` → `release_
 | 真实模型运行时 | 离线需 1.5 TB 自由 + Docker + 已 fetch 的 BGE-M3/Qwen/SenseVoice/Kokoro | CI lane 用 `prepare-*.py` 自动拉；本地靠 `.local/selfhost-models/`。 |
 | `fork-selfhost-product-core` 2026-09-04 已删的 `providers.py` / `test_provider_access.py` 文字痕迹 | manifest reason 字段过期 | 已在本轮清理。 |
 
+### 2026-09-26 同步后的上游 manifest 继承红（本地 preflight 残留 7 条）
+
+复现口径：`PATH="backend/.venv/bin:/opt/homebrew/opt/ruby/bin:$PATH"`（repo canonical runner：python 3.11 带 yaml/dotenv、keg-only ruby ≥2.7），`scripts/pr-preflight --lane local --base origin/main --pr-body-file <body>`（PR body 必须含 invariant IDs、独立成行的 `Failure-Class: none`、精确的 `Line-Count-Exception` 行——模板见 2026-09-26 sync-log 提及的 /tmp/pr-body.md 生成法：先 `scripts/pr-preflight --suggest`）。原始 16 红的其余 9 条已在本轮修复或为 runner/body 伪影。
+
+| 继承红 | 为什么 fork 侧无合规修法 | 自愈条件 / 处置 |
+|---|---|---|
+| `capture-ownership-boundaries` | 上游新文件出现在 sync diff 里，新文件棘轮 limit=0（与 baseline 无关） | **push 落盘后自愈**（base 含该文件后 limit=min(4,4)）；baseline 2→4 已入白名单 + 上游 PR 队列 #16 |
+| `spine-contracts` | 上游 spine 规则要求 revision 记录单独 oracle-only 范围落地，批量同步必然把 8 个未 grandfather 的 revision 与实现混在同一 range；涉及文件全为上游 T2，拆分需重写已含兄弟提交的历史 | 记录即处置；待上游调整 grandfather 或接受下游同步形态 |
+| `dev-harness-unit-tests`（3 个 BuildAttributionTests） | 上游测试在 macOS `/var`→`/private/var` symlink 上 `relative_to` 崩（上游文件 + T2） | 仅本机 macOS 跑面红；Linux CI（上游真实跑面）绿 |
+| `diff-hygiene` | 上游 #15469 的 `plugins/omi-slack-app/slack_client.py` 自带 trailing whitespace；T2 禁止改上游格式 | 等上游修，或该文件退出 diff 范围 |
+| `mobile-ux-contract`（INV-UI-3） | 上游 onboarding/capture UI 自增 hand-rolled 模式（sync 带入，上游文件） | 等上游 |
+| `deferred-work-markers` | 上游 #18678 的 todo.txt recipe 注释被上游自己的 `\bTODO\b`（忽略大小写）匹配 `todo.txt`——上游检查与上游内容互撞 | 等上游修 regex 或示例 |
+| `backend-module-isolation` | 上游 #17340 的 `test_apps_exception_hardening.py:26` 模块级 `sys.modules` 改写；**扫描 upstream/main 自己的树复现同一违规**；`backend/**`+`tests/**` 是 T2 永不入白名单 | 等上游修测试或加 allowlist |
+
+这些红全部由 2026-09-26 同步（1011 提交）首次带入；`origin/main` 对照跑法（临时 worktree）证明其中 4 条在同步前的树上根本不存在对应检查或文件。任何一条被上游修复后，下次同步自动消失。
+
 ## 7. 改 manifest / workflow 的清单
 
 1. `validate_manifest` 要求每条 id 唯一、命令存在、`triggers` glob 命中现有路径、lanes 同时含 `local` + `ci`、`platforms ∈ {all,macos,linux,windows}`。改完先在本地：
