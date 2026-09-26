@@ -55,6 +55,7 @@ import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/lib/settingsSection
 import { PROFILE_MENU_MAX_HEIGHT } from '@/lib/profileMenu';
 import { ConfettiBurst } from '@/components/ui/ConfettiBurst';
 import { OpenSurface } from '@/components/ui/OpenSurface';
+import { BRAND } from '@/lib/fork/brand';
 
 /** How long the banner takes to swell and pop, and the burst to clear it. */
 const BANNER_BURST_MS = 420;
@@ -87,22 +88,22 @@ const navItems: NavItem[] = [
   {
     label: 'Home',
     href: '/home',
-    icon: <House className="w-5 h-5" />,
+    icon: <House className="h-5 w-5" />,
   },
   {
     label: 'Conversations',
     href: '/conversations',
-    icon: <GanttChartSquare className="w-5 h-5" />,
+    icon: <GanttChartSquare className="h-5 w-5" />,
   },
   {
     label: 'Memories',
     href: '/memories',
-    icon: <Brain className="w-5 h-5" />,
+    icon: <Brain className="h-5 w-5" />,
   },
   {
     label: 'Tasks',
     href: '/tasks',
-    icon: <ListChecks className="w-5 h-5" />,
+    icon: <ListChecks className="h-5 w-5" />,
   },
 ];
 
@@ -145,7 +146,7 @@ function MenuRow({
   );
   const content = (
     <>
-      <Icon className="w-4 h-4 flex-shrink-0" />
+      <Icon className="h-4 w-4 flex-shrink-0" />
       <span className="whitespace-nowrap text-sm">{label}</span>
     </>
   );
@@ -185,7 +186,7 @@ function ProfileMenuRows({
 }) {
   return (
     <>
-      <div className="p-2 space-y-0.5">
+      <div className="space-y-0.5 p-2">
         <MenuRow
           href="/connectors"
           icon={Puzzle}
@@ -203,7 +204,7 @@ function ProfileMenuRows({
         ))}
       </div>
 
-      <div className="border-t border-stroke/60 p-2 space-y-0.5">
+      <div className="space-y-0.5 border-t border-stroke/60 p-2">
         <MenuRow
           href="https://omi.me/download"
           icon={Download}
@@ -229,12 +230,12 @@ function ProfileMenuRows({
         <button
           onClick={onSignOut}
           className={cn(
-            'w-full flex items-center gap-3 rounded-card px-3 py-2',
-            'text-red-400/80 hover:text-red-400 hover:bg-red-500/[0.08]',
+            'flex w-full items-center gap-3 rounded-card px-3 py-2',
+            'text-red-400/80 hover:bg-red-500/[0.08] hover:text-red-400',
             'transition-colors',
           )}
         >
-          <LogOut className="w-4 h-4 flex-shrink-0" />
+          <LogOut className="h-4 w-4 flex-shrink-0" />
           <span className="whitespace-nowrap text-sm">Sign Out</span>
         </button>
       </div>
@@ -371,7 +372,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="fixed inset-0 bg-black/50 z-40 lg:hidden"
+            className="fixed inset-0 z-40 bg-black/50 lg:hidden"
             onClick={onClose}
           />
         )}
@@ -391,9 +392,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           // The rail sits on the raw window; the inset content pane is the
           // only card, so it carries no fill or divider of its own on desktop.
           'bg-bg-secondary lg:bg-transparent',
-          'flex flex-col flex-shrink-0',
+          'flex flex-shrink-0 flex-col',
           // Mobile: fixed overlay with slide transition
-          'fixed top-0 left-0 bottom-0 z-50',
+          'fixed bottom-0 left-0 top-0 z-50',
           // Desktop animates its width to match the macOS rail
           // (.omiAnimation(.easeInOut(duration: 0.2))); mobile slides instead.
           // Deliberately NOT overflow-hidden: the collapsed profile menu opens
@@ -409,7 +410,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             itself. They share the nav's horizontal padding so they read as one
             column of icons with the destinations below, rather than as a
             separate toolbar. */}
-        <div className="overflow-hidden px-2 pt-6 pb-3">
+        <div className="overflow-hidden px-2 pb-3 pt-6">
           {/* Expanded, the mark and the two shell controls share one line.
               Collapsed there is not room for both — two 36px controls do not
               fit in a 56px column — so they stack under the mark. */}
@@ -422,11 +423,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             <Link
               href="/conversations"
               className="flex h-6 items-center gap-2 px-2"
-              aria-label="Omi"
+              aria-label={BRAND.displayName}
             >
               <Image
                 src="/omi-white.webp"
-                alt="Omi"
+                alt={BRAND.displayName}
                 width={60}
                 height={24}
                 className="h-[18px] w-auto flex-shrink-0 object-contain"
@@ -454,21 +455,24 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               <button
                 onClick={toggleNotificationCenter}
                 className={cn(
-                  'flex items-center justify-center p-2 rounded-element transition-colors',
+                  'flex items-center justify-center rounded-element p-2 transition-colors',
                   'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary',
                 )}
                 title="Notifications"
                 aria-label="Notifications"
               >
                 <div className="relative">
-                  <Bell className="w-5 h-5" />
-                  <span className="t-badge" data-open={unreadCount > 0 ? 'true' : 'false'}>
+                  <Bell className="h-5 w-5" />
+                  <span
+                    className="t-badge"
+                    data-open={unreadCount > 0 ? 'true' : 'false'}
+                  >
                     <span
                       className={cn(
                         't-badge-dot',
-                        'min-w-[18px] h-[18px] px-1',
+                        'h-[18px] min-w-[18px] px-1',
                         'flex items-center justify-center',
-                        'bg-red-500 text-white text-[10px] font-bold',
+                        'bg-red-500 text-[10px] font-bold text-white',
                         'rounded-full',
                       )}
                     >
@@ -485,7 +489,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 <button
                   onClick={handleToggleExpand}
                   className={cn(
-                    'flex items-center justify-center p-2 rounded-element transition-colors',
+                    'flex items-center justify-center rounded-element p-2 transition-colors',
                     'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary',
                   )}
                   title={isExpanded ? 'Collapse sidebar' : 'Expand sidebar'}
@@ -493,10 +497,10 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 >
                   <span className="t-icon-swap" data-state={isExpanded ? 'a' : 'b'}>
                     <span className="t-icon" data-icon="a">
-                      <PanelLeftClose className="w-5 h-5" />
+                      <PanelLeftClose className="h-5 w-5" />
                     </span>
                     <span className="t-icon" data-icon="b">
-                      <PanelLeft className="w-5 h-5" />
+                      <PanelLeft className="h-5 w-5" />
                     </span>
                   </span>
                 </button>
@@ -506,10 +510,10 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
               {!isDesktop && (
                 <button
                   onClick={onClose}
-                  className="p-2 rounded-element hover:bg-bg-tertiary transition-colors"
+                  className="rounded-element p-2 transition-colors hover:bg-bg-tertiary"
                   aria-label="Close menu"
                 >
-                  <X className="w-5 h-5 text-text-secondary" />
+                  <X className="h-5 w-5 text-text-secondary" />
                 </button>
               )}
             </div>
@@ -517,7 +521,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         </div>
 
         {/* Scrollable middle section */}
-        <div className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
           <nav className="space-y-1 px-2 py-2">
             {navItems.map((item) => {
               const isActive =
@@ -555,7 +559,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                       className="absolute inset-0 rounded-chip bg-text-primary"
                     />
                   )}
-                  <span className="flex-shrink-0 relative z-10">{item.icon}</span>
+                  <span className="relative z-10 flex-shrink-0">{item.icon}</span>
                   <span
                     className={cn(
                       'relative z-10 whitespace-nowrap font-medium',
@@ -581,9 +585,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 ? 'https://macos.omi.me/'
                 : 'https://onelink.to/rbsrxc';
               const bannerTitle = isMac
-                ? 'Omi is 10X better on macOS'
-                : 'Take Omi with you';
-              const bannerSubtitle = isMac ? 'Try Omi on macOS' : 'Try Omi on your phone';
+                ? BRAND.displayName + ' is 10X better on macOS'
+                : 'Take ' + BRAND.shortName + ' with you';
+              const bannerSubtitle = isMac
+                ? 'Try ' + BRAND.shortName + ' on macOS'
+                : 'Try ' + BRAND.shortName + ' on your phone';
               return (
                 <motion.div
                   // Dismissing is the one moment this banner is the thing you are
@@ -614,7 +620,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                         }
                       : { type: 'spring', stiffness: 520, damping: 26 }
                   }
-                  className={cn('relative px-3 pt-2 pb-2', !showText && 'px-2')}
+                  className={cn('relative px-3 pb-2 pt-2', !showText && 'px-2')}
                 >
                   {bannerBursting && <ConfettiBurst />}
                   <div className="relative">
@@ -629,9 +635,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     >
                       <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-white/[0.08]">
                         {isMac ? (
-                          <AppleLogo className="w-4 h-4 text-text-tertiary" />
+                          <AppleLogo className="h-4 w-4 text-text-tertiary" />
                         ) : (
-                          <Smartphone className="w-4 h-4 text-text-tertiary" />
+                          <Smartphone className="h-4 w-4 text-text-tertiary" />
                         )}
                       </div>
                       {showText && (
@@ -756,7 +762,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             >
               <>
                 {/* Name & email */}
-                <div className="flex-1 min-w-0 text-left">
+                <div className="min-w-0 flex-1 text-left">
                   <p className="truncate whitespace-nowrap text-sm font-medium text-text-primary">
                     {user?.displayName || 'User'}
                   </p>
@@ -813,12 +819,12 @@ export function MobileMenuButton({ onClick }: { onClick: () => void }) {
     <button
       onClick={onClick}
       className={cn(
-        'lg:hidden p-2 rounded-lg',
-        'hover:bg-bg-tertiary transition-colors',
+        'rounded-lg p-2 lg:hidden',
+        'transition-colors hover:bg-bg-tertiary',
         'focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40',
       )}
     >
-      <Menu className="w-6 h-6 text-text-secondary" />
+      <Menu className="h-6 w-6 text-text-secondary" />
     </button>
   );
 }

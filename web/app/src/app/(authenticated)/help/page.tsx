@@ -1,33 +1,36 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useAuth } from '@/components/auth/AuthProvider';
-import { crispEmbedUrl } from '@/lib/support';
-import { MixpanelManager } from '@/lib/analytics/mixpanel';
+import { productName, webPresentation } from '@/lib/fork/web-profile';
 import { registerMoonshineRoute } from '@/moonshine/register-client-route';
 
 export default function HelpPage() {
-  const { user } = useAuth();
-
-  useEffect(() => {
-    MixpanelManager.pageView('Help');
-  }, []);
-
+  const { support_email, links } = webPresentation();
   return (
-    <div className="flex h-full flex-col">
-      <header className="border-b border-stroke px-6 py-4">
-        <h1 className="text-2xl font-bold text-text-primary">Help</h1>
-        <p className="mt-1 text-sm text-text-quaternary">
-          Chat with the team. Replies come back here and by email.
-        </p>
-      </header>
-
-      <iframe
-        src={crispEmbedUrl({ email: user?.email, name: user?.displayName })}
-        title="Omi support chat"
-        className="min-h-0 flex-1 border-0"
-      />
-    </div>
+    <main className="mx-auto w-full max-w-3xl space-y-6 px-6 py-10">
+      <h1 className="text-2xl font-semibold text-text-primary">
+        {productName()} support
+      </h1>
+      <p className="text-text-secondary">
+        Find documentation, report an issue, or contact the team.
+      </p>
+      <nav
+        aria-label="Support"
+        className="flex flex-col items-start gap-4 text-text-primary"
+      >
+        <a href={links.docs} className="underline">
+          Documentation
+        </a>
+        <a href={links.help} className="underline">
+          Help and issues
+        </a>
+        <a href={links.feedback} className="underline">
+          Share feedback
+        </a>
+        <a href={`mailto:${support_email}`} className="underline">
+          {support_email}
+        </a>
+      </nav>
+    </main>
   );
 }
 

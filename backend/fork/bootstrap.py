@@ -100,14 +100,22 @@ def bootstrap(role: Role = Role.API) -> Admission:
     from .operator_ai import select as select_operator_ai
 
     operator_ai = select_operator_ai(row)
-    if row.get('llm') or operator_ai:
-        from .model_contract import validate_llm
-        from .llm_runtime import process_environment
-
-        llm = operator_ai or validate_llm(row['llm'])
-        # Cloud-provider 25/60-second defaults are not CPU-model budgets. Bind
-        # before imports so captured chat owners share the selected deadline.
-        for name, value in process_environment(llm).items():
+    if operator_ai:
+        llm = operator_ai
+    elif row.get('llm'):
+        raise profile.ProfileError('self_hosted fork only supports operator_ai; remove row.llm')
+    else:
+        llm = None
+    if llm is not None:
+        # OpenAI-compatible hosted providers report the same 25/60-second
+        # request_timeout_seconds; double for stream max, quadruple for the
+        # queue callback budget so a slow downstream never times out before
+        # the stream itself.
+        for name, value in {
+            'AGENT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS': str(llm.request_timeout_seconds),
+            'AGENT_STREAM_MAX_DURATION_SECONDS': str(2 * llm.request_timeout_seconds),
+            'QUEUE_REDIS_FINALIZATION_REQUEST_TIMEOUT_SECONDS': str(4 * llm.request_timeout_seconds),
+        }.items():
             _bind(name, value)
 
     if role == Role.API:
@@ -145,10 +153,7 @@ def bootstrap(role: Role = Role.API) -> Admission:
             }.items():
                 _bind(name, value)
         if row.get('llm'):
-            from .local_llm import contract_for_profile
-
-            contract_for_profile()
-            _require('LLM_ENDPOINT')
+            raise profile.ProfileError('self_hosted fork only supports operator_ai; remove row.llm')
         if operator_ai:
             from .operator_ai import credentials
 
@@ -166,10 +171,6 @@ def bootstrap(role: Role = Role.API) -> Admission:
         ObjectConfig.from_env()
         registry = build_registry(collect()).apply(row)
         applied = tuple(registry.applied)
-        if row.get('llm') or operator_ai:
-            from .local_llm import check as check_llm
-
-            check_llm()
         if row.get('speech'):
             from .speech import check as check_speech
 
@@ -186,8 +187,8 @@ def bootstrap(role: Role = Role.API) -> Admission:
         from .capabilities import validate as validate_capabilities
 
         validate_capabilities(row)
-        if not (row.get('llm') or operator_ai):
-            raise profile.ProfileError('canonical memory maintenance requires the selected text model')
+        if not operator_ai:
+            raise profile.ProfileError('canonical memory maintenance requires operator_ai; remove row.llm')
         for name, value in {
             'OMI_LLM_GATEWAY_FEATURE_MODE': 'off',
             'OMI_LLM_CHAT_AGENT_ROUTE': 'direct',
@@ -196,7 +197,7 @@ def bootstrap(role: Role = Role.API) -> Admission:
         }.items():
             _bind(name, value)
         if row.get('llm'):
-            _require('LLM_ENDPOINT')
+            raise profile.ProfileError('self_hosted fork only supports operator_ai; remove row.llm')
         if operator_ai:
             from .operator_ai import credentials
 
@@ -209,6 +210,8 @@ def bootstrap(role: Role = Role.API) -> Admission:
         from .operator_ai import HostedOperatorAI
 
         required = () if isinstance(operator_ai, HostedOperatorAI) else ('EMBEDDING_ENDPOINT',)
+        if row.get('llm'):
+            raise profile.ProfileError('self_hosted fork only supports operator_ai; remove row.llm')
         required += (
             ('PGVECTOR_COLLECTION_PREFIX',)
             if vector == 'pgvector'
@@ -225,10 +228,6 @@ def bootstrap(role: Role = Role.API) -> Admission:
 
         ensure_memories_collection()
         ensure_ledger_keyword_schema()
-        from .local_llm import check as check_llm
-
-        check_llm()
-
     from fork.firestore_pg.migrations import check_schema
 
     check_schema()

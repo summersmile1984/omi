@@ -14,7 +14,6 @@ from . import account_deletion as _account_deletion
 from . import auth as _auth
 from . import embedding as _embedding
 from .. import firmware as _firmware
-from . import llm as _llm
 from . import capabilities as _capabilities
 from . import consolidation as _consolidation
 from . import canonical_memory as _canonical_memory
@@ -31,7 +30,6 @@ ALL = (
     _auth,
     _embedding,
     _firmware,
-    _llm,
     _capabilities,
     _consolidation,
     _canonical_memory,
@@ -69,7 +67,6 @@ def collect_memory_maintenance() -> List[Patch]:
         *_memory_clock.patches(),
         *_canonical_memory.patches(),
         *_consolidation.patches(),
-        *(patch for patch in _llm.patches() if patch.module != 'utils.retrieval.agentic'),
         *_embedding.patches(),
         *_vector.patches(),
         *(patch for patch in _provider_guard.patches() if patch.name in provider_names),
