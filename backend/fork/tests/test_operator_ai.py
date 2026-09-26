@@ -10,9 +10,10 @@ from pathlib import Path
 from unittest import mock
 
 import httpx
+import openai
 import pytest
 
-from fork import capabilities, embedding, local_llm, operator_ai, profile, speech
+from fork import capabilities, embedding, operator_ai, operator_chat, profile, speech
 
 
 def selected():
@@ -240,19 +241,144 @@ def test_no_selection_denies_hosted_vendor_hosts(monkeypatch):
 
 def test_hosted_chat_build_uses_the_frozen_identity(monkeypatch):
     row = operator_ai.configure(selected(), 'openrouter')
-    monkeypatch.setattr(local_llm, 'current', lambda: row)
     monkeypatch.setattr(profile, 'current', lambda: row)
     monkeypatch.setenv('OPENROUTER_API_KEY', 'or-key')
     spec = operator_ai.select(row)
-    assert local_llm.route('chat_responses') == (spec.model, 'openrouter')
-    instance = local_llm.build(*local_llm.route('chat_responses'))
-    assert instance.model_name == spec.model
-    with pytest.raises(local_llm.LLMInputRejected):
-        local_llm.build('other-model', 'openrouter')
-    monkeypatch.setattr(local_llm, 'current', lambda: selected())
+    instance = operator_chat.build()
+    try:
+        assert instance.model_name == spec.model
+        assert instance.openai_api_base.rstrip('/') == spec.base_url
+        assert instance.openai_api_key.get_secret_value() == 'or-key'
+    finally:
+        instance.http_client.close()
+    monkeypatch.delenv('OPENROUTER_API_KEY')
+    with pytest.raises(ValueError, match='OPENROUTER_API_KEY'):
+        operator_chat.build()
     monkeypatch.setattr(profile, 'current', lambda: selected())
-    with pytest.raises(ValueError):
-        local_llm.build(spec.model, 'openrouter')
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'or-key')
+    with pytest.raises(ValueError, match='no hosted AI is selected'):
+        operator_chat.build()
+
+
+def test_mimo_chat_preserves_prompts_tools_and_parses_structured_results():
+    from pydantic import BaseModel
+
+    from fork.mimo_chat import MiMoChat
+
+    class Drink(BaseModel):
+        drink: str
+
+    sent = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        sent.append(payload)
+        return httpx.Response(
+            200,
+            json={
+                'id': 'controlled',
+                'object': 'chat.completion',
+                'created': 1,
+                'model': 'mimo-v2.5',
+                'choices': [
+                    {
+                        'index': 0,
+                        'finish_reason': 'tool_calls',
+                        'message': {
+                            'role': 'assistant',
+                            'content': None,
+                            'tool_calls': [
+                                {
+                                    'id': 'call-1',
+                                    'type': 'function',
+                                    'function': {'name': 'Drink', 'arguments': '{"drink":"jasmine tea"}'},
+                                }
+                            ],
+                        },
+                    }
+                ],
+                'usage': {'prompt_tokens': 100, 'completion_tokens': 8, 'total_tokens': 108},
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        model = MiMoChat(
+            model='mimo-v2.5',
+            api_key='synthetic',
+            base_url='https://selected.invalid/v1',
+            http_client=client,
+            extra_body={'thinking': {'type': 'disabled'}},
+        )
+        prompt = 'Existing default prompt and full schema descriptions must stay intact.'
+        result = model.with_structured_output(Drink).invoke(prompt)
+        assert result.drink == 'jasmine tea'
+        assert sent[0]['messages'] == [{'content': prompt, 'role': 'user'}]
+        assert sent[0]['tool_choice'] == 'auto'
+        assert sent[0]['tools'][0]['function']['parameters']['properties']['drink']['type'] == 'string'
+        assert sent[0]['thinking'] == {'type': 'disabled'}
+
+
+def test_mimo_chat_factory_retains_frozen_sampling_options(monkeypatch):
+    from fork import mimo_chat
+
+    row = operator_ai.configure({'target': 'self_hosted', 'stage': 'local', 'capabilities': {}}, 'mimo-cn')
+    monkeypatch.setattr(profile, 'current', lambda: row)
+    monkeypatch.setenv('MIMO_API_KEY', 'synthetic')
+    monkeypatch.delenv('MIMO_SECRET_FILE', raising=False)
+    model = mimo_chat.build()
+    try:
+        assert model.temperature == 0
+        assert model.extra_body == {'thinking': {'type': 'disabled'}}
+        assert model.model_name == 'mimo-v2.5'
+    finally:
+        model.http_client.close()
+
+
+def test_hosted_chat_usage_reaches_the_existing_callback_and_failed_requests_never_charge():
+    from fork.llm_usage import UsageCallback
+    from fork.mimo_chat import MiMoChat
+    from utils.llm.usage_tracker import LLMUsageCallback as ExistingUsageCallback
+
+    records = []
+    delegated = ExistingUsageCallback(flush_fn=lambda *args: records.append(args))
+
+    def handler(request):
+        payload = json.loads(request.content)
+        if payload['messages'][-1]['content'] == 'boom':
+            raise httpx.ConnectError('controlled failure', request=request)
+        return httpx.Response(
+            200,
+            json={
+                'id': 'controlled',
+                'object': 'chat.completion',
+                'created': 1,
+                'model': 'mimo-v2.5',
+                'choices': [
+                    {'index': 0, 'finish_reason': 'stop', 'message': {'role': 'assistant', 'content': 'ready'}}
+                ],
+                'usage': {'prompt_tokens': 100, 'completion_tokens': 8, 'total_tokens': 108},
+            },
+        )
+
+    def selected():
+        return MiMoChat(
+            model='mimo-v2.5',
+            api_key='synthetic',
+            base_url='https://selected.invalid/v1',
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+            callbacks=[UsageCallback(delegated, 'mimo-v2.5')],
+        )
+
+    model = selected()
+    try:
+        assert model.invoke('test').content == 'ready'
+        assert len(records) == 1 and records[0][-3:] == ('mimo-v2.5', 100, 8)
+        before = len(records)
+        with pytest.raises(openai.APIConnectionError):
+            model.invoke('boom')
+        assert len(records) == before
+    finally:
+        model.http_client.close()
 
 
 def test_hosted_embeddings_own_the_dimension_contract(monkeypatch):

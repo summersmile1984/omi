@@ -194,25 +194,21 @@ The shared local/CI product contract exercises the public config/rating routes.
   The startup lane executes the real finalizer route and all four authenticated
   queue consumers through controlled transport/storage seams.
 
-- Local text generation uses the profile's sole `llm` contract and
-  `fork/local_llm.py`; every upstream feature resolves through the patched
-  captured factories. Keep native context, serving window and output limit as
-  separate fields. `LLM_ENDPOINT` is an internal origin only. The runtime
-  refuses BYOK, vendor/model fallback, implicit truncation and context shifting.
-  Model HTTP responses and streams stay byte-bounded; synchronous socket
-  operations share one monotonic deadline, but standard-library DNS resolution
-  is not a cancellable absolute-deadline proof. Model usage is charged only from
-  a completed terminal envelope through the existing usage callback.
+- Text generation is hosted-operator-only. A `self_hosted` profile row that
+  still carries a local `llm` is refused by `fork.bootstrap` in every role
+  before a workload import; there is no local model runtime, no `LLM_ENDPOINT`
+  and no Ollama generation image. `fork/operator_ai.py` freezes the vendor
+  endpoints, models, credential environment variables and exact egress grants,
+  and `capabilities.validate` derives `llm_provider` from that selection with
+  no vendor fallback. Admission binds the agent stream first-event, stream
+  maximum and queue finalization budgets from the selected operator's
+  `request_timeout_seconds`. Model usage is charged only from a completed
+  terminal envelope through `fork/llm_usage.py` and the existing usage owner;
+  a failed or cancelled stream is never billed.
 
-  `fork/llm_runtime.py` derives the thin model image and API/worker budgets from
-  this same profile. Keep the original memory extraction schema in the selected
-  route-options factory and bind both canonical and captured consumers; never
-  loosen the parser to fit a model response. The startup lane covers that real
-  parser and finalization's terminal-status acceptance through controlled seams.
-
-- The opt-in `self_hosted.local` MiMo profile replaces local `llm`/`speech`
-  contracts with the sole `operator_ai` owner; embedding remains local.
-  `fork/operator_ai.py` fixes model identities and the exact CN endpoint, while
+- Every `self_hosted` stage selects the sole `operator_ai` owner (MiMo is one
+  of the frozen choices); embedding remains local. `fork/operator_ai.py` fixes
+  model identities and the exact CN endpoint, while
   server-only credentials come from `MIMO_API_KEY` or `MIMO_SECRET_FILE`.
   `fork/mimo_listen.py` drains accepted ASR and its existing persistence owner
   before normal disconnect finalization. Keep default prompts and extraction

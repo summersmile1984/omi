@@ -18,6 +18,14 @@ from product import Fixture, ROOT, render
 from loopback import handler as proxy_handler
 
 
+def mimo_secret(directory):
+    from fork.operator_ai import MiMo
+
+    path = Path(directory) / 'mimo-secret.json'
+    path.write_text(json.dumps({'MIMO_API_KEY': 'synthetic', 'MIMO_BASE_URL': MiMo().base_url}))
+    return path
+
+
 class FixtureHTTP(unittest.TestCase):
     def test_options_preserves_upstream_cors_approval_and_denial(self):
         seen = []
@@ -321,7 +329,8 @@ class FixtureOwnership(unittest.TestCase):
                     output,
                     'fixture-proof',
                     34800,
-                    model_stores={kind: output for kind in ('embedding', 'llm', 'speech')},
+                    model_stores={'embedding': output},
+                    mimo_secret_file=mimo_secret(directory),
                 )
             self.assertEqual(marker.read_text(), 'retained')
 
@@ -334,7 +343,8 @@ class FixtureOwnership(unittest.TestCase):
                 Path(directory) / 'owned',
                 'fixture-proof',
                 34800,
-                model_stores={kind: Path(directory) for kind in ('embedding', 'llm', 'speech')},
+                model_stores={'embedding': Path(directory)},
+                mimo_secret_file=mimo_secret(directory),
             )
             origin = f'http://127.0.0.1:{stalled_auth.getsockname()[1]}'
             (fixture.output / 'metadata.json').write_text(
@@ -375,7 +385,8 @@ class FixtureOwnership(unittest.TestCase):
                 Path(directory) / 'owned',
                 'fixture-proof',
                 34800,
-                model_stores={kind: Path(directory) for kind in ('embedding', 'llm', 'speech')},
+                model_stores={'embedding': Path(directory)},
+                mimo_secret_file=mimo_secret(directory),
             )
             code = '''
 import signal,socket,subprocess,sys
@@ -431,9 +442,15 @@ class FixtureProfile(unittest.TestCase):
     def test_model_capacity_rejects_the_observed_oom_host(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            stores = {kind: root for kind in ('embedding', 'llm', 'speech')}
-            services = {name: {'mem_limit': '4294967296'} for name in ('embedding', 'llm')}
-            fixture = Fixture(root / 'models', 'fixture-models', 34800, model_stores=stores)
+            stores = {'embedding': root}
+            services = {'embedding': {'mem_limit': '4294967296'}}
+            fixture = Fixture(
+                root / 'models',
+                'fixture-models',
+                34800,
+                model_stores=stores,
+                mimo_secret_file=mimo_secret(directory),
+            )
             calls = []
 
             def engine_info(args, **kwargs):
@@ -441,7 +458,7 @@ class FixtureProfile(unittest.TestCase):
                 return '8318562304\n'
 
             fixture.command = engine_info
-            with self.assertRaisesRegex(RuntimeError, 'at least 12 GiB Docker memory'):
+            with self.assertRaisesRegex(RuntimeError, 'at least 8 GiB Docker memory'):
                 fixture.admit_model_capacity(services)
             self.assertEqual(calls, [['docker', 'info', '--format', '{{.MemTotal}}']])
             self.assertFalse(fixture.created)
@@ -453,6 +470,7 @@ class FixtureProfile(unittest.TestCase):
     def test_partial_or_missing_model_stores_fail_before_creating_fixture_state(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            secret = mimo_secret(directory)
             for stores in (
                 None,
                 {},
@@ -461,7 +479,7 @@ class FixtureProfile(unittest.TestCase):
                 {'embedding': root, 'llm': root, 'speech': root / 'missing'},
             ):
                 with self.subTest(stores=stores), self.assertRaises(ValueError):
-                    Fixture(root / 'output', 'fixture-models', 34800, model_stores=stores)
+                    Fixture(root / 'output', 'fixture-models', 34800, model_stores=stores, mimo_secret_file=secret)
                 self.assertFalse((root / 'output').exists())
 
     def test_mimo_missing_embedding_or_invalid_credential_fails_before_creating_state(self):
@@ -483,18 +501,20 @@ class FixtureProfile(unittest.TestCase):
     def test_prepare_preserves_complete_rendered_capabilities_and_real_embedding_service(self):
         from fork.operator_ai import MiMo
 
-        for operator in (None, 'mimo-cn'):
+        # A native local model is refused at admission, so the admitted shape
+        # is the hosted operator credential plus the local embedding store.
+        for operator in ('mimo-cn',):
             with self.subTest(operator=operator), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 secret = root / 'secret.json'
                 secret.write_text(json.dumps({'MIMO_API_KEY': 'synthetic', 'MIMO_BASE_URL': MiMo().base_url}))
-                stores = {kind: root for kind in (('embedding',) if operator else ('embedding', 'llm', 'speech'))}
+                stores = {'embedding': root}
                 fixture = Fixture(
                     root / 'output',
                     'fixture-models',
                     34800,
                     model_stores=stores,
-                    mimo_secret_file=secret if operator else None,
+                    mimo_secret_file=secret,
                 )
                 # Only Docker IO is controlled. Profile resolution and fixture
                 # preparation execute normally, retaining every capability.
@@ -520,15 +540,10 @@ class FixtureProfile(unittest.TestCase):
                 composed = json.loads(fixture.compose_file.read_text())['services']
                 self.assertEqual(composed['embedding']['image'], services['embedding']['image'])
                 self.assertIn('embedding-artifact-check', composed)
-                if not operator:
-                    self.assertIn('llm-artifact-check', composed)
-                    self.assertIn('llm', composed)
-                else:
-                    for name in ('backend', 'memory-maintenance-worker'):
-                        self.assertIn('client', composed[name]['networks'])
-                        self.assertEqual(composed[name]['environment']['MIMO_API_KEY'], 'synthetic')
-                        self.assertNotIn('LLM_ENDPOINT', composed[name]['environment'])
-                    self.assertNotIn('MIMO_API_KEY', composed['queue-worker']['environment'])
+                for name in ('backend', 'memory-maintenance-worker'):
+                    self.assertIn('client', composed[name]['networks'])
+                    self.assertEqual(composed[name]['environment']['MIMO_API_KEY'], 'synthetic')
+                self.assertNotIn('MIMO_API_KEY', composed['queue-worker']['environment'])
 
     def test_operator_secret_file_replaces_native_llm_and_speech_for_hosted_providers(self):
         from fork.operator_ai import MiMo
@@ -576,10 +591,8 @@ class FixtureProfile(unittest.TestCase):
                 for name in ('backend', 'memory-maintenance-worker'):
                     self.assertIn('client', composed[name]['networks'])
                     self.assertEqual(composed[name]['environment'][expected_env], 'synthetic')
-                    self.assertNotIn('LLM_ENDPOINT', composed[name]['environment'])
-                # Neither MiMo nor native LLM / speech env vars should leak.
+                # Neither MiMo nor local model env vars should leak.
                 self.assertNotIn('MIMO_API_KEY', composed['backend']['environment'])
-                self.assertNotIn('llm-artifact-check', composed)
                 self.assertNotIn('MIMO_API_KEY', composed['queue-worker']['environment'])
 
     def test_operator_secret_file_without_provider_rejects_before_creating_state(self):

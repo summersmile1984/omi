@@ -34,8 +34,9 @@ elif [ -n "${SELF_HOST_CI_OPERATOR_SECRET_FILE:-}" ]; then
   args+=(--operator-secret-file "$SELF_HOST_CI_OPERATOR_SECRET_FILE"
     --operator-provider "$SELF_HOST_CI_OPERATOR_PROVIDER")
 else
-  args+=(--llm-store "${SELF_HOST_CI_LLM_STORE:?prepare the Qwen model store first}"
-    --speech-store "${SELF_HOST_CI_SPEECH_STORE:?prepare the SenseVoice/Kokoro model store first}")
+  echo 'the product fixture requires SELF_HOST_CI_MIMO_SECRET_FILE or SELF_HOST_CI_OPERATOR_SECRET_FILE;' >&2
+  echo 'a native local text model is refused at self-host admission' >&2
+  exit 2
 fi
 
 # The fixture reports a failed step as "inspect command-NN.log", but those logs live

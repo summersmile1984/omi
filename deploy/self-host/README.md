@@ -77,7 +77,7 @@ four capabilities from one frozen spec (`backend/fork/operator_ai.py`):
 - TTS: the vendor's `/audio/speech`, normalized to a bounded 16-bit mono WAV
 
 A hosted Compose graph runs **no AI compute**: `model_services.py` removes the
-`llm` and `embedding` service groups, their volumes and env bindings, and
+`embedding` service group, its volumes and env bindings, and
 injects the vendor's required credential variables into the backend and the
 canonical-memory worker. Credentials live only in the environment
 (`OPENROUTER_API_KEY`, `SILICONFLOW_API_KEY`, and a single

@@ -3,15 +3,17 @@
 
 LIFECYCLE: permanent
 This owns a fresh Compose project, normal migrations and application images.
-The complete rendered profile runs with one of two real runtime shapes:
+The complete rendered profile runs in one real runtime shape:
 
-  - native: local BGE-M3 / Qwen / SenseVoice / Kokoro stores, prepared by
-    prepare-model.py and prepare-speech.py before the fixture starts.
   - hosted operator AI: a single OpenAI-compatible vendor (openrouter /
     siliconflow / cloudflare-gateway / mimo-cn) declared by the brand
     manifest supplies LLM / ASR / TTS over the wire; only the local BGE-M3
     embedding store is still required (none of the hosted vendors own that
     model).
+
+A native local text model is no longer a runtime shape: `fork.bootstrap`
+refuses a profile row that carries a local `llm`, so a fixture without a
+declared operator credential fails before any state is created.
 
 Missing model requirements fail before fixture state is created.
 """
@@ -62,12 +64,13 @@ class Fixture:
                 raise ValueError('operator secret file must exist')
         if self.mimo_secret_file and not self.mimo_secret_file.is_file():
             raise ValueError('MiMo secret file must exist')
-        required_stores = {'embedding'} if (self.mimo_secret_file or self.operator_secret_file) else {'embedding', 'llm', 'speech'}
-        if model_stores is None or set(model_stores) != required_stores or not all(model_stores.values()):
-            requirement = (
-                'embedding store only' if (self.mimo_secret_file or self.operator_secret_file) else 'embedding, llm and speech stores together'
+        if not (self.mimo_secret_file or self.operator_secret_file):
+            raise ValueError(
+                'the product fixture requires --mimo-secret-file or --operator-secret-file; '
+                'a native local text model is refused at self-host admission'
             )
-            raise ValueError(f'real-model fixture requires {requirement}')
+        if model_stores is None or set(model_stores) != {'embedding'} or not all(model_stores.values()):
+            raise ValueError('real-model fixture requires the embedding store only')
         if self.mimo_secret_file:
             from fork.operator_ai import MiMo
 
@@ -96,7 +99,6 @@ class Fixture:
         self.runtime_image = runtime_image or self.project + '-base'
         self.auth_image = self.project + '-auth'
         self.api_image = self.project + '-api'
-        self.llm_image = self.project + '-llm'
         self.compose_file = self.output / 'compose.json'
         self.stopped = threading.Event()
         self.created = False
@@ -161,7 +163,7 @@ class Fixture:
         )
 
     def admit_model_capacity(self, services):
-        limits = {name: services[name].get('mem_limit') for name in ('embedding', 'llm') if name in self.model_stores}
+        limits = {name: services[name].get('mem_limit') for name in ('embedding',) if name in self.model_stores}
         # `docker compose config --format json` emits byte counts as decimal
         # strings, including the production YAML's `4g` model limits.
         if any(not isinstance(value, str) or not re.fullmatch(r'[1-9][0-9]*', value) for value in limits.values()):
@@ -230,14 +232,12 @@ class Fixture:
             OMI_SHARE_BASE_URL=api,
             CORS_ALLOWED_ORIGINS=auth,
             BETTER_AUTH_TRUSTED_ORIGINS=auth,
-            SELF_HOST_EGRESS_ALLOWLIST='embedding' if self.mimo_secret_file else 'embedding,llm',
+            SELF_HOST_EGRESS_ALLOWLIST='embedding',
             BACKEND_RUNTIME_IMAGE=self.runtime_image,
             BACKEND_IMAGE=self.api_image,
             AUTH_SERVER_IMAGE=self.auth_image,
-            LLM_IMAGE=self.llm_image,
             EMBEDDING_MODEL_STORE=str(self.model_stores['embedding']),
-            SPEECH_MODEL_STORE=str(self.model_stores.get('speech', self.output / 'unused-speech-store')),
-            LLM_MODEL_STORE=str(self.model_stores.get('llm', self.output / 'unused-llm-store')),
+            SPEECH_MODEL_STORE=str(self.output / 'unused-speech-store'),
             GENERIC_OPENAI_BASE_URL='http://embedding:11434/v1',
             GENERIC_OPENAI_MODEL='controlled-unavailable',
             GENERIC_OPENAI_API_KEY=secrets.token_hex(24),
@@ -289,8 +289,6 @@ class Fixture:
             'memory-maintenance-worker',
         )
         selected += ('embedding-artifact-check', 'embedding')
-        if 'llm' in self.model_stores:
-            selected += ('llm-artifact-check', 'llm')
         services = {name: config['services'][name] for name in selected}
         for name, service in services.items():
             service.pop('build', None)
@@ -313,7 +311,6 @@ class Fixture:
             for name in ('backend', 'memory-maintenance-worker'):
                 services[name]['networks'].append('client')
                 services[name]['environment']['MIMO_API_KEY'] = credential['MIMO_API_KEY']
-                services[name]['environment'].pop('LLM_ENDPOINT', None)
         elif self.operator_secret_file:
             # Every hosted vendor authenticates with one bearer; the per-provider
             # env var name is in fork.operator_ai.CREDENTIAL_ENV. The brand manifest
@@ -334,7 +331,6 @@ class Fixture:
             for name in ('backend', 'memory-maintenance-worker'):
                 services[name]['networks'].append('client')
                 services[name]['environment'][env_var] = key
-                services[name]['environment'].pop('LLM_ENDPOINT', None)
         services['loopback'] = {
             'image': self.api_image,
             'platform': 'linux/amd64',
@@ -378,7 +374,11 @@ class Fixture:
                     'scope': 'real-model-product-runtime',
                     'profile_sha256': hashlib.sha256(profile_file.read_bytes()).hexdigest(),
                     'speech': ('MiMo-CN-ASR-TTS' if self.mimo_secret_file else 'admitted-local-SenseVoice-Kokoro'),
-                    'llm': ('MiMo-CN-mimo-v2.5' if self.mimo_secret_file else 'admitted-local-Qwen-Ollama'),
+                    'llm': (
+                        'MiMo-CN-mimo-v2.5'
+                        if self.mimo_secret_file
+                        else f'hosted-operator-{self.operator_provider}'
+                    ),
                     'embedding': 'admitted-local-BGE-M3-Ollama',
                     'application_network': 'API-outbound-selected-MiMo' if self.mimo_secret_file else 'internal-only',
                     'http_ingress': 'isolated-two-port-loopback-proxy',
@@ -482,28 +482,10 @@ class Fixture:
             ],
             timeout=60,
         )
-        if 'llm' in self.model_stores:
-            self.command(
-                [
-                    'docker',
-                    'build',
-                    '--platform=linux/amd64',
-                    '-f',
-                    'deploy/self-host/Dockerfile.llm',
-                    '--build-arg',
-                    'BACKEND_IMAGE=' + self.api_image,
-                    '-t',
-                    self.llm_image,
-                    '.',
-                ],
-                timeout=600,
-            )
 
     def start(self):
         self.created = True
-        for service in ('embedding-artifact-check', 'llm-artifact-check'):
-            if service.removesuffix('-artifact-check') in self.model_stores:
-                self.compose('run', '--rm', service)
+        self.compose('run', '--rm', 'embedding-artifact-check')
         self.compose(
             'up',
             '-d',
@@ -516,7 +498,6 @@ class Fixture:
             'qdrant',
             'typesense',
             'embedding',
-            *(['llm'] if 'llm' in self.model_stores else []),
         )
         for service in ('auth-migrate', 'firestore-pg-migrate', 'qdrant-migrate'):
             self.compose('run', '--rm', service)
@@ -579,15 +560,9 @@ def main():
         help='provider declared by the brand manifest under self_hosted_inference.<stage>; the secret file must carry its matching env var',
     )
     parser.add_argument('--embedding-store', type=Path, required=True, help='admitted BGE-M3 store')
-    parser.add_argument('--llm-store', type=Path, help='admitted Qwen store; requires both other stores')
-    parser.add_argument(
-        '--speech-store', type=Path, help='admitted SenseVoice/Kokoro store; requires both other stores'
-    )
     parser.add_argument('--self-test', action='store_true', help='run common HTTP contract and clean up')
     args = parser.parse_args()
-    stores = {kind: getattr(args, kind + '_store') for kind in ('embedding', 'llm', 'speech')}
-    if args.mimo_secret_file or args.operator_secret_file:
-        stores = {kind: value for kind, value in stores.items() if value is not None}
+    stores = {'embedding': args.embedding_store}
     fixture = Fixture(
         args.output,
         args.brand_id,

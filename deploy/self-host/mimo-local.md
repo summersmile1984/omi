@@ -38,7 +38,7 @@ python3 deploy/self-host/ci/product.py --output /absolute/private/new-local-run 
   --mimo-secret-file /absolute/private/mimo.json
 ```
 
-Do not pass `--llm-store` or `--speech-store` in this mode. The fixture builds
+The fixture builds
 the ordinary backend image, renders the selected public profile, runs the normal
 database migrations and starts the real product services. The API and canonical
 maintenance worker receive the MiMo credential and outbound network access;

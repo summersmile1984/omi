@@ -214,7 +214,16 @@ class PreparationTests(unittest.TestCase):
     def test_archives_are_bound_to_one_source_after_normal_candidate_verification(self):
         receipt = prepare(self.plan, self.root, self.output, self.run_command)
         self.assertEqual(receipt['files']['server-images.tar'], sha256(self.output / 'server-images.tar'))
-        self.assertEqual(set(receipt['images']), {'backend', 'auth', 'llm', 'web'})
+        self.assertEqual(set(receipt['images']), {'backend', 'auth', 'web'})
+        # Every image build names a Dockerfile that exists in this checkout; a
+        # plan referencing a deleted build file must fail here, not on a runner.
+        builds = [command for command in self.commands if command[:2] == ['docker', 'build']]
+        self.assertTrue(builds)
+        for command in builds:
+            dockerfile = command[command.index('-f') + 1]
+            if Path(dockerfile).is_absolute():
+                continue
+            self.assertTrue((ROOT / dockerfile).is_file(), dockerfile)
         self.assertFalse(receipt['release_ready'])
         self.assertEqual(self.commands[-1][2], 'check')
         self.assertFalse(any('push' in command or 'apply' in command for command in self.commands))
@@ -254,7 +263,6 @@ class PreparationTests(unittest.TestCase):
         )
         receipt = prepare(self.plan, self.root, self.output, self.run_command)
         self.assertEqual(set(receipt['images']), {'backend', 'auth', 'web'})
-        self.assertFalse(any('deploy/self-host/Dockerfile.llm' in cmd for cmd in self.commands))
 
 
 if __name__ == '__main__':

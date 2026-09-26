@@ -214,7 +214,7 @@ def test_worker_bootstrap_does_not_import_asgi_or_model_modules():
 
 
 def test_memory_maintenance_bootstrap_admits_the_model_without_asgi():
-    from fork import capabilities, local_llm, operator_ai
+    from fork import capabilities, operator_ai
     from utils.memory import atom_keyword_index
 
     environment = {
@@ -241,9 +241,7 @@ def test_memory_maintenance_bootstrap_admits_the_model_without_asgi():
         atom_keyword_index, 'ensure_memories_collection'
     ) as ensure_collection, mock.patch.object(
         atom_keyword_index, 'ensure_ledger_keyword_schema'
-    ) as ensure_ledger, mock.patch.object(
-        local_llm, 'check'
-    ) as check_llm, mock.patch.dict(
+    ) as ensure_ledger, mock.patch.dict(
         os.environ, environment, clear=True
     ):
         bootstrap.bootstrap.cache_clear()
@@ -251,16 +249,39 @@ def test_memory_maintenance_bootstrap_admits_the_model_without_asgi():
             admitted = bootstrap.bootstrap(bootstrap.Role.MEMORY_MAINTENANCE)
         finally:
             bootstrap.bootstrap.cache_clear()
+        # The selected operator owns every model budget; there is no local
+        # model runtime left to probe at admission.
+        assert os.environ['AGENT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS'] == '120'
+        assert os.environ['AGENT_STREAM_MAX_DURATION_SECONDS'] == '240'
+        assert os.environ['QUEUE_REDIS_FINALIZATION_REQUEST_TIMEOUT_SECONDS'] == '480'
 
     assert admitted.role == bootstrap.Role.MEMORY_MAINTENANCE
     assert admitted.patches == ()
     collect_maintenance.assert_called_once_with()
-    check_llm.assert_called_once_with()
     ensure_collection.assert_called_once_with()
     ensure_ledger.assert_called_once_with()
     imported = {name for call in require_modules.call_args_list for name in call.args[0]}
     assert 'redis' not in imported
     assert 'fastapi' not in imported
+
+
+@pytest.mark.parametrize('role', ['API', 'WORKER', 'MEMORY_MAINTENANCE'])
+def test_native_llm_rows_are_refused_before_any_workload_import(role):
+    native = {**SELF_HOST, 'llm': {'provider': 'ollama'}}
+    environment = {
+        'FIRESTORE_PG_DSN': 'postgresql+psycopg://unused',
+        'REDIS_DB_HOST': 'localhost',
+        'REDIS_DB_PASSWORD': 'test',
+    }
+    with mock.patch.object(profile, 'current', return_value=native), mock.patch.object(
+        bootstrap, '_require_modules'
+    ), mock.patch.dict(os.environ, environment, clear=True):
+        bootstrap.bootstrap.cache_clear()
+        try:
+            with pytest.raises(profile.ProfileError, match='only supports operator_ai'):
+                bootstrap.bootstrap(getattr(bootstrap.Role, role))
+        finally:
+            bootstrap.bootstrap.cache_clear()
 
 
 def test_migration_v9_admits_current_inventory_and_preserves_mapping():

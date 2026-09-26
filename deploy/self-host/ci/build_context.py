@@ -20,7 +20,6 @@ RUNTIME_FILES = ("backend/fork/model_contract.py", "backend/fork/firestore_pg/mi
 FILTERS = {
     "backend/Dockerfile.dockerignore": RUNTIME_FILES,
     "deploy/self-host/Dockerfile.dockerignore": RUNTIME_FILES,
-    "deploy/self-host/Dockerfile.llm.dockerignore": ("deploy/self-host/llm-entrypoint.sh",),
 }
 CACHE_FILES = (
     "backend/.openapi-venv/lib/local-only.py",

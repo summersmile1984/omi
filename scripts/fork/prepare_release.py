@@ -80,23 +80,6 @@ def build_plan(root: Path, output: Path, inventory: Path, brand: str, stage: str
             '.',
         ],
         [*common, '-f', 'auth-server/Dockerfile', *labels, '-t', images['auth'], '.'],
-        *(
-            [
-                [
-                    *common,
-                    '-f',
-                    'deploy/self-host/Dockerfile.llm',
-                    *labels,
-                    '--build-arg',
-                    f'BACKEND_IMAGE={images["backend"]}',
-                    '-t',
-                    images['llm'],
-                    '.',
-                ]
-            ]
-            if 'llm' in images
-            else []
-        ),
         [
             *common,
             '-f',

@@ -15,7 +15,7 @@ COMPOSE_WRAPPER="$OPS_DIR/compose-clean-env.sh"
 CONFIG_CHECKER="$OPS_DIR/check-config.py"
 APPLICATION_SERVICES=(memory-maintenance-worker queue-worker backend auth-server)
 STATE_SERVICES=(postgres redis minio qdrant typesense searxng)
-PROVIDER_SERVICES=(embedding llm)
+PROVIDER_SERVICES=(embedding)
 STATE_ARCHIVES=(redis minio qdrant typesense backend)
 ARCHIVE_FILES=(postgres.dump.enc redis.tar.gz.enc minio.tar.gz.enc qdrant.tar.gz.enc typesense.tar.gz.enc backend.tar.gz.enc)
 

@@ -1,3 +1,0 @@
-# The runtime stage only needs its entrypoint; settings come from BACKEND_IMAGE.
-**
-!deploy/self-host/llm-entrypoint.sh

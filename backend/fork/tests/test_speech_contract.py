@@ -389,7 +389,13 @@ def test_runtime_version_and_missing_store_are_fatal(monkeypatch, tmp_path):
 def test_bootstrap_rejects_independent_speech_configuration_before_model_load(monkeypatch):
     from fork import bootstrap
 
-    monkeypatch.setattr(profile, 'current', selected)
+    # A native row carrying a local `llm` is refused before any speech bind
+    # (`self_hosted fork only supports operator_ai`), so the speech contract is
+    # exercised on the admitted shape that still owns a local speech bundle.
+    native = selected()
+    row = {key: value for key, value in native.items() if key != 'llm'}
+    row['capabilities'] = {**row['capabilities'], 'llm_provider': 'disabled'}
+    monkeypatch.setattr(profile, 'current', lambda: row)
     monkeypatch.setattr(bootstrap, '_require_modules', lambda *args: None)
     monkeypatch.setenv('FIRESTORE_PG_DSN', 'postgresql+psycopg://unused')
     monkeypatch.setenv('REDIS_DB_HOST', 'unused')

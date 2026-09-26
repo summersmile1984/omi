@@ -1,17 +1,22 @@
 # Current local model runtime
 
-For the explicit hosted LLM/ASR/TTS option with local embedding, see
-[Local Server OS with Xiaomi MiMo](mimo-local.md). The pinned offline reference
-below remains the default when that option is not selected.
+Text inference is hosted: the brand-declared operator AI (openrouter,
+siliconflow, cloudflare-gateway or mimo-cn) owns chat, ASR and TTS, and
+[Local Server OS with Xiaomi MiMo](mimo-local.md) documents that variant. A
+profile row that still carries a local `llm` is refused by `fork.bootstrap`
+before any workload import, so there is no Ollama generation image, no
+`Dockerfile.llm` and no `LLM_IMAGE`/`LLM_MODEL_STORE`.
 
-The self-host reference selects pinned BGE-M3 embeddings, Qwen3 1.7B text inference,
-and the SenseVoice/Kokoro speech bundle described in [speech-runtime.md](speech-runtime.md).
+The local model surface is pinned BGE-M3 embeddings and, when the profile
+carries it, the SenseVoice/Kokoro speech bundle described in
+[speech-runtime.md](speech-runtime.md).
 Push and speaker identification remain disabled. The older full-cutover sections
 of README.md and their scripts are not deployment attestation.
 
 `deploy/profiles/self_hosted.yaml` is the public model owner. The renderer derives
 `capabilities.embedding_dims` from its embedding contract and `llm_provider`
-from the optional text contract; clients, backend, model-store validators and
+from the selected operator, falling back to the optional local text contract
+when one exists; clients, backend, model-store validators and
 Qdrant migration consume the same result. There is
 no independent model/dimension environment default. BGE-M3 is F16, 1024
 dimensions and 8192 context tokens. The manifest and GGUF SHA-256 digests are
@@ -35,46 +40,29 @@ health only proves the daemon; API admission additionally performs real model
 inference and fails on load/identity/shape errors.
 
 
-Qwen3 1.7B is the sole text owner for every admitted upstream feature. The
-profile records its Ollama manifest and GGUF SHA-256, native 40960-token context,
-8192-token serving window and 2048-token output ceiling separately. The lower
-serving values are measured resource admission, not changed artifact metadata.
-The adapter uses Ollama's native chat/schema/tool protocol, disables thinking
-and context shifting, refuses implicit truncation, and unloads after each
-request. It retains the upstream chat/tool loop and its real user-scoped
-PostgreSQL/Qdrant tools, while excluding web search, hosted apps and vision.
-BYOK, another model name, an unknown feature or a vendor credential cannot
-change this owner.
+Text identity is the profile's `operator_ai` selection. `fork/operator_ai.py`
+freezes each vendor's chat, ASR and TTS models, endpoints, credential
+environment variables and exact per-capability egress grants; credentials never
+enter the profile and there is no vendor or model fallback. `operator_chat.py`
+and `mimo_chat.py` build the chat client through the existing LangChain tool and
+usage owners. Admission binds the agent stream first-event, stream maximum and
+queue finalization budgets from the selected vendor's
+`request_timeout_seconds`.
 
-The same model contract fixes serving KV-cache precision to `q8_0`. This halves
-the cache budget relative to F16 with a small precision tradeoff; it does not
-change the Q4_K_M model artifact. `Dockerfile.llm` takes the generated backend
-image, compiles its sole stage through `fork.llm_runtime`, and copies only that
-public environment into the pinned Ollama runtime. Its entrypoint applies the
-compiled context, flash-attention, KV type, no-cloud and unload settings before
-serving, so an unrelated shell variable cannot silently change them. Set
-`LLM_IMAGE` to the resulting image name. Actual runtime logs must establish flash
-attention and Q8 cache use; profile validation alone is not that evidence.
+Run `prepare-model.py --kind embedding --output ...` before deployment, then
+set `EMBEDDING_MODEL_STORE` to an operator-owned directory. Provisioning
+downloads only from `registry.ollama.ai`, bounds manifest, layer count and
+layer bytes, verifies all SHA-256 digests in a temporary directory, then
+atomically publishes the complete store. A failed download leaves no accepted
+store. Runtime mounts are read-only and never download.
 
-Run `prepare-model.py --kind embedding --output ...` and `--kind llm --output ...`
-before deployment, then set `EMBEDDING_MODEL_STORE` and `LLM_MODEL_STORE` to
-separate operator-owned directories. Provisioning downloads only from
-`registry.ollama.ai`, bounds manifest, layer count and layer bytes, verifies all
-SHA-256 digests in a temporary directory, then atomically publishes the complete
-store. A failed download leaves no accepted store. Runtime mounts are read-only
-and never download. Apache-2.0 Qwen source/model references and the reviewed
-artifact digests are recorded in the dated verification evidence.
 
-Compose starts separate pinned Ollama services because embedding and generation
-have different memory budgets. API admission checks version, exact inventory,
-manifest, sole GGUF source, native context and completion/tool capabilities,
-then runs a real completion. Each generation repeats identity validation. JSON
-responses are limited to 1 MiB and streams to 4 MiB; socket connect/read/write/TLS
-operations share a monotonic deadline. Standard-library DNS resolution cannot be
-interrupted by that socket deadline and is not claimed as an absolute DNS bound.
-Transport failure never becomes an empty successful answer. HTTP requests that
-fail before streaming return typed 422/503; an SSE model failure after HTTP 200
-remains an in-band `error:` terminal condition.
+Compose runs one pinned Ollama service (embeddings). There is no local
+generation service: text, ASR and TTS requests leave through the selected
+vendor's exact endpoint grant, and `fork.egress_policy` refuses any other
+authority before DNS resolution. Transport failure never becomes an empty
+successful answer; a hosted stream failure stays an in-band error rather than
+a silent empty response.
 
 The dated verification includes a reusable local recording command and its
 input contract: a synthetic account JWT and real 16 kHz mono PCM WAV. It exercises
@@ -111,17 +99,14 @@ Hermetic tests run in the existing `fork-selfhost-startup` lane. CPU inference,
 actual PG/Qdrant/Redis/Auth and wire HTTP/WebSocket evidence are recorded in the
 dated SH3 verification document; they are not replaced by controlled vectors.
 
-The admitted CPU budget is four threads and one concurrent generation. The
-measured 2-CPU fixture processed about 15 prompt tokens/second and exceeded the
-upstream structure feature's 60-second cloud-provider default. Four CPUs yielded
-about 28–31 prompt tokens/second. The profile therefore owns a 300-second model
-request deadline; bootstrap projects 300 seconds to the chat first-event wait,
-600 to the whole chat stream and 1200 to finalizer HTTP dispatch (below its 1500-
-second PG lease). CPU generation can take minutes. These limits are finite and
-source-selected, and no cloud-client timeout option may silently replace them.
+The selected vendor's `request_timeout_seconds` owns the model deadline:
+admission binds it to the chat first-event wait (x1), the whole chat stream
+(x2) and finalizer HTTP dispatch (x4). The frozen vendors report 120 seconds,
+so a Server OS profile binds 120/240/480 seconds. These limits are
+source-selected, and no cloud-client timeout option may silently replace
+them.
 
-The `memory_l1` route passes the original `WorkingObservationBatch` JSON schema
-through the same canonical/captured feature-options owner to native generation.
-It retains the existing prompt, Pydantic parser, attribution and memory writes.
-A native HTTP 200 response that violates that parser remains an extraction
-failure; no parser relaxation or fabricated memory is used to certify the model.
+The `memory_l1` route keeps the original `WorkingObservationBatch` JSON schema,
+prompt, Pydantic parser, attribution and memory writes. A response that
+violates that parser remains an extraction failure; no parser relaxation or
+fabricated memory is used to certify a model

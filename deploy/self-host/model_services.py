@@ -26,12 +26,9 @@ def profile_for(values, *, root=ROOT):
 
 def image_keys(profile):
     """The frozen application images required by the selected Compose graph."""
-    from fork.operator_ai import select
-
-    keys = {'backend': 'BACKEND_IMAGE', 'auth': 'AUTH_SERVER_IMAGE', 'web': 'WEB_IMAGE'}
-    if not select(profile):
-        keys['llm'] = 'LLM_IMAGE'
-    return keys
+    # Text/ASR/TTS come from the brand-declared hosted operator AI; a native
+    # local model is refused at admission, so no profile builds a model image.
+    return {'backend': 'BACKEND_IMAGE', 'auth': 'AUTH_SERVER_IMAGE', 'web': 'WEB_IMAGE'}
 
 
 def specialize(config, profile):
@@ -44,7 +41,7 @@ def specialize(config, profile):
     selected = select(profile)
     hosted = selected.provider != 'mimo'
     services = config['services']
-    removed = ['llm', 'llm-artifact-check']
+    removed = []
     if hosted:
         # A hosted operator AI owns embeddings too, so the server runs no AI compute.
         removed += ['embedding', 'embedding-artifact-check']
@@ -53,7 +50,7 @@ def specialize(config, profile):
     credential_envs = [CREDENTIAL_ENV[selected.provider]]
     if selected.provider == CLOUDFLARE_GATEWAY:
         credential_envs.append(CLOUDFLARE_TOKEN_ENV)
-    removed_env_prefixes = ('SPEECH_MODEL_STORE=', 'LLM_ENDPOINT=')
+    removed_env_prefixes = ('SPEECH_MODEL_STORE=',)
     if hosted:
         removed_env_prefixes += ('EMBEDDING_ENDPOINT=',)
     for service in services.values():
@@ -91,7 +88,7 @@ def main():
         return
     config = selected_config(dotenv_values(args.env_file, interpolate=False))
     if args.providers:
-        print(' '.join(name for name in ('embedding', 'llm') if name in config['services']))
+        print(' '.join(name for name in ('embedding',) if name in config['services']))
     else:
         print(yaml.safe_dump(config, sort_keys=False), end='')
 

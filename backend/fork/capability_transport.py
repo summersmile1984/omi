@@ -61,3 +61,12 @@ def install(app, row=None):
     if found != set(OWNERS):
         raise RuntimeError('disabled capability route owner missing: ' + repr(set(OWNERS) - found))
     app.add_middleware(DisabledCapabilityMiddleware, routes=routes)
+
+    async def disabled(request, error):
+        return JSONResponse(status_code=503, content=error.detail())
+
+    # The middleware owns the named routes above; capability policy also raises
+    # from shared senders those routes do not cover (push delivery, STT
+    # selection). Without this handler an admission refusal would escape as an
+    # unhandled 500 instead of the documented 503.
+    app.add_exception_handler(CapabilityDisabled, disabled)

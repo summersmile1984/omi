@@ -225,22 +225,23 @@ explicitly and check both transfer and signer cache refresh; inherited ambient
 configuration is never a substitute for the current runtime contract.
 
 
-`local_llm.py`, `local_llm_chat.py` and `patches/llm.py` bind every admitted
-text feature to the profile-selected Ollama artifact and retain the upstream
-user-scoped chat/tool loop. Startup and each generation verify the exact runtime,
-manifest, GGUF source, native context and capabilities. The serving context/output
-limits remain distinct from artifact metadata. Requests are byte-bounded, disable
-implicit truncation/context shifting, and fail typed rather than yielding empty
-success. `llm_http.py` bounds socket operations with one deadline; it does not
-claim to interrupt standard-library DNS lookup. `llm_usage.py` delegates completed
-native token counts to the existing usage owner and never charges failed streams.
+There is no local text runtime. `local_llm.py`, `local_llm_chat.py`,
+`llm_http.py`, `llm_runtime.py`, `patches/llm.py` and the Ollama generation
+image (`deploy/self-host/Dockerfile.llm`, its entrypoint and
+`Dockerfile.llm.dockerignore`) were removed together. Every role of
+`fork.bootstrap` refuses a `self_hosted` profile row that still carries a local
+`llm` before importing a workload, so no text request reaches an internal
+Ollama origin and `LLM_ENDPOINT` no longer exists.
 
-`llm_runtime.py` compiles the generated profile into the thin Ollama image's
-precision, context and concurrency settings. The same owner projects model,
-chat and worker budgets before imports; four CPU threads and one generation
-are the admitted reference. The memory feature uses the unchanged upstream
-`WorkingObservationBatch` schema through the canonical/captured route-options
-factory, so native structured output and the production parser agree.
+Text identity is the profile's `operator_ai` selection: `operator_ai.py`
+freezes vendor endpoints, models, credential environment variables and exact
+egress grants, and `capabilities` derives `llm_provider` from that selection
+with no vendor fallback. `operator_chat.py` and `mimo_chat.py` build the
+hosted chat client through the existing LangChain tool/usage owners for that
+selection. Admission binds the agent stream first-event, stream maximum and
+queue finalization budgets from the selected operator's
+`request_timeout_seconds`. `llm_usage.py` delegates completed token counts to
+the existing usage owner and never charges failed streams.
 
 `consolidation_admission.py` is the shared Server/Cloudflare pre-write rule for
 proven exact duplicate/create decisions. `consolidation_transport.py` retains

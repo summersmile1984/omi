@@ -61,6 +61,19 @@ def test_real_websocket_owner_closes_explicitly_without_accepting_audio(applicat
     assert failure.value.reason == 'stt_disabled'
 
 
+def test_capability_refusal_inside_a_handler_is_a_documented_503(application):
+    from fork.capabilities import reject
+
+    @application.post('/contract/capability-refusal')
+    def refusal():
+        reject('push')
+
+    with TestClient(application) as client:
+        response = client.post('/contract/capability-refusal')
+    assert response.status_code == 503
+    assert response.json() == {'code': 'deployment_capability_disabled', 'capability': 'push', 'retryable': False}
+
+
 def test_background_stt_is_not_empty_transcription_and_push_count_is_not_delivery(monkeypatch):
     from fork import profile
 

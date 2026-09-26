@@ -56,48 +56,48 @@ fresh random Compose project owns all state and removes its own containers,
 volumes and networks on exit. No production container is selected or reused.
 
 The fixture preserves the **complete canonical rendered profile**. It never
-removes speech/LLM contracts or substitutes an embedding HTTP fake. Native
-startup requires **all three** existing, absolute model-store directories.
-Stores are mounted read-only, the normal `Dockerfile.llm` is built, both
-production Ollama artifact checks run, and actual BGE-M3/Qwen services start.
-Backend admission verifies the speech bundle and executes real
-Kokoro/SenseVoice and Qwen readiness. Missing or incomplete stores are rejected
-before fixture state is created.
+removes contracts or substitutes an embedding HTTP fake. A native local text
+model is no longer a runtime shape: `fork.bootstrap` refuses a profile row that
+carries a local `llm`, so the fixture requires a declared operator credential
+and fails before creating state without one. Startup requires the existing,
+absolute embedding store directory. It is mounted read-only, the production
+Ollama artifact check runs, and the actual BGE-M3 service starts. Backend
+admission executes the hosted operator selection and real embedding readiness.
+Missing or incomplete stores are rejected before fixture state is created.
 
 ```bash
 python3 deploy/self-host/ci/product.py \
   --output /absolute/new-server-fixture --brand-id eddy \
   --embedding-store /absolute/bge-m3-store \
-  --llm-store /absolute/qwen-store \
-  --speech-store /absolute/speech-store
+  --operator-secret-file /absolute/operator.json \
+  --operator-provider openrouter
 ```
 
-The same local/CI shell entry requires `SELF_HOST_CI_EMBEDDING_STORE`,
-`SELF_HOST_CI_LLM_STORE` and `SELF_HOST_CI_SPEECH_STORE` together. Provision with
-`deploy/self-host/prepare-model.py --kind embedding --output ...`,
-`prepare-model.py --kind llm --output ...`, and
-`deploy/self-host/prepare-speech.py --output ...` beforehand. The fork CI
-workflow runs these existing digest-verifying provisioners when the product
-check is selected; runtime startup never downloads or substitutes models.
-CI therefore needs model-registry/release-download access, disk space for the
-stores and images, and at least 12 GiB of Docker memory. Insufficient resources
-fail the gate; no reduced-capability runner is selected instead.
+The same local/CI shell entry requires `SELF_HOST_CI_EMBEDDING_STORE` plus
+either `SELF_HOST_CI_MIMO_SECRET_FILE` or, for another hosted vendor,
+`SELF_HOST_CI_OPERATOR_SECRET_FILE` together with
+`SELF_HOST_CI_OPERATOR_PROVIDER`. Provision the embedding store with
+`deploy/self-host/prepare-model.py --kind embedding --output ...` beforehand.
+The fork CI workflow runs that existing digest-verifying provisioner when the
+product check is selected; runtime startup never downloads or substitutes
+models. CI therefore needs model-registry/release-download access, disk space
+for the store and images, and enough Docker memory to pass the fixture's
+capacity admission. Insufficient resources fail the gate; no
+reduced-capability runner is selected instead.
 
 An explicitly selected [MiMo fixture](../../deploy/self-host/mimo-local.md)
-requires only the embedding store and a private `--mimo-secret-file` credential
-file (shell entry: `SELF_HOST_CI_MIMO_SECRET_FILE`). Do not also select native
-LLM/speech stores. Only the API and canonical-memory maintenance worker receive
-that selected credential and outbound network access. CI uses native models and
-needs no hosted-provider credential.
+uses the same embedding store with a private `--mimo-secret-file` credential
+file (shell entry: `SELF_HOST_CI_MIMO_SECRET_FILE`). Only the API and
+canonical-memory maintenance worker receive that selected credential and
+outbound network access.
 
 Before building or starting application containers, the fixture checks Docker's
-memory against selected Compose model limits plus 4 GiB application/engine
-headroom (currently 12 GiB native, 8 GiB MiMo).
-`model-capacity.json` records the decision. This rejects the actual 2026-09-05
-8 GiB native VM that killed `llama-server` during finalization; it is an admission
-floor, not a throughput or concurrent-workload guarantee.
+memory against the selected Compose model limits plus 4 GiB application/engine
+headroom (currently 8 GiB).
+`model-capacity.json` records the decision. It is an admission floor, not a
+throughput or concurrent-workload guarantee.
 
-Both native and MiMo selections expose actual WebSocket Upgrade through the same Auth/API proxy.
+Both hosted selections expose actual WebSocket Upgrade through the same Auth/API proxy.
 The upstream server owns authentication and the handshake response. The tunnel
 preserves parser-buffered first frames and binary PCM in both directions, and
 closes both sockets on disconnect, 30-second inactivity, its 15-minute deadline
