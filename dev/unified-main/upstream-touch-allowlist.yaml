@@ -63,6 +63,19 @@ allow:
     upstream_pr: "PROPOSED (not opened): drop or retarget the dead rollout.py scope hint; retire when upstream accepts"
     owner: C-sync
 
+  # The upstream boundary scan excludes backend/tests/** but cannot know
+  # backend/fork/ (a directory that does not exist upstream), so its exact-match
+  # baseline can never contain the fork's contract-test transport calls. The
+  # sync actually aligned every production count with upstream's baseline; this
+  # one key records the fork-owned test's three real direct calls so the ratchet
+  # keeps holding both sides. Upstream PR proposes generalizing their own test
+  # exclusion instead of carrying downstream keys.
+  - path: .github/scripts/notification_dispatch_boundary_baseline.json
+    max_added_lines: 1
+    reason: 上游 baseline 的排除前缀不含 backend/fork/（上游树无此目录），精确匹配对 fork 必然失配；补记 fork 契约测试的 3 个真实 direct transport 调用
+    upstream_pr: "PROPOSED (not opened): generalize the boundary scan's test exclusion (backend/tests/** -> **/tests/**) so downstream test fixtures never enter the baseline; retire when upstream accepts"
+    owner: C-sync
+
   # AGENTS.md pointers were tried on 2026-09-03 and removed the same day.
   # Upstream keeps these files at their guardrail ceiling -- app/AGENTS.md was
   # 11288/11500 bytes and backend/AGENTS.md 38997/39000 -- so a one-line fork

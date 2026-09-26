@@ -1,4 +1,5 @@
 {
+  "backend/fork/tests/test_disabled_capabilities.py": 3,
   "backend/routers/action_items.py": 4,
   "backend/routers/apps.py": 2,
   "backend/routers/developer.py": 2,

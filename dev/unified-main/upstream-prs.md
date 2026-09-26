@@ -24,6 +24,7 @@
 | 16 | capture 棘轮记录落后于已合并代码 | `app/contracts/capture/boundary-baseline.json` | `capture_seams.dart` 的 `singleton-reads` 记录 2→4：C1 (#14327) 记录后 #14529/#14549/#14550 把文件涨到 4 未更新记录，上游自己的 diff 触及该文件即红；纯数据一行，与已合并代码一致 | 1（同文件 fork 条目） | 待提 · 2026-09-26 同步后 `capture-ownership-boundaries` 对任何触及该文件的 diff 失败 |
 | 17 | 品牌可配置的应用标题 | `app/lib/flavors.dart` | `F.title` 的 `Omi`/`Omi Dev` 字面量改为从构建配置读取的品牌常量，默认值与上游逐字节等价 | 1（`flavors.dart` 条目，+3/3） | 待提 · 与品牌生成物（`flavors.brand.dart`）配套 |
 | 18 | FC 定义遗留死 scope_hint | `.github/failure-classes/FC-gate-principal-outside-consolidated-entitlement.json` | `backend/utils/task_intelligence/rollout.py` 被 #18722 删除后 hint 仍指向它；`scripts/failure-class` 把零命中的 hint 视为错误（#14466/#14495 同类）。改指存活目录 `backend/utils/task_intelligence/**`；上游已有同款自修先例（#14493 修九个死 hint） | 1（同文件 fork 条目） | 待提 · 2026-09-26 同步后 `failure-class-protocol` 对本区间必红 |
+| 19 | 通知边界扫描不区分下游测试 | `.github/scripts/notification_dispatch_boundary_baseline.json`（配合 `check_notification_dispatch_boundary.py`） | 扫描已排除 `backend/tests/**` 却不知 `backend/fork/`（上游树无此目录），精确匹配对下游必然失配；提议把测试排除泛化为 `**/tests/**`，下游测试永不需要进上游 baseline | 1（同文件 fork 条目） | 待提 · 先例：上游自己在 #14493/#14466 泛化过同类规则 |
 
 ## 提交约定
 
