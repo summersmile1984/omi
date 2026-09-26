@@ -312,6 +312,7 @@ async def test_gemini_proxy_rejects_basic_embed_content(monkeypatch):
     red-proof: remove embedContent from _PLAN_GATED_PROXY_ACTIONS and this
     fails because the provider spy runs.
     """
+    monkeypatch.setenv("BASIC_PLAN_GATE_PROXY_EMBED_ENABLED", "true")
     provider_calls = []
 
     async def should_not_proxy(*_args, **_kwargs):
@@ -344,6 +345,7 @@ async def test_gemini_proxy_rejects_basic_embed_content(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_gemini_proxy_rejects_basic_batch_embed_contents(monkeypatch):
+    monkeypatch.setenv("BASIC_PLAN_GATE_PROXY_EMBED_ENABLED", "true")
     provider_calls = []
 
     async def should_not_proxy(*_args, **_kwargs):
@@ -414,6 +416,7 @@ async def test_gemini_proxy_embed_gate_is_the_deliberate_tbd4_flip(monkeypatch):
     pins the deliberate flip: the same 402 plan_gated deny as generate, and
     the release-probe exemption does NOT extend to embed traffic.
     """
+    monkeypatch.setenv("BASIC_PLAN_GATE_PROXY_EMBED_ENABLED", "true")
     auth_calls = []
 
     def authorize(*_args, **_kwargs):
@@ -462,6 +465,67 @@ async def test_gemini_proxy_fails_closed_when_authorization_is_unavailable(monke
         )
 
     assert error.value.status_code == 503
+    assert provider_calls == []
+
+
+@pytest.mark.asyncio
+async def test_gemini_proxy_embed_switch_off_reaches_the_provider_without_authorize(monkeypatch):
+    """Unset embed switch: basic non-BYOK embed is byte-identical to main before #14165."""
+    from fastapi.responses import Response
+
+    auth_calls = []
+    seen = []
+
+    def authorize(*_args, **_kwargs):
+        auth_calls.append(True)
+        return _decision(allowed=False, reason="basic_not_entitled")
+
+    async def fake_proxy(request, path, streaming, uid):
+        seen.append((path, streaming, uid))
+        return Response(b'{"ok":true}', media_type="application/json")
+
+    monkeypatch.delenv("BASIC_PLAN_GATE_PROXY_EMBED_ENABLED", raising=False)
+    monkeypatch.setattr(desktop_proxy, "run_blocking", _passthrough_run_blocking)
+    monkeypatch.setattr(desktop_proxy, "authorize_managed_compute", authorize)
+    monkeypatch.setattr(desktop_proxy, "_proxy", fake_proxy)
+
+    response = await desktop_proxy.gemini_proxy(
+        make_request(),
+        "models/gemini-embedding-001:embedContent",
+        "basic-uid",
+    )
+
+    assert response.status_code == 200
+    assert auth_calls == []
+    assert seen == [("models/gemini-embedding-001:embedContent", False, "basic-uid")]
+
+
+@pytest.mark.asyncio
+async def test_gemini_proxy_generate_stays_gated_when_embed_switch_is_off(monkeypatch):
+    """S14 generate/stream stay live in prod; the embed switch must not disarm them."""
+    provider_calls = []
+
+    async def should_not_proxy(*_args, **_kwargs):
+        provider_calls.append(True)
+        raise AssertionError("provider must not run for a plan-gated basic user")
+
+    monkeypatch.delenv("BASIC_PLAN_GATE_PROXY_EMBED_ENABLED", raising=False)
+    monkeypatch.setattr(desktop_proxy, "run_blocking", _passthrough_run_blocking)
+    monkeypatch.setattr(
+        desktop_proxy,
+        "authorize_managed_compute",
+        lambda *_args, **_kwargs: _decision(allowed=False, reason="basic_not_entitled"),
+    )
+    monkeypatch.setattr(desktop_proxy, "_proxy", should_not_proxy)
+
+    with pytest.raises(HTTPException) as error:
+        await desktop_proxy.gemini_proxy(
+            make_request(),
+            "models/gemini-2.5-flash:generateContent",
+            "basic-uid",
+        )
+
+    assert error.value.status_code == 402
     assert provider_calls == []
 
 
@@ -1366,6 +1430,51 @@ def test_overflow_plan_probes_the_target_before_paying_on_demand(monkeypatch):
     ]
 
 
+def _gateway_pt_provider():
+    from llm_gateway.gateway.providers import VertexGeminiProvider
+
+    async def _token() -> str:
+        return "token"
+
+    return VertexGeminiProvider(access_token_supplier=_token)
+
+
+@pytest.mark.asyncio
+async def test_gateway_and_desktop_kill_switch_overflow_agree(monkeypatch):
+    """Both copies of the PT policy apply the same origin ceiling."""
+    monkeypatch.delenv(desktop_proxy._OVERFLOW_MODEL_OVERRIDE_ENV, raising=False)
+    monkeypatch.delenv(desktop_proxy._PT_MODEL_OVERRIDE_ENV, raising=False)
+    monkeypatch.delenv(desktop_proxy._OVERFLOW_ENABLED_ENV, raising=False)
+    provider = _gateway_pt_provider()
+    try:
+        origin = "gemini-2.5-flash-lite"
+        unset_desktop = desktop_proxy._overflow_plan("gemini-2.5-flash")
+        unset_gateway = provider._overflow_plan("gemini-2.5-flash")
+        assert unset_desktop == unset_gateway
+        assert unset_desktop[0] == ("gemini-3.1-flash-lite", "dedicated")
+
+        capped_desktop = desktop_proxy._overflow_plan("gemini-2.5-flash", origin_model=origin)
+        capped_gateway = provider._overflow_plan("gemini-2.5-flash", origin_model=origin)
+        assert capped_desktop == capped_gateway == [("gemini-2.5-flash-lite", "shared")]
+        assert all("gemini-3.1" not in model for model, _capacity in capped_desktop)
+
+        desktop_proxy._record_pt_target_observation(True)
+        provider._pt_target_ready = True
+        promoted_desktop = desktop_proxy._overflow_plan("gemini-3.1-flash-lite", origin_model=origin)
+        promoted_gateway = provider._overflow_plan("gemini-3.1-flash-lite", origin_model=origin)
+        assert promoted_desktop == promoted_gateway == [("gemini-2.5-flash-lite", "shared")]
+        assert all(model != "gemini-3.1-flash-lite" for model, _capacity in promoted_desktop)
+    finally:
+        await provider.aclose()
+
+
+def test_desktop_kill_switch_reads_the_origin_table(monkeypatch):
+    """The ceiling is data on the shared table, not a per-call conditional."""
+    monkeypatch.delenv(desktop_proxy._OVERFLOW_MODEL_OVERRIDE_ENV, raising=False)
+    monkeypatch.setitem(desktop_proxy.ptr.LANE_OVERFLOW_ORIGINS, "gemini-2.5-flash", "gemini-2.5-flash-lite")
+    assert desktop_proxy._overflow_plan("gemini-2.5-flash") == [("gemini-2.5-flash-lite", "shared")]
+
+
 def test_overflow_skips_a_rung_traffic_has_proved_unreachable(monkeypatch):
     """Keeping an unreachable rung in the plan would spend a round trip to 404
     on every overflow request."""
@@ -2076,7 +2185,7 @@ def _capture_proxy_journeys(monkeypatch):
     monkeypatch.setattr(
         journeys,
         'record_client_journey_terminal',
-        lambda journey, client_kind, outcome, _elapsed, *, issue_class=None: terminal.append(
+        lambda journey, client_kind, outcome, _elapsed, *, issue_class=None, app_build='unknown': terminal.append(
             (journey, client_kind, outcome, issue_class)
         ),
     )

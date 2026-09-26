@@ -23,6 +23,7 @@ from utils.env_loader import EnvStage, resolve_stage_from_env
 from utils.executors import critical_executor, db_executor, run_blocking
 from utils.http_client import get_llm_gateway_client, get_llm_gateway_semaphore
 from utils.llm.desktop_llm_stub import llm_stub_enabled
+from utils.llm.model_config import LUNA_MODEL
 from utils.llm.gateway_client import llm_gateway_headers
 from utils.llm.gateway_observability import record_direct_exception_surface
 from utils.llm.prompt_cache import EXPLICIT_CACHE_OPTIONS, has_cacheable_prefix
@@ -30,6 +31,8 @@ from utils.llm.providers import get_openai_api_key
 from utils.journey_metrics_contract import ClientKind, resolve_client_kind_from_headers
 from utils.observability.fallback import record_fallback
 from utils.observability.journeys import ClientJourneyAttempt
+from utils.product_metrics import extract_app_build
+from utils.free_tier_basic_gates import basic_plan_gate_proactivity_enabled
 from utils.managed_compute import Decision, authorize_managed_compute, funding_owner_for_feature
 from utils.other.endpoints import get_current_user_uid
 from utils.subscription import (
@@ -61,7 +64,7 @@ _OPERATION_LANES = {
 }
 _DIRECT_MODELS = {
     "proactive_extraction": "gpt-5-nano",
-    "proactive_reasoning": "gpt-5.6-luna",
+    "proactive_reasoning": LUNA_MODEL,
 }
 # Must match generated_route_overrides.yaml for these features. The direct
 # recovery path previously used medium for reasoning, which let luna spend a
@@ -276,7 +279,11 @@ async def _enforce_proactive_plan_gate(uid: str, operation: ProactiveOperation) 
     Mirrors desktop_proxy._enforce_managed_plan_gate: 503 for an authorization
     outage, 402 plan_gated for every other deny. The offline stub path below
     stays reachable only for callers this gate admitted.
+
+    Default off (``BASIC_PLAN_GATE_PROACTIVITY_ENABLED``): no authorize call.
     """
+    if not basic_plan_gate_proactivity_enabled():
+        return
     feature = _OPERATION_GATE_FEATURES[operation.value]
     decision = await run_blocking(
         db_executor,
@@ -945,12 +952,14 @@ async def proactive_completion(
     response: Response,
     uid: str = Depends(_authorized_desktop_user),
     x_app_platform: str | None = Header(None, alias='X-App-Platform'),
+    x_app_version: str | None = Header(None, alias='X-App-Version'),
     user_agent: str | None = Header(None, alias='User-Agent'),
 ) -> ProactiveCompletionEnvelope:
     await _enforce_proactive_plan_gate(uid, request.operation)
     attempt = ClientJourneyAttempt(
         'desktop_proactivity',
         _proactivity_client_kind(x_app_platform, user_agent),
+        app_build=extract_app_build({'x-app-version': x_app_version or ''}),
     )
     try:
         result = await _proactive_completion_unobserved(request, response, uid=uid)
