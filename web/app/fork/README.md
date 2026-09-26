@@ -23,6 +23,11 @@ transforms and before staged production typechecking. JSX and template literals
 retain escaping; dynamic user content and model prompt modules are not rewritten.
 The artifact manifest records every changed owner and its output hash.
 
+`scripts/copy-moonshine-assets.ts` is overlaid from `fork/overlays/` so the
+staged asset build allowlists the `NEXT_PUBLIC_BRAND_*` and
+`NEXT_PUBLIC_OMI_*` keys and the generated Moonshine server derives page titles
+and marketplace copy from that same brand environment.
+
 Footer, help, mobile notice and activity-mark overlays consume the same public
 presentation. Activity indicators use the generated `/logo.png` and honor pause
 and reduced motion. Help uses declared contact links without the upstream support

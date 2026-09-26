@@ -32,12 +32,6 @@ export function buildPublicEnvironment(
       'NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID',
       'NEXT_PUBLIC_FIREBASE_VAPID_KEY',
       'NEXT_PUBLIC_MIXPANEL_TOKEN',
-      'NEXT_PUBLIC_BRAND_DISPLAY_NAME',
-      'NEXT_PUBLIC_BRAND_SHORT_NAME',
-      'NEXT_PUBLIC_BRAND_TAGLINE',
-      'NEXT_PUBLIC_BRAND_APP_TITLE',
-      'NEXT_PUBLIC_OMI_PROFILE_JSON',
-      'NEXT_PUBLIC_OMI_PRODUCT_NAME',
     ].map((key) => [key, environment[key] ?? '']),
   );
   publicEnvironment.NEXT_PUBLIC_WS_BASE_URL = webSocketBaseUrl;
@@ -108,14 +102,8 @@ const resolvedManifest = {
 
 const apiBaseInput = process.env.NEXT_PUBLIC_API_BASE_URL || 'https://api.omi.me';
 const apiBaseUrl = apiBaseInput.endsWith('/') ? apiBaseInput.slice(0, -1) : apiBaseInput;
-const brand = {
-  displayName: (process.env.NEXT_PUBLIC_BRAND_DISPLAY_NAME || 'Omi').trim() || 'Omi',
-  shortName: (process.env.NEXT_PUBLIC_BRAND_SHORT_NAME || process.env.NEXT_PUBLIC_BRAND_DISPLAY_NAME || 'Omi').trim() || 'Omi',
-  tagline: (process.env.NEXT_PUBLIC_BRAND_TAGLINE || 'thought to action').trim() || 'thought to action',
-  appTitle: (process.env.NEXT_PUBLIC_BRAND_APP_TITLE || 'Omi - Your AI Companion').trim() || 'Omi - Your AI Companion',
-};
 const marketplaceCategories = ${JSON.stringify(marketplaceCategories)};
-const marketplaceDescription = 'Explore and install AI-powered apps for ' + brand.displayName + '. Enhance your experience with productivity tools, conversation insights, and more.';
+const marketplaceDescription = 'Explore and install AI-powered apps for Omi. Enhance your experience with productivity tools, conversation insights, and more.';
 let initialMarketplaceCache = { expiresAt: 0, apps: [] };
 let marketplaceCache = { expiresAt: 0, apps: [] };
 
@@ -179,19 +167,19 @@ async function marketplacePage(pathname) {
   if (pathname === '/apps') {
     const apps = await getInitialMarketplaceApps();
     return {
-      title: brand.displayName + ' App Store - Discover AI-Powered Apps',
+      title: 'Omi App Store - Discover AI-Powered Apps',
       description: marketplaceDescription,
       canonical: '/apps',
       image: '/og-apps.png',
-      content: marketplaceList(apps, brand.displayName + ' App Store'),
+      content: marketplaceList(apps, 'Omi App Store'),
     };
   }
   const pathParts = pathname.split('/').filter(Boolean);
   if (pathParts.length === 3 && pathParts[0] === 'apps' && pathParts[1] === 'category') {
     const category = decodeURIComponent(pathParts[2]);
     const categoryInfo = marketplaceCategories[category] || marketplaceCategories.other;
-    const title = categoryInfo.displayName + ' Apps - ' + brand.displayName + ' App Store';
-    const description = categoryInfo.description + ' Browse ' + categoryInfo.displayName + ' apps for your ' + brand.displayName + '.';
+    const title = categoryInfo.displayName + ' Apps - Omi App Store';
+    const description = categoryInfo.description + ' Browse ' + categoryInfo.displayName + ' apps for your Omi.';
     const apps = (await getInitialMarketplaceApps()).filter((app) => app.category === category);
     return {
       title,
@@ -215,7 +203,7 @@ async function marketplacePage(pathname) {
     const categoryName = formatCategoryName(app.category);
     return {
       title: app.name + ' - ' + categoryName + ' App',
-      description: app.description + ' Available on ' + brand.displayName + ', the AI-powered wearable platform.',
+      description: app.description + ' Available on Omi, the AI-powered wearable platform.',
       socialDescription: app.description,
       canonical: pathname,
       image: app.image || '/og-apps.png',
@@ -244,8 +232,8 @@ const renderer = {
     const requestUrl = new URL(context.request.url);
     const pathname = requestUrl.pathname;
     const marketplace = await marketplacePage(pathname);
-    const title = marketplace?.title ?? (pathname === '/login' ? 'Sign In to ' + brand.displayName : brand.appTitle);
-    const description = marketplace?.description ?? (brand.displayName + ' - Your AI companion that turns ' + brand.tagline + '.');
+    const title = marketplace?.title ?? (pathname === '/login' ? 'Sign In to Omi' : 'Omi - Your AI Companion');
+    const description = marketplace?.description ?? 'Omi - Your AI companion that turns thoughts into action.';
     const canonical = marketplace?.canonical ? requestUrl.origin + marketplace.canonical : undefined;
     const image = marketplace?.image ? new URL(marketplace.image, requestUrl.origin).href : undefined;
     const head = [

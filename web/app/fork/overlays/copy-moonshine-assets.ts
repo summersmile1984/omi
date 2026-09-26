@@ -1,5 +1,5 @@
 import { cp, mkdir } from 'node:fs/promises';
-import { categoryMetadata } from '../src/components/marketplace/category';
+import { categoryMetadata } from '@/components/marketplace/category';
 
 export function deriveWebSocketBaseUrl(
   apiBaseUrl: string,
@@ -37,6 +37,7 @@ export function buildPublicEnvironment(
       'NEXT_PUBLIC_BRAND_TAGLINE',
       'NEXT_PUBLIC_BRAND_APP_TITLE',
       'NEXT_PUBLIC_OMI_PROFILE_JSON',
+      'NEXT_PUBLIC_OMI_PRODUCT_NAME',
     ].map((key) => [key, environment[key] ?? '']),
   );
   publicEnvironment.NEXT_PUBLIC_WS_BASE_URL = webSocketBaseUrl;
@@ -282,6 +283,10 @@ const handler = createRequestHandler({
 // Prevent clickjacking: disallow embedding any page (incl. /login) in a frame.
 const fetch = async (request) => {
   const response = await handler(request);
+  // Streamed chat replies can pause for 25s during a tool call, longer than Bun's 10s idle default.
+  if (response.headers.get('content-type')?.includes('text/event-stream')) {
+    server.timeout(request, 60);
+  }
   const headers = new Headers(response.headers);
   headers.set('X-Frame-Options', 'DENY');
   headers.set('Content-Security-Policy', "frame-ancestors 'none'");

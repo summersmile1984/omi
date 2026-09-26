@@ -12,7 +12,8 @@
     "src/components/ui/OmiOrb.tsx": "fork/overlays/OmiOrb.tsx",
     "src/components/layout/Footer.tsx": "fork/overlays/Footer.tsx",
     "src/components/layout/MobileBlockOverlay.tsx": "fork/overlays/MobileBlockOverlay.tsx",
-    "src/app/(authenticated)/help/page.tsx": "fork/overlays/HelpPage.tsx"
+    "src/app/(authenticated)/help/page.tsx": "fork/overlays/HelpPage.tsx",
+    "scripts/copy-moonshine-assets.ts": "fork/overlays/copy-moonshine-assets.ts"
   },
   "additions": {
     "src/app/(public)/chat/[token]/page.tsx": "fork/routes/chat-share-page.tsx",

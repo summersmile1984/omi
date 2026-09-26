@@ -55,7 +55,6 @@ import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/lib/settingsSection
 import { PROFILE_MENU_MAX_HEIGHT } from '@/lib/profileMenu';
 import { ConfettiBurst } from '@/components/ui/ConfettiBurst';
 import { OpenSurface } from '@/components/ui/OpenSurface';
-import { BRAND } from '@/lib/fork/brand';
 
 /** How long the banner takes to swell and pop, and the burst to clear it. */
 const BANNER_BURST_MS = 420;
@@ -423,11 +422,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             <Link
               href="/conversations"
               className="flex h-6 items-center gap-2 px-2"
-              aria-label={BRAND.displayName}
+              aria-label="Omi"
             >
               <Image
                 src="/omi-white.webp"
-                alt={BRAND.displayName}
+                alt="Omi"
                 width={60}
                 height={24}
                 className="h-[18px] w-auto flex-shrink-0 object-contain"
@@ -585,11 +584,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 ? 'https://macos.omi.me/'
                 : 'https://onelink.to/rbsrxc';
               const bannerTitle = isMac
-                ? BRAND.displayName + ' is 10X better on macOS'
-                : 'Take ' + BRAND.shortName + ' with you';
-              const bannerSubtitle = isMac
-                ? 'Try ' + BRAND.shortName + ' on macOS'
-                : 'Try ' + BRAND.shortName + ' on your phone';
+                ? 'Omi is 10X better on macOS'
+                : 'Take Omi with you';
+              const bannerSubtitle = isMac ? 'Try Omi on macOS' : 'Try Omi on your phone';
               return (
                 <motion.div
                   // Dismissing is the one moment this banner is the thing you are

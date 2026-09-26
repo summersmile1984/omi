@@ -401,10 +401,19 @@ describe("the shared Web build boundary", () => {
     }
   });
 
-  test("projects the real Eddy manifest asset directory without adding local paths to public environment", () => {
+  test("projects the real Eddy manifest asset directory without adding local paths to public environment", async () => {
+    const venvPython = resolve(
+      import.meta.dir,
+      "../../backend/.venv/bin/python"
+    );
+    // Same interpreter convention as the fork checks manifest: the canonical
+    // backend venv when it exists, the ambient python3 otherwise.
+    const interpreter = (await Bun.file(venvPython).exists())
+      ? venvPython
+      : "python3";
     const result = Bun.spawnSync(
       [
-        resolve(import.meta.dir, "../../backend/.venv/bin/python"),
+        interpreter,
         resolve(import.meta.dir, "profile_input.py"),
         "--brand",
         "eddy",
@@ -510,6 +519,7 @@ describe("the shared Web build boundary", () => {
     const stage = resolve(temp, "stage");
     try {
       await mkdir(resolve(web, "src"), { recursive: true });
+      await mkdir(resolve(web, "scripts"), { recursive: true });
       await mkdir(resolve(web, "fork"));
       await mkdir(resolve(web, "node_modules"));
       await writeFile(resolve(web, "src/firebase.ts"), "old Firebase source");
@@ -518,17 +528,38 @@ describe("the shared Web build boundary", () => {
         "new Better Auth facade"
       );
       await writeFile(resolve(web, "fork/share.ts"), "new public share route");
+      await writeFile(
+        resolve(web, "scripts/copy-assets.ts"),
+        "upstream asset script"
+      );
+      await writeFile(
+        resolve(web, "fork/copy-assets.ts"),
+        "branded asset script"
+      );
       await writeFile(resolve(web, ".env.local"), "PRIVATE=do-not-copy");
       const rows = await stageSources(web, stage, {
         schema_version: 1,
-        files: { "src/firebase.ts": "fork/firebase.ts" },
+        files: {
+          "src/firebase.ts": "fork/firebase.ts",
+          "scripts/copy-assets.ts": "fork/copy-assets.ts",
+        },
         additions: { "src/app/share.ts": "fork/share.ts" },
       });
-      expect(rows).toHaveLength(2);
-      expect(rows.map((row) => row.mode)).toEqual(["replace", "add"]);
+      expect(rows).toHaveLength(3);
+      expect(rows.map((row) => row.mode)).toEqual([
+        "replace",
+        "replace",
+        "add",
+      ]);
       expect(await readFile(resolve(stage, "src/firebase.ts"), "utf8")).toBe(
         "new Better Auth facade"
       );
+      expect(await readFile(resolve(stage, "scripts/copy-assets.ts"), "utf8")).toBe(
+        "branded asset script"
+      );
+      expect(
+        await readFile(resolve(web, "scripts/copy-assets.ts"), "utf8")
+      ).toBe("upstream asset script");
       expect(await readFile(resolve(web, "src/firebase.ts"), "utf8")).toBe(
         "old Firebase source"
       );
@@ -559,5 +590,17 @@ describe("the shared Web build boundary", () => {
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
+  });
+
+  test("registers the branded asset script overlay outside src/ with both targets present", async () => {
+    const webRoot = resolve(import.meta.dir, "../../web/app");
+    const manifest = JSON.parse(
+      await readFile(resolve(webRoot, "fork/overlays.json"), "utf8")
+    );
+    const source = "scripts/copy-moonshine-assets.ts";
+    const replacement = manifest.files[source];
+    expect(replacement).toBe("fork/overlays/copy-moonshine-assets.ts");
+    expect(await Bun.file(resolve(webRoot, source)).exists()).toBe(true);
+    expect(await Bun.file(resolve(webRoot, replacement)).exists()).toBe(true);
   });
 });

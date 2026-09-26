@@ -83,7 +83,6 @@ _ALLOWED_ENV_KEYS = {
     "NODE_ENV",
     "PATH",
     "PWD",
-    "REDIS_DB_PASSWORD",
     "PYTHONPATH",
     "SHELL",
     "TMPDIR",
