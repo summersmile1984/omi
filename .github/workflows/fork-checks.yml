@@ -146,11 +146,19 @@ jobs:
       # `|| true` makes the failure soft: test_hosted_speech.py already gates its
       # own ffmpeg-dependent cases with `pytest.mark.skipif(shutil.which('ffmpeg')
       # is None)`, so a missing binary never breaks the rest of the lane.
+      # The acquire bounds are the guard's required shape (acquire options on every
+      # network apt-get line, timeout-minutes on the step): a stalled Azure mirror
+      # fails over after three retries with a 30s timeout instead of hanging the job
+      # to its ceiling, and the step cap covers what the options cannot (dpkg, a
+      # debconf prompt). This step's unbounded `apt-get install` is exactly what
+      # failed with exit 1 on the self-hosted runner, so bounded+retried is also the
+      # first-line mitigation for that flake.
       - name: Provision ffmpeg for speech-contract fixtures
+        timeout-minutes: 10
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends ffmpeg
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends ffmpeg
           fi
           command -v ffmpeg && ffmpeg -version | head -1
 
