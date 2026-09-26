@@ -52,6 +52,17 @@ allow:
     upstream_pr: "PROPOSED (not opened): record current singleton-reads debt for capture_seams; retire when upstream accepts"
     owner: C-sync
 
+  # Upstream #18722 (43c27b740c) deleted backend/utils/task_intelligence/rollout.py
+  # while leaving its scope_hint behind in this FC definition; scripts/failure-class
+  # rightly fails a hint that matches zero tracked paths. Retargeting the hint to
+  # the surviving task_intelligence directory keeps the class's scope honest; the
+  # alternative (deleting the hint) loses information the validator is happy to keep.
+  - path: .github/failure-classes/FC-gate-principal-outside-consolidated-entitlement.json
+    max_added_lines: 1
+    reason: 上游删除 rollout.py 后遗留死 scope_hint，检查要求 hint 至少命中一个跟踪路径；改指同域存活目录
+    upstream_pr: "PROPOSED (not opened): drop or retarget the dead rollout.py scope hint; retire when upstream accepts"
+    owner: C-sync
+
   # AGENTS.md pointers were tried on 2026-09-03 and removed the same day.
   # Upstream keeps these files at their guardrail ceiling -- app/AGENTS.md was
   # 11288/11500 bytes and backend/AGENTS.md 38997/39000 -- so a one-line fork
