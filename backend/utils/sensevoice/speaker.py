@@ -28,7 +28,7 @@ from fork.speaker_embedding import (
     validate_speaker_embedding_configuration,
 )
 
-SENSEVOICE_SPEAKER_MODE_ENV = 'SENSEVOICE_SPEAKER_MODE'
+SENSEVOICE_SPEAKER_STRATEGY_ENV = 'SENSEVOICE_SPEAKER_STRATEGY'
 SENSEVOICE_SPEAKER_THRESHOLD_ENV = 'SENSEVOICE_SPEAKER_CLUSTER_THRESHOLD'
 SENSEVOICE_SPEAKER_MAX_CLUSTERS_ENV = 'SENSEVOICE_SPEAKER_MAX_CLUSTERS'
 SENSEVOICE_SPEAKER_WINDOW_SECONDS_ENV = 'SENSEVOICE_SPEAKER_WINDOW_SECONDS'
@@ -88,7 +88,7 @@ def sensevoice_speaker_mode() -> str:
     the historical, explicit single-speaker capability.
     """
 
-    raw = os.getenv(SENSEVOICE_SPEAKER_MODE_ENV, 'auto').strip().lower()
+    raw = os.getenv(SENSEVOICE_SPEAKER_STRATEGY_ENV, 'auto').strip().lower()
     if raw == 'auto':
         try:
             return 'window_clustering' if speaker_embedding_provider() == 'sherpa_onnx' else 'single_speaker'

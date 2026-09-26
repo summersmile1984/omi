@@ -134,7 +134,7 @@ def bootstrap(role: Role = Role.API) -> Admission:
             'OMI_LLM_GATEWAY_CONVERSATION_ACTION_ITEMS_SHADOW_ENABLED': '0',
             'STT_SERVICE_MODELS': operator_provider,
             'STT_PRERECORDED_MODEL': operator_provider,
-            'SENSEVOICE_SPEAKER_MODE': 'single_speaker',
+            'SENSEVOICE_SPEAKER_STRATEGY': 'single_speaker',
         }.items():
             _bind(name, value)
         if row.get('speech'):

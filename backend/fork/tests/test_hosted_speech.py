@@ -217,7 +217,7 @@ async def test_hosted_live_socket_replaces_only_inference(monkeypatch):
     from utils.sensevoice.socket import SenseVoiceSocket
 
     monkeypatch.setattr(speech, 'recognizer', mock.Mock(side_effect=AssertionError('local ASR was constructed')))
-    monkeypatch.setenv('SENSEVOICE_SPEAKER_MODE', 'single_speaker')
+    monkeypatch.setenv('SENSEVOICE_SPEAKER_STRATEGY', 'single_speaker')
     monkeypatch.setattr('utils.stt.vad.linear16_pcm_is_silent', lambda *args, **kwargs: False)
     monkeypatch.setattr(
         hosted_speech.Client, 'transcribe_audio', lambda *args, **kwargs: SimpleNamespace(text='hosted transcript')

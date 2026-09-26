@@ -249,7 +249,7 @@ async def test_selected_mimo_socket_does_not_construct_the_local_recognizer(monk
     row = operator_ai.configure(selected(), 'mimo-cn')
     monkeypatch.setattr(profile, 'current', lambda: row)
     monkeypatch.setattr(speech, 'recognizer', mock.Mock(side_effect=AssertionError('local ASR was constructed')))
-    monkeypatch.setenv('SENSEVOICE_SPEAKER_MODE', 'single_speaker')
+    monkeypatch.setenv('SENSEVOICE_SPEAKER_STRATEGY', 'single_speaker')
     monkeypatch.setattr('utils.stt.vad.linear16_pcm_is_silent', lambda *args, **kwargs: False)
     monkeypatch.setattr(
         mimo_speech.Client, 'transcribe_audio', lambda *args, **kwargs: SimpleNamespace(text='MiMo transcript')
