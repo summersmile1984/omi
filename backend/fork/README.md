@@ -238,7 +238,14 @@ freezes vendor endpoints, models, credential environment variables and exact
 egress grants, and `capabilities` derives `llm_provider` from that selection
 with no vendor fallback. `operator_chat.py` and `mimo_chat.py` build the
 hosted chat client through the existing LangChain tool/usage owners for that
-selection. Admission binds the agent stream first-event, stream maximum and
+selection. `patches/operator_llm.py` binds that contract into upstream's model
+resolution — `utils.llm.model_config._get_model_config` / `get_route_options`
+and `utils.llm.clients` / `providers.get_default_client` all resolve to the
+admitted (model, provider), an unknown feature, BYOK headers, a caller-chosen
+model or an unselected deployment fail closed (`LLMInputRejected` → 422,
+`LLMUnavailable` → 503 through `capability_transport`), and the agent loop
+keeps only the eight user-scoped tools with the deployment-capabilities
+preamble. Admission binds the agent stream first-event, stream maximum and
 queue finalization budgets from the selected operator's
 `request_timeout_seconds`. `llm_usage.py` delegates completed token counts to
 the existing usage owner and never charges failed streams.

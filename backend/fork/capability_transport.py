@@ -70,3 +70,17 @@ def install(app, row=None):
     # selection). Without this handler an admission refusal would escape as an
     # unhandled 500 instead of the documented 503.
     app.add_exception_handler(CapabilityDisabled, disabled)
+
+    # Text-route refusals raised by the operator_llm seam: caller state outside
+    # the admitted contract is a documented 422, an absent text model a
+    # documented 503 — never an unhandled 500.
+    from .patches.operator_llm import LLMInputRejected, LLMUnavailable
+
+    async def input_rejected(request, error):
+        return JSONResponse(status_code=422, content={'code': 'model_input_rejected', 'retryable': False})
+
+    async def text_model_unavailable(request, error):
+        return JSONResponse(status_code=503, content={'code': 'text_model_unavailable', 'retryable': True})
+
+    app.add_exception_handler(LLMInputRejected, input_rejected)
+    app.add_exception_handler(LLMUnavailable, text_model_unavailable)

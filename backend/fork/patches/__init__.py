@@ -19,6 +19,7 @@ from . import consolidation as _consolidation
 from . import canonical_memory as _canonical_memory
 from . import conversation_search as _conversation_search
 from . import memory_clock as _memory_clock
+from . import operator_llm as _operator_llm
 from . import speech as _speech
 from . import provider_guard as _provider_guard
 from . import queue as _queue
@@ -35,6 +36,7 @@ ALL = (
     _canonical_memory,
     _conversation_search,
     _memory_clock,
+    _operator_llm,
     _speech,
     _account_deletion,
     _provider_guard,
