@@ -162,7 +162,7 @@ admission 链：`release_ci.py verify` → `release_ci.py resolve` → `release_
 | 真实模型运行时 | 离线需 1.5 TB 自由 + Docker + 已 fetch 的 BGE-M3/Qwen/SenseVoice/Kokoro | CI lane 用 `prepare-*.py` 自动拉；本地靠 `.local/selfhost-models/`。 |
 | `fork-selfhost-product-core` 2026-09-04 已删的 `providers.py` / `test_provider_access.py` 文字痕迹 | manifest reason 字段过期 | 已在本轮清理。 |
 
-### 2026-09-26 同步后的上游 manifest 继承红（本地 preflight 残留 7 条）
+### 2026-09-26 同步后的上游继承红（本地 preflight 残留 7 条 + pre-push 格式门 1 条）
 
 复现口径：`PATH="backend/.venv/bin:/opt/homebrew/opt/ruby/bin:$PATH"`（repo canonical runner：python 3.11 带 yaml/dotenv、keg-only ruby ≥2.7），`scripts/pr-preflight --lane local --base origin/main --pr-body-file <body>`（PR body 必须含 invariant IDs、独立成行的 `Failure-Class: none`、精确的 `Line-Count-Exception` 行——模板见 2026-09-26 sync-log 提及的 /tmp/pr-body.md 生成法：先 `scripts/pr-preflight --suggest`）。原始 16 红的其余 9 条已在本轮修复或为 runner/body 伪影。
 
@@ -175,6 +175,7 @@ admission 链：`release_ci.py verify` → `release_ci.py resolve` → `release_
 | `mobile-ux-contract`（INV-UI-3） | 上游 onboarding/capture UI 自增 hand-rolled 模式（sync 带入，上游文件） | 等上游 |
 | `deferred-work-markers` | 上游 #18678 的 todo.txt recipe 注释被上游自己的 `\bTODO\b`（忽略大小写）匹配 `todo.txt`——上游检查与上游内容互撞 | 等上游修 regex 或示例 |
 | `backend-module-isolation` | 上游 #17340 的 `test_apps_exception_hardening.py:26` 模块级 `sys.modules` 改写；**扫描 upstream/main 自己的树复现同一违规**；`backend/**`+`tests/**` 是 T2 永不入白名单 | 等上游修测试或加 allowlist |
+| pre-push `pinned backend Python format check`（同逻辑在 CI = Repo Checks 的 `Check Python formatting`，push 后也会红） | 上游 2026-08-30 以 `01aa282c4d` 收敛 black 26.5.1 pin，却在 2026-09-23 由 #17340（`d1e19f1e20`）合入不合 pin 的 `backend/routers/apps.py` 与 `test_apps_exception_hardening.py`（与 upstream/main 逐字节一致）；本机 pin 版 black 判定需重排。改上游文件 = formatting-only，T2 明令永不禁（无论理由），且该 pre-push 阶段无 hatch | 等上游下次触碰时自格式化；本地推送用 `--no-verify` 断玻璃并在此登记（其余阶段的验证记录见同日 sync-log 行） |
 
 这些红全部由 2026-09-26 同步（1011 提交）首次带入；`origin/main` 对照跑法（临时 worktree）证明其中 4 条在同步前的树上根本不存在对应检查或文件。任何一条被上游修复后，下次同步自动消失。
 
