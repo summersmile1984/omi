@@ -30,7 +30,6 @@ OMI_LOCAL_BETTER_AUTH_SECRET OMI_LOCAL_AUTH_DEV_ISSUER_SECRET OMI_LOCAL_QUEUE_WO
 OMI_LOCAL_ENCRYPTION_SECRET OMI_LOCAL_REDIS_PASSWORD OMI_LOCAL_INTERNAL_ADMIN_SECRET
 OMI_LOCAL_TYPESENSE_PORT OMI_LOCAL_TYPESENSE_API_KEY OMI_LOCAL_PGVECTOR_COLLECTION_PREFIX
 OMI_LOCAL_EMBEDDING_ENDPOINT
-OMI_LOCAL_LLM_ENDPOINT OMI_LOCAL_SPEECH_MODEL_STORE
 OMI_LOCAL_SHARE_PORT OMI_LOCAL_AI_PROFILE OMI_LOCAL_BRAND_MANIFEST
 OMI_LOCAL_MIMO_API_KEY OMI_LOCAL_OPENROUTER_API_KEY OMI_LOCAL_SILICONFLOW_API_KEY
 OMI_LOCAL_CLOUDFLARE_API_TOKEN"
@@ -60,7 +59,7 @@ done
 for key in $_CONFIG_KEYS; do
   case "${!key:-}" in *$'\n'*|*$'\r'*) die "multiline local configuration is not supported: $key" ;; esac
   case "$key" in
-    OMI_LOCAL_MIMO_API_KEY|OMI_LOCAL_OPENROUTER_API_KEY|OMI_LOCAL_SILICONFLOW_API_KEY|OMI_LOCAL_CLOUDFLARE_API_TOKEN|OMI_LOCAL_SPEECH_MODEL_STORE) continue ;;
+    OMI_LOCAL_MIMO_API_KEY|OMI_LOCAL_OPENROUTER_API_KEY|OMI_LOCAL_SILICONFLOW_API_KEY|OMI_LOCAL_CLOUDFLARE_API_TOKEN) continue ;;
   esac
   [ -n "${!key:-}" ] || die "configuration error: $key is empty (check $_config_source)"
   case "$key" in
@@ -137,22 +136,27 @@ stop_process() {
   rm -f "$file" "$file.started"
 }
 select_ai() {
-  case "$OMI_LOCAL_AI_PROFILE" in native|mimo-cn|openrouter|cloudflare-gateway|siliconflow) ;; *) die 'invalid local AI profile; select native or an explicit hosted provider' ;; esac
+  case "$OMI_LOCAL_AI_PROFILE" in
+    mimo-cn|openrouter|cloudflare-gateway|siliconflow) ;;
+    *) die 'invalid local AI profile; the native profile is retired -- select an explicit provider with --operator-ai (openrouter, siliconflow, cloudflare-gateway, mimo-cn)' ;;
+  esac
   NO_BACKEND=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --no-backend) NO_BACKEND=true; shift ;;
       --operator-ai)
         [ "$#" -ge 2 ] || die '--operator-ai requires a provider'
-        case "$2" in mimo-cn|openrouter|cloudflare-gateway|siliconflow) ;; *) die 'invalid operator AI provider' ;; esac
+        case "$2" in
+          mimo-cn|openrouter|cloudflare-gateway|siliconflow) ;;
+          *) die "invalid operator AI provider; select: openrouter, siliconflow, cloudflare-gateway, mimo-cn" ;;
+        esac
         OMI_LOCAL_AI_PROFILE="$2"; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
 }
 render_profile() {
-  local args=(--target self_hosted --manifest "$OMI_LOCAL_BRAND_MANIFEST" --stage local)
-  if [ "$OMI_LOCAL_AI_PROFILE" != native ]; then args+=(--operator-ai "$OMI_LOCAL_AI_PROFILE"); fi
+  local args=(--target self_hosted --manifest "$OMI_LOCAL_BRAND_MANIFEST" --stage local --operator-ai "$OMI_LOCAL_AI_PROFILE")
   "${CLEAN_ENV[@]}" "$PYTHON_BIN" "$_REPO_ROOT/scripts/profiles/render.py" \
     "${args[@]}" --emit-json >"$TABLE.tmp" || { rm -f "$TABLE.tmp"; die 'profile rendering failed'; }
   mv "$TABLE.tmp" "$TABLE"
@@ -189,23 +193,15 @@ backend_env() {
     "ACCOUNT_DELETION_HANDLER_URL=$BACKEND_URL/v1/users/account-deletion-wipes/run" \
     "LISTEN_FINALIZATION_TASKS_HANDLER_URL=$BACKEND_URL/v1/conversation-finalization-jobs/run"
   case "$OMI_LOCAL_AI_PROFILE" in
-    native)
-      [ -n "$OMI_LOCAL_SPEECH_MODEL_STORE" ] || die 'native inference requires OMI_LOCAL_SPEECH_MODEL_STORE'
-      case "$OMI_LOCAL_SPEECH_MODEL_STORE" in /*) ;; *) die 'OMI_LOCAL_SPEECH_MODEL_STORE must be absolute' ;; esac
-      [ -d "$OMI_LOCAL_SPEECH_MODEL_STORE" ] || die 'OMI_LOCAL_SPEECH_MODEL_STORE must be a provisioned speech bundle directory'
-      printf '%s\n' "LLM_ENDPOINT=$OMI_LOCAL_LLM_ENDPOINT" "EMBEDDING_ENDPOINT=$OMI_LOCAL_EMBEDDING_ENDPOINT" \
-        "SPEECH_MODEL_STORE=$OMI_LOCAL_SPEECH_MODEL_STORE"
-      ;;
     mimo-cn) key=MIMO_API_KEY; printf '%s\n' "EMBEDDING_ENDPOINT=$OMI_LOCAL_EMBEDDING_ENDPOINT" ;;
     openrouter) key=OPENROUTER_API_KEY ;;
     siliconflow) key=SILICONFLOW_API_KEY ;;
     cloudflare-gateway) key=CLOUDFLARE_API_TOKEN ;;
+    *) die "invalid local AI profile; the native profile is retired -- select an explicit provider with --operator-ai (openrouter, siliconflow, cloudflare-gateway, mimo-cn)" ;;
   esac
-  if [ "$OMI_LOCAL_AI_PROFILE" != native ]; then
-    local scoped="OMI_LOCAL_$key"
-    [ -n "${!scoped:-}" ] || die "explicit local credential required: $scoped"
-    printf '%s=%s\n' "$key" "${!scoped}"
-  fi
+  local scoped="OMI_LOCAL_$key"
+  [ -n "${!scoped:-}" ] || die "explicit local credential required: $scoped"
+  printf '%s=%s\n' "$key" "${!scoped}"
 }
 write_child_env() {
   local line key value
@@ -379,10 +375,11 @@ Omi local dev — fork runtime, isolated by OMI_LOCAL_STATE_DIR.
   dev/local.sh down
   dev/local.sh reset
   dev/local.sh selfhost [--operator-ai PROVIDER]
-Default: OpenRouter hosted chat, embeddings, STT and TTS; select SiliconFlow or
-Cloudflare Gateway with --operator-ai or OMI_LOCAL_AI_PROFILE. Native and MiMo
-remain explicit options and need local model/embedding services.
-AI providers: openrouter, siliconflow, cloudflare-gateway (plus native, mimo-cn).
+Default: OpenRouter hosted chat, embeddings, STT and TTS; select SiliconFlow,
+Cloudflare Gateway or MiMo with --operator-ai or OMI_LOCAL_AI_PROFILE.
+AI providers: openrouter, siliconflow, cloudflare-gateway, mimo-cn.
+The retired native local-LLM profile is rejected; mimo-cn additionally needs a
+local embedding service (OMI_LOCAL_EMBEDDING_ENDPOINT).
 All use self_hosted.local persistence. Credentials must be OMI_LOCAL_* scoped.
 Config: ambient local-scoped variables > dev/local.env > dev/local.env.example.
 EOF

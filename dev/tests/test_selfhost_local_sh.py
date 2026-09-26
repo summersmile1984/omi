@@ -108,9 +108,11 @@ class SelfhostLocalShTests(unittest.TestCase):
         self.record_pid(process)
         for suffix in (".pid", ".pid.started"):
             (self.state / f"pids/queue-worker{suffix}").write_bytes((self.state / f"pids/backend{suffix}").read_bytes())
-        (self.state / "ai-profile").write_text("native\n")
+        (self.state / "ai-profile").write_text("openrouter\n")
+        self.env["OMI_LOCAL_OPENROUTER_API_KEY"] = "synthetic-key"
         result = self.run_selfhost("up")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("owned backend is not healthy", result.stderr)
         self.assertIsNone(process.poll())
 
     def test_retired_restart_selection_does_not_stop_the_owned_process(self) -> None:

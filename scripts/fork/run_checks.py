@@ -16,6 +16,12 @@ owner repair uncovered electron, then repo-state, then the Flutter anchor, one
 lane each.  Fanning out keeps the upstream selector and every check's own
 command, evidence and exit code intact; only the stopping rule changes, in the
 fork's own wrapper rather than by patching the shared runner.
+
+`FORK_SKIP_CHECKS` (comma-separated ids) excludes checks from one diff-scoped
+run; the CI workflow uses it when no operator secret is readable and the
+self-host fixture therefore cannot start.  The complete lane
+(`FORK_FULL_CHECKS=true`) refuses the variable outright: its attestation must
+account for every check in the manifest.
 """
 
 from __future__ import annotations
@@ -73,6 +79,28 @@ def without_check_ids(arguments: list[str]) -> list[str]:
             continue
         result.append(argument)
     return result
+
+
+def skip_check_ids() -> list[str]:
+    """The checks the caller excluded from this run via `FORK_SKIP_CHECKS` (comma separated).
+
+    The CI workflow sets it when no operator secret is readable: the self-host fixture
+    refuses a native local text model at admission and the manifest forbids fake
+    inference, so `fork-selfhost-product-core` is skipped instead of failing every run
+    without secrets. Selection probes (`--output`/`--list`) deliberately ignore it --
+    the workflow's provisioning decisions read those probes.
+    """
+
+    raw = os.environ.get('FORK_SKIP_CHECKS', '')
+    return [identifier for identifier in (part.strip() for part in raw.split(',')) if identifier]
+
+
+def without_skipped(check_ids: list[str], skipped: list[str]) -> tuple[list[str], list[str]]:
+    """Partition a selection into (retained, excluded) against the skip list, order kept."""
+
+    excluded = set(skipped)
+    retained = [identifier for identifier in check_ids if identifier not in excluded]
+    return retained, [identifier for identifier in check_ids if identifier in excluded]
 
 
 def command(arguments: list[str], full: bool) -> tuple[list[str], list[str], str, str]:
@@ -155,6 +183,14 @@ def attestation(path: Path, lane: str, platform: str, check_ids: list[str]) -> N
 if __name__ == '__main__':
     arguments = sys.argv[1:]
     full = os.environ.get('FORK_FULL_CHECKS') == 'true'
+    skipped = skip_check_ids()
+    if full and skipped:
+        # The complete lane's attestation is proof the whole manifest ran; a skip
+        # list would silently under-report it, so refuse before selecting anything.
+        raise SystemExit(
+            f'FORK_SKIP_CHECKS ({", ".join(skipped)}) conflicts with FORK_FULL_CHECKS=true: '
+            'the complete lane must select, run and attest every check.'
+        )
     invocation, selected, lane, platform = command(arguments, full)
     destination = os.environ.get('FORK_CI_ATTESTATION')
     # Only the complete lane has a known selection: the diff lane's ids are
@@ -169,4 +205,13 @@ if __name__ == '__main__':
         # Nothing selected, or the upstream selector could not answer: run the
         # entry point itself so its own summary and exit code stand.
         raise SystemExit(subprocess.call(invocation, cwd=ROOT))
+    if skipped:
+        retained, excluded = without_skipped(check_ids, skipped)
+        if excluded:
+            print(
+                f'Fork manifest: skipping {len(excluded)} check(s): {", ".join(excluded)}',
+                file=sys.stderr,
+                flush=True,
+            )
+        check_ids = retained
     raise SystemExit(execute_each(without_check_ids(invocation), check_ids))

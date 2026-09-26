@@ -246,31 +246,29 @@ jobs:
         working-directory: desktop/windows
         run: pnpm install --frozen-lockfile
 
-      # The product cases run against a real backend fixture. Two runtime
-      # shapes are possible:
-      #
-      #   - Complete canonical native profile: prepare-model.py /
-      #     prepare-speech.py download BGE-M3 / Qwen / SenseVoice / Kokoro and
-      #     product.sh starts the fixture with all three model stores. This is
-      #     the safe shape for untrusted PRs because no business secret leaks
-      #     and downloaded bytes are admitted again at startup. The download
-      #     is several gigabytes per lane and dominates the gate duration;
-      #     it is unavoidable until fork rules allow secrets on PR lanes.
+      # The product cases run against a real backend fixture. Exactly two
+      # runtime shapes are possible, decided by secret availability rather than
+      # event type (a same-repository pull request can read repository secrets):
       #
       #   - Hosted operator AI: an OpenAI-compatible vendor (openrouter /
       #     siliconflow / cloudflare-gateway) supplies LLM / ASR / TTS over
-      #     the wire. The fixture still binds a local BGE-M3 embedding store
-      #     because none of them owns that model; everything else is one
-      #     bearer the brand manifest already declared. PR from forks cannot
-      #     read repo secrets, so this shape only runs on the trusted lanes
-      #     (push, workflow_dispatch).
+      #     the wire and one bearer the brand manifest already declared; CI
+      #     provisions the pinned local BGE-M3 embedding store because none of
+      #     them owns that model. A native local text model is refused at
+      #     self-host admission (backend/fork/bootstrap.py), so this is the
+      #     only runnable fixture shape.
+      #
+      #   - Skip: no operator secret is readable (a fork pull request, or a
+      #     push without repository secrets). The fixture cannot start without
+      #     a real vendor bearer and the manifest forbids substituting fake
+      #     inference, so fork-selfhost-product-core is excluded from this run
+      #     through FORK_SKIP_CHECKS below and the step summary records why;
+      #     every other selected check still runs.
       - name: Decide Server model runtime
         id: server_runtime
         if: steps.flutter.outputs.server_models == 'true'
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "shape=native" >> "$GITHUB_OUTPUT"
-          elif [ -n "${{ secrets.FORK_OPERATOR_OPENROUTER_API_KEY }}" ]; then
+          if [ -n "${{ secrets.FORK_OPERATOR_OPENROUTER_API_KEY }}" ]; then
             printf '{"OPENROUTER_API_KEY":"%s"}\n' "${{ secrets.FORK_OPERATOR_OPENROUTER_API_KEY }}" \
               > "$RUNNER_TEMP/selfhost-operator.json"
             echo "shape=hosted provider=openrouter secret=$RUNNER_TEMP/selfhost-operator.json" >> "$GITHUB_OUTPUT"
@@ -283,21 +281,27 @@ jobs:
               > "$RUNNER_TEMP/selfhost-operator.json"
             echo "shape=hosted provider=cloudflare-gateway secret=$RUNNER_TEMP/selfhost-operator.json" >> "$GITHUB_OUTPUT"
           else
-            echo "shape=native" >> "$GITHUB_OUTPUT"
+            echo "shape=skip" >> "$GITHUB_OUTPUT"
+            {
+              echo "### fork-selfhost-product-core skipped"
+              echo ""
+              echo "No operator secret is readable on this run (fork pull request, or a"
+              echo "push without repository secrets). The self-host fixture refuses a"
+              echo "native local text model at admission, and the manifest forbids"
+              echo "substituting fake inference, so this check is excluded through"
+              echo "FORK_SKIP_CHECKS. Every other selected check still ran."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # Native model stores. Skip the entire download when the hosted shape is
-      # selected above: the fixture no longer needs Qwen / SenseVoice / Kokoro,
-      # only BGE-M3 for the embedding dimension contract.
+      # Hosted shape only: the fixture binds the pinned local BGE-M3 embedding
+      # store (no hosted vendor owns that model), and a run with no operator
+      # secret runs no fixture at all. There is no native shape to provision
+      # Qwen / SenseVoice / Kokoro for -- a local text model is refused at
+      # self-host admission.
       - name: Provision Server embedding store
-        if: steps.server_runtime.outputs.shape == 'native'
+        if: steps.server_runtime.outputs.shape == 'hosted'
         run: |
           python3 deploy/self-host/prepare-model.py --kind embedding --output "$RUNNER_TEMP/selfhost-models/embedding"
-      - name: Provision Server LLM and speech stores
-        if: steps.server_runtime.outputs.shape == 'native'
-        run: |
-          python3 deploy/self-host/prepare-model.py --kind llm --output "$RUNNER_TEMP/selfhost-models/llm"
-          python3 deploy/self-host/prepare-speech.py --output "$RUNNER_TEMP/selfhost-models/speech"
 
       - name: Provision hosted operator AI binding
         if: steps.server_runtime.outputs.shape == 'hosted'
@@ -311,14 +315,12 @@ jobs:
       # Portable contracts run on either host; macOS-only checks run below.
       # The self-host fixture runs on this same Linux host, natively amd64, so its
       # image builds and compose stack are no longer emulated.
-      # Portable contracts run on either host; macOS-only checks run below.
-      # The self-host fixture runs on this same Linux host, natively amd64, so its
-      # image builds and compose stack are no longer emulated.
       #
-      # The runtime-shape branch from the Decide step above determines whether
-      # LLM / speech stores are exported to the lane. Compose the env from a
-      # small shell script so the YAML stays free of nested template expressions
-      # that the GitHub Actions parser refuses.
+      # The runtime-shape branch from the Decide step above either exports the
+      # hosted operator binding or excludes the product-core check from this
+      # run; there is no local LLM/speech store to export. Compose the env from
+      # a small shell script so the YAML stays free of nested template
+      # expressions that the GitHub Actions parser refuses.
       - name: Fork manifest (ci lane)
         env:
           # The self-host fixture writes per-command logs; pin them to a stable path
@@ -335,9 +337,8 @@ jobs:
           if [ "$SERVER_RUNTIME_SHAPE" = "hosted" ]; then
             export SELF_HOST_CI_OPERATOR_SECRET_FILE="$SERVER_RUNTIME_SECRET"
             export SELF_HOST_CI_OPERATOR_PROVIDER="$SERVER_RUNTIME_PROVIDER"
-          else
-            export SELF_HOST_CI_LLM_STORE="$RUNNER_TEMP/selfhost-models/llm"
-            export SELF_HOST_CI_SPEECH_STORE="$RUNNER_TEMP/selfhost-models/speech"
+          elif [ "$SERVER_RUNTIME_SHAPE" = "skip" ]; then
+            export FORK_SKIP_CHECKS=fork-selfhost-product-core
           fi
           python3 scripts/fork/run_checks.py --lane ci --base "${{ steps.base.outputs.ref }}" --platform linux
 
