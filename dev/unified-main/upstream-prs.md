@@ -22,6 +22,7 @@
 
 | 15 | 模型端点清单支持追加登记 | `backend/docs/llm/model_endpoint_inventory.yaml` | `call_sites` 支持 `extra:` 或第二清单文件，让下游登记自己的托管 host 而不改上游文件；fork 的 hosted operator AI（openrouter.ai / 自有网关 host）现在被 `test_llm_gateway_coverage_guardrails` 的全库 host 扫描捕获 | 2（fork/egress_policy.py、fork/operator_ai.py） | 待提 · fork CI advisory 失败 2026-09-16 |
 | 16 | capture 棘轮记录落后于已合并代码 | `app/contracts/capture/boundary-baseline.json` | `capture_seams.dart` 的 `singleton-reads` 记录 2→4：C1 (#14327) 记录后 #14529/#14549/#14550 把文件涨到 4 未更新记录，上游自己的 diff 触及该文件即红；纯数据一行，与已合并代码一致 | 1（同文件 fork 条目） | 待提 · 2026-09-26 同步后 `capture-ownership-boundaries` 对任何触及该文件的 diff 失败 |
+| 17 | 品牌可配置的应用标题 | `app/lib/flavors.dart` | `F.title` 的 `Omi`/`Omi Dev` 字面量改为从构建配置读取的品牌常量，默认值与上游逐字节等价 | 1（`flavors.dart` 条目，+3/3） | 待提 · 与品牌生成物（`flavors.brand.dart`）配套 |
 
 ## 提交约定
 
