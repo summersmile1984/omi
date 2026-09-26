@@ -1,59 +1,37 @@
-import { moonshineJson } from '@tschk/moonshine-next/server';
-
-const REFERRAL_BACKENDS = {
-  dev: 'https://api.omiapi.com',
-  prod: 'https://api.omi.me',
-} as const;
-
-type ReferralEnvironment = keyof typeof REFERRAL_BACKENDS;
-
-export function referralBackendOrigin(environment: string): string | null {
-  return environment in REFERRAL_BACKENDS
-    ? REFERRAL_BACKENDS[environment as ReferralEnvironment]
-    : null;
-}
+import { webProfile } from '@/lib/fork/web-profile';
 
 export async function POST(request: Request) {
-  const authorization = request.headers.get('Authorization');
-  if (!authorization) {
-    return moonshineJson({ error: 'Authorization header required' }, { status: 401 });
-  }
-
-  let body: { code?: unknown; environment?: unknown };
+  const authorization = request.headers.get('authorization');
+  if (!authorization)
+    return Response.json({ error: 'Authorization header required' }, { status: 401 });
+  let body;
   try {
     body = await request.json();
   } catch {
-    return moonshineJson({ error: 'Invalid request body' }, { status: 400 });
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
-
-  if (typeof body.code !== 'string' || typeof body.environment !== 'string') {
-    return moonshineJson({ error: 'Invalid referral claim' }, { status: 400 });
-  }
-  const backendOrigin = referralBackendOrigin(body.environment);
-  if (!backendOrigin) {
-    return moonshineJson({ error: 'Invalid referral environment' }, { status: 400 });
-  }
-
+  if (typeof body?.code !== 'string' || !body.code || body.code.length > 512)
+    return Response.json({ error: 'Invalid referral claim' }, { status: 400 });
   try {
-    const response = await fetch(`${backendOrigin}/v1/users/me/referral/claim`, {
-      method: 'POST',
-      headers: {
-        Authorization: authorization,
-        'Content-Type': 'application/json',
+    const response = await fetch(
+      `${webProfile().api_base_url.replace(/\/$/, '')}/v1/users/me/referral/claim`,
+      {
+        method: 'POST',
+        credentials: 'omit',
+        redirect: 'error',
+        headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: body.code }),
+        signal: AbortSignal.timeout(20000),
       },
-      body: JSON.stringify({ code: body.code }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    const responseBody = await response.text();
-    return new Response(responseBody, {
+    );
+    return new Response(response.body, {
       status: response.status,
       headers: {
-        'Content-Type':
-          response.headers.get('content-type') || 'application/json; charset=utf-8',
-        'Cache-Control': 'no-store',
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
       },
     });
   } catch {
-    return moonshineJson({ error: 'Referral service unavailable' }, { status: 502 });
+    return Response.json({ error: 'Referral service unavailable' }, { status: 502 });
   }
 }

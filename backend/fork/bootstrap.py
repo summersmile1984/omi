@@ -69,11 +69,13 @@ def bootstrap(role: Role = Role.API) -> Admission:
         'object_store': 'minio',
         'queue': 'redis',
         'cache': 'redis',
-        'vector': 'qdrant',
     }
     for name, value in expected.items():
         if row.get('data_plane', {}).get(name) != value:
             raise profile.ProfileError(f'self_hosted data_plane.{name} must be {value}')
+    vector = 'pgvector' if row.get('stage') == 'local' else 'qdrant'
+    if row.get('data_plane', {}).get('vector') != vector:
+        raise profile.ProfileError(f"self_hosted.{row.get('stage')} data_plane.vector must be {vector}")
     _bind('OMI_DEPLOYMENT_TARGET', 'self_hosted')
     stages = {'production': 'prod', 'beta': 'dev', 'local': 'local'}
     if row.get('stage') not in stages:
@@ -86,7 +88,7 @@ def bootstrap(role: Role = Role.API) -> Admission:
     _require_modules(('sqlalchemy', 'psycopg', 'httpx'))
     # Must precede any upstream database import: the facade replaces the SDK
     # module aliases that captured business modules resolve through.
-    from firestore_pg.compat import install as install_firestore_facade
+    from fork.firestore_pg.compat import install as install_firestore_facade
 
     install_firestore_facade()
 
@@ -98,14 +100,22 @@ def bootstrap(role: Role = Role.API) -> Admission:
     from .operator_ai import select as select_operator_ai
 
     operator_ai = select_operator_ai(row)
-    if row.get('llm') or operator_ai:
-        from .model_contract import validate_llm
-        from .llm_runtime import process_environment
-
-        llm = operator_ai or validate_llm(row['llm'])
-        # Cloud-provider 25/60-second defaults are not CPU-model budgets. Bind
-        # before imports so captured chat owners share the selected deadline.
-        for name, value in process_environment(llm).items():
+    if operator_ai:
+        llm = operator_ai
+    elif row.get('llm'):
+        raise profile.ProfileError('self_hosted fork only supports operator_ai; remove row.llm')
+    else:
+        llm = None
+    if llm is not None:
+        # OpenAI-compatible hosted providers report the same 25/60-second
+        # request_timeout_seconds; double for stream max, quadruple for the
+        # queue callback budget so a slow downstream never times out before
+        # the stream itself.
+        for name, value in {
+            'AGENT_STREAM_FIRST_EVENT_TIMEOUT_SECONDS': str(llm.request_timeout_seconds),
+            'AGENT_STREAM_MAX_DURATION_SECONDS': str(2 * llm.request_timeout_seconds),
+            'QUEUE_REDIS_FINALIZATION_REQUEST_TIMEOUT_SECONDS': str(4 * llm.request_timeout_seconds),
+        }.items():
             _bind(name, value)
 
     if role == Role.API:
@@ -143,29 +153,24 @@ def bootstrap(role: Role = Role.API) -> Admission:
             }.items():
                 _bind(name, value)
         if row.get('llm'):
-            from .local_llm import contract_for_profile
-
-            contract_for_profile()
-            _require('LLM_ENDPOINT')
+            raise profile.ProfileError('self_hosted fork only supports operator_ai; remove row.llm')
         if operator_ai:
             from .operator_ai import credentials
 
             credentials()
         _require('ENCRYPTION_SECRET', 32)
         _require('AUTH_JWKS_URL')
-        _bind('VECTOR_STORE_PROVIDER', 'qdrant')
+        _bind('VECTOR_STORE_PROVIDER', vector)
         if os.environ.get('PINECONE_API_KEY') or os.environ.get('PINECONE_INDEX_NAME'):
-            raise profile.ProfileError('Pinecone configuration conflicts with the self-host Qdrant authority')
+            raise profile.ProfileError('Pinecone configuration conflicts with the selected self-host vector authority')
+        if vector == 'pgvector':
+            _require('PGVECTOR_COLLECTION_PREFIX')
         _require_modules(('jwt', 'boto3'))
         from .storage_minio import Config as ObjectConfig
 
         ObjectConfig.from_env()
         registry = build_registry(collect()).apply(row)
         applied = tuple(registry.applied)
-        if row.get('llm') or operator_ai:
-            from .local_llm import check as check_llm
-
-            check_llm()
         if row.get('speech'):
             from .speech import check as check_speech
 
@@ -182,8 +187,8 @@ def bootstrap(role: Role = Role.API) -> Admission:
         from .capabilities import validate as validate_capabilities
 
         validate_capabilities(row)
-        if not (row.get('llm') or operator_ai):
-            raise profile.ProfileError('canonical memory maintenance requires the selected text model')
+        if not operator_ai:
+            raise profile.ProfileError('canonical memory maintenance requires operator_ai; remove row.llm')
         for name, value in {
             'OMI_LLM_GATEWAY_FEATURE_MODE': 'off',
             'OMI_LLM_CHAT_AGENT_ROUTE': 'direct',
@@ -192,17 +197,27 @@ def bootstrap(role: Role = Role.API) -> Admission:
         }.items():
             _bind(name, value)
         if row.get('llm'):
-            _require('LLM_ENDPOINT')
+            raise profile.ProfileError('self_hosted fork only supports operator_ai; remove row.llm')
         if operator_ai:
             from .operator_ai import credentials
 
             credentials()
         _require('ENCRYPTION_SECRET', 32)
-        _bind('VECTOR_STORE_PROVIDER', 'qdrant')
+        _bind('VECTOR_STORE_PROVIDER', vector)
         _bind('MEMORY_KEYWORD_INDEX_PROVIDER', 'typesense')
         if os.environ.get('PINECONE_API_KEY') or os.environ.get('PINECONE_INDEX_NAME'):
-            raise profile.ProfileError('Pinecone configuration conflicts with the self-host Qdrant authority')
-        for name in ('EMBEDDING_ENDPOINT', 'QDRANT_URL', 'QDRANT_API_KEY', 'QDRANT_COLLECTION_PREFIX'):
+            raise profile.ProfileError('Pinecone configuration conflicts with the selected self-host vector authority')
+        from .operator_ai import HostedOperatorAI
+
+        required = () if isinstance(operator_ai, HostedOperatorAI) else ('EMBEDDING_ENDPOINT',)
+        if row.get('llm'):
+            raise profile.ProfileError('self_hosted fork only supports operator_ai; remove row.llm')
+        required += (
+            ('PGVECTOR_COLLECTION_PREFIX',)
+            if vector == 'pgvector'
+            else ('QDRANT_URL', 'QDRANT_API_KEY', 'QDRANT_COLLECTION_PREFIX')
+        )
+        for name in required:
             _require(name)
         for name in ('TYPESENSE_HOST', 'TYPESENSE_HOST_PORT', 'TYPESENSE_API_KEY', 'MEMORY_TYPESENSE_COLLECTION'):
             _require(name)
@@ -213,11 +228,7 @@ def bootstrap(role: Role = Role.API) -> Admission:
 
         ensure_memories_collection()
         ensure_ledger_keyword_schema()
-        from .local_llm import check as check_llm
-
-        check_llm()
-
-    from firestore_pg.migrations import check_schema
+    from fork.firestore_pg.migrations import check_schema
 
     check_schema()
     result = Admission(row['name'], row['target'], role, applied)

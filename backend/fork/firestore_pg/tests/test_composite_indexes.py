@@ -13,7 +13,7 @@ pytestmark = pytest.mark.skipif(
     not os.environ.get("FIRESTORE_PG_DSN"), reason="needs live PostgreSQL (set FIRESTORE_PG_DSN)"
 )
 
-from firestore_pg.compat import install  # noqa: E402
+from fork.firestore_pg.compat import install  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -21,8 +21,8 @@ def engine_conn():
     install()
     from sqlalchemy import text
 
-    from firestore_pg.engine import get_engine
-    from firestore_pg.migrations import migrate
+    from fork.firestore_pg.engine import get_engine
+    from fork.firestore_pg.migrations import migrate
 
     migrate()
     engine = get_engine()
@@ -74,7 +74,7 @@ def test_dotted_path_index_expression(engine_conn):
 
 def test_forward_migration_is_idempotent():
     """The forward migration owner is safe to execute repeatedly."""
-    from firestore_pg.migrations import migrate
+    from fork.firestore_pg.migrations import migrate
 
     migrate()
     migrate()

@@ -44,12 +44,16 @@ T2 原本是绝对的。M1 撞到一个它没预见的情形：**上游自身的
 |---|---|---|
 | 品牌 | `brand/<id>/manifest.yaml`、`scripts/brand/` | `flavors.brand.dart` 为消费端生成物；品牌条件不进入 `F.title` |
 | Flutter 身份 | `app/fork/identity/`、`app/fork/prepare.py` | staging 输出仍为 `lib/fork/identity/`，消费者统一使用同一个 package URI；测试模板在 `app/fork/tests/` |
-| 后端运行时 | `backend/fork/`、`backend/firestore_pg/` | 显式 `fork.main:app` 入口；只使用已有窄接缝，不复制上游业务模块 |
+| 后端运行时 | `backend/fork/`（含 `fork/firestore_pg/`） | 显式 `fork.main:app` 入口；PostgreSQL 包只使用 `fork.firestore_pg` 导入，不复制上游业务模块或保留旧别名 |
 | 本地开发 | `dev/local.sh`、`dev/selfhost-local.sh`、`dev/docker-compose.dev.yml` | 统一生命周期与 profile renderer；不另建 fork 版上游 harness |
 | 测试依赖 | `dev/requirements-test.*`、`scripts/fork/run-container-tests.py` | 独立 `.venv-fork-tests`；容器 fixtures 不进入上游 unit conftest；生产依赖仍归 `backend/requirements-fork.txt` |
 | 桌面与 Web 构建 | `desktop/macos/fork/`、`desktop/windows/fork/`、`web/app/fork/`、`deploy/web/` | 当前已有 staged 构建入口，不为过去的 Swift/Next.js 接缝预留许可 |
 | 部署 | `deploy/self-host/`、`deploy/cloudflare/`、`scripts/profiles/` | 普通 Linux 与 Cloudflare 是目录和 profile 维度；部署选择不等于 AI 供应商选择 |
 | CI 与文档 | `scripts/fork/`、`checks-manifest.fork.yaml`、`fork-*.yml`、`AGENTS.fork.md` | 上游 workflow、manifest、AGENTS 和纯空白不修改 |
+
+新增代码优先归入所属组件的 `fork/`；独立包、部署目标、品牌/契约与
+CI 工作流等需要固定根路径的例外见 `AGENTS.fork.md`。目录归属和 Python
+包名一起迁移，不通过保留 `firestore_pg` 顶层导入来掩盖旧路径。
 
 上游已有测试继续保留原来的运行条件。`listen_pusher_stack` 仍使用宿主 Redis；
 不要为统一开发容器而复制整套测试，也不要用 Redis PING 代替 listen 业务场景。

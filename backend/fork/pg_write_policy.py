@@ -5,10 +5,10 @@ from typing import Mapping
 
 from sqlalchemy import text
 
-from firestore_pg.codec import decode_stored_document
-from firestore_pg.erasure import CONTROL_COLLECTIONS, validate_uid
-from firestore_pg.migrations import collection_table_name
-from firestore_pg.sql import get_sql
+from fork.firestore_pg.codec import decode_stored_document
+from fork.firestore_pg.erasure import CONTROL_COLLECTIONS, validate_uid
+from fork.firestore_pg.migrations import collection_table_name
+from fork.firestore_pg.sql import get_sql
 from . import deletion_read
 from .provider_guard import ProviderOperationBusy, acquire_account_lock
 

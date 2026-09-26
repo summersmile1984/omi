@@ -7,7 +7,7 @@ or add inferred collections while a production request is serving.
 
 from copy import deepcopy
 
-from firestore_pg.migrations import SchemaNotCurrent, known_collections
+from fork.firestore_pg.migrations import SchemaNotCurrent, known_collections
 from tests.unit.fixtures.strict_firestore_transaction import (
     StrictFirestore,
     StrictFirestoreCollection,

@@ -37,7 +37,6 @@ export function buildPublicEnvironment(
       'NEXT_PUBLIC_BRAND_TAGLINE',
       'NEXT_PUBLIC_BRAND_APP_TITLE',
       'NEXT_PUBLIC_OMI_PROFILE_JSON',
-      'NEXT_PUBLIC_OMI_PRODUCT_NAME',
     ].map((key) => [key, environment[key] ?? '']),
   );
   publicEnvironment.NEXT_PUBLIC_WS_BASE_URL = webSocketBaseUrl;

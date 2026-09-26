@@ -52,6 +52,8 @@ stages:
     share_base_url: http://127.0.0.1:3001
     objects_base_url: http://127.0.0.1:9000
     auth_callback_scheme: "{scheme}-dev"
+    data_plane:
+      vector: pgvector
 
 # Public, reproducible reference model. Both profile capability and the runtime
 # migration derive dimension from this identity; endpoint/credentials stay env.

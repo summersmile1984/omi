@@ -17,12 +17,12 @@ pytestmark = pytest.mark.skipif(not os.environ.get('FIRESTORE_PG_DSN'), reason='
 
 @pytest.fixture
 def db(monkeypatch):
-    from firestore_pg.compat import install
+    from fork.firestore_pg.compat import install
 
     install()
-    from firestore_pg.client import Client
-    from firestore_pg.migrations import migrate
-    from firestore_pg import write_policy
+    from fork.firestore_pg.client import Client
+    from fork.firestore_pg.migrations import migrate
+    from fork.firestore_pg import write_policy
     from fork.pg_write_policy import TerminalReceiptWrites
     from fork.patches.account_deletion import patches
 
@@ -51,8 +51,8 @@ def complete(uid):
 
 def test_real_request_side_effect_cannot_recreate_completed_user_or_device(db, monkeypatch):
     from database import users
-    from firestore_pg import write_policy
-    from firestore_pg.erasure import count_user_owned_rows, delete_user_owned_rows
+    from fork.firestore_pg import write_policy
+    from fork.firestore_pg.erasure import count_user_owned_rows, delete_user_owned_rows
     from fork.pg_write_policy import AccountWriteRejected
 
     uid, other = subject(), subject()
@@ -80,7 +80,7 @@ def test_pre_wipe_snapshot_cannot_admit_external_or_late_sql_write(db):
     from database.legal_holds import DestructiveOperationInProgress
     from fork import account_deletion, deletion_read, provider_guard
     from fork.pg_write_policy import AccountWriteRejected
-    from firestore_pg.erasure import count_user_owned_rows
+    from fork.firestore_pg.erasure import count_user_owned_rows
 
     uid = subject()
     tx = db.transaction()
@@ -169,7 +169,7 @@ def test_nested_first_usage_conflict_keeps_existing_writer_authority(db):
 
 
 def test_terminal_owner_blocks_entire_real_batch_and_metadata_laundering(db, monkeypatch):
-    from firestore_pg import write_policy
+    from fork.firestore_pg import write_policy
     from fork.pg_write_policy import AccountWriteRejected
 
     uid, other = subject(), subject()
@@ -194,7 +194,7 @@ def test_terminal_owner_blocks_entire_real_batch_and_metadata_laundering(db, mon
 
 
 def test_fresh_reader_does_not_need_free_connection_in_full_writer_pool(db):
-    from firestore_pg.engine import get_engine
+    from fork.firestore_pg.engine import get_engine
     from fork import deletion_read
 
     uid = subject()
@@ -211,7 +211,7 @@ def test_fresh_reader_does_not_need_free_connection_in_full_writer_pool(db):
 
 
 def test_existing_real_worker_contract_under_selected_policy_and_exclusive_lease(db, monkeypatch):
-    from firestore_pg.tests.test_transaction_semantics import (
+    from fork.firestore_pg.tests.test_transaction_semantics import (
         test_real_wipe_worker_uses_pg_authority_with_isolated_provider_seams,
     )
     from fork import provider_guard

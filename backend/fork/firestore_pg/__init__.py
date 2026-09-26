@@ -4,7 +4,7 @@ This package exposes the Firestore API surface used by the Omi backend
 (collection/document/query/transaction/field ops) and translates it to
 PostgreSQL (JSONB documents + promoted query columns).
 
-Module registration: importing ``firestore_pg.compat`` installs aliases so
+Module registration: importing ``fork.firestore_pg.compat`` installs aliases so
 that ``from google.cloud import firestore`` and
 ``from google.cloud.firestore_v1 import FieldFilter`` resolve to this package
 without touching the 88 business modules in ``database/``.

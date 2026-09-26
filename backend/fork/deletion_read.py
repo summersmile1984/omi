@@ -11,9 +11,9 @@ import threading
 
 from sqlalchemy import create_engine, text
 
-from firestore_pg.codec import decode_stored_document
-from firestore_pg.engine import get_engine
-from firestore_pg.migrations import collection_table_name
+from fork.firestore_pg.codec import decode_stored_document
+from fork.firestore_pg.engine import get_engine
+from fork.firestore_pg.migrations import collection_table_name
 from .account_deletion import _receipt, receipt_id, status_from_records
 
 _pool_lock = threading.Lock()

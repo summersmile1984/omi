@@ -33,6 +33,9 @@ from the upstream revision actually incorporated, not the event's commit range,
 and an unavailable `upstream/main` fails the lane instead of skipping. The
 per-platform techniques that replace an upstream edit are in
 [`dev/unified-main/00-upstream-touch-policy.md`](dev/unified-main/00-upstream-touch-policy.md).
+For the current code paths that implement those replacements (backend admission,
+Web staging, native clients, and Cloudflare routing), use the
+[`fork integration points` map](dev/unified-main/fork-integration-points.md).
 
 Current admitted seam: `app/lib/flavors.dart`, at most three added lines.
 Do not add allowances to make a failing audit pass. Restore upstream files
@@ -41,10 +44,50 @@ do not use `upstream/main` itself, which may contain changes not yet incorporate
 After tests/builds, discard only their generated source changes and run the
 aggregate audit against the final committed HEAD.
 
+### Upstream modification records
+
+| Path | Purpose |
+|---|---|
+| [`dev/unified-main/upstream-touch-allowlist.yaml`](dev/unified-main/upstream-touch-allowlist.yaml) | Current, authoritative list of upstream files the fork may change, with line budgets and retirement conditions. |
+| [`dev/unified-main/09-upstream-diverged-files.md`](dev/unified-main/09-upstream-diverged-files.md) | Dated divergence snapshots and dispositions; its older snapshots are not the current allowlist. |
+| [`dev/unified-main/sync-log.md`](dev/unified-main/sync-log.md) | Per-sync upstream revisions, conflict counts and resolutions. |
+| [`dev/unified-main/06-upstream-sync.md`](dev/unified-main/06-upstream-sync.md) | Procedure for regenerating the inventory and recording each sync. |
+
+Git history remains the record of individual file edits; the aggregate
+`scripts/fork/check-upstream-touch.py` check enforces the current state.
+
 Which upstream workflows stay enabled, which checks gate `main`, and how the
 deployment environments are protected are declared in
 `config/repo-state.fork.json` and checked by `scripts/fork/check_repo_state.py`.
 Change the declaration, not the repository settings by hand.
+
+### Fork path layout
+
+Place fork-owned implementation under the owning component's `fork/` directory:
+`backend/fork/` (including `backend/fork/firestore_pg/`), `app/fork/`,
+`desktop/macos/fork/`, `desktop/windows/fork/`, `web/app/fork/`, and
+`omi/firmware/fork/`.
+Keep one canonical package/import path; do not leave an old import alias or
+duplicate upstream source to make a move appear conflict-free.
+
+Some entry points must remain where their toolchain or deployment contract finds
+them: `auth-server/` and `auth/shared/` are independent packages;
+`deploy/{self-host,cloudflare,web,profiles}/` are deployment targets/adapters;
+`brand/`, `contracts/`, `runtime/shared/`, `scripts/fork/`, `scripts/brand/`,
+`scripts/profiles/`, `backend/requirements-fork.txt` (image dependency layer),
+`config/*.fork.json`, `Makefile.fork`, `.github/workflows/fork-*.yml`, and
+`.github/checks-manifest.fork.yaml` keep their respective owners. These paths are
+explicit exceptions, not invitations to create more root-level fork packages.
+Upstream-owned paths stay in place and byte-identical except the registered
+three-line `app/lib/flavors.dart` seam. Generated source goes only into an
+isolated build stage, not the tracked upstream tree.
+
+Put new fork-wide architecture, integration, sync, and decision documents in
+[`dev/unified-main/`](dev/unified-main/README.md), indexed by its README. Keep
+`AGENTS.fork.md` at the repository root as the agent entry point, and keep
+component-specific README, verification, and `AGENTS.fork.md` files beside the
+code and commands they describe. Link to them from the central index when a
+cross-component reader needs them; do not duplicate their contents.
 
 ## 2. Formatting: two opposite rules
 
@@ -92,18 +135,19 @@ wrapper, not a second configuration or process owner. Do not fork the upstream
 dev-harness CLI/config/safety implementation. Render profiles through
 `scripts/profiles/render.py`, never a second hand-maintained profile table.
 
-- The user requires the complete canonical native profile by default: chat,
-  STT, TTS and embedding stay enabled. Never add a core-only mode or a renamed
-  reduced-capability substitute, or strip capabilities to make a gate pass.
-  Missing model requirements fail explicitly. Hosted AI requires explicit
-  selection and a selected `OMI_LOCAL_*` credential; never inherit ambient
-  cloud/provider authority. Retired selectors are errors, not migration aliases.
+- Local dev defaults to one full hosted operator-AI profile (OpenRouter);
+  SiliconFlow and Cloudflare Gateway are explicit alternatives. Chat, STT, TTS
+  and embedding stay enabled for every selection; native inference remains an
+  explicit option, never a reduced-capability substitute. Require only the
+  selected `OMI_LOCAL_*` credential, never ambient provider authority; missing
+  keys/models fail explicitly. Retired selectors remain errors.
 - Own processes by instance state and process identity, never by port alone.
   Stop/reset only that instance's processes, containers and volumes.
-- Qdrant admission must verify exact embedding identity, not just dimensions.
-  A provider/model change requires an explicitly reviewed namespace/backfill;
-  never relabel or delete existing collections automatically. No-option restart
-  retains the active selection and namespace unless configuration replaces it.
+- Local pgvector and production Qdrant admission verify exact embedding identity,
+  not just dimensions. A provider/model change requires an explicitly reviewed
+  namespace/backfill; never relabel or delete existing vectors automatically.
+  No-option restart retains the active selection and namespace unless
+  configuration replaces it.
 - Mocked API E2E, container qualification and live runtime proof are distinct.
   Exercise real Auth/JWT, persistence CRUD and lifecycle transitions; hosted chat
   proof must demonstrate a model reply, not HTTP 200 with a canned fallback.

@@ -66,7 +66,7 @@ def patches():
     entries.append(
         Patch(
             name='provider.pg-terminal-write',
-            module='firestore_pg.write_policy',
+            module='fork.firestore_pg.write_policy',
             attribute='policy',
             build=lambda original: TerminalReceiptWrites(),
             applies_to=selected,

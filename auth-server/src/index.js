@@ -138,7 +138,12 @@ if (DEV_ISSUER_SECRET) {
       const { internalAdapter } = await auth.$context;
       const user = await internalAdapter.findUserById(uid);
       if (!user) return res.status(404).json({ error: "user_not_found" });
-      const session = await internalAdapter.createSession(uid);
+      // Better-auth only assigns session.id when secondaryStorage is configured;
+      // our PG-only deployment relies on PG to generate it. Capture the id we
+      // control via the createSession override so the issued JWT and the
+      // /internal/verify lookup agree on the same session identifier.
+      const sessionId = crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "") : crypto.randomBytes(16).toString("hex");
+      const session = await internalAdapter.createSession(uid, false, { id: sessionId });
       const result = await auth.api.signJWT({
         body: {
           payload: {

@@ -50,7 +50,7 @@ gh pr create --title "sync: upstream/main $(date +%F)" --body-file dev/unified-m
 | 上游文件里的 fork 注入点 | `database/_client.py` 的 shim 开关、`endpoints.py` 的 `AUTH_PROVIDER` 分支、`stt_provider_policy.py` 的注册钩子 | 手工：保留上游新逻辑 + 保留 fork 那一行钩子；解完后**必须**运行对应 shim 单测 |
 | 客户端接缝 | `auth_service.dart`、`auth_provider.dart`、`api.ts`、`DesktopBackendEnvironment.swift` | 手工：上游改动优先落地，fork 的 profile 分支重新套上；跑 profile 契约测试 |
 | 品牌注入点 | `flavorizr.yaml`、`Info.plist` 模板、`brand.py` 调用处 | 取上游后重跑 `apply.py`，用 `check.py` 找新泄漏 |
-| fork 自有路径 | `deploy/**`、`brand/**`、`backend/firestore_pg/**`、`auth-server/**`、`dev/**`、`*.fork.md` | 上游不会触碰，理论上无冲突；若冲突说明路径命名撞车，改 fork 路径 |
+| fork 自有路径 | `backend/fork/**`、`app/fork/**`、`desktop/*/fork/**`、`web/app/fork/**`、`omi/firmware/fork/**`；独立包及部署/CI 例外见 `AGENTS.fork.md` | 上游不会触碰，理论上无冲突；若冲突说明路径命名撞车，改 fork 路径 |
 | 文档/AGENTS | `AGENTS.md`、`backend/AGENTS.md`、`PRODUCT.md` | **一律取上游**（`git checkout --theirs`）；fork 内容只存在于 `*.fork.md`，上游文件不加任何指针 |
 
 ## 4. "不修改上游文件"清单（fork 纪律，进 `AGENTS.fork.md` 并由检查脚本守卫）
@@ -60,7 +60,7 @@ gh pr create --title "sync: upstream/main $(date +%F)" --body-file dev/unified-m
 3. **AGENTS/PRODUCT/规则文档**：上游文件**零改动、不加指针**（预算无余量）；正文进 `AGENTS.fork.md`、`backend/AGENTS.fork.md`、`app/AGENTS.fork.md`、`desktop/macos/AGENTS.fork.md`。`check_agents_md_lean.py` 按精确文件名 `AGENTS.md` 发现，fork 文件对它不可见、不受预算限制。
 4. **检查清单**：`.github/checks-manifest.yaml` 不改；fork 检查写在 `.github/checks-manifest.fork.yaml`，运行器改为加载两个文件（一次性小改，可回推上游；见 `05-ci-matrix.md`）。
 5. **CI 工作流**：上游 `gcp_*.yml`、`desktop_*release*.yml`、`mobile_internal_build.yml`、`publish_omi_cli.yml` **不删不改**，在 GitHub Actions 界面禁用；fork 工作流用新文件名 `fork-*.yml`。
-6. **格式化**：`.pre-commit-config.yaml` 与上游一致；fork 钩子只对 `deploy/ brand/ backend/firestore_pg/ auth-server/ dev/ backend/utils/*_fork*` 等 fork 路径格式化。任何"style: format upstream files"提交禁止合入 `main`（检查脚本：若一次提交只改变空白/格式且触及非 fork 路径 → 失败）。
+6. **格式化**：`.pre-commit-config.yaml` 与上游一致；fork 钩子只对 `backend/fork/ deploy/ brand/ auth-server/ dev/` 等 fork 路径格式化。任何"style: format upstream files"提交禁止合入 `main`（检查脚本：若一次提交只改变空白/格式且触及非 fork 路径 → 失败）。
 7. **上游测试**：不修改上游测试断言；fork 行为差异写 fork 自有测试（`backend/tests/unit/fork/`、`app/test/fork/`、`desktop/macos/Desktop/Tests/Fork*`），并保证被各组件 runner 发现（`backend-test-discovery` 清单检查会强制）。
 8. **上游文件零改动为默认**：fork 行为通过新文件、包/模块别名、入口封装、导入时补丁、构建期生成文件与环境变量实现（技术目录见 `00-upstream-touch-policy.md` §3）。确实无法做到的（Swift 常量、Next 根配置、C 字面量）进 T1 白名单：单点、≤3 行、附上游 PR 链接，白名单只减不增。
 

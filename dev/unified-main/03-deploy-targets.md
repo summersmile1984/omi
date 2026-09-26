@@ -9,7 +9,7 @@
 | 目录自足 | `deploy/self-host/` 只依赖 `backend/`（上游单体 + shim）与 `auth-server/` 镜像 | `deploy/cloudflare/` 不 import `backend/main.py`（现状：`python/api-core` 174 个文件零 import） | `fork-upstream-touch` + 静态 import 检查（CF 已有 `ARCHITECTURE.md:6-8` 规则） |
 | 契约同一 | 服务 `docs/api-reference/*openapi*.json` 全集 | 服务 `manifests/routes.yaml` 中 `target_runtime ≠ legacy|blocked` 的子集，其余按 §4 处理 | `deploy/cloudflare/scripts/route_inventory.py --check`（从 CF 分支的 `export_openapi.py` 改动迁出，不改上游脚本）+ `contracts/` 套件对两者跑 |
 | 身份契约 v1 | `auth-server/`（Express + Better Auth + PG） | `workers/auth`（Hono + Better Auth + D1） | `contracts/auth/` 套件（`02-deployment-profile.md` §6） |
-| 数据面不共享 | firestore_pg（PostgreSQL JSONB）+ Qdrant + MinIO + Redis | D1 + Vectorize + R2 + Queues + DO | 迁移工具是显式、单向、账户级的（`INV-DATA-1`/`INV-CUTOVER-1`），没有双写 |
+| 数据面不共享 | `backend/fork/firestore_pg/`（PostgreSQL JSONB）+ Qdrant + MinIO + Redis | D1 + Vectorize + R2 + Queues + DO | 迁移工具是显式、单向、账户级的（`INV-DATA-1`/`INV-CUTOVER-1`），没有双写 |
 | 无上游供应商锁定 | `SELF_HOST_EGRESS_ALLOWLIST` 拒绝 `*.omi.me`、`api.openai.com` 等（`deploymentProfile.ts:31-54` 同款） | 出站限于 Cloudflare 服务 + 运营方端点 | `zero-vendor-acceptance.sh`（自托管已有）；CF 侧新增等价脚本 |
 
 ## 2. `deploy/self-host/` 契约

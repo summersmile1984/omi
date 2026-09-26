@@ -13,8 +13,8 @@ import threading
 
 from sqlalchemy import text
 
-from firestore_pg.engine import get_engine, get_tx_conn
-from firestore_pg.erasure import validate_uid
+from fork.firestore_pg.engine import get_engine, get_tx_conn
+from fork.firestore_pg.erasure import validate_uid
 from . import deletion_read
 
 _held = threading.local()
@@ -100,16 +100,27 @@ def wipe(original):
 
 def external_index():
     from database import vector_db
-    from .vector_qdrant import QdrantIndex
+    from .profile import current
 
-    if not isinstance(vector_db.index, QdrantIndex):
-        raise RuntimeError('self-host deletion requires the admitted Qdrant authority')
+    authority = current().get('data_plane', {}).get('vector')
+    if authority == 'pgvector':
+        from .vector_pg import PgVectorIndex
+
+        selected = PgVectorIndex
+    elif authority == 'qdrant':
+        from .vector_qdrant import QdrantIndex
+
+        selected = QdrantIndex
+    else:
+        raise RuntimeError('self-host deletion has no admitted vector authority')
+    if type(vector_db.index) is not selected:
+        raise RuntimeError('self-host deletion requires the selected vector authority')
     return vector_db.index
 
 
 def assert_erased(uid):
     from .provider_objects import count_owner
-    from .vector_qdrant import NAMESPACES
+    from .vector_pg import NAMESPACES
 
     index = external_index()
     if any(index.count_owner(uid, namespace) for namespace in NAMESPACES) or count_owner(uid):

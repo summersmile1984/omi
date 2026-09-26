@@ -74,6 +74,10 @@ class ProfileTests(unittest.TestCase):
                 self.assertEqual(row["auth_base_url"], origins["auth_base"])
                 self.assertEqual(row["objects_base_url"], origins["objects_base"])
                 self.assertEqual(row["data_plane"]["store"], "d1" if target == "cloudflare" else "firestore_pg")
+                expected_vector = (
+                    "vectorize" if target == "cloudflare" else "pgvector" if stage == "local" else "qdrant"
+                )
+                self.assertEqual(row["data_plane"]["vector"], expected_vector)
                 self.assertFalse(row["managed"])
         self.assertFalse((ROOT / "brand/fixture-weft").exists())
 

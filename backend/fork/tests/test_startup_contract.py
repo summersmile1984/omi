@@ -16,7 +16,7 @@ from starlette.requests import Request
 from fork import bootstrap, profile
 from fork.patches.queue import _route_worker_auth
 from fork.queue_config import QUEUES
-from firestore_pg import migrations
+from fork.firestore_pg import migrations
 
 ROOT = Path(__file__).resolve().parents[3]
 SELF_HOST = {
@@ -30,7 +30,7 @@ SELF_HOST = {
         'object_store': 'minio',
         'queue': 'redis',
         'cache': 'redis',
-        'vector': 'qdrant',
+        'vector': 'pgvector',
     },
 }
 
@@ -91,16 +91,27 @@ def test_unknown_profile_stops_real_entrypoint(entry):
     assert 'WORKLOAD_RAN' not in result.stdout
 
 
+def test_local_worker_rejects_a_stale_qdrant_profile_before_loading_providers():
+    stale = {**SELF_HOST, 'data_plane': {**SELF_HOST['data_plane'], 'vector': 'qdrant'}}
+    with mock.patch.object(profile, 'current', return_value=stale):
+        bootstrap.bootstrap.cache_clear()
+        try:
+            with pytest.raises(profile.ProfileError, match='data_plane.vector must be pgvector'):
+                bootstrap.bootstrap(bootstrap.Role.WORKER)
+        finally:
+            bootstrap.bootstrap.cache_clear()
+
+
 def test_self_host_admission_installs_firestore_facade_before_database_import():
     code = f'''from unittest import mock
 from fork import bootstrap
-from firestore_pg import migrations
+from fork.firestore_pg import migrations
 with mock.patch.object(bootstrap.profile, 'current', return_value={SELF_HOST!r}), mock.patch.object(
     bootstrap, '_require_modules'
 ), mock.patch.object(migrations, 'check_schema'):
     bootstrap.bootstrap(bootstrap.Role.WORKER)
 from database import _client
-from firestore_pg.client import Client
+from fork.firestore_pg.client import Client
 assert _client.firestore.Client is Client
 '''
     result = child(
@@ -173,6 +184,7 @@ print('WORKLOAD_RAN')
         MINIO_PUBLIC_ENDPOINT='http://localhost:9000',
         MINIO_ACCESS_KEY='synthetic',
         MINIO_SECRET_KEY='synthetic',
+        PGVECTOR_COLLECTION_PREFIX='synthetic',
     )
     assert result.returncode != 0
     assert 'PatchError' in result.stderr
@@ -210,9 +222,7 @@ def test_memory_maintenance_bootstrap_admits_the_model_without_asgi():
         'MIMO_API_KEY': 'synthetic',
         'FIRESTORE_PG_DSN': 'postgresql+psycopg://unused',
         'EMBEDDING_ENDPOINT': 'http://embedding:11434',
-        'QDRANT_URL': 'http://qdrant:6333',
-        'QDRANT_API_KEY': 'synthetic',
-        'QDRANT_COLLECTION_PREFIX': 'synthetic',
+        'PGVECTOR_COLLECTION_PREFIX': 'synthetic',
         'TYPESENSE_HOST': 'typesense',
         'TYPESENSE_HOST_PORT': '8108',
         'TYPESENSE_API_KEY': 'synthetic',

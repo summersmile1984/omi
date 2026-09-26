@@ -54,7 +54,7 @@ migration_fingerprint() {
     auth-server/src/migrate.js \
     auth-server/src/auth.js \
     backend/fork/migrate.py \
-    backend/firestore_pg/migrations.py | "$PY" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+    backend/fork/firestore_pg/migrations.py | "$PY" -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
 }
 
 verify_backup() {

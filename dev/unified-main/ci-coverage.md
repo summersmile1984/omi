@@ -34,7 +34,7 @@ backend/.venv/bin/python scripts/fork/run_checks.py \
 | id | 真实命令 | trigger glob 数 | runner / 平台 | 本机 | 备注 |
 |---|---|---|---|---|---|
 | fork-cloudflare-product-core | `bash deploy/cloudflare/ci/product.sh` | 8 | linux amd64 / workerd + D1 | 可 | 16 真实 HTTP 合同；本机跑需要 workerd + D1。 |
-| fork-selfhost-product-core | `bash deploy/self-host/ci/product.sh` | 13 | linux amd64 + PG/Redis/MinIO/Qdrant + 模型 | 可 | 16 真实 HTTP 合同；需要 3 套模型库或显式 MiMo + BGE-M3。 |
+| fork-selfhost-product-core | `bash deploy/self-host/ci/product.sh` | 12 | linux amd64 + PG/Redis/MinIO/Qdrant + 模型 | 可 | 16 真实 HTTP 合同；`backend/fork/**` 覆盖 PostgreSQL 适配器；需要 3 套模型库或显式 MiMo + BGE-M3。 |
 | fork-electron-native-identity | `bash desktop/windows/fork/test.sh` | 7 | linux x86 | 可（受限） | Vitest + Python 单测 + ci_build；不打包、不签名。 |
 | fork-selfhost-build-context | `python3 deploy/self-host/ci/build_context.py` | 4 | 任意 | 可 | 离线 scratch Docker build。 |
 | fork-flutter-native-identity | `bash app/fork/test.sh` | 11 | macOS（推荐） | 不可（无 macOS） | Flutter 3.44.5 / Dart 3.12.2。 |
@@ -62,7 +62,7 @@ backend/.venv/bin/python scripts/fork/run_checks.py \
 | fork-brand-raster | `npm test --prefix scripts/brand/raster` | 1 | 任意 | 可 | brand 资产解码器。 |
 | fork-brand-upstream-clean | `python3 scripts/brand/check.py --brand omi-upstream` | 2 | 任意 | 可 | 上游品牌回归守卫。 |
 | fork-profile-boundary-tests | `python3 scripts/profiles/test_profiles.py` | 5 | 任意 | 可 | profile 渲染器五项输出。 |
-| fork-selfhost-startup | `BACKEND_UNIT_TEST_FILE_LIST=… bash test.sh` | 20 | 任意 | 可 | 26 个 fork backend 测试文件。 |
+| fork-selfhost-startup | `BACKEND_UNIT_TEST_FILE_LIST=… bash test.sh` | 19 | 任意 | 可 | 26 个 fork backend 测试文件；`backend/fork/**` 含 `fork/firestore_pg/`。 |
 | fork-local-dev-harness | `test_local_sh.py && test_selfhost_local_sh.py && test_git_hygiene.py` | 2 | 任意 | 可 | 本地 harness 行为。 |
 | fork-backend-test-collection | `pytest fork/tests --collect-only -q` | 3 | 任意 | 可 | 全部 fork 测试文件可导入。 |
 | fork-hosted-operator-smoke | `python3 ../deploy/self-host/hosted-live-smoke.py --self-check` | 6 | 任意 | 可 | hosted 厂商调用 builder 自检。 |

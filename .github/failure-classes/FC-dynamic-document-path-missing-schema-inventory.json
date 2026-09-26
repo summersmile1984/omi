@@ -6,12 +6,12 @@
   "canonical_prevention_artifact": [
     "backend/fork/tests/schema_firestore.py",
     "backend/fork/tests/test_pg_owner_inventory.py",
-    "backend/firestore_pg/tests/test_transaction_semantics.py"
+    "backend/fork/firestore_pg/tests/test_transaction_semantics.py"
   ],
   "evidence_prs": [],
   "scope_hints": [
-    "backend/firestore_pg/migrations.py",
-    "backend/firestore_pg/engine.py",
+    "backend/fork/firestore_pg/migrations.py",
+    "backend/fork/firestore_pg/engine.py",
     "backend/fork/tests/test_pg_owner_inventory.py"
   ],
   "status": "open"

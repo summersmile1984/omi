@@ -1,9 +1,9 @@
-"""sys.modules registration: make ``google.cloud.firestore`` resolve to firestore_pg.
+"""sys.modules registration: make ``google.cloud.firestore`` resolve to fork.firestore_pg.
 
 Importing this module rewrites the module registry so that business code's
 existing imports work unchanged:
 
-    from google.cloud import firestore            -> firestore_pg (Client, transactional, ArrayUnion, ...)
+    from google.cloud import firestore            -> fork.firestore_pg (Client, transactional, ArrayUnion, ...)
     from google.cloud.firestore import FieldFilter -> FieldFilter
     from google.cloud.firestore_v1 import FieldFilter -> FieldFilter
 
@@ -68,7 +68,7 @@ class _FirestoreModule(types.ModuleType):
         # is actually requested, preventing engine -> database -> compat ->
         # client -> engine cycles without hiding imports inside business calls.
         if name in _CLIENT_EXPORTS:
-            value = getattr(importlib.import_module('firestore_pg.client'), name)
+            value = getattr(importlib.import_module('fork.firestore_pg.client'), name)
             setattr(self, name, value)
             return value
         # Forward any other attribute to the installed google.cloud.firestore

@@ -1,149 +1,40 @@
 'use client';
 
-import { Twitter, Linkedin, Github } from 'lucide-react';
-import Image from '@tschk/moonshine-next/image';
+import { productName, webPresentation } from '@/lib/fork/web-profile';
 
 export function Footer() {
+  const { tagline, support_email, links } = webPresentation();
   return (
-    <footer className="w-full border-t border-solid border-zinc-800 bg-[#0B0F17] px-4 py-12 text-white md:px-12">
-      <div className="mx-auto flex max-w-screen-xl flex-wrap justify-between gap-12">
-        <div>
-          <Image
-            src="/omi-white.webp"
-            alt="Omi Logo"
-            width={146}
-            height={64}
-            className="h-auto w-[70px]"
-          />
-          <p className="mt-1 text-gray-500">Made in San Francisco</p>
-          <a href="mailto:team@basedhardware.com" className="hover:underline">
-            team@basedhardware.com
+    <footer className="border-t border-neutral-800 bg-black px-6 py-10 text-neutral-300">
+      <div className="mx-auto flex max-w-screen-xl flex-wrap items-start justify-between gap-8">
+        <div className="space-y-3">
+          <a
+            href={links.website}
+            className="flex items-center gap-3 text-lg font-semibold text-white"
+          >
+            <img src="/logo.png" alt="" width={32} height={32} />
+            {productName()}
           </a>
-          <div className="mt-3 flex items-center gap-3">
-            <a
-              href="https://x.com/based_hardware"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-gray-400 hover:text-white transition-colors"
-            >
-              <Twitter className="h-5 w-5" />
-            </a>
-            <a
-              href="https://www.linkedin.com/company/omi-ai/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-gray-400 hover:text-white transition-colors"
-            >
-              <Linkedin className="h-5 w-5" />
-            </a>
-            <a
-              href="https://github.com/BasedHardware"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-gray-400 hover:text-white transition-colors"
-            >
-              <Github className="h-5 w-5" />
-            </a>
-          </div>
+          <p>{tagline}</p>
+          <a className="block underline" href={`mailto:${support_email}`}>
+            {support_email}
+          </a>
         </div>
-
-        <div className="grid grid-cols-3 gap-10 md:gap-20">
-          <ul className="flex flex-col gap-3">
-            <li className="font-bold">Products</li>
-            <li>
-              <a
-                className="text-zinc-400 hover:text-white hover:underline md:text-base"
-                href="https://www.omi.me/pages/openglass"
-                target="_blank"
-                rel="noreferrer"
-              >
-                OpenGlass
-              </a>
-            </li>
-            <li>
-              <a
-                className="text-zinc-400 hover:text-white hover:underline md:text-base"
-                href="https://www.omi.me/"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Omi AI
-              </a>
-            </li>
-            <li>
-              <a
-                className="text-zinc-400 hover:text-white hover:underline md:text-base"
-                href="https://www.omi.me/"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Buy Omi
-              </a>
-            </li>
-          </ul>
-          <ul className="flex flex-col gap-3">
-            <li className="font-bold">Other</li>
-            <li>
-              <a
-                href="https://airtable.com/appyGfrqMxoUaD1mg/shrswR2uD1LRoFkFX"
-                target="_blank"
-                rel="noreferrer"
-                className="text-zinc-400 hover:text-white hover:underline md:text-base"
-              >
-                Residency
-              </a>
-            </li>
-            <li>
-              <a
-                href="https://affiliate.basedhardware.com/"
-                target="_blank"
-                rel="noreferrer"
-                className="text-zinc-400 hover:text-white hover:underline md:text-base"
-              >
-                Affiliate
-              </a>
-            </li>
-            <li>
-              <a
-                href="https://www.omi.me/pages/privacy"
-                target="_blank"
-                rel="noreferrer"
-                className="text-zinc-400 hover:text-white hover:underline md:text-base"
-              >
-                Privacy
-              </a>
-            </li>
-            <li>
-              <a
-                href="https://discord.com/invite/8MP3b9ymvx"
-                target="_blank"
-                rel="noreferrer"
-                className="text-zinc-400 hover:text-white hover:underline md:text-base"
-              >
-                Discord
-              </a>
-            </li>
-          </ul>
-          <ul className="flex flex-col gap-3">
-            <li className="font-bold">Company</li>
-            <li>
-              <a
-                href="https://www.omi.me/pages/about"
-                className="text-zinc-400 hover:text-white hover:underline md:text-base"
-              >
-                About
-              </a>
-            </li>
-            <li>
-              <a
-                href="https://airtable.com/appyGfrqMxoUaD1mg/shrkALjXdq7mJMM1W"
-                className="text-zinc-400 hover:text-white hover:underline md:text-base"
-              >
-                Invest
-              </a>
-            </li>
-          </ul>
-        </div>
+        <nav aria-label="Resources" className="flex flex-wrap gap-5 text-sm">
+          {Object.entries({
+            'Download for macOS': links.download,
+            Documentation: links.docs,
+            Help: links.help,
+            Feedback: links.feedback,
+            Privacy: links.privacy,
+            Terms: links.terms,
+            ...(links.community ? { Community: links.community } : {}),
+          }).map(([label, href]) => (
+            <a key={label} href={href} className="underline hover:text-white">
+              {label}
+            </a>
+          ))}
+        </nav>
       </div>
     </footer>
   );

@@ -5,6 +5,8 @@
 
 > **2026-09-04 实测更新**：以上日期与待签状态保留原始规划语境；当前代码进度和下一步以三路审计为准：[标准服务器](audit-2026-09-04/01-self-host-action-plan.md)、[Cloudflare](audit-2026-09-04/02-cloudflare-action-plan.md)、[白牌终端](audit-2026-09-04/03-whitelabel-action-plan.md)。审计基线是 `origin/main@d238a85af9`，区分已经验证、失败和未覆盖的路径。下文 D3/Next.js 的事实前提已过时：该主线及本次检查的上游都已使用 Moonshine/Bun，Web 双目标交付由三路计划中的 `WEB-1` 重新验证。
 
+本目录是 **fork 跨组件文档的统一入口和存放处**：新的架构、接管点、同步与决策文档在此创建，并在下方索引。根目录 `AGENTS.fork.md` 是 agent 必须发现的规则入口；各组件的 README、验证记录和 `AGENTS.fork.md` 与其代码、测试命令就近存放，不搬迁或复制。需要跨组件阅读时从本索引链接过去。
+
 ## 一句话
 
 把 `codex/cloudflare-adaptation` 与 `feature/cloud-neutral-shim` 各自的**接缝**（客户端认证、部署 profile、Web 构建、限流/检查清单）在 `main` 上重写成一份，把它们的**新增目录**（`deploy/cloudflare/` 616 文件、`deploy/self-host/` 24 文件、`backend/firestore_pg/`、`auth-server/`）直接检出，把**不该合的**（Moonshine 重写、上游文件格式化、上游测试改动、上游不变量改动）归档；之后部署目标由 `deploy/<target>/` + profile 表达，品牌由 `brand/<id>/` 表达，CI 跑 品牌 × 目标 矩阵，上游每周合一次、真实冲突 ≤5 个文件；**上游文件默认零改动**，例外只在 T1 白名单里（`00`）；契约权威是上游 API 与自托管参考实现，Cloudflare 单向对齐；Web 保持上游 Next.js，不引入 Bun。
@@ -16,6 +18,8 @@
 | [architecture/three-track-architecture.md](architecture/three-track-architecture.md) | 整体系统如何在一个主线、两个部署目标和白牌客户端之间组织；数据、实体、处理和删除边界如何流动 | 架构文档 + 图集 |
 | [Cloudflare Candidates 与推荐](../../docs/doc/developer/ForkCloudflareRecommendations.mdx) | fork 的候选建议、反馈、D1 事务与验证范围；通过 fork 索引访问，保持上游 Mintlify 导航不变 | 开发者文档 |
 | [00-upstream-touch-policy.md](00-upstream-touch-policy.md) | 为什么"能不改上游代码就不改"、shim 分支 653 个上游文件改动的诊断、T0 技术目录（每个平台）、T1 白名单、T2 禁改、两条测试通道 | 纪律 + 技术目录 |
+| [fork-integration-points.md](fork-integration-points.md) | **现行代码入口**：profile 如何选目标，后端在导入上游前如何接管依赖，Web/原生端如何只在构建副本替换，Cloudflare 如何独立分发 | 可跳转的调用链与边界；以代码为准，勿将本目录历史规划当成已交付行为 |
+| 组件本地指南：[后端](../../backend/fork/README.md)、[Flutter](../../app/fork/README.md)、[macOS](../../desktop/macos/fork/README.md)、[Windows/Linux](../../desktop/windows/fork/README.md)、[Web](../../web/app/fork/README.md)、[自托管部署](../../deploy/self-host/README.md)、[Cloudflare 部署](../../deploy/cloudflare/README.md) | 各组件如何构建、测试及验证；保留在代码旁以免拆断相对路径和命令入口 | 本索引链接到唯一原件，不复制全文 |
 | [01-branch-consolidation.md](01-branch-consolidation.md) | 两条分支怎么收敛到 main：冻结、先同步上游、接缝 PR（S 系列）、新增目录合入（M 系列）、20 个冲突文件归属、门禁命令、回滚 | 操作手册 |
 | [02-deployment-profile.md](02-deployment-profile.md) | 客户端与后端如何用同一份 profile 同时支持 `omi_cloud / self_hosted / cloudflare`；身份契约 v1（Better Auth 两种部署同一契约）；能力开关默认值；两分支现有代码的迁移映射 | 设计 + 生成器规范 |
 | [03-deploy-targets.md](03-deploy-targets.md) | `deploy/self-host/` 与 `deploy/cloudflare/` 各自的目录契约、合入时的调整、混合部署、共享服务端资产、Web 运行时决策 D3、Cloudflare 未移植清单 | 目录契约 |
@@ -35,7 +39,7 @@
 ```
 main（fork of BasedHardware/omi）
 ├── app/ desktop/ web/            # 上游客户端（默认零改动）；Firebase 等通过包/模块别名换成 fork shim；少数 T1 钩子在白名单
-├── backend/                      # 上游单体（零改动）+ backend/fork/（入口、补丁注册表、provider、shim、tests）+ firestore_pg/
+├── backend/                      # 上游单体（零改动）+ backend/fork/（入口、补丁、firestore_pg、测试）
 ├── auth/shared/  auth-server/    # Better Auth 共享逻辑 + 自托管 adapter（Cloudflare adapter 在 deploy/cloudflare/workers/auth）
 ├── contracts/                    # 上游 parity 夹具 + fork 新增 auth/realtime/api-smoke 套件，对两个后端都跑
 ├── deploy/
@@ -46,8 +50,14 @@ main（fork of BasedHardware/omi）
 ├── brand/                        # 品牌清单与资产（可放私有 overlay）
 ├── scripts/{brand,profiles,fork}/ # apply/check/render/preflight/upstream-touch
 ├── .github/checks-manifest.fork.yaml  +  .github/workflows/fork-*.yml
-└── AGENTS.fork.md（及各组件 *.fork.md）  # fork 纪律；上游 AGENTS.md 只加一行指针
+└── AGENTS.fork.md（及各组件 *.fork.md）  # fork 纪律；上游 AGENTS.md 保持原样
 ```
+
+当前规范：fork 扩展放在所属组件的 `fork/` 下；后端 PostgreSQL 适配器
+使用 `backend/fork/firestore_pg/` 和唯一导入路径 `fork.firestore_pg`。
+独立的 `auth-server/`、部署目标 `deploy/`、品牌与契约目录以及 GitHub
+工作流保留工具链要求的位置，不为表面统一增加包别名。完整例外见
+`AGENTS.fork.md` 的 Fork path layout。
 
 ## 执行顺序与里程碑
 
