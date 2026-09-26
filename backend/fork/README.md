@@ -76,10 +76,13 @@ The registry cursor is process-local and wraps in UID order. Restarting repeats
 discovery but retains the canonical revision leases, decisions, and durable
 outbox. The standard deployment runs one supervised instance.
 
-`patches/conversation_search.py` resolves the selected lazy client factory before
-the existing Typesense conversation projector reads a document. Account policy,
-field allowlisting, privacy deletion, and provider errors stay with that owner.
-This conversation index is not the authority for manual-memory eligibility.
+The Typesense conversation projector reads through upstream's
+`_resolve_firestore_client`, which resolves the selected client factory itself
+(2026-09-26 sync absorbed the fork fix the former
+`patches/conversation_search.py` seam carried, so that patch is retired).
+Account policy, field allowlisting, privacy deletion, and provider errors stay
+with that owner. This conversation index is not the authority for
+manual-memory eligibility.
 
 `profile.py` reads the image's generated `deployment_profiles.generated.json`.
 Build with `render.py --target self_hosted --manifest ... --stage ... --emit-json`;

@@ -83,6 +83,9 @@ def test_canonical_user_mutation_hashes_feedback_arguments_before_apply(register
 
 def test_feedback_commits_and_replays_through_real_server_owners(registered, monkeypatch, store):
     monkeypatch.setenv('MEMORY_MODE', 'read')
+    # Upstream's canonical intake fence (database.memory_apply_store) reads
+    # MEMORY_ENABLED; unset fails closed to 'globally paused' before any write.
+    monkeypatch.setenv('MEMORY_ENABLED', 'on')
     item = trigger_item()
     db = _db_with(target_items=[item])
     db.docs[canonical_memory_maintenance_registry_path('u1')] = {
@@ -168,6 +171,9 @@ def test_noop_mutation_preserves_memory_and_durable_state(registered, store, ent
 
 def test_accepted_edit_requires_receipted_processing_before_chat_visibility(registered, monkeypatch, store):
     monkeypatch.setenv('MEMORY_MODE', 'read')
+    # Upstream's canonical intake fence (database.memory_apply_store) reads
+    # MEMORY_ENABLED; unset fails closed to 'globally paused' before any write.
+    monkeypatch.setenv('MEMORY_ENABLED', 'on')
     monkeypatch.setenv('MEMORY_BELIEF_MODEL_ENABLED', 'false')
     item = _short_term_target(
         user_asserted=True,

@@ -17,7 +17,6 @@ from .. import firmware as _firmware
 from . import capabilities as _capabilities
 from . import consolidation as _consolidation
 from . import canonical_memory as _canonical_memory
-from . import conversation_search as _conversation_search
 from . import memory_clock as _memory_clock
 from . import operator_llm as _operator_llm
 from . import speech as _speech
@@ -34,7 +33,6 @@ ALL = (
     _capabilities,
     _consolidation,
     _canonical_memory,
-    _conversation_search,
     _memory_clock,
     _operator_llm,
     _speech,

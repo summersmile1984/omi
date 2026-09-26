@@ -1,7 +1,16 @@
-"""Exercise the registered resolver through the real projection/privacy owner."""
+"""The upstream Typesense conversation projection honors privacy deletions.
+
+The fork's former `conversation-search.resolve-client` patch became redundant
+during the 2026-09-26 sync: upstream's `_resolve_firestore_client` now calls
+the memoized `database._client.get_firestore_client` factory itself instead of
+returning the factory, which is exactly what the patch used to do (and, once
+upstream absorbed that, what made the patch's `original()()` double-call drop
+every projection as unindexable). The real projection owner keeps the account
+policy, field allowlist, privacy deletion and provider-error behavior this
+test drives with the selected client.
+"""
 
 from database import _client
-from fork.patches import collect
 from tests.unit.test_conversation_typesense_index import (
     _conversation_data,
     _fake_typesense,
@@ -11,13 +20,10 @@ from tests.unit.test_conversation_typesense_index import (
 from utils.conversations import typesense_index
 
 
-def test_registered_projection_resolves_factory_and_keeps_privacy_deletes(monkeypatch):
-    patch = next(item for item in collect() if item.name == 'conversation-search.resolve-client')
-    module, original = patch.target()
-    monkeypatch.setattr(module, patch.attribute, patch.build(original))
+def test_projection_resolves_selected_client_and_keeps_privacy_deletes(monkeypatch):
     monkeypatch.setenv('TYPESENSE_HOST', 'localhost')
     monkeypatch.setenv('TYPESENSE_API_KEY', 'synthetic')
-    monkeypatch.delenv('TYPESENSE_CONVERSATION_INDEX_WRITES', raising=False)
+    monkeypatch.delenv(typesense_index.CONVERSATION_INDEX_WRITES_ENV, raising=False)
     selected_client = _firestore_with_doc(_conversation_data())
     monkeypatch.setattr(_client, 'get_firestore_client', lambda: selected_client)
     index, rows = _fake_typesense()

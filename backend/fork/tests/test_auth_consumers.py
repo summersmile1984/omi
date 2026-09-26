@@ -31,6 +31,9 @@ def runtime(request):
     database_client = types.ModuleType('database._client')
     database_client.db = mock.MagicMock()
     database_client.document_id_from_seed = mock.Mock(return_value='synthetic')
+    # Upstream database.auth imports get_firestore_client at module import
+    # (database/auth.py); the hand-rolled stub must satisfy that contract.
+    database_client.get_firestore_client = mock.MagicMock()
     redis = types.ModuleType('database.redis_db')
     redis.cache_user_name = mock.Mock()
     redis.check_rate_limit = mock.Mock(return_value=True)
