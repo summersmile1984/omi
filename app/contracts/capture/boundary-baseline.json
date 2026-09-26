@@ -71,7 +71,7 @@
       "unowned-resources": 2
     },
     "app/lib/services/capture/capture_seams.dart": {
-      "singleton-reads": 2
+      "singleton-reads": 4
     },
     "app/lib/services/capture/free_tier_on_device_stt_flag.dart": {
       "singleton-reads": 1

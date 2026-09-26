@@ -39,6 +39,19 @@ allow:
     upstream_pr: "PROPOSED (not opened): brand-configurable app title; retire when upstream accepts configuration"
     owner: B2
 
+  # Upstream's own capture ratchet drifted: C1 (#14327) recorded
+  # singleton-reads: 2, then #14529/#14549/#14550 grew the file to 4 without
+  # updating the record, so every later diff touching the file fails
+  # scripts/check_mobile_boundaries.py at upstream/main itself. This one-line
+  # record update restates the already-merged upstream code; it cannot legalize
+  # this sync's first-time appearance of the file (the check limits new files to
+  # zero regardless of baseline), only steady-state runs after the sync lands.
+  - path: app/contracts/capture/boundary-baseline.json
+    max_added_lines: 1
+    reason: capture_seams.dart 的 singleton-reads 债务记录落后于上游已合并代码（2→4），棘轮检查的既定补救即更新 baseline
+    upstream_pr: "PROPOSED (not opened): record current singleton-reads debt for capture_seams; retire when upstream accepts"
+    owner: C-sync
+
   # AGENTS.md pointers were tried on 2026-09-03 and removed the same day.
   # Upstream keeps these files at their guardrail ceiling -- app/AGENTS.md was
   # 11288/11500 bytes and backend/AGENTS.md 38997/39000 -- so a one-line fork
