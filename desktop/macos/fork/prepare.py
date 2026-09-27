@@ -17,7 +17,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-from swift_overlay import declarations, load_owners, replace_literal, rewrite_functions, rewrite_region, verify_owner
+from swift_overlay import (
+    declarations,
+    load_owners,
+    replace_brand_literals,
+    replace_literal,
+    rewrite_functions,
+    rewrite_region,
+    verify_owner,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 FORK = Path(__file__).resolve().parent
@@ -107,6 +115,132 @@ def stage_memory_batching(source: Path, owners: dict[str, str]) -> None:
     ).replace("var failed = 0", "var failed = plan.rejectedCount")
     rewrite_functions(path, {signature: method}, owners)
 
+
+# User-visible brand copy in the staged sources: (path relative to Desktop/,
+# literal, reviewed raw occurrence count). stage() substitutes the brand display
+# name for "Omi" inside each literal in one longest-first pass
+# (overlapping literals such as "Close Omi Chat" inside "Close Omi Chat (Esc)"
+# are rewritten exactly once), fails closed when an upstream occurrence count
+# moves, and is byte-identical for omi-upstream (display "Omi"). Reviewed
+# 2026-09-27 against the staged eddy scan (58 visible Omi matches).
+# Deliberately excluded:
+#   - Info.plist CFBundleDisplayName / CFBundleURLSchemes / SUFeedURL:
+#     build.local_info_plist rewrites display+bundle at package time, empties
+#     URL types and strips the Sparkle keys;
+#   - the "~/Library/Application Support/Omi/users/" path in RewindOnlyView:
+#     renaming the runtime data directory needs a data-migration decision,
+#     not a stage rewrite;
+#   - ViewExporter share-attribution strings ("Omi Desktop", "Omi Assistant",
+#     palette changelog line): matcher identity the gate does not flag;
+#     changing them breaks cross-app share matching.
+BRAND_COPY: dict[str, list[tuple[str, int]]] = {
+    "Info.plist": [
+        ('<string>Omi uses nearby calendar events to add meeting titles and participant names to your conversation notes.</string>', 2),
+        ('<string>Omi needs Bluetooth access to connect to your Omi wearable device for audio capture and transcription.</string>', 1),
+        ('<string>Omi needs permission to capture system audio for transcription of calls and meetings.</string>', 1),
+        ('<string>Omi needs screen recording permission to monitor your focus and detect distractions.</string>', 1),
+        ('<string>Omi needs microphone access to transcribe your conversations in real-time.</string>', 1),
+        ('<string>Omi needs permission to detect which application is currently active.</string>', 1),
+        ('<string>Omi Auth Callback</string>', 1),
+    ],
+    "Sources/Chat/ClaudeAuthSheet.swift": [
+        ('Your browser will open to the Omi Pro checkout. After subscribing, return to Omi.', 1),
+        ('Unlock Omi Pro for $199/month', 1),
+        ('Upgrade to Omi Pro', 2),
+    ],
+    "Sources/DesktopUpdatePolicyManager.swift": [
+        ('Please install the latest Omi desktop app to continue.', 1),
+        ('Update Omi', 1),
+    ],
+    "Sources/FileIndexing/FileIndexingView.swift": [
+        ('Your knowledge graph will grow as Omi learns more about you', 1),
+    ],
+    "Sources/FloatingControlBar/AIResponseView.swift": [
+        ('Open the Omi app to keep chatting', 1),
+        ('Continue in Omi', 1),
+        ('Omi says', 1),
+    ],
+    "Sources/FloatingControlBar/FloatingControlBarView.swift": [
+        ('Open the Omi app to steer this agent', 1),
+        ('Close Omi Chat (Esc)', 1),
+        ('Suggested by Omi', 1),
+        ('Continue in Omi', 1),
+        ('Close Omi Chat', 2),
+        ('Omi Chat', 3),
+        ('Open Omi', 2),
+    ],
+    "Sources/FloatingControlBar/NotchSystemControlsView.swift": [
+        ('Omi is watching \\(name)', 1),
+    ],
+    "Sources/MainWindow/ChatFirst/ChatFirstGoalsPage.swift": [
+        ('Talk to Omi About a Goal', 1),
+    ],
+    "Sources/MainWindow/Components/TaskChatPanel.swift": [
+        ('Choose Work on this with Omi on a task, or open one that already has a thread.', 1),
+        ('Choose Work on this with Omi when a task deserves ongoing context.', 1),
+        ('Work on this with Omi', 3),
+        ('Omi thread', 2),
+    ],
+    "Sources/MainWindow/Pages/AppsPage.swift": [
+        ('You can close this window now. Omi keeps importing in the background.', 1),
+    ],
+    "Sources/MainWindow/Pages/HomeAskBarControls.swift": [
+        ('Connect data & use Omi anywhere', 1),
+    ],
+    "Sources/MainWindow/Pages/MemoryExportDestinationSheet.swift": [
+        ('Test hosted and local Omi access', 1),
+    ],
+    "Sources/MainWindow/Pages/PermissionsPage.swift": [
+        ('Without this, Omi can see that you were in an app, but not which page or file.', 1),
+        ('Come back to Omi and grant the permission', 1),
+    ],
+    "Sources/MainWindow/Pages/Settings/Components/SettingsContentView+Controls.swift": [
+        ('Get help from the Omi community and team', 1),
+        ('Help us improve Omi', 1),
+        ('Get Omi Beta', 1),
+    ],
+    "Sources/MainWindow/Pages/Settings/Sections/SettingsContentView+FloatingBarAndChat.swift": [
+        ('Let Ask Omi capture your screen when you ask about what\'s on it.', 1),
+    ],
+    "Sources/MainWindow/Pages/Settings/Sections/SettingsContentView+Transcription.swift": [
+        ('Keeps what you dictate with Omi Type out of the chat.', 1),
+    ],
+    "Sources/MainWindow/Pages/ShortcutsSettingsSection.swift": [
+        ('Global shortcut to open the Omi app from anywhere.', 1),
+        ('Open Omi Shortcut', 1),
+    ],
+    "Sources/MainWindow/Pages/TasksPage.swift": [
+        ('Work on this with Omi', 2),
+    ],
+    "Sources/MainWindow/Referrals/ReferralProgramView.swift": [
+        ('Share your unique link. When a friend joins Omi, they\'ll get one month of Operator free.', 1),
+    ],
+    "Sources/MainWindow/RewindOnlyView.swift": [
+        ('Open Full Omi App', 1),
+    ],
+    "Sources/MainWindow/Tasks/SuggestedTasksSection.swift": [
+        ('Why Omi added this', 1),
+    ],
+    "Sources/Onboarding/FirstUseCasePreview.swift": [
+        ('\\(useCase.siteName) with the Omi bar asking: \\(useCase.question)', 1),
+    ],
+    "Sources/Onboarding/SecondBrain/SBOnboardingView.swift": [
+        ('Omi is typing…', 1),
+        ('Take me to Omi', 1),
+        ('Set up Omi →', 1),
+        ('Reopen Omi', 1),
+    ],
+    "Sources/PostOnboardingPromptViews.swift": [
+        ('How would you like to use Omi first?', 1),
+        ('Next step → Ask Omi', 1),
+    ],
+    "Sources/ViewExporter.swift": [
+        ('Omi', 19),
+    ],
+    "Sources/WhatsNewToast.swift": [
+        ('Omi updated', 1),
+    ],
+}
 
 def application_identity(manifest: dict, app_name: str, deployment_stage: str, distribution: str) -> str:
     identities = manifest["identifiers"]
@@ -299,6 +433,10 @@ def stage(
         '["Omi Dev Bundles", bundleIdentifier]',
         f'[{json.dumps(manifest["brand"]["id"] + " Dev Bundles")}, bundleIdentifier]',
     )
+    display = manifest["brand"]["display_name"]
+    for rel, entries in BRAND_COPY.items():
+        replace_brand_literals(desktop / rel, entries, display)
+
     # Resource access is explicit through the app bundle; SwiftPM's module
     # resource bundle still carries all untouched upstream UI resources.
     (output / "ForkDeployment.json").write_text(json.dumps(profile, indent=2) + "\n")
