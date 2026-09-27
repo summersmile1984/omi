@@ -197,7 +197,20 @@ if __name__ == '__main__':
     # decided by the upstream selector at run time, and attesting to them would
     # mean reimplementing that selector here.
     if destination and full:
-        attestation(Path(destination), lane, platform, selected)
+        # The attestation write must never abort the lane: the workflow runs the
+        # selector with `FORK_CI_ATTESTATION` set in the job env so the release
+        # admission can read it back, and a write failure on a non-writable or
+        # otherwise constrained path would otherwise turn the gate red for the
+        # selector itself. Print the failure to stderr (callers parse stdout
+        # only) and fall through to the upstream call.
+        try:
+            attestation(Path(destination), lane, platform, selected)
+        except OSError as error:
+            print(
+                f'warning: could not write manifest attestation to {destination}: {error}',
+                file=sys.stderr,
+                flush=True,
+            )
     if resolves_only(arguments):
         raise SystemExit(subprocess.call(invocation, cwd=ROOT))
     check_ids = explicit_ids(arguments) or (selected if full else selection_ids(invocation))
