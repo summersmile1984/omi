@@ -61,7 +61,10 @@ export function webProfile(): WebProfile {
 }
 
 export function mcpServerUrl(): string {
-  return `${webProfile().mcp_base_url.replace(/\/$/, '')}/v1/mcp/sse`;
+  // Upstream serves the MCP endpoint at /v1/mcp directly since the hosted
+  // Connectors rework (mcpConfig.MCP_ENDPOINT_PATH); mirror it so the
+  // profile-scoped connector/copy URL matches what the backend serves.
+  return `${webProfile().mcp_base_url.replace(/\/$/, '')}/v1/mcp`;
 }
 
 export function directModelProvidersEnabled(): boolean {
