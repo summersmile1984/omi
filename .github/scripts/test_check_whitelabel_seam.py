@@ -73,13 +73,20 @@ class EndorsedPathTest(unittest.TestCase):
         # Pattern A: frontend prepare
         self.assertTrue(module.is_endorsed("app/fork/prepare.py"))
         self.assertTrue(module.is_endorsed("desktop/windows/fork/prepare.py"))
+        self.assertTrue(module.is_endorsed("desktop/macos/fork/prepare.py"))
         # Pattern B: backend shim
         self.assertTrue(module.is_endorsed("backend/fork/patches/auth.py"))
         self.assertTrue(module.is_endorsed("backend/fork/brand_transport.py"))
         # Pattern C: firmware stage
         self.assertTrue(module.is_endorsed("omi/firmware/fork/stage.py"))
-        # Pattern D: profile render
+        # Pattern D: profile render + Cloudflare overlay
         self.assertTrue(module.is_endorsed("scripts/profiles/render.py"))
+        self.assertTrue(module.is_endorsed("scripts/brand/generators/firmware.py"))
+        self.assertTrue(module.is_endorsed("web/app/fork/realtime-overlay.ts"))
+        self.assertTrue(module.is_endorsed("deploy/web/Dockerfile"))
+        # Brand manifest + raster fixture pattern
+        self.assertTrue(module.is_endorsed("brand/eddy/manifest.yaml"))
+        self.assertTrue(module.is_endorsed("brand/eddy/assets/icon-master.svg"))
         # Meta (model doc, CI registration, the guard itself)
         self.assertTrue(module.is_endorsed("dev/unified-main/WHITELABEL-MODEL.md"))
         self.assertTrue(module.is_endorsed(".github/scripts/check_whitelabel_seam.py"))
