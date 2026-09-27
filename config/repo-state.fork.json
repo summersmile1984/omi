@@ -50,6 +50,16 @@
         "reason": "Quarantined: 44 pre-existing lint errors, every one in a fork-owned file under desktop/windows/fork/ (19 missing return types, 16 explicit any, 7 empty methods, 1 useless escape, 1 unused arg). Kept enabled for signal and excluded from main's checks. See the quarantine entry."
       },
       {
+        "file": "desktop_backend_recover_prod.yml",
+        "enforcement": "advisory",
+        "reason": "Incident-only recovery of a retained desktop-backend Cloud Run revision. workflow_dispatch with required confirm/revision/reason inputs, so it can never run on its own. Upstream #17320 registered it on GitHub during the 2026-09-26 sync; GitHub reports state=active and the declaration follows the settings, not the other way around."
+      },
+      {
+        "file": "desktop_breakglass_credential_preflight.yml",
+        "enforcement": "advisory",
+        "reason": "Breakglass preflight that authenticates an immutable desktop release candidate read-only before an emergency beta. workflow_dispatch only. Upstream #17313 registered it on GitHub during the 2026-09-26 sync; GitHub reports state=active and the declaration follows the settings."
+      },
+      {
         "file": "fork-cd-cloudflare.yml",
         "enforcement": "advisory",
         "reason": "Cloudflare CD and qualification lane; manual or called by release preparation."
@@ -361,14 +371,6 @@
       }
     ],
     "unregistered": [
-      {
-        "file": "desktop_backend_recover_prod.yml",
-        "reason": "On main but never registered by GitHub (the workflow API returns 404); it cannot run."
-      },
-      {
-        "file": "desktop_breakglass_credential_preflight.yml",
-        "reason": "On main but never registered by GitHub."
-      },
       {
         "file": "main.yml",
         "reason": "Upstream GitHub issue sync; on main but never registered by GitHub."
