@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .model_contract import validate, validate_digest, validate_llm
+from .model_contract import validate, validate_digest
 from .profile import current
 
 
@@ -52,9 +52,9 @@ def check(root, contract):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('root', type=Path)
-    parser.add_argument('--kind', choices=('embedding', 'llm'), default='embedding')
+    parser.add_argument('--kind', choices=('embedding',), default='embedding')
     args = parser.parse_args()
-    contract = (validate if args.kind == 'embedding' else validate_llm)(current().get(args.kind))
+    contract = validate(current().get(args.kind))
     if contract is None:
         parser.error('selected model capability is disabled')
     print(json.dumps(check(args.root, contract)))
