@@ -75,6 +75,12 @@ class DiffBaseTests(unittest.TestCase):
         subprocess.run([sys.executable, '-m', 'venv', '--without-pip', str(venv)], check=True)
         python = venv / 'bin/python'
         site = subprocess.check_output([str(python), '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'], text=True).strip()
+        # The upstream _resolve_python.sh rejects venvs that cannot `import yaml, dotenv`,
+        # falling back to the system interpreter and breaking the python3 shim. Drop the
+        # minimum importable stubs so the resolver accepts this fixture venv; the actual
+        # child check still proves the shim routes invocations back here via fork_venv_marker.
+        Path(site, 'yaml.py').write_text('# minimal stub for fork-ci-diff-base fixture venv\n')
+        Path(site, 'dotenv.py').write_text('# minimal stub for fork-ci-diff-base fixture venv\n')
         Path(site, 'fork_venv_marker.py').write_text('selected = True\n')
         checker = root / '.github/scripts/run_checks.py'
         checker.parent.mkdir(parents=True)
