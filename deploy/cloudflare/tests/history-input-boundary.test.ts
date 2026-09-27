@@ -9,7 +9,6 @@ const cloudflareDirectory = path.resolve(import.meta.dirname, "..");
 const reconcileScripts = [
   "chat-file-reconcile.mjs",
   "chat-history-reconcile.mjs",
-  "memory-archive-reconcile.mjs",
   "persona-app-history-reconcile.mjs",
   "phone-history-reconcile.mjs",
   "wrapped-history-reconcile.mjs",
