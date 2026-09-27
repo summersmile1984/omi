@@ -1,5 +1,5 @@
 {
-  "base": "ae075915af4b2db5c7959d80a77f0b35f6d1a1a6",
+  "base": "8b08490f21d97fbd47ca94b99cb35adf4a01a668",
   "files": {
     "android/app/build.gradle": "571c529aab2eef3becb398f1db5e25ad363f8c5abb4dd15271aaecb4a042185b",
     "android/app/src/dev/res/mipmap-hdpi/ic_launcher.png": "c3bb4b914f0aaf0298a9eae1cbdb9fea3310b1f55cd5f64fd0b0e8a03798a2e1",
@@ -7,7 +7,7 @@
     "android/app/src/dev/res/mipmap-xhdpi/ic_launcher.png": "9b936be0967e6b8011a27b2146c792fbcb9fbd59e06feb391d9239f1ed7b6561",
     "android/app/src/dev/res/mipmap-xxhdpi/ic_launcher.png": "0aee6f63b29471e9715e5092a25a3bd7259a9028651950d048db2d5fc2770532",
     "android/app/src/dev/res/mipmap-xxxhdpi/ic_launcher.png": "dcb1360b0d88687b5399b3713f39cf064ce59dabbd5f4130904e8285c949389f",
-    "android/app/src/main/AndroidManifest.xml": "e92a6c4d463befcf8c650e7957d90c22f489763453176dd8042a5c348a24c67c",
+    "android/app/src/main/AndroidManifest.xml": "c901e395d2d76db37b32dd66aa8164b1a44a81aa9adf970518e4020cda9faa15",
     "android/app/src/main/res/drawable-hdpi/android12splash.png": "d659fc09434d9a7f275f61c1a17970a8f7e22c9c5e63c6aec84f1b62b9309896",
     "android/app/src/main/res/drawable-hdpi/splash_icon.png": "714b23626e55d35ef6d1c804ddfed4979b2c357c525cc1be78bc807360046566",
     "android/app/src/main/res/drawable-hdpi/splash_icon_v2.png": "8d25a49b582a402cbd7bf97207c078d0f2aef24fc73a1ce6876f9d157bf7e17b",
@@ -74,17 +74,18 @@
     "assets/images/splash.png": "382a27c1665221eb448e5531eef1b3211af5057749bd0b761554be46bdd4cf6c",
     "assets/images/splash_icon.png": "f3e55457cdf8b60832d0d0776cc1ca0c71fac75a8161312a2ccd83cf3cbc9355",
     "lib/env/env.dart": "ed794522676be41b14e9591f52e04b7f0f5352ecb50761c1f6532e38b5657c2f",
-    "lib/main.dart": "13134957cea473cff2a9ed1fcdfcab4d2869708c72de5747b61a9565d0060f40",
-    "lib/pages/onboarding/name/name_widget.dart": "9cbe22fe436a39b6be4cc3b3f0769901d73547e440f878166e68ccf67d0d418a",
-    "lib/pages/onboarding/wrapper.dart": "3dddaec7cb98c0d833d05a5aa33040d033b6b9bcae0462d5510ac4f2484d123c",
-    "lib/pages/settings/change_name_widget.dart": "d40060142844837861ec9119184a6a89ff54b5c51c9247d4dead3b037cc36ab4",
-    "lib/pages/settings/settings_drawer.dart": "07a6be6443df0d781f79826f48b3b38fe295e2ed9799a5ad212d4af7fc4ff8fa",
-    "lib/services/auth_service.dart": "f53b8323c2340fc04232d135de2244eace72f926b1497aa7295adc849435bf73",
+    "lib/main.dart": "7c8a20fd08012e970d3b7aa36d996bc56c3c7a46658c00ad378dc1ac80794cc4",
+    "lib/pages/onboarding/name/name_widget.dart": "4b729098053462ed1b2673fe90e73876e596191a76f7086f5eeffbd98573457a",
+    "lib/pages/onboarding/wrapper.dart": "47ff79de8a7067cbcfd3bc7d03e87d901e6cea33cd32d504cbc3e4e554b5fa38",
+    "lib/pages/settings/change_name_widget.dart": "46a08666470b8f35f65035fada0c8a7376e2d00a55a5a469f6badde7185e8c89",
+    "lib/pages/settings/settings_drawer.dart": "f0e75a8371c0a8797197f5b4b9eb4390dbcc1d99b00b9abfce81524ba2aceab8",
+    "lib/pages/settings/sign_out.dart": "5b887ce4b2411f7ccf991e9e55c99bb71a31961a68e02f7a72d8a62367e8cc54",
+    "lib/services/auth_service.dart": "9eda67433196c48a9fdeebfcfe94b1d783482dba33ceb7411a664ce2eecf3aca",
     "lib/services/notifications/notification_service.dart": "b27e5ac07a9b5130c79bc7c4b3a7bc36e20634abdbd8ba3d7e712b0b4f9d3db9",
     "lib/startup_routing.dart": "8c671d3b96fd8eb0259eab18d336877cb2b28a8aa0bf4cd74122c73204a182ee",
-    "lib/utils/debugging/crashlytics_manager.dart": "3aca19b0b67d44b91e66fa6b3ac187a9f5ef55d4fe1ba99a8bc706776a62ead8",
-    "lib/utils/logger.dart": "ec0da1f0224295d019a25e2e98c7cb3d9195c4fccd1da1e18d81cd644ed048e5",
-    "lib/utils/platform/platform_manager.dart": "d835b1a2e6b9873118adeac3ac1d5ca5cef2d303013e07db69e959572db1ce50",
-    "lib/utils/platform/platform_service.dart": "a95e266737d6dd8ab98bd39935e6f928f0e7c52061418f1dc3b44bcb5b020b5c"
+    "lib/utils/debugging/crashlytics_manager.dart": "f3cb48a7099d4c747c5447785e6064dd0c392dc529c27cce8600dd22a0542e8a",
+    "lib/utils/logger.dart": "1ba5be5e36b2f59aa79d7c0f5b7724012bf630308f204688bea1064b79121e3e",
+    "lib/utils/platform/platform_manager.dart": "e2a804de88a57169448b5935f80af5ca6e7e292dc111be1f6934bc2328d223a0",
+    "lib/utils/platform/platform_service.dart": "8a255266b2a25f699078da7994ed198fc6bb91f1f70193ce92338b18bedb7681"
   }
 }

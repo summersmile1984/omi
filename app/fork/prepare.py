@@ -228,10 +228,25 @@ def stage(manifest_path: Path, target: str, output: Path, dart: Path) -> dict:
         "_tokenGateway = tokenGateway,",
         "_tokenGateway = tokenGateway,\n        _invalidateSession = invalidateSession ?? tokenGateway.signOut,",
     )
+    # Upstream made the field non-final for its debug-only harness seam; the
+    # stage strips that seam, so the reviewed replacement keeps the field final.
     once(
         auth_path,
-        "final AuthTokenGateway _tokenGateway;",
+        "AuthTokenGateway _tokenGateway;",
         "final AuthTokenGateway _tokenGateway;\n  final Future<void> Function() _invalidateSession;",
+    )
+    # Upstream's transient-refresh escape hatch re-mints an Auth-emulator
+    # session; the staged artifact has no Firebase, and its reviewed retry is
+    # the opaque credential itself on the next request.
+    once(
+        auth_path,
+        """      case AuthTokenTransientFailure():
+        _scheduleLocalDevRecovery();
+        break;
+""",
+        """      case AuthTokenTransientFailure():
+        break;
+""",
     )
     start = text.index("    } on FirebaseAuthException catch (e) {")
     end = text.index("    } catch (e) {", start)
@@ -259,9 +274,12 @@ def stage(manifest_path: Path, target: str, output: Path, dart: Path) -> dict:
         "",
         content,
     )
+    # Both zone/startup crash fallbacks now gate on PhysicalQualification and
+    # swallow their own errors; the staged artifact has no Firebase at all.
     content = re.sub(
-        r"if \(Firebase.apps.isNotEmpty\) \{\s*FirebaseCrashlytics.instance.recordError\(error, stack, fatal: true\);\s*\}",
-        "Logger.debug('Unhandled startup failure: ${error.runtimeType}');",
+        r"if \(!PhysicalQualification\.enabled && Firebase\.apps\.isNotEmpty\) \{\s*"
+        r"unawaited\(FirebaseCrashlytics\.instance\.recordError\(error, stack, fatal: true\)\.catchError\(\(Object _\) \{\}\)\);\s*\}",
+        "Logger.debug('Unhandled error: ${error.runtimeType}');",
         content,
     )
     content = content.replace("FirebaseAuth.instance.currentUser", "NativeIdentity.owner.currentUser").replace(
@@ -286,36 +304,57 @@ def stage(manifest_path: Path, target: str, output: Path, dart: Path) -> dict:
     once(change_name, "bool isSaving = false;", "bool isSaving = false;\n  String? saveError;")
     once(
         change_name,
-        "const SizedBox(height: 24),",
-        "if (saveError != null) Text(saveError!, key: const ValueKey('identity_name_error'), style: const TextStyle(color: Colors.red)),\n            const SizedBox(height: 24),",
-    )
-    once(change_name, "setState(() => isSaving = true);", "setState(() { isSaving = true; saveError = null; });")
-    once(
-        change_name,
         "child: TextField(\n",
         "child: TextField(\n                key: const ValueKey('identity_name_edit'),\n",
     )
+    # The dialog body collapsed to one TextField, so the reviewed name-commit
+    # error now needs its own column inside the same content widget.
     once(
         change_name,
-        ": () {\n                            if (nameController",
-        ": () async {\n                            if (nameController",
+        "      content: Material(\n        type: MaterialType.transparency,\n        child: TextField(",
+        "      content: Material(\n        type: MaterialType.transparency,\n        child: Column(\n"
+        "          mainAxisSize: MainAxisSize.min,\n          children: [\n"
+        "            if (saveError != null)\n              Padding(\n                padding: const EdgeInsets.only(bottom: 8),\n"
+        "                child: Text(\n                  saveError!,\n"
+        "                  key: const ValueKey('identity_name_error'),\n"
+        "                  style: const TextStyle(color: Colors.red),\n                ),\n              ),\n            TextField(",
     )
     once(
         change_name,
-        """                            SharedPreferencesUtil().givenName = nameController.text.trim();
-                            AuthService.instance.updateGivenName(nameController.text.trim());
-                            AppSnackbar.showSnackbar(context.l10n.nameUpdatedSuccessfully);
-                            Navigator.of(context).pop();""",
-        """                            try {
-                              await AuthService.instance.updateGivenName(nameController.text.trim());
-                              if (!mounted) return;
-                              AppSnackbar.showSnackbar(context.l10n.nameUpdatedSuccessfully);
-                              Navigator.of(context).pop();
-                            } catch (_) {
-                              if (mounted) setState(() => saveError = context.l10n.connectionError);
-                            } finally {
-                              if (mounted) setState(() => isSaving = false);
-                            }""",
+        "        ),\n      ),\n      actions: [",
+        "        ),\n          ],\n        ),\n      ),\n      actions: [",
+    )
+    # Only the auth-provider projection may write given/family name, and the
+    # dialog must await that commit before it reports success or closes.
+    once(
+        change_name,
+        """  void _save() {
+    final name = nameController.text.trim();
+    if (name.isEmpty) return;
+    setState(() => isSaving = true);
+    SharedPreferencesUtil().givenName = name;
+    AuthService.instance.updateGivenName(name);
+    OmiFeedback.confirm(context, context.l10n.nameUpdatedSuccessfully);
+    Navigator.of(context).pop();
+  }""",
+        """  Future<void> _save() async {
+    final name = nameController.text.trim();
+    if (name.isEmpty) return;
+    setState(() {
+      isSaving = true;
+      saveError = null;
+    });
+    try {
+      await AuthService.instance.updateGivenName(name);
+      if (!mounted) return;
+      OmiFeedback.confirm(context, context.l10n.nameUpdatedSuccessfully);
+      Navigator.of(context).pop();
+    } catch (_) {
+      if (mounted) setState(() => saveError = context.l10n.connectionError);
+    } finally {
+      if (mounted) setState(() => isSaving = false);
+    }
+  }""",
     )
     name_step = app / "lib/pages/onboarding/name/name_widget.dart"
     once(
@@ -326,50 +365,70 @@ def stage(manifest_path: Path, target: str, output: Path, dart: Path) -> dict:
     once(name_step, "  var focusNode = FocusNode();", "  var focusNode = FocusNode();\n  bool isSaving = false;")
     once(
         name_step,
-        "onPressed: nameController.text.trim().isEmpty",
-        "onPressed: isSaving || nameController.text.trim().isEmpty",
+        "onPressed: _canContinue ? _submit : null",
+        "onPressed: _canContinue && !isSaving ? _submit : null",
     )
+    # Onboarding must await the reviewed name commit before it advances.
     once(
         name_step,
-        """                            AuthService.instance.updateGivenName(nameController.text.trim());
-                            widget.goNext();""",
-        """                            setState(() => isSaving = true);
-                            try {
-                              await AuthService.instance.updateGivenName(nameController.text.trim());
-                              if (mounted) widget.goNext();
-                            } catch (_) {
-                              if (mounted) AppSnackbar.showSnackbarError(context.l10n.connectionError);
-                            } finally {
-                              if (mounted) setState(() => isSaving = false);
-                            }""",
+        """  void _submit() {
+    if (!_canContinue) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    AuthService.instance.updateGivenName(nameController.text.trim());
+    OmiHaptics.selection();
+    widget.goNext();
+  }""",
+        """  Future<void> _submit() async {
+    if (!_canContinue) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() => isSaving = true);
+    try {
+      await AuthService.instance.updateGivenName(nameController.text.trim());
+      if (!mounted) return;
+      OmiHaptics.selection();
+      widget.goNext();
+    } catch (_) {
+      if (mounted) AppSnackbar.showSnackbarError(context.l10n.connectionError);
+    } finally {
+      if (mounted) setState(() => isSaving = false);
+    }
+  }""",
     )
-    settings = app / "lib/pages/settings/settings_drawer.dart"
-    content = settings.read_text()
-    pattern = r"final rootCtx = globalNavigatorKey.currentContext;\s*if \(rootCtx != null && rootCtx.mounted\) \{\s*clearAllUserState\(rootCtx\);\s*\}\s*await SharedPreferencesUtil\(\).clear\(\);\s*await AuthService.instance.signOut\(\);\s*if \(rootCtx != null && rootCtx.mounted\) \{\s*routeToPage\(rootCtx, const AppShell\(\), replace: true\);\s*\}"
+    # Upstream extracted the confirmed sign-out transaction out of the settings
+    # drawer into its own page-level helper; the transaction owner moved with it.
+    sign_out = app / "lib/pages/settings/sign_out.dart"
+    content = sign_out.read_text()
+    pattern = (
+        r"final rootCtx = globalNavigatorKey\.currentContext;\s*"
+        r"if \(rootCtx != null && rootCtx\.mounted\) clearAllUserState\(rootCtx\);\s*"
+        r"await clearPreferencesForSignOut\(\);\s*"
+        r"await AuthService\.instance\.signOut\(\);\s*"
+        r"if \(rootCtx != null && rootCtx\.mounted\) routeToPage\(rootCtx, const AppShell\(\), replace: true\);"
+    )
     content, count = re.subn(
         pattern,
         """final rootCtx = globalNavigatorKey.currentContext;
-      try {
-        final completed = await completeNativeSignOut(
-          revoke: AuthService.instance.signOut,
-          owner: NativeIdentity.owner,
-          clearLocalState: () async {
-            if (rootCtx != null && rootCtx.mounted) clearAllUserState(rootCtx);
-            await SharedPreferencesUtil().clear();
-          });
-        if (completed && rootCtx != null && rootCtx.mounted) {
-          routeToPage(rootCtx, const AppShell(), replace: true);
-        }
-      } on IdentityException {
-        if (rootCtx != null && rootCtx.mounted) {
-          AppSnackbar.showSnackbarError(rootCtx.l10n.connectionError);
-        }
-      }""",
+  try {
+    final completed = await completeNativeSignOut(
+      revoke: AuthService.instance.signOut,
+      owner: NativeIdentity.owner,
+      clearLocalState: () async {
+        if (rootCtx != null && rootCtx.mounted) clearAllUserState(rootCtx);
+        await clearPreferencesForSignOut();
+      });
+    if (completed && rootCtx != null && rootCtx.mounted) {
+      routeToPage(rootCtx, const AppShell(), replace: true);
+    }
+  } on IdentityException {
+    if (rootCtx != null && rootCtx.mounted) {
+      AppSnackbar.showSnackbarError(rootCtx.l10n.connectionError);
+    }
+  }""",
         content,
     )
-    if count != 2:
-        raise ValueError("Both settings sign-out transaction owners must be reviewed")
-    settings.write_text(
+    if count != 1:
+        raise ValueError("The settings sign-out transaction owner must be reviewed")
+    sign_out.write_text(
         "import 'package:omi/fork/identity/runtime.dart';\nimport 'package:omi/fork/identity/sign_out.dart';\nimport 'package:omi/fork/identity/credential.dart';\nimport 'package:omi/utils/alerts/app_snackbar.dart';\n"
         + content
     )
