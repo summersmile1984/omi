@@ -25,6 +25,11 @@ def clean_env() -> dict[str, str]:
     environment['PYTHON_DOTENV_DISABLED'] = '1'
     # Test-mode policy, not a duplicated provider/service configuration table.
     environment['MEMORY_MODE'] = 'read'
+    # Upstream's canonical intake fence (database/memory_apply_store) reads
+    # MEMORY_ENABLED; unset fail-closes to 'globally paused' and blocks every
+    # memory write before reaching test code. Mirror the deployed default so
+    # the upstream hermetic suite can exercise the write paths it owns.
+    environment['MEMORY_ENABLED'] = 'on'
     environment['E2E_PYTEST_TIMEOUT'] = '0'
     return environment
 
