@@ -309,6 +309,12 @@
       "source": "Quit Omi",
       "template": "Quit {product}",
       "count": 1
+    },
+    {
+      "kind": "StringLiteral",
+      "source": "Toggle OMI Bar",
+      "template": "Toggle {product} Bar",
+      "count": 1
     }
   ],
   "src/main/index.ts": [
