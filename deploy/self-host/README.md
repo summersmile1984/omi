@@ -1200,9 +1200,6 @@ and public edge before any route change.
 
 ```bash
 make self-host-migration-gate
-# or choose an evidence path
-SELF_HOST_GATE_EVIDENCE=/secure/change-record/omi-firestore-pg.json \
-  deploy/self-host/migration-cutover-gate.sh
 ```
 
 The managed lane never uses the production DSN. `--external` exists for a

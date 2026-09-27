@@ -264,10 +264,7 @@ final pass. Any unsupported value, source drift, missing/edited checkpoint, or
 count/hash mismatch exits nonzero and does not authorize cutover.
 
 For a fresh/re-imported database, PostgreSQL behavior is covered by the contract
-suite above. `deploy/self-host/migration-cutover-gate.sh` executes migration
-twice, checks the ledger, imports a real missing-parent nested emulator fixture,
-reconciles count/content hashes, then runs the live PG suite and 29-scenario
-emulator shadow diff. Production enablement still requires the repository-wide
+suite above. Production enablement still requires the repository-wide
 deployment gate, backups, live source freeze, and rollback—not merely setting
 `FIRESTORE_PG_DSN` on one process.
 
