@@ -112,9 +112,28 @@ def application_identity(manifest: dict, app_name: str, deployment_stage: str, d
     identities = manifest["identifiers"]
     if deployment_stage not in ("local", "beta", "production"):
         raise ValueError("Select an explicit deployment stage")
+    # The dev-app name prefix mirrors the brand's url_scheme: omi-upstream uses
+    # `omi`, eddy uses `eddy`, etc. Schema constrains url_scheme to ^[a-z][a-z0-9-]*$,
+    # so it is safe to interpolate directly into a regex without escaping.
+    dev_prefix_pattern = rf"{identities['url_scheme']}-[a-z0-9][a-z0-9-]*"
+    # The forbidden installed identities are the canonical upstream (omi-upstream)
+    # brand's own installed bundle IDs -- not the fork brand's own. Loading the
+    # omi-upstream manifest once and reading its macos_bundle_id* preserves the
+    # original hardcoded rejection of com.omi.computer-macos, .beta, and
+    # com.omi.desktop-dev for every fork brand that does NOT happen to be the
+    # upstream brand itself. For an omi-upstream run, the reserved set equals
+    # the brand's own macos_bundle_id*, which is what the original hardcode
+    # guarded against.
+    upstream_manifest = load_manifest(None, ROOT)
+    upstream_ids = upstream_manifest["identifiers"]
+    forbidden_installed = {
+        upstream_ids["macos_bundle_id"],
+        upstream_ids["macos_bundle_id_beta"],
+        upstream_ids["macos_bundle_id_dev"],
+    }
     if distribution == "development":
-        if not re.fullmatch(r"omi-[a-z0-9][a-z0-9-]*", app_name):
-            raise ValueError("A development artifact requires a named omi-* test bundle")
+        if not re.fullmatch(dev_prefix_pattern, app_name):
+            raise ValueError(f"A development artifact requires a named {identities['url_scheme']}-* test bundle")
         bundle_id = identities["macos_named_bundle_prefix"] + app_name
         if bundle_id in (identities["macos_bundle_id"], identities["macos_bundle_id_beta"]):
             raise ValueError("A development artifact cannot claim a distribution identity")
@@ -127,9 +146,9 @@ def application_identity(manifest: dict, app_name: str, deployment_stage: str, d
         bundle_id = identities["macos_bundle_id" if distribution == "production" else "macos_bundle_id_beta"]
     else:
         raise ValueError("Unknown native distribution identity")
-    if bundle_id.startswith("com.omi.") and distribution != "development":
+    if bundle_id.startswith(upstream_ids["macos_named_bundle_prefix"]) and distribution != "development":
         raise ValueError("A fork distribution cannot claim an upstream application identity")
-    if bundle_id in {"com.omi.computer-macos", "com.omi.computer-macos.beta", "com.omi.desktop-dev"}:
+    if bundle_id in forbidden_installed:
         raise ValueError("A fork artifact cannot claim an installed upstream identity")
     return bundle_id
 
