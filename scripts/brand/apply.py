@@ -28,6 +28,19 @@ GENERATORS: dict[str, Callable[[dict], dict[str, str]]] = {
 # A category joins this set only when its platform identity contract is complete.
 # Flutter currently generates a title, not native app identity (audit E1).
 COMPLETE_CATEGORIES: frozenset[str] = frozenset()
+# Explicit skip rationale for every category that does not have a generator.
+# Each entry cites the WHITELABEL-MODEL §3 pattern that owns that category so
+# the absence of an apply-side generator is honest: apply does not own it,
+# the named fork-owned prepare/stage/render path does. Adding a generator here
+# is a feature, not a fix.
+SKIP_REASONS: dict[str, str] = {
+    "desktop": "owned by desktop/macos/fork/prepare.py (Pattern A: macOS prepare); apply.py never edits upstream macOS source",
+    "windows": "owned by desktop/windows/fork/prepare.py (Pattern A: Windows prepare + vite resolve.alias shim); apply.py never edits upstream Windows source",
+    "backend": "owned by backend/fork/patches/* (Pattern B: backend import-time shim); apply.py never edits upstream backend source",
+    "web": "owned by web/app/fork/* (Pattern D: web prepare + shim); apply.py never edits upstream web source",
+    "docs": "documentation surface; rendered by the docs site generator, not by brand apply",
+    "ci": "CI matrix surface; rendered by scripts/profiles/render.py (Pattern D), not by brand apply",
+}
 
 
 class ApplyError(RuntimeError):
@@ -59,6 +72,7 @@ def render(manifest: dict, only: list[str] | None = None) -> tuple[dict[str, str
         "rendered": rendered,
         "skipped": [c for c in categories if c not in GENERATORS],
         "partial": [c for c in rendered if c not in COMPLETE_CATEGORIES],
+        "skip_reasons": {c: SKIP_REASONS[c] for c in (set(categories) - set(GENERATORS)) if c in SKIP_REASONS},
         "files": sorted(outputs),
     }
     report["release_ready"] = not report["skipped"] and not report["partial"]
