@@ -1,2 +1,8 @@
 .env.production
 migration-gate-evidence.json
+
+# The self-host product fixture writes the synthetic brand manifest it
+# renders here so the canonical Compose wrapper can resolve it; the path
+# is reviewed by deploy/self-host/check-config.py, but the file itself
+# is per-run ephemeral state.
+ci-rendered-product-manifest.json

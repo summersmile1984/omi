@@ -53,10 +53,22 @@ def specialize(config, profile):
     removed_env_prefixes = ('SPEECH_MODEL_STORE=',)
     if hosted:
         removed_env_prefixes += ('EMBEDDING_ENDPOINT=',)
+    # SELF_HOST_STAGE=local shares the same PostgreSQL instance as the
+    # vector store (backend/fork/bootstrap.py). The backend and the
+    # memory-maintenance worker must not read a half-migrated pgvector
+    # schema, so they wait on pgvector-migrate when it is the active
+    # authority. The prod default keeps VECTOR_STORE_PROVIDER=qdrant, so
+    # this only fires for the local fixture (and any future explicit
+    # pgvector deploy).
+    vector_provider = (
+        (profile.get('data_plane') or {}).get('vector') if profile.get('stage') == 'local' else None
+    )
     for service in services.values():
         depends = service.get('depends_on', {})
         for name in removed:
             depends.pop(name, None)
+        if vector_provider == 'pgvector' and 'pgvector-migrate' in services:
+            depends['pgvector-migrate'] = {'condition': 'service_completed_successfully'}
         environment = service.get('environment') or []
         service['environment'] = [value for value in environment if not value.startswith(removed_env_prefixes)]
     credential_lines = [f'{name}=${{{name}:?{name} is required}}' for name in credential_envs]

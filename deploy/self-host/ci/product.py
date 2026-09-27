@@ -40,6 +40,30 @@ MODEL_APPLICATION_HEADROOM = 4 * 1024**3
 PYTHON_BASE = 'python:3.11.10-slim-bookworm@sha256:840e180ebcc6e5c8efab209c43f5e40fd2af98cb49db5c7103c90539c56bb30e'
 sys.path.insert(0, str(ROOT / 'scripts/profiles'))
 import render  # noqa: E402
+sys.path.insert(0, str(ROOT / 'deploy/self-host'))
+from model_services import selected_config  # noqa: E402
+
+# Vendors other than MiMo own every capability (LLM / ASR / TTS / embedding)
+# over the wire; the canonical Compose wrapper removes the local model
+# services for them via deploy/self-host/model_services.py::specialize. The
+# fixture renders the same profile through specialize() so the compose it
+# starts matches the production admission surface exactly.
+HOSTED_OPERATORS = frozenset({'openrouter', 'siliconflow', 'cloudflare-gateway'})
+
+
+def _vendor_hosts(provider):
+    """External HTTPS hosts a hosted operator exposes for chat/embedding/ASR/TTS.
+
+    The backend's HttpEndpoint guard admits requests only to hosts listed in
+    SELF_HOST_EGRESS_ALLOWLIST; for a hosted operator the only such host is
+    the vendor itself. Returning the union of all three keeps the fixture
+    env-shareable without removing mimo-cn's local-embedding path.
+    """
+    return {
+        'openrouter': {'openrouter.ai'},
+        'siliconflow': {'api.siliconflow.cn'},
+        'cloudflare-gateway': {'api.cloudflare.com'},
+    }.get(provider, set())
 
 
 class Fixture:
@@ -69,7 +93,14 @@ class Fixture:
                 'the product fixture requires --mimo-secret-file or --operator-secret-file; '
                 'a native local text model is refused at self-host admission'
             )
-        if model_stores is None or set(model_stores) != {'embedding'} or not all(model_stores.values()):
+        # The MiMo-managed profile keeps its local BGE-M3 embedding store; a
+        # hosted operator AI (openrouter / siliconflow / cloudflare-gateway)
+        # owns embeddings too, so the fixture starts without any model store.
+        hosted = bool(self.operator_secret_file) and self.operator_provider in HOSTED_OPERATORS
+        if hosted:
+            if model_stores not in (None, {}):
+                raise ValueError('hosted operator AI owns embeddings; pass no --embedding-store')
+        elif model_stores is None or set(model_stores) != {'embedding'} or not all(model_stores.values()):
             raise ValueError('real-model fixture requires the embedding store only')
         if self.mimo_secret_file:
             from fork.operator_ai import MiMo
@@ -86,7 +117,7 @@ class Fixture:
             credential = json.loads(self.operator_secret_file.read_text())
             if not isinstance(credential, dict) or not credential:
                 raise ValueError('operator secret file must be a non-empty JSON object')
-        for kind, path in model_stores.items():
+        for kind, path in (model_stores or {}).items():
             path = Path(path)
             if not path.is_absolute() or not path.is_dir():
                 raise ValueError(f'{kind} model store must be an existing absolute directory')
@@ -105,6 +136,10 @@ class Fixture:
         self.sequence = 0
         self.active = None
         self.closing = False
+        # Bind the production Compose wrapper as an attribute so unit tests
+        # can monkey-patch it; the real call site still goes through the
+        # deploy/self-host/model_services.py canon.
+        self.selected_config = selected_config
 
     def stop(self, *_args):
         self.stopped.set()
@@ -163,6 +198,24 @@ class Fixture:
         )
 
     def admit_model_capacity(self, services):
+        # Hosted operator AI does not bind any local model service, so the
+        # engine-memory admission only applies to the MiMo shape.
+        if not self.model_stores:
+            total = int(self.command(['docker', 'info', '--format', '{{.MemTotal}}'], capture=True, timeout=30).strip())
+            report = {
+                'engine_memory_bytes': total,
+                'model_memory_limits': {},
+                'application_headroom_bytes': MODEL_APPLICATION_HEADROOM,
+                'required_engine_memory_bytes': MODEL_APPLICATION_HEADROOM,
+                'admitted': total >= MODEL_APPLICATION_HEADROOM,
+            }
+            (self.output / 'model-capacity.json').write_text(json.dumps(report, indent=2) + '\n')
+            if not report['admitted']:
+                raise RuntimeError(
+                    f'real-model fixture needs at least {MODEL_APPLICATION_HEADROOM / 1024**3:g} GiB Docker memory '
+                    f'for application headroom; engine reports {total / 1024**3:.2f} GiB'
+                )
+            return
         limits = {name: services[name].get('mem_limit') for name in ('embedding',) if name in self.model_stores}
         # `docker compose config --format json` emits byte counts as decimal
         # strings, including the production YAML's `4g` model limits.
@@ -217,6 +270,16 @@ class Fixture:
                 }
             }
         }
+        # The canonical production wrapper (deploy/self-host/model_services
+        # .profile_for -> scripts/profiles/render.resolve) reads
+        # `self_hosted_inference.<stage>` from the brand manifest, NOT the
+        # operator_ai positional argument. The fixture's brand manifest is
+        # synthesized, so the rendered selection must be encoded here too,
+        # otherwise profile_for sees operator_ai=None and specialize() takes
+        # the early-return path that skips every operator-aware wiring.
+        operator = self._selected_operator()
+        if operator:
+            manifest.setdefault('self_hosted_inference', {})['local'] = operator
         if self.operator_provider == 'cloudflare-gateway' and not manifest.get('cloudflare_ai_gateway'):
             # cloudflare_spec() derives the account-scoped REST origin from
             # these public ids and refuses a non-dict; the fixture manifest is
@@ -229,7 +292,11 @@ class Fixture:
         return manifest
 
     def _render_profile(self, manifest):
-        manifest_file = self.output / 'brand.json'
+        # The fixture writes the rendered brand manifest at a stable in-repo
+        # path so the canonical production wrapper (deploy/self-host/
+        # model_services.selected_config -> profile_for) can resolve it the
+        # same way it resolves any reviewed deployment configuration.
+        manifest_file = ROOT / 'deploy/self-host/ci-rendered-product-manifest.json'
         manifest_file.write_text(json.dumps(manifest))
         table = render.resolve(
             'self_hosted', None, manifest_file, 'local', self._selected_operator()
@@ -251,9 +318,14 @@ class Fixture:
             if line.strip() and not line.lstrip().startswith('#') and '=' in line:
                 key, value = line.split('=', 1)
                 env[key] = secrets.token_hex(24) if 'REPLACE_' in value else value
+        # `selected_config()` (deploy/self-host/model_services.py) reads the
+        # brand manifest by this exact path; the canonical production wrapper
+        # uses the same resolution. The synthetic manifest is the rendered
+        # source of truth for this fixture run.
+        manifest_path = 'deploy/self-host/ci-rendered-product-manifest.json'
         env.update(
             SELF_HOST_STAGE='local',
-            SELF_HOST_BRAND_MANIFEST='brand/omi-upstream/manifest.yaml',
+            SELF_HOST_BRAND_MANIFEST=manifest_path,
             SELF_HOST_BIND_ADDRESS='127.0.0.1',
             BACKEND_PORT=str(self.port),
             AUTH_SERVER_PORT=str(self.port + 1),
@@ -265,43 +337,76 @@ class Fixture:
             PUBLIC_OBJECTS_URL=f'http://127.0.0.1:{self.port + 2}',
             OMI_SHARE_BASE_URL=api,
             CORS_ALLOWED_ORIGINS=auth,
+            # SELF_HOST_STAGE=local shares the PostgreSQL instance as the
+            # vector store (backend/fork/bootstrap.py). The pgvector image
+            # pin matches dev/docker-compose.dev.yml exactly so a fixture
+            # run and a local dev stack agree on the extension owner.
+            POSTGRES_IMAGE='pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b',
+            VECTOR_STORE_PROVIDER='pgvector',
+            PGVECTOR_COLLECTION_PREFIX='contract',
             BETTER_AUTH_TRUSTED_ORIGINS=auth,
             SELF_HOST_EGRESS_ALLOWLIST='embedding',
             BACKEND_RUNTIME_IMAGE=self.runtime_image,
             BACKEND_IMAGE=self.api_image,
             AUTH_SERVER_IMAGE=self.auth_image,
-            EMBEDDING_MODEL_STORE=str(self.model_stores['embedding']),
-            SPEECH_MODEL_STORE=str(self.output / 'unused-speech-store'),
-            GENERIC_OPENAI_BASE_URL='http://embedding:11434/v1',
-            GENERIC_OPENAI_MODEL='controlled-unavailable',
-            GENERIC_OPENAI_API_KEY=secrets.token_hex(24),
-            REALTIME_RELAY_URL='ws://embedding:11434/unavailable',
-            REALTIME_RELAY_ALLOWED_HOSTS='embedding',
-            REALTIME_RELAY_PROVIDER_ID='controlled-unavailable',
-            REALTIME_MODEL='controlled-unavailable',
             QDRANT_COLLECTION_PREFIX='contract',
             VECTOR_PROJECTION_MODE='single',
             VECTOR_PROJECTION_ACTIVE_VERSION='v1',
             VECTOR_PROJECTION_SCHEMA_VERSION='1',
             VECTOR_PROJECTION_DELETE_VERSIONS='v1',
         )
+        # The local embedding store and the synthetic "controlled-unavailable"
+        # GENERIC_OPENAI / REALTIME_RELAY bindings only exist when the
+        # profile's operator AI is MiMo. Hosted vendors own embeddings over
+        # the wire; the egress allowlist names the actual vendor hosts so the
+        # backend's HttpEndpoint guard admits every capability the vendor
+        # exposes (fork/operator_ai._grants is the per-endpoint authority).
+        if self.operator_provider in HOSTED_OPERATORS:
+            env['SELF_HOST_EGRESS_ALLOWLIST'] = ','.join(
+                {
+                    'openrouter.ai',
+                    'api.siliconflow.cn',
+                    'api.cloudflare.com',
+                }
+                & _vendor_hosts(self.operator_provider)
+            )
+        else:
+            env['EMBEDDING_MODEL_STORE'] = str(self.model_stores['embedding'])
+            env['SPEECH_MODEL_STORE'] = str(self.output / 'unused-speech-store')
+            env['GENERIC_OPENAI_BASE_URL'] = 'http://embedding:11434/v1'
+            env['GENERIC_OPENAI_MODEL'] = 'controlled-unavailable'
+            env['GENERIC_OPENAI_API_KEY'] = secrets.token_hex(24)
+            env['REALTIME_RELAY_URL'] = 'ws://embedding:11434/unavailable'
+            env['REALTIME_RELAY_ALLOWED_HOSTS'] = 'embedding'
+            env['REALTIME_RELAY_PROVIDER_ID'] = 'controlled-unavailable'
+            env['REALTIME_MODEL'] = 'controlled-unavailable'
         env['POSTGRES_PASSWORD_URLENCODED'] = env['POSTGRES_PASSWORD']
         env_file = self.output / 'fixture.env'
         env_file.write_text(''.join(f'{key}={value}\n' for key, value in env.items()))
-        config = json.loads(
-            self.command(
-                [
-                    'bash',
-                    str(ROOT / 'deploy/self-host/compose-clean-env.sh'),
-                    str(env_file),
-                    str(ROOT / 'deploy/self-host/compose.production.yml'),
-                    'config',
-                    '--format',
-                    'json',
-                ],
-                capture=True,
-            )
-        )
+        # Canonical production wrapper: read the operator from the brand
+        # manifest through profile_for(), then specialize() drops every
+        # local model service the operator owns over the wire. The same
+        # code path backs deploy/self-host/check-config.py --env-file, so
+        # the fixture admission surface matches the deployed one byte for
+        # byte. The upstream compose.production.yml is the only input;
+        # docker is not invoked for graph construction.
+        config = self.selected_config(env)
+        # The upstream compose stores each service environment as a list of
+        # `KEY=VALUE` entries; the rest of this fixture and every Docker
+        # JSON consumer below expect an explicit dict, so normalize once
+        # here. YAML list entries like `${VAR:?VAR is required}` are kept
+        # verbatim for VAR substitution, which already happened inside
+        # `selected_config()`.
+        for service in config['services'].values():
+            environment = service.get('environment')
+            if isinstance(environment, list):
+                merged = {}
+                for entry in environment:
+                    if not isinstance(entry, str):
+                        raise ValueError('compose environment entries must be strings')
+                    key, _, value = entry.partition('=')
+                    merged[key] = value
+                service['environment'] = merged
         # The 2026-09-05 real-model run exhausted an 8 GiB Docker VM during
         # finalization and killed llama-server. Reject that known insufficient
         # allocation before building or starting any application containers.
@@ -317,12 +422,17 @@ class Fixture:
             'auth-migrate',
             'firestore-pg-migrate',
             'qdrant-migrate',
+            'pgvector-migrate',
             'auth-server',
             'backend',
             'queue-worker',
             'memory-maintenance-worker',
         )
-        selected += ('embedding-artifact-check', 'embedding')
+        # specialize() drops embedding/embedding-artifact-check when the
+        # operator owns embeddings; for MiMo the local BGE-M3 service stays
+        # and admission expects to see its services in the compose graph.
+        if self.operator_provider not in HOSTED_OPERATORS:
+            selected += ('embedding-artifact-check', 'embedding')
         services = {name: config['services'][name] for name in selected}
         for name, service in services.items():
             service.pop('build', None)
@@ -379,12 +489,18 @@ class Fixture:
                 'retries': 30,
             },
         }
-        used_volumes = {
-            mount['source']
-            for service in services.values()
-            for mount in service.get('volumes', [])
-            if isinstance(mount, dict) and mount.get('type') == 'volume'
-        }
+        used_volumes = set()
+        for service in services.values():
+            for mount in service.get('volumes', []):
+                if isinstance(mount, dict):
+                    if mount.get('type') == 'volume' and mount.get('source'):
+                        used_volumes.add(mount['source'])
+                elif isinstance(mount, str):
+                    # Long-form `source:target[:mode]` shorthand; the source
+                    # is the named volume, so it must exist at the top level.
+                    source = mount.split(':', 1)[0].strip()
+                    if source and not source.startswith('/') and not source.startswith('.'):
+                        used_volumes.add(source)
         self.compose_file.write_text(
             json.dumps(
                 {
@@ -413,7 +529,11 @@ class Fixture:
                         if self.mimo_secret_file
                         else f'hosted-operator-{self.operator_provider}'
                     ),
-                    'embedding': 'admitted-local-BGE-M3-Ollama',
+                    'embedding': (
+                        'admitted-local-BGE-M3-Ollama'
+                        if self.mimo_secret_file
+                        else f'hosted-operator-{self.operator_provider}-bge-m3'
+                    ),
                     'application_network': 'API-outbound-selected-MiMo' if self.mimo_secret_file else 'internal-only',
                     'http_ingress': 'isolated-two-port-loopback-proxy',
                     'websocket_ingress': 'same-proxy-bounded-bidirectional-tunnel',
@@ -519,21 +639,38 @@ class Fixture:
 
     def start(self):
         self.created = True
-        self.compose('run', '--rm', 'embedding-artifact-check')
-        self.compose(
-            'up',
-            '-d',
-            '--wait',
-            '--wait-timeout',
-            '120',
-            'postgres',
-            'redis',
-            'minio',
-            'qdrant',
-            'typesense',
-            'embedding',
-        )
-        for service in ('auth-migrate', 'firestore-pg-migrate', 'qdrant-migrate'):
+        # MiMo keeps its local BGE-M3 service; hosted operator AI does not
+        # ship embedding or its artifact check, so specialize() removed them
+        # from the compose graph and there is nothing to run here.
+        if self.operator_provider not in HOSTED_OPERATORS:
+            self.compose('run', '--rm', 'embedding-artifact-check')
+            self.compose(
+                'up',
+                '-d',
+                '--wait',
+                '--wait-timeout',
+                '120',
+                'postgres',
+                'redis',
+                'minio',
+                'qdrant',
+                'typesense',
+                'embedding',
+            )
+        else:
+            self.compose(
+                'up',
+                '-d',
+                '--wait',
+                '--wait-timeout',
+                '120',
+                'postgres',
+                'redis',
+                'minio',
+                'qdrant',
+                'typesense',
+            )
+        for service in ('auth-migrate', 'firestore-pg-migrate', 'pgvector-migrate', 'qdrant-migrate'):
             self.compose('run', '--rm', service)
         self.compose(
             'up',
@@ -586,17 +723,26 @@ def main():
     parser.add_argument(
         '--operator-secret-file',
         type=Path,
-        help='hosted operator AI secret JSON; one bearer per the chosen provider, requires --operator-provider and --embedding-store',
+        help='hosted operator AI secret JSON; one bearer per the chosen provider, requires --operator-provider; --embedding-store is unused',
     )
     parser.add_argument(
         '--operator-provider',
         choices=['mimo-cn', 'openrouter', 'cloudflare-gateway', 'siliconflow'],
         help='provider declared by the brand manifest under self_hosted_inference.<stage>; the secret file must carry its matching env var',
     )
-    parser.add_argument('--embedding-store', type=Path, required=True, help='admitted BGE-M3 store')
+    parser.add_argument(
+        '--embedding-store',
+        type=Path,
+        help='admitted BGE-M3 store; required only for MiMo. Hosted operator AI owns embeddings over the wire.',
+    )
     parser.add_argument('--self-test', action='store_true', help='run common HTTP contract and clean up')
     args = parser.parse_args()
-    stores = {'embedding': args.embedding_store}
+    hosted = args.operator_provider in {'openrouter', 'cloudflare-gateway', 'siliconflow'}
+    if args.embedding_store is None and not hosted:
+        parser.error('--embedding-store is required when the operator is not a hosted AI')
+    if args.embedding_store is not None and hosted:
+        parser.error('--embedding-store must not be passed for a hosted operator AI; it owns embeddings')
+    stores = {'embedding': args.embedding_store} if args.embedding_store else None
     fixture = Fixture(
         args.output,
         args.brand_id,

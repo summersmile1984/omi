@@ -527,11 +527,21 @@ class FixtureProfile(unittest.TestCase):
                 def command(args, **kwargs):
                     if args[:2] == ['docker', 'info']:
                         return str(16 * 1024**3)
-                    return json.dumps({'services': services})
+                    raise AssertionError(f'unexpected docker call: {args[:2]}')
 
                 fixture.command = command
+                # The fixture now calls selected_config() instead of docker
+                # compose config; hand it a graph that mirrors what a real
+                # specialize() pass would emit for the MiMo shape.
+                fixture.selected_config = lambda values: {'services': services}
                 fixture.prepare()
-                expected = render.resolve('self_hosted', None, fixture.output / 'brand.json', 'local', operator)
+                expected = render.resolve(
+                    'self_hosted',
+                    None,
+                    ROOT / 'deploy/self-host/ci-rendered-product-manifest.json',
+                    'local',
+                    operator,
+                )
                 self.assertEqual(json.loads((fixture.output / 'profile.json').read_text()), expected)
                 profile = expected['profiles']['self_hosted.local']
                 self.assertNotEqual(profile['capabilities']['llm_provider'], 'disabled')
@@ -560,16 +570,20 @@ class FixtureProfile(unittest.TestCase):
                     'siliconflow': {'SILICONFLOW_API_KEY': 'synthetic'},
                 }[operator]
                 secret.write_text(json.dumps(credential))
-                stores = {'embedding': root}  # hosted providers do not need llm/speech stores
                 fixture = Fixture(
                     root / 'output',
                     'fixture-models',
                     34800,
-                    model_stores=stores,
+                    model_stores=None,
                     operator_secret_file=secret,
                     operator_provider=operator,
                 )
                 services = render.load_yaml(ROOT / 'deploy/self-host/compose.production.yml')['services']
+                # specialize() drops the local embedding services for any
+                # hosted operator; mirror that here so the test sees the same
+                # graph the production admission surface will see.
+                for name in ('embedding', 'embedding-artifact-check'):
+                    services.pop(name, None)
                 for service in services.values():
                     service['environment'] = {}
                     if 'mem_limit' in service:
@@ -578,9 +592,10 @@ class FixtureProfile(unittest.TestCase):
                 def command(args, **kwargs):
                     if args[:2] == ['docker', 'info']:
                         return str(16 * 1024**3)
-                    return json.dumps({'services': services})
+                    raise AssertionError(f'unexpected docker call: {args[:2]}')
 
                 fixture.command = command
+                fixture.selected_config = lambda values: {'services': services}
                 fixture.prepare()
                 composed = json.loads(fixture.compose_file.read_text())['services']
                 expected_env = {
@@ -594,6 +609,49 @@ class FixtureProfile(unittest.TestCase):
                 # Neither MiMo nor local model env vars should leak.
                 self.assertNotIn('MIMO_API_KEY', composed['backend']['environment'])
                 self.assertNotIn('MIMO_API_KEY', composed['queue-worker']['environment'])
+                # A hosted operator owns embeddings; the local Ollama service
+                # and its preflight artifact check must not appear in the
+                # composed graph.
+                self.assertNotIn('embedding', composed)
+                self.assertNotIn('embedding-artifact-check', composed)
+
+    def test_hosted_operator_rejects_a_local_embedding_store(self):
+        """Hosted operator AI owns embeddings over the wire; the fixture must
+        not be told to bind a local BGE-M3 store on top of that."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = root / 'secret.json'
+            secret.write_text(json.dumps({'OPENROUTER_API_KEY': 'synthetic'}))
+            with self.assertRaises(ValueError) as raised:
+                Fixture(
+                    root / 'output',
+                    'fixture-models',
+                    34800,
+                    model_stores={'embedding': root},
+                    operator_secret_file=secret,
+                    operator_provider='openrouter',
+                )
+            self.assertIn('hosted operator AI owns embeddings', str(raised.exception))
+            self.assertFalse((root / 'output').exists())
+
+    def test_mimo_operator_rejects_omitted_embedding_store(self):
+        """The MiMo shape still owns the local BGE-M3 embedding service."""
+        from fork.operator_ai import MiMo
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = root / 'secret.json'
+            secret.write_text(json.dumps({'MIMO_API_KEY': 'synthetic', 'MIMO_BASE_URL': MiMo().base_url}))
+            with self.assertRaises(ValueError) as raised:
+                Fixture(
+                    root / 'output',
+                    'fixture-models',
+                    34800,
+                    model_stores=None,
+                    mimo_secret_file=secret,
+                )
+            self.assertIn('real-model fixture requires the embedding store', str(raised.exception))
+            self.assertFalse((root / 'output').exists())
 
     def test_operator_secret_file_without_provider_rejects_before_creating_state(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -654,11 +712,14 @@ class FixtureProfile(unittest.TestCase):
                 root = Path(directory)
                 secret = root / 'secret.json'
                 secret.write_text(json.dumps(credential))
+                # Hosted vendors own embeddings over the wire (no local store);
+                # MiMo keeps its local BGE-M3 contract.
+                stores = None if operator != 'mimo-cn' else {'embedding': root}
                 fixture = Fixture(
                     root / 'output',
                     'fixture-models',
                     34800,
-                    model_stores={'embedding': root},
+                    model_stores=stores,
                     operator_secret_file=secret,
                     operator_provider=operator,
                 )
@@ -687,6 +748,102 @@ class FixtureProfile(unittest.TestCase):
             profile = table['profiles']['self_hosted.local']
             self.assertEqual(profile['operator_ai']['provider'], 'mimo')
             self.assertNotIn('llm', profile)
+
+    def test_local_stage_compose_uses_pgvector_and_pin(self):
+        """SELF_HOST_STAGE=local shares PostgreSQL as the vector store.
+
+        The fixture must build an env file that drives the production
+        compose to (a) launch the pgvector build of PostgreSQL with the
+        exact digest dev/docker-compose.dev.yml pins, (b) bind
+        VECTOR_STORE_PROVIDER=pgvector, and (c) provide the
+        PGVECTOR_COLLECTION_PREFIX bootstrap requires. Without these the
+        fixture admission crashes on 'VECTOR_STORE_PROVIDER conflicts
+        with the selected deployment profile'.
+        """
+        from fork.operator_ai import MiMo
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = root / 'secret.json'
+            secret.write_text(json.dumps({'MIMO_API_KEY': 'synthetic', 'MIMO_BASE_URL': MiMo().base_url}))
+            fixture = Fixture(
+                root / 'output',
+                'fixture-models',
+                34800,
+                model_stores={'embedding': root},
+                mimo_secret_file=secret,
+            )
+
+            def command(args, **kwargs):
+                if args[:2] == ['docker', 'info']:
+                    return str(16 * 1024**3)
+                raise AssertionError(f'unexpected docker call: {args[:2]}')
+
+            fixture.command = command
+            captured = {}
+
+            def fake_selected_config(values):
+                from model_services import specialize, profile_for
+                import yaml as _yaml
+                from pathlib import Path as _Path
+                config = _yaml.safe_load((_Path(ROOT) / 'deploy/self-host/compose.production.yml').read_text())
+                specialized = specialize(config, profile_for(values))
+                captured['config'] = specialized
+                # Snapshot the pgvector-migrate dependency wiring before the
+                # fixture's prepare() post-processing strips depends_on from
+                # the in-place service dicts; deep-copy preserves the data.
+                captured['depends_on'] = {
+                    name: dict(specialized['services'][name].get('depends_on') or {})
+                    for name in ('backend', 'memory-maintenance-worker', 'queue-worker')
+                }
+                for service in specialized['services'].values():
+                    if isinstance(service, dict) and 'mem_limit' in service:
+                        service['mem_limit'] = str(4 * 1024**3)
+                return specialized
+
+            fixture.selected_config = fake_selected_config
+            fixture.prepare()
+            env_text = (fixture.output / 'fixture.env').read_text()
+            self.assertIn(
+                'POSTGRES_IMAGE=pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b',
+                env_text,
+            )
+            self.assertIn('VECTOR_STORE_PROVIDER=pgvector', env_text)
+            self.assertIn('PGVECTOR_COLLECTION_PREFIX=contract', env_text)
+            specialized = captured['config']
+            self.assertIn(
+                '${POSTGRES_IMAGE:-postgres:16.4-alpine@sha256:',
+                specialized['services']['postgres']['image'],
+            )
+            self.assertIn('pgvector-migrate', specialized['services'])
+            for name in ('backend', 'memory-maintenance-worker', 'queue-worker'):
+                depends = captured['depends_on'][name]
+                self.assertEqual(
+                    depends.get('pgvector-migrate', {}).get('condition'),
+                    'service_completed_successfully',
+                    f'{name}: must wait for pgvector-migrate before reading the schema',
+                )
+
+    def test_production_default_compose_keeps_alpine_postgres_and_qdrant(self):
+        """Production default is byte-stable: bare postgres + qdrant.
+
+        Fork-owned compose must not change the production default; the
+        fixture only swaps them through POSTGRES_IMAGE / VECTOR_STORE_PROVIDER.
+        """
+        compose = render.load_yaml(ROOT / 'deploy/self-host/compose.production.yml')['services']
+        # The pin is identical to the pre-override compose; the override
+        # path wraps the same default with `${VAR:-default}` so a fixture
+        # can override it without changing the production default.
+        self.assertEqual(
+            compose['postgres']['image'],
+            '${POSTGRES_IMAGE:-postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c}',
+        )
+        for service in ('backend', 'memory-maintenance-worker'):
+            self.assertIn(
+                'VECTOR_STORE_PROVIDER=${VECTOR_STORE_PROVIDER:-qdrant}',
+                compose[service]['environment'],
+                f'{service}: production default must default VECTOR_STORE_PROVIDER to qdrant',
+            )
 
 
 if __name__ == '__main__':
