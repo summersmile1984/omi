@@ -40,6 +40,10 @@ def profile_consumer():
     client = types.ModuleType('database._client')
     client.db = mock.MagicMock()
     client.db.collection.return_value.document.return_value.get.return_value.exists = False
+    # Upstream #15698 imports get_firestore_client at database.auth module scope
+    # and resolves the owner name through it when Firebase has no display name;
+    # the shaped db mock is the empty user document that lookup returns.
+    client.get_firestore_client = mock.Mock(return_value=client.db)
     redis = types.ModuleType('database.redis_db')
     redis.cache_user_name = mock.Mock()
     with stub_modules({'database._client': client, 'database.redis_db': redis, 'database.auth': None}):
