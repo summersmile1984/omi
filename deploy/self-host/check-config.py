@@ -41,6 +41,7 @@ REQUIRED_SOURCE = (
     'backend/fork/memory_maintenance_worker.py',
     'deploy/self-host/prepare-speech.py',
     'backend/fork/vector_qdrant.py',
+    'backend/fork/vector_pg.py',
     'backend/fork/worker.py',
     'backend/fork/migrate.py',
     'backend/fork/queue_config.py',
