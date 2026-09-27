@@ -185,7 +185,22 @@ class Fixture:
                 f'for model limits and application headroom; engine reports {total / 1024**3:.2f} GiB'
             )
 
-    def prepare(self):
+    def _selected_operator(self):
+        """The render-time operator selection for the credential actually passed.
+
+        Hosted operators must reach the profile row: render.resolve() installs
+        the selection through operator_ai.configure(), which strips the native
+        llm/speech rows that fork.bootstrap otherwise refuses at admission.
+        Passing None here (as this fixture did before) renders a native row and
+        every backend container dies with 'remove row.llm'.
+        """
+        if self.mimo_secret_file:
+            return 'mimo-cn'
+        if self.operator_secret_file:
+            return self.operator_provider
+        return None
+
+    def _brand_manifest(self):
         manifest = copy.deepcopy(render.load_yaml(ROOT / 'brand/omi-upstream/manifest.yaml'))
         manifest['brand'].update(id=self.brand_id, display_name='Product Fixture', short_name='Product Fixture')
         manifest['domains'] = {key: f'https://{key.replace("_", "-")}.example.invalid' for key in manifest['domains']}
@@ -202,16 +217,35 @@ class Fixture:
                 }
             }
         }
+        if self.operator_provider == 'cloudflare-gateway' and not manifest.get('cloudflare_ai_gateway'):
+            # cloudflare_spec() derives the account-scoped REST origin from
+            # these public ids and refuses a non-dict; the fixture manifest is
+            # synthesized, so pin deterministic values (same shape the gateway
+            # contract test uses) instead of failing on the real brand's None.
+            manifest['cloudflare_ai_gateway'] = {
+                'account_id': 'a' * 32,
+                'gateway_id': 'product-fixture',
+            }
+        return manifest
+
+    def _render_profile(self, manifest):
         manifest_file = self.output / 'brand.json'
         manifest_file.write_text(json.dumps(manifest))
         table = render.resolve(
-            'self_hosted', None, manifest_file, 'local', 'mimo-cn' if self.mimo_secret_file else None
+            'self_hosted', None, manifest_file, 'local', self._selected_operator()
         )
         profile_file = self.output / 'profile.json'
         profile_file.write_text(json.dumps(table, indent=2) + '\n')
         # The public profile is bind-mounted into a different Linux UID. The
         # enclosing fixture and credential files retain the private umask.
         profile_file.chmod(0o444)
+        return table
+
+    def prepare(self):
+        manifest = self._brand_manifest()
+        self._render_profile(manifest)
+        api, auth = f'http://127.0.0.1:{self.port}', f'http://127.0.0.1:{self.port + 1}'
+        profile_file = self.output / 'profile.json'
         env = {}
         for line in (ROOT / 'deploy/self-host/.env.production.example').read_text().splitlines():
             if line.strip() and not line.lstrip().startswith('#') and '=' in line:

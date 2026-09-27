@@ -632,5 +632,62 @@ class FixtureProfile(unittest.TestCase):
             self.assertIn('not both', str(raised.exception))
 
 
+    def test_every_hosted_credential_renders_an_admitted_profile_row(self):
+        """Regression: the operator credential must reach render.resolve().
+
+        The fixture used to pass operator_ai=None for every non-MiMo secret
+        file, so the rendered self_hosted row kept its native `llm` and every
+        backend container died at admission with 'remove row.llm'. Only the
+        mimo-cn path ever reached configure(); this drives the actual
+        manifest+render seam for all four providers plus the legacy mimo file.
+        """
+        from fork.operator_ai import MiMo
+
+        cases = {
+            'openrouter': ({'OPENROUTER_API_KEY': 'synthetic'}, 'openrouter'),
+            'siliconflow': ({'SILICONFLOW_API_KEY': 'synthetic'}, 'siliconflow'),
+            'cloudflare-gateway': ({'CLOUDFLARE_API_TOKEN': 'synthetic'}, 'cloudflare-gateway'),
+            'mimo-cn': ({'MIMO_API_KEY': 'synthetic', 'MIMO_BASE_URL': MiMo().base_url}, 'mimo'),
+        }
+        for operator, (credential, row_provider) in cases.items():
+            with self.subTest(operator=operator), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                secret = root / 'secret.json'
+                secret.write_text(json.dumps(credential))
+                fixture = Fixture(
+                    root / 'output',
+                    'fixture-models',
+                    34800,
+                    model_stores={'embedding': root},
+                    operator_secret_file=secret,
+                    operator_provider=operator,
+                )
+                table = fixture._render_profile(fixture._brand_manifest())
+                profile = table['profiles']['self_hosted.local']
+                self.assertEqual(profile['operator_ai']['provider'], row_provider)
+                self.assertNotIn('llm', profile, 'native llm row survives -> admission refuses it')
+                self.assertNotIn('speech', profile, 'native speech row survives the hosted selection')
+                if operator == 'mimo-cn':
+                    # MiMo keeps the local embedding contract; hosted vendors
+                    # supply embeddings over the wire (configure() strips it).
+                    self.assertIn('embedding', profile)
+                else:
+                    self.assertNotIn('embedding', profile)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = Fixture(
+                root / 'output',
+                'fixture-models',
+                34800,
+                model_stores={'embedding': root},
+                mimo_secret_file=mimo_secret(root),
+            )
+            table = fixture._render_profile(fixture._brand_manifest())
+            profile = table['profiles']['self_hosted.local']
+            self.assertEqual(profile['operator_ai']['provider'], 'mimo')
+            self.assertNotIn('llm', profile)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
