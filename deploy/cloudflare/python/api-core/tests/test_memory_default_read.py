@@ -20,6 +20,23 @@ from test_memory_mutation_lock import target
 ROOT = Path(__file__).resolve().parents[5]
 
 
+class _StripNestedImports(ast.NodeTransformer):
+    """Replace import statements anywhere in the kept body with ``pass``.
+
+    The adapter's scan predicate lazy-imports its history policy at call time
+    (upstream a22eb2a424); executing that import would leave the controlled
+    namespace and pull models.memories -> database._client -> google into the
+    Worker test environment. The real policy is exec'd into the same namespace
+    below instead.
+    """
+
+    def visit_Import(self, node):
+        return ast.copy_location(ast.Pass(), node)
+
+    def visit_ImportFrom(self, node):
+        return ast.copy_location(ast.Pass(), node)
+
+
 def original_visibility():
     # Execute the upstream policy functions with the same staged domain types.
     # Storage/network imports and telemetry are controlled; policy bodies are
@@ -37,6 +54,14 @@ def original_visibility():
     }
     for name in [
         'backend/database/product_memory_items.py',
+        # Upstream a22eb2a424 (2026-09-15) added the temporal-view normalize
+        # call and the ledger admission policy to the adapter's scan
+        # predicate. Exec'ing their dependency-free policy modules into this
+        # namespace keeps the oracle on the real upstream bodies without the
+        # module-level import chains (models.memories -> database._client ->
+        # google) that the Worker test environment does not carry.
+        'backend/utils/memory/belief_model.py',
+        'backend/utils/memory/ledger_history_policy.py',
         'backend/utils/memory/canonical_visibility_filter.py',
         'backend/utils/memory/device_scope_filter.py',
         'backend/utils/memory/canonical_memory_adapter.py',
@@ -46,6 +71,8 @@ def original_visibility():
             tree.body = [
                 n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_canonical_scan_item_visible'
             ]
+            tree = _StripNestedImports().visit(tree)
+            ast.fix_missing_locations(tree)
         else:
             tree.body = [n for n in tree.body if not isinstance(n, (ast.Import, ast.ImportFrom))]
         exec(compile(tree, name, 'exec', flags=__future__.annotations.compiler_flag), namespace)

@@ -759,6 +759,19 @@ families:
     target: none
     target_owner: jobs
     migration_state: retired
+  - id: x-sync-window-lock
+    source_symbols: [try_acquire_x_sync_window_lock]
+    key_patterns: ["notifications_job:x_sync_lock:{date}:{window}"]
+    legacy_features: [set-if-absent, ttl, fail-open]
+    consistency: global-single-flight
+    # Upstream (a92d9af01b, 2026-09-20) collapses the minute-level Cloud
+    # Scheduler X-connector sweep into one run per 6-hour window with this
+    # fail-open NX lock. The CF target has no such job to guard:
+    # x-connector.ts owns its own cadence (SYNC_INTERVAL_SECONDS = 6h) under a
+    # 15-minute D1 lease, so no Redis window lock has a counterpart.
+    target: none
+    target_owner: jobs
+    migration_state: retired
 direct_legacy_callers:
   # The mentor relevance gate's debounce record is cross-host authority: the
   # listen and pusher realtime paths both evaluate it, and an eligibility answer
@@ -971,6 +984,42 @@ direct_legacy_callers:
   # delivery still block the public route's qualification.
   - {
       path: backend/utils/conversations/share_email.py,
+      target: d1,
+      target_owner: api-core,
+      migration_state: blocked,
+    }
+  # Upstream MCP modernization (d95a36b586, 2026-09-24): the CIMD document
+  # cache plus its SSRF-bounded negative cache for URL-form OAuth client_ids.
+  # The auth Worker's MCP flow verifies first-party JWT claims
+  # (verifiedMcpClaims) and never fetches a client-published metadata
+  # document, so no file under deploy/cloudflare references this cache; a KV
+  # entry keyed by canonical URL with the negative-cache TTL is the
+  # architectural choice once the authorization server accepts URL-form
+  # client_ids.
+  - {
+      path: backend/database/mcp_client_metadata.py,
+      target: kv,
+      target_owner: auth,
+      migration_state: blocked,
+    }
+  # The CF MCP boundary validates access tokens as verifiedMcpClaims plus a
+  # direct D1 read of oauthConsent (activeMcpConsent), and revocation flips
+  # that same D1 row (revokeMcpOauthGrant). One authoritative store needs no
+  # positive identity cache, and revocation needs no pre-write marker because
+  # there is no second store to slip between.
+  - {
+      path: backend/database/mcp_token_cache.py,
+      target: none,
+      target_owner: auth,
+      migration_state: retired,
+    }
+  # PostHog MCP Tool Call / MCP Active telemetry: no file under
+  # deploy/cloudflare/ emits either event (PostHog is absent from the CF
+  # surface), so the once-per-uid-per-day DAU marker has no owner yet. An
+  # exact per-day claim belongs in D1 once the telemetry contract lands on the
+  # tool-execution surface (api-core mcp_routes.py behind the edge transport).
+  - {
+      path: backend/utils/mcp_analytics.py,
       target: d1,
       target_owner: api-core,
       migration_state: blocked,

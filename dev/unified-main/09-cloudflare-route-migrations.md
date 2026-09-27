@@ -10,7 +10,7 @@ acceptance includes prefixed HTTP/WS routes, protected-resource discovery, OAuth
 redirects and share/object URLs. This is independent of the route-count ledger;
 it does not retire routes or reduce the dual-target objective.
 
-CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 623 unique method/path/protocol slots: 600 have Worker owners and 23 remain blocked pending the contracts below (the 2026-09-15 upstream additions are the six newest, below). Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
+CF-1 now compares the actual FastAPI HTTP/WebSocket registry to the reviewed inventory. After the desktop/admin slots, daily-write, CSAT, calendar capture-gap lifecycle opt-out and referral implementations, the inventory has 645 unique method/path/protocol slots: 602 have Worker owners and 43 remain blocked pending the contracts below (the 2026-09-26 sync additions are the twenty newest, below). Duplicate upstream registrations of one slot are collapsed; this guard does not change upstream first-match routing policy. The stale upstream inventory entry `GET /v1/crisp/unread` is removed; the separate CF route manifest can still inventory explicitly registered CF-only extensions.
 
 `GET /v2/desktop/prompts` is implemented in API Core using `cf_desktop_prompts` and the upstream audience/spec contract, with an authenticated Edge route. The remaining families were compared with the source references below; no complete CF implementation exists. A prefix proxy or same-named storage projection is not proof of availability.
 
@@ -422,3 +422,23 @@ An upstream import added six backend slots that the CF target does not implement
 The same import retired two slots: upstream `chore(desktop-backend): remove dead Sentry feedback ingest` (#13251) deleted `POST /v1/webhooks/sentry` and `POST /v1/webhooks/sentry/poll` from the backend, so the ledger drops them. **The CF target still implements both** (`deploy/cloudflare/python/api-core/src/sentry_routes.py`, `deploy/cloudflare/workers/edge/index.ts`); they are now CF-only extensions, and either belong to the separate CF route manifest or are retired together with a product decision. Leaving them in the backend ledger would claim a backend route that no longer exists.
 
 Each of the six stays `blocked` under the completion gate until its owner lands the production success and main failure path on the CF target.
+
+<a id="cf4-upstream-route-additions-2026-09-26"></a>
+
+## CF-4: upstream route additions (2026-09-26)
+
+Owner: `edge` for the canonical streamable-HTTP MCP root and its per-path protected-resource document; `api-core` for the speaker-tag, conversation and mobile-feedback surfaces; `auth` for the local-dev token mint.
+
+The 2026-09-26 sync (1011 upstream commits) registered twenty backend slots that the CF target does not implement and retired none. They enter the ledger as `blocked` under the same rule as the 2026-09-15 additions: a shared prefix is not proof of availability, and only the completion gate above changes a classification. Upstream authority and the CF-side position:
+
+| slots | upstream authority | CF position |
+|---|---|---|
+| `GET`/`POST`/`DELETE`/`HEAD` `/v1/mcp` and `/v1/mcp/` (8) | `backend/routers/mcp_sse.py` (d95a36b586, faa50822d4, 2026-09-24/25) | Edge serves the legacy `/v1/mcp/sse` alias and proxies `/v1/mcp/**` subresources, but no file under `deploy/cloudflare/` references the canonical root |
+| `GET`/`HEAD` `/.well-known/oauth-protected-resource/v1/mcp` (2) | `backend/routers/mcp_sse.py` | Edge serves the unqualified document and the `/v1/mcp/sse` document only |
+| `GET /v1/speaker-tag-prompts`, `GET /v1/speaker-tag-prompts/clip`, `POST /v1/speaker-tag-prompts/answer`, `/dismiss`, `/shown` (5) | `backend/routers/speaker_tag_prompts.py` (4ec7cb461b, #18483) | no reference to the paths anywhere under `deploy/cloudflare/` |
+| `GET`/`PATCH` `/v1/users/voice-profile-settings` (2) | `backend/routers/speaker_tag_prompts.py` (4ec7cb461b, #18483) | no reference to the paths anywhere under `deploy/cloudflare/` |
+| `POST /v1/conversations/{conversation_id}/capture-group/separate` (1) | `backend/routers/conversations.py` (8d8984bac8, #17281) | API Core serves the conversation routes but has no capture-group separation handler |
+| `POST /v1/auth/local-dev/custom-token` (1) | `backend/routers/auth.py` (820c450f25, #14213) | the auth Worker implements `/internal/firebase/custom-token` only |
+| `POST /v1/mobile/feedback` (1) | `backend/routers/mobile_feedback.py` (8b2e2073c3, #15883) | no reference to the path anywhere under `deploy/cloudflare/` |
+
+Each of the twenty stays `blocked` under the completion gate until its owner lands the production success and main failure path on the CF target.

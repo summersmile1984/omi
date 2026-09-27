@@ -1172,8 +1172,12 @@ push success completes delivery but device sync-batch confirmation owns exported
 No default prompt, model, schema or external task data is changed by deployment.
 
 `candidate_control_routes.py` projects the unchanged upstream universal rollout
-from the same D1 generation/deletion owner used by Candidate writes. The ordinary
-projector stages `candidate_kernel_rollout.py` without changing its policy.
+from the same D1 generation/deletion owner used by Candidate writes. Upstream
+#18722 deleted `utils.task_intelligence.rollout` and moved the universal
+decision into `chat_first_eligibility`, so the ordinary projector stages
+`candidate_kernel_rollout.py` from that module's pure resolver — without its
+control-table import, which the Worker never stages — and the route performs
+the endpoint projection upstream now does inline in its own controller.
 Healthy authenticated accounts receive read/Chat-first capability and their
 current generation; unmigrated accounts use zero without creating metadata.
 Unavailable or erasing accounts retain the original off/zero/false response with

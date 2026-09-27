@@ -54,6 +54,30 @@ def page_policy():
     fn = Storage().visit(fn)
     if changes != {'iterator', 'policy'}:
         raise ValueError('upstream history page boundary changed')
+    # Upstream a22eb2a424 builds a provider_kwargs prelude (self.db_client)
+    # for its direct iterator before the loop. The staged store owns those
+    # arguments, so the loop rewrite discards the call kwargs; the prelude
+    # statements themselves would evaluate an unbound name on the first read
+    # (NameError -> route-level 503) and are dropped from the bodies they sit
+    # in. The strict check below fails loudly if upstream moves that prelude
+    # somewhere this filter does not reach.
+    def staged_statement(stmt):
+        return not any(isinstance(node, ast.Name) and node.id in {'self', 'provider_kwargs'} for node in ast.walk(stmt))
+
+    class DropProviderPrelude(ast.NodeTransformer):
+        def visit_FunctionDef(self, node):
+            node = self.generic_visit(node)
+            node.body = [stmt for stmt in node.body if staged_statement(stmt)]
+            return node
+
+        def visit_Try(self, node):
+            node = self.generic_visit(node)
+            node.body = [stmt for stmt in node.body if staged_statement(stmt)]
+            return node
+
+    fn = DropProviderPrelude().visit(fn)
+    if any(isinstance(node, ast.Name) and node.id in {'self', 'provider_kwargs'} for node in ast.walk(fn)):
+        raise ValueError('upstream history page provider boundary changed')
     fn = ast.AsyncFunctionDef(**fn.__dict__)
     ast.fix_missing_locations(fn)
     return ast.unparse(fn) + '\n'
@@ -63,8 +87,8 @@ def history_sources():
     header = (
         'from __future__ import annotations\n'
         'import copy,json,os,time\nfrom enum import Enum\nfrom dataclasses import dataclass\n'
-        'from datetime import datetime,timezone\nfrom typing import Any,Callable,Dict,Iterable,List,Mapping,Optional,Sequence,Tuple,cast\n'
-        'from fastapi import HTTPException\nfrom pydantic import BaseModel,Field,computed_field,field_validator\n'
+        'from datetime import datetime,timezone\nfrom typing import Any,Callable,Dict,Iterable,List,Literal,Mapping,Optional,Sequence,Tuple,cast\n'
+        'from fastapi import HTTPException\nfrom pydantic import AwareDatetime,BaseModel,Field,computed_field,field_validator\n'
         'from memory_kernel_item import LedgerWriteReason,MemoryItem,MemoryItemStatus,MemoryKind,MemorySubjectScope,MemoryTier,ProcessingState,SourceState,RESTRICTED_SENSITIVITY_LABELS,MAX_MEMORY_ARGUMENTS_JSON_BYTES\n'
         'from memory_kernel_domain import tier_to_layer\nPayload=Dict[str,Any]\n'
         # The wire decorates a class with @model_validator(mode='after'), so the symbol must\n'
@@ -75,7 +99,12 @@ def history_sources():
         # without expanding check_projection_names.py's third-party list.\n'
         'from pydantic import model_validator\n'
     )
-    wire = header + selected_nodes(MODELS, {'MemoryCategory', 'SubjectAttribution'})
+    # Memory.capture_context (upstream a22eb2a424, #13953) annotates the class
+    # defined beside it; pydantic resolves that annotation against this staged
+    # module's namespace on the first MemoryDB build, so the class and its
+    # Literal annotation must travel with the wire or every canonical-memory
+    # route answers 503 with PydanticUserError 'not fully defined'.
+    wire = header + selected_nodes(MODELS, {'MemoryCategory', 'SubjectAttribution', 'MemoryCaptureContext'})
     wire += schema_class('Memory', {'get_memories_as_str', 'render'})
     wire += schema_class('Evidence', {'from_source'})
     wire += schema_class('MemoryDB', {'calculate_score', 'from_memory'})

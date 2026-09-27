@@ -8,8 +8,8 @@ from fastapi.responses import JSONResponse
 from internal_auth import decode_context
 from candidate_db import account_generation
 from candidate_kernel_policy import CandidateGenerationMismatchError
-from memory_kernel_task_intelligence import TaskWorkflowControl
-from candidate_kernel_rollout import effective_task_workflow_control, resolve_task_intelligence_for_user
+from memory_kernel_task_intelligence import TaskWorkflowControl, TaskWorkflowMode
+from candidate_kernel_rollout import resolve_task_intelligence_for_user
 from fallback import record_fallback
 
 router = APIRouter()
@@ -41,7 +41,12 @@ async def get_candidate_workflow_control(request: Request):
         rollout = resolve_task_intelligence_for_user(
             uid=principal['uid'], workflow_mode=control.workflow_mode, account_generation=generation
         )
-        return effective_task_workflow_control(control, rollout).model_dump(mode='json')
+        # Upstream #18722 removed effective_task_workflow_control and performs
+        # this projection inline in the /v1/candidates/control endpoint; the
+        # Worker mirrors that endpoint with the D1 generation it already owns.
+        return control.model_copy(
+            update={"workflow_mode": TaskWorkflowMode.read, "chat_first_ui": rollout.intelligence_product_enabled}
+        ).model_dump(mode="json")
     except Exception as error:
         record_fallback(
             from_mode='task_workflow_control',

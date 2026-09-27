@@ -8,7 +8,7 @@ import json
 
 from memory_apply_intake import MODEL_COLUMNS
 from memory_apply_item import read_item
-from memory_history_wire import memory_item_to_memorydb
+from memory_history_wire import BELIEF_VIEW_FIELDS, memory_item_to_memorydb
 from memory_kernel_apply import MemoryControlState
 from memory_read_authority import HEAD, digest
 from jit_trigger_snapshot_kernel import V3TrustedAccountGenerationResult
@@ -53,9 +53,11 @@ PROJECTION = bounded_rows('id IN (SELECT value FROM json_each(?)) ORDER BY id')
 
 
 def stable_projection(rows):
-    # These three fields describe a time-dependent read, not persisted content.
+    # These fields describe a time-dependent read, not persisted content.
+    # The set is upstream's own BELIEF_VIEW_FIELDS, so a belief field added
+    # upstream cannot silently invalidate every stored receipt.
     # Return the original receipt unchanged; validate every stored field below.
-    return {row.id: row.model_dump(mode='json', exclude={'currency', 'currency_band', 'as_of'}) for row in rows}
+    return {row.id: row.model_dump(mode='json', exclude=BELIEF_VIEW_FIELDS) for row in rows}
 
 
 class LedgerSnapshotStore:

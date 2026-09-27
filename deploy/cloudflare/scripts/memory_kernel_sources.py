@@ -25,7 +25,6 @@ ROOT = Path(__file__).resolve().parents[3]
 MODULES = {
     'models.jit_trigger_feedback': 'jit_trigger_feedback_models',
     'models.jit_proactivity': 'jit_proactivity_models',
-    'utils.task_intelligence.rollout': 'candidate_kernel_rollout',
     'utils.durable_queue_policy': 'integration_queue_policy',
     'models.memory_apply': 'memory_kernel_apply',
     'models.memory_admission': 'memory_kernel_admission',
@@ -100,10 +99,23 @@ def generate(output: Path) -> None:
         + selected_nodes('backend/utils/notifications.py', {'_generate_tag', '_build_apple_reminders_sync_message'})
     )
     outputs['memory_kernel_intake.py'] = (
-        'import hashlib,uuid\nfrom enum import Enum\nfrom typing import Any, Dict\n'
+        'import hashlib,uuid\nfrom enum import Enum\nfrom typing import Any, Dict, cast\n'
         + selected_nodes('backend/database/document_ids.py', {'document_id_from_seed'})
         + selected_nodes('backend/models/memories.py', {'SubjectAttribution'})
-        + selected_nodes('backend/utils/memory/canonical_memory_adapter.py', {'_product_metadata_from_payload'})
+        + selected_nodes(
+            'backend/utils/memory/canonical_memory_adapter.py',
+            {'_product_metadata_from_payload', '_attribution_override_from_payload', '_ATTRIBUTION_OVERRIDE_KEYS'},
+        )
+    )
+    # Upstream #18722 deleted utils/task_intelligence.rollout and moved the
+    # universal decision into chat_first_eligibility. That module imports the
+    # control table at module scope, which the Worker never stages, so the
+    # projection selects the pure resolver node instead and binds the same
+    # staged task-intelligence types its body uses.
+    outputs['candidate_kernel_rollout.py'] = (
+        'from __future__ import annotations\n'
+        'from memory_kernel_task_intelligence import TaskIntelligenceRolloutDecision, TaskWorkflowMode\n\n'
+        + selected_nodes('backend/utils/task_intelligence/chat_first_eligibility.py', {'resolve_task_intelligence_for_user'})
     )
     outputs['memory_kernel_privacy.py'] = (
         'from __future__ import annotations\n'
