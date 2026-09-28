@@ -33,8 +33,9 @@ class SelectionTests(unittest.TestCase):
                     env={**os.environ, 'FORK_FULL_CHECKS': full},
                     capture_output=True,
                     text=True,
-                    check=True,
+                    check=False,
                 )
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
                 selected = {check['id'] for check in json.loads(result.stdout)['checks']}
                 if full == 'true':
                     self.assertTrue(
@@ -69,8 +70,9 @@ class SelectionTests(unittest.TestCase):
             env={**os.environ, 'FORK_FULL_CHECKS': 'true'},
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
         )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertEqual(
             {check['id'] for check in json.loads(result.stdout)['checks']},
             {'fork-macos-native-identity', 'fork-macos-native-compile'},
@@ -107,8 +109,9 @@ class SelectionTests(unittest.TestCase):
                 },
                 capture_output=True,
                 text=True,
-                check=True,
+                check=False,
             )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
             selected = {check['id'] for check in json.loads(result.stdout)['checks']}
             self.assertTrue(attestation.is_file(), 'the attestation was not written')
             payload = json.loads(attestation.read_text())
