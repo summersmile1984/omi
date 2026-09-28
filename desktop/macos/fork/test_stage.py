@@ -47,6 +47,18 @@ class NativeStageTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temporary.cleanup()
 
+    def test_brand_copy_leaves_view_exporter_code_tokens_and_matcher_identity(self):
+        # A bare ('Omi', n) pin made replace_brand_literals rewrite the whole
+        # file, so a non-Omi display name produced `import Synthetic Native
+        # CITheme` and destroyed OmiSpacing/OmiChrome identifiers -- the CI
+        # synthetic compile failed on it. The share-attribution strings are
+        # documented exclusions and must stay upstream bytes.
+        source = (self.output / "Desktop/Sources/ViewExporter.swift").read_text()
+        self.assertIn("import OmiTheme", source)
+        self.assertIn('Text("Synthetic Native")', source)
+        self.assertIn('sourceApp: "Omi Desktop"', source)
+        self.assertIn("OmiSpacing.lg", source)
+
     def test_real_staged_identity_functions_isolate_brand_storage_and_disable_updater(self):
         source = self.output / "Desktop/Sources"
         app = source / "OmiApp.swift"

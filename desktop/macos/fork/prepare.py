@@ -235,7 +235,12 @@ BRAND_COPY: dict[str, list[tuple[str, int]]] = {
         ('Next step → Ask Omi', 1),
     ],
     "Sources/ViewExporter.swift": [
-        ('Omi', 19),
+        # Bare 'Omi' here would be a whole-file rewrite: this file mixes the
+        # visible export label with import/identifier tokens (OmiTheme,
+        # OmiSpacing, OmiChrome) and the documented share-attribution
+        # exclusions, so only the visible literal is reviewed. The synthetic
+        # CI compile once broke on `import Synthetic Native CITheme`.
+        ('Text("Omi")', 1),
     ],
     "Sources/WhatsNewToast.swift": [
         ('Omi updated', 1),
