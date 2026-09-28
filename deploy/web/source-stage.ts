@@ -8,6 +8,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import type * as TsModule from "typescript";
 import {
   basename,
   dirname,
@@ -137,17 +138,22 @@ export async function stageSources(
   return applied;
 }
 
-export function rewriteMcpUrl(source: string, typescript: any): string {
+export function rewriteMcpUrl(source: string, typescript: typeof TsModule): string {
   const ts = typescript;
+  // Re-anchored for the 2026-09-26 upstream sync: the MCP UI moved out of
+  // SettingsPage into McpSection and the initializer became a hostedMcpUrl()
+  // call (upstream's Connectors rework serves /v1/mcp directly). Whitespace is
+  // normalized for the expected-text comparison; any structural upstream edit
+  // still fails closed for review.
   const file = ts.createSourceFile(
-    "SettingsPage.tsx",
+    "McpSection.tsx",
     source,
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.TSX
   );
-  const candidates: any[] = [];
-  const visit = (node: any) => {
+  const candidates: TsModule.VariableDeclaration[] = [];
+  const visit = (node: TsModule.Node) => {
     if (
       ts.isVariableDeclaration(node) &&
       node.name.getText(file) === "mcpServerUrl"
@@ -163,9 +169,11 @@ export function rewriteMcpUrl(source: string, typescript: any): string {
   }
   const initializer = candidates[0].initializer;
   // A changed upstream expression must be reviewed before this targeted build overlay applies.
+  // Compared with whitespace stripped so formatting is free but every token change fails.
   const expected =
-    "`${process.env.NEXT_PUBLIC_API_BASE_URL || 'https://api.omi.me'}/v1/mcp/sse`";
-  if (initializer.getText(file) !== expected)
+    "hostedMcpUrl(process.env.NEXT_PUBLIC_API_BASE_URL||'https://api.omi.me',)";
+  const actual = initializer.getText(file).replace(/\s+/g, "");
+  if (actual !== expected)
     throw new Error("Settings MCP source contract changed");
   const replaced =
     source.slice(0, initializer.getStart(file)) +
@@ -173,7 +181,7 @@ export function rewriteMcpUrl(source: string, typescript: any): string {
     source.slice(initializer.end);
   const directiveEnd =
     file.statements.find(
-      (statement: any) =>
+      (statement: TsModule.Statement) =>
         ts.isExpressionStatement(statement) &&
         ts.isStringLiteral(statement.expression) &&
         statement.expression.text === "use client"
@@ -186,7 +194,7 @@ export function rewriteMcpUrl(source: string, typescript: any): string {
 }
 
 export async function applyMcpOverlay(stage: string, webRoot: string) {
-  const path = join(stage, "src/components/settings/SettingsPage.tsx");
+  const path = join(stage, "src/components/settings/McpSection.tsx");
   const typescript = createRequire(join(webRoot, "package.json"))("typescript");
   await writeFile(
     path,
@@ -198,28 +206,22 @@ export function rewriteBrandMetadata(
   source: string,
   productName: string,
   tagline: string,
-  ts: any
+  ts: typeof TsModule
 ): string {
   if (!productName?.trim() || typeof tagline !== "string")
     throw new Error("Web metadata needs a product name and optional tagline");
   const description = tagline.trim()
     ? `${productName} - ${tagline}`
     : productName;
-  const required = new Map([
-    ["Sign In to Omi", `Sign In to ${productName}`],
-    ["Omi - Your AI Companion", description],
-    ["Omi - Your AI companion that turns thoughts into action.", description],
-  ]);
-  const presentation = new Map([
-    ...required,
-    ...[
-      "Explore and install AI-powered apps for Omi. Enhance your experience with productivity tools, conversation insights, and more.",
-      "Omi App Store - Discover AI-Powered Apps",
-      "Omi App Store",
-      " Apps - Omi App Store",
-      " apps for your Omi.",
-      " Available on Omi, the AI-powered wearable platform.",
-    ].map((text) => [text, text.replaceAll("Omi", productName)] as const),
+  // Reviewed 2026-09-27 against the brand-aware copy-moonshine overlay: the
+  // sign-in title, page description and marketplace copy are composed from
+  // brand.* at generation time, so the only brand literals left in the
+  // generated server.ts are the two NEXT_PUBLIC_BRAND_APP_TITLE fallback
+  // defaults. Bake both to the reviewed description so a deployment that
+  // omits the runtime brand env still cannot serve Omi text. The reviewed
+  // count (2) keeps the transform fail-closed if the template regresses.
+  const required = new Map<string, { value: string; count: number }>([
+    ["Omi - Your AI Companion", { value: description, count: 2 }],
   ]);
   const file = ts.createSourceFile(
     "server.ts",
@@ -230,20 +232,23 @@ export function rewriteBrandMetadata(
   );
   const edits: { start: number; end: number; value: string }[] = [];
   const counts = new Map<string, number>();
-  const visit = (node: any) => {
-    if (ts.isStringLiteral(node) && presentation.has(node.text)) {
-      counts.set(node.text, (counts.get(node.text) ?? 0) + 1);
-      edits.push({
-        start: node.getStart(file),
-        end: node.end,
-        value: JSON.stringify(presentation.get(node.text)),
-      });
+  const visit = (node: TsModule.Node) => {
+    if (ts.isStringLiteral(node)) {
+      const spec = required.get(node.text);
+      if (spec) {
+        counts.set(node.text, (counts.get(node.text) ?? 0) + 1);
+        edits.push({
+          start: node.getStart(file),
+          end: node.end,
+          value: JSON.stringify(spec.value),
+        });
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(file);
-  for (const text of required.keys())
-    if (counts.get(text) !== 1)
+  for (const [text, spec] of required)
+    if (counts.get(text) !== spec.count)
       throw new Error("Generated Web metadata owner changed");
   for (const edit of edits.sort((a, b) => b.start - a.start))
     source = source.slice(0, edit.start) + edit.value + source.slice(edit.end);

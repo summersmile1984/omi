@@ -78,5 +78,31 @@ def replace_literal(path: Path, old: str, new: str, expected: int = 1) -> None:
     path.write_text(source.replace(old, new))
 
 
+def replace_brand_literals(path: Path, entries: list[tuple[str, int]], display: str) -> None:
+    """Substitute `display` for "Omi" inside each reviewed literal, one pass.
+
+    All raw occurrence counts are validated against the reviewed pins first;
+    the single regex pass (longest alternative first) means overlapping
+    literals such as "Close Omi Chat" inside "Close Omi Chat (Esc)" are each
+    rewritten exactly once, at the longest match. Byte-identical no-op for
+    the omi-upstream brand.
+    """
+    with open(path, encoding="utf-8", newline="") as handle:
+        source = handle.read()
+    for literal, expected in entries:
+        if source.count(literal) != expected:
+            raise OverlayError(
+                f"Brand copy owner changed in {path.name}: {literal!r} (expected {expected})"
+            )
+    if display == "Omi":
+        return
+    pattern = re.compile(
+        "|".join(sorted((re.escape(literal) for literal, _ in entries), key=len, reverse=True))
+    )
+    rewritten = pattern.sub(lambda match: match.group(0).replace("Omi", display), source)
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(rewritten)
+
+
 def load_owners() -> dict[str, str]:
     return json.loads((Path(__file__).parent / "source-owners.json").read_text())

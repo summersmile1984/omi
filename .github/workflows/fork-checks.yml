@@ -259,12 +259,13 @@ jobs:
       # event type (a same-repository pull request can read repository secrets):
       #
       #   - Hosted operator AI: an OpenAI-compatible vendor (openrouter /
-      #     siliconflow / cloudflare-gateway) supplies LLM / ASR / TTS over
-      #     the wire and one bearer the brand manifest already declared; CI
-      #     provisions the pinned local BGE-M3 embedding store because none of
-      #     them owns that model. A native local text model is refused at
-      #     self-host admission (backend/fork/bootstrap.py), so this is the
-      #     only runnable fixture shape.
+      #     siliconflow / cloudflare-gateway) supplies LLM / ASR / TTS / EMBEDDING
+      #     over the wire through one bearer the brand manifest already declared.
+      #     The fixture's compose graph (deploy/self-host/model_services.py::
+      #     specialize) drops the local BGE-M3 embedding service for these vendors
+      #     so the server runs no AI compute at all. A native local text model
+      #     is refused at self-host admission (backend/fork/bootstrap.py), so this
+      #     is the only runnable hosted fixture shape.
       #
       #   - Skip: no operator secret is readable (a fork pull request, or a
       #     push without repository secrets). The fixture cannot start without
@@ -301,16 +302,11 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # Hosted shape only: the fixture binds the pinned local BGE-M3 embedding
-      # store (no hosted vendor owns that model), and a run with no operator
-      # secret runs no fixture at all. There is no native shape to provision
-      # Qwen / SenseVoice / Kokoro for -- a local text model is refused at
-      # self-host admission.
-      - name: Provision Server embedding store
-        if: steps.server_runtime.outputs.shape == 'hosted'
-        run: |
-          python3 deploy/self-host/prepare-model.py --kind embedding --output "$RUNNER_TEMP/selfhost-models/embedding"
-
+      # Hosted shape only: the brand-declared operator AI owns every capability
+      # (LLM / ASR / TTS / embedding) over the wire and the server runs no AI
+      # compute, so no local model store needs provisioning. There is no native
+      # shape to provision Qwen / SenseVoice / Kokoro for -- a local text model
+      # is refused at self-host admission.
       - name: Provision hosted operator AI binding
         if: steps.server_runtime.outputs.shape == 'hosted'
         run: |
@@ -337,7 +333,6 @@ jobs:
           # (fork-selfhost-product-core reported "inspect command-09.log" for days
           # with nothing diagnosable anywhere).
           SELF_HOST_CI_REPORT_DIR: ${{ runner.temp }}/selfhost-fixture-report
-          SELF_HOST_CI_EMBEDDING_STORE: ${{ runner.temp }}/selfhost-models/embedding
           SERVER_RUNTIME_SHAPE: ${{ steps.server_runtime.outputs.shape }}
           SERVER_RUNTIME_PROVIDER: ${{ steps.server_runtime.outputs.provider }}
           SERVER_RUNTIME_SECRET: ${{ steps.server_runtime.outputs.secret }}
@@ -345,6 +340,8 @@ jobs:
           if [ "$SERVER_RUNTIME_SHAPE" = "hosted" ]; then
             export SELF_HOST_CI_OPERATOR_SECRET_FILE="$SERVER_RUNTIME_SECRET"
             export SELF_HOST_CI_OPERATOR_PROVIDER="$SERVER_RUNTIME_PROVIDER"
+            # Hosted vendors own embeddings; the fixture does not need a local
+            # BGE-M3 store and product.sh will refuse one if passed.
           elif [ "$SERVER_RUNTIME_SHAPE" = "skip" ]; then
             export FORK_SKIP_CHECKS=fork-selfhost-product-core
           fi

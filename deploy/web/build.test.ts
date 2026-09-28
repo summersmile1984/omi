@@ -289,35 +289,50 @@ describe("the shared Web build boundary", () => {
     const ts = createRequire(
       resolve(import.meta.dir, "../../web/app/package.json")
     )("typescript");
+    // Current shape of the brand-aware copy-moonshine overlay template: the
+    // sign-in title and description are composed from brand.* at generation;
+    // only the two NEXT_PUBLIC_BRAND_APP_TITLE fallbacks remain as literals.
     const source = `const api = 'https://api.omi.me';
-      const title = pathname === '/login' ? 'Sign In to Omi' : 'Omi - Your AI Companion';
-      const description = 'Omi - Your AI companion that turns thoughts into action.';
-      return { api, title, description, app: app.description + ' Available on Omi, the AI-powered wearable platform.' };`;
+      appTitle: (process.env.NEXT_PUBLIC_BRAND_APP_TITLE || 'Omi - Your AI Companion').trim() || 'Omi - Your AI Companion';
+      const title = pathname === '/login' ? 'Sign In to ' + brand.displayName : brand.appTitle;
+      return { api, title, app: app.description + ' Available on Omi, the AI-powered wearable platform.' };`;
     const rewritten = rewriteBrandMetadata(
       source,
       'Harbor "<&',
       "懂你的随身AI伴侣",
       ts
     );
-    const render = new Function("pathname", "app", rewritten);
-    expect(render("/login", { description: "My Omi notes" })).toEqual({
+    const render = new Function("pathname", "brand", "app", rewritten);
+    expect(
+      render("/login", { displayName: "Harbor" }, { description: "My Omi notes" })
+    ).toEqual({
       api: "https://api.omi.me",
-      title: 'Sign In to Harbor "<&',
-      description: 'Harbor "<& - 懂你的随身AI伴侣',
-      app: 'My Omi notes Available on Harbor "<&, the AI-powered wearable platform.',
+      title: "Sign In to Harbor",
+      app: "My Omi notes Available on Omi, the AI-powered wearable platform.",
     });
-    expect(render("/home", { description: "" }).title).toBe(
-      'Harbor "<& - 懂你的随身AI伴侣'
-    );
+    // Both fallback literals are baked to the reviewed brand description
+    // (JSON-escaped in the emitted source).
+    const baked = JSON.stringify('Harbor "<& - 懂你的随身AI伴侣');
+    expect(rewritten.split(baked).length - 1).toBe(2);
+    expect(rewritten).not.toContain("Omi - Your AI Companion");
+    expect(rewritten).toContain("https://api.omi.me");
+    // The composed brand.* title/description lines are not rewritten.
+    expect(rewritten).toContain("'Sign In to ' + brand.displayName");
     const legacy = new Function(
       "pathname",
+      "brand",
       "app",
       rewriteBrandMetadata(source, "Harbor", "", ts)
     );
-    expect(legacy("/home", { description: "" }).description).toBe("Harbor");
+    expect(
+      legacy("/home", { displayName: "Harbor" }, { description: "" }).app
+    ).toContain("Available on Omi");
     expect(() =>
       rewriteBrandMetadata(
-        source.replace("Sign In to Omi", "New login title"),
+        source.replace(
+          "|| 'Omi - Your AI Companion'",
+          "|| 'Something Else'"
+        ),
         "Harbor",
         "Companion",
         ts
@@ -497,7 +512,7 @@ describe("the shared Web build boundary", () => {
       resolve(import.meta.dir, "../../web/app/package.json")
     )("typescript");
     const source =
-      "'use client';\nexport function Page() { const mcpServerUrl = `${process.env.NEXT_PUBLIC_API_BASE_URL || 'https://api.omi.me'}/v1/mcp/sse`; return mcpServerUrl; }";
+      "'use client';\nexport function Page() { const mcpServerUrl = hostedMcpUrl(process.env.NEXT_PUBLIC_API_BASE_URL || 'https://api.omi.me',); return mcpServerUrl; }";
     const output = rewriteMcpUrl(source, ts);
     expect(output.startsWith("'use client';\nimport")).toBe(true);
     expect(output).toContain("const mcpServerUrl = profileMcpServerUrl()");

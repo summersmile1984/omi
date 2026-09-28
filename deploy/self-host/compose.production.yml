@@ -2,7 +2,10 @@ name: omi-self-host
 
 services:
   postgres:
-    image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    # SELF_HOST_STAGE=local shares this image as the vector store and ships
+    # the pgvector extension; the default below is the unmodified production
+    # pin. A local fixture may set POSTGRES_IMAGE to pgvector/pgvector:pg16.
+    image: ${POSTGRES_IMAGE:-postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c}
     restart: unless-stopped
     environment:
       - POSTGRES_USER=${POSTGRES_USER:?POSTGRES_USER is required}
@@ -206,6 +209,36 @@ services:
       qdrant:
         condition: service_healthy
 
+  # The local-stage vector store is pgvector on the shared PostgreSQL
+  # instance (backend/fork/bootstrap.py). Runs once, before the backend
+  # reads any collection. The check-config source closure picks it up
+  # alongside qdrant-migrate; the prod default keeps VECTOR_STORE_PROVIDER
+  # =qdrant so this service is started but does nothing for qdrant.
+  pgvector-migrate:
+    platform: ${BACKEND_PLATFORM:?BACKEND_PLATFORM is required}
+    build:
+      context: ../..
+      dockerfile: deploy/self-host/Dockerfile
+      args:
+        UPSTREAM_BACKEND_IMAGE: ${BACKEND_RUNTIME_IMAGE:?BACKEND_RUNTIME_IMAGE is required}
+        BRAND_MANIFEST: ${SELF_HOST_BRAND_MANIFEST:?SELF_HOST_BRAND_MANIFEST is required}
+        DEPLOYMENT_STAGE: ${SELF_HOST_STAGE:-production}
+        OMI_SOURCE_GIT_COMMIT: ${OMI_SOURCE_GIT_COMMIT:-unattributed}
+        OMI_SOURCE_GIT_TREE: ${OMI_SOURCE_GIT_TREE:-unattributed}
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    restart: "no"
+    command: ["python", "-m", "fork.vector_pg", "migrate"]
+    environment:
+      - OMI_DEPLOYMENT_PROFILE=self_hosted.${SELF_HOST_STAGE:-production}
+      - VECTOR_STORE_PROVIDER=${VECTOR_STORE_PROVIDER:-qdrant}
+      - PGVECTOR_COLLECTION_PREFIX=${PGVECTOR_COLLECTION_PREFIX:?PGVECTOR_COLLECTION_PREFIX is required}
+      - FIRESTORE_PG_DSN=postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      firestore-pg-migrate:
+        condition: service_completed_successfully
+
   auth-server:
     command: ["node", "self-host-runtime.mjs", "serve"]
     build:
@@ -326,7 +359,8 @@ services:
       - VECTOR_PROJECTION_SCHEMA_VERSION=${VECTOR_PROJECTION_SCHEMA_VERSION:?VECTOR_PROJECTION_SCHEMA_VERSION is required}
       - VECTOR_PROJECTION_DELETE_VERSIONS=${VECTOR_PROJECTION_DELETE_VERSIONS:?VECTOR_PROJECTION_DELETE_VERSIONS is required}
       - VECTOR_PROJECTION_REQUIRED_NAMESPACES=${VECTOR_PROJECTION_REQUIRED_NAMESPACES:?VECTOR_PROJECTION_REQUIRED_NAMESPACES is required}
-      - VECTOR_STORE_PROVIDER=qdrant
+      - VECTOR_STORE_PROVIDER=${VECTOR_STORE_PROVIDER:-qdrant}
+      - PGVECTOR_COLLECTION_PREFIX=${PGVECTOR_COLLECTION_PREFIX:-}
       - MEMORY_KEYWORD_INDEX_PROVIDER=typesense
       - CONVERSATION_KEYWORD_INDEX_PROVIDER=typesense
       - TYPESENSE_HOST=typesense
@@ -468,7 +502,8 @@ services:
       - REDIS_DB_HOST=redis
       - REDIS_DB_PORT=6379
       - REDIS_DB_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
-      - VECTOR_STORE_PROVIDER=qdrant
+      - VECTOR_STORE_PROVIDER=${VECTOR_STORE_PROVIDER:-qdrant}
+      - PGVECTOR_COLLECTION_PREFIX=${PGVECTOR_COLLECTION_PREFIX:-}
       - VECTOR_PROJECTION_MODE=${VECTOR_PROJECTION_MODE:?VECTOR_PROJECTION_MODE is required}
       - VECTOR_PROJECTION_ACTIVE_VERSION=${VECTOR_PROJECTION_ACTIVE_VERSION:?VECTOR_PROJECTION_ACTIVE_VERSION is required}
       - VECTOR_PROJECTION_TARGET_VERSION=${VECTOR_PROJECTION_TARGET_VERSION-}

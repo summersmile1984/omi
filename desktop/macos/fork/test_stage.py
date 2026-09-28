@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 from build import install_brand_package_resources, local_info_plist
 from ci_build import TARGETS, build_matrix, synthetic_manifest
-from prepare import AUTH_REPLACEMENTS, ROOT, application_identity, stage
-from swift_overlay import OverlayError, load_owners, rewrite_functions
+from prepare import AUTH_REPLACEMENTS, BRAND_COPY, ROOT, application_identity, stage
+from swift_overlay import OverlayError, load_owners, replace_brand_literals, rewrite_functions
 from render import ProfileError
 from release import command, dependencies, normalize_resource_bundle, runtime_code, signing_details, vendor_dependencies
 from swift_overlay import declarations
@@ -46,6 +46,18 @@ class NativeStageTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.temporary.cleanup()
+
+    def test_brand_copy_leaves_view_exporter_code_tokens_and_matcher_identity(self):
+        # A bare ('Omi', n) pin made replace_brand_literals rewrite the whole
+        # file, so a non-Omi display name produced `import Synthetic Native
+        # CITheme` and destroyed OmiSpacing/OmiChrome identifiers -- the CI
+        # synthetic compile failed on it. The share-attribution strings are
+        # documented exclusions and must stay upstream bytes.
+        source = (self.output / "Desktop/Sources/ViewExporter.swift").read_text()
+        self.assertIn("import OmiTheme", source)
+        self.assertIn('Text("Synthetic Native")', source)
+        self.assertIn('sourceApp: "Omi Desktop"', source)
+        self.assertIn("OmiSpacing.lg", source)
 
     def test_real_staged_identity_functions_isolate_brand_storage_and_disable_updater(self):
         source = self.output / "Desktop/Sources"
@@ -570,5 +582,70 @@ class PostHogManager {
             rewrite_functions(changed, {"configure()": AUTH_REPLACEMENTS["configure()"]}, load_owners())
 
 
+
+class BrandCopyContractTests(unittest.TestCase):
+    """Reviewed brand-copy literals: upstream-brand identity and fail-closed pins."""
+
+    def _scratch(self, rel: str) -> Path:
+        root = Path(tempfile.mkdtemp(prefix="brand-copy-"))
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / "desktop/macos/Desktop" / rel, target)
+        return target
+
+    def test_upstream_brand_display_keeps_every_reviewed_literal_byte_identical(self):
+        # The omi-upstream stage substitutes display "Omi" for "Omi": the helper
+        # returns before writing, so every reviewed target stays untouched.
+        for rel, entries in BRAND_COPY.items():
+            with self.subTest(path=rel):
+                target = self._scratch(rel)
+                before = target.read_bytes()
+                replace_brand_literals(target, entries, "Omi")
+                self.assertEqual(target.read_bytes(), before, rel)
+
+    def test_brand_copy_fails_closed_when_upstream_moves_an_occurrence(self):
+        rel, entries = next(iter(BRAND_COPY.items()))
+        literal = entries[0][0]
+        target = self._scratch(rel)
+        target.write_text(
+            target.read_text(encoding="utf-8").replace(literal, "Rewritten Upstream Copy", 1),
+            encoding="utf-8",
+        )
+        with self.assertRaises(OverlayError):
+            replace_brand_literals(target, entries, "Eddy")
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class BrandCopyContractTests(unittest.TestCase):
+    """Reviewed brand-copy literals: upstream-brand identity and fail-closed pins."""
+
+    def _scratch(self, rel: str) -> Path:
+        root = Path(tempfile.mkdtemp(prefix="brand-copy-"))
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / "desktop/macos/Desktop" / rel, target)
+        return target
+
+    def test_upstream_brand_display_keeps_every_reviewed_literal_byte_identical(self):
+        # The omi-upstream stage substitutes display "Omi" for "Omi": the helper
+        # returns before writing, so every reviewed target stays untouched.
+        for rel, entries in BRAND_COPY.items():
+            with self.subTest(path=rel):
+                target = self._scratch(rel)
+                before = target.read_bytes()
+                replace_brand_literals(target, entries, "Omi")
+                self.assertEqual(target.read_bytes(), before, rel)
+
+    def test_brand_copy_fails_closed_when_upstream_moves_an_occurrence(self):
+        rel, entries = next(iter(BRAND_COPY.items()))
+        literal = entries[0][0]
+        target = self._scratch(rel)
+        target.write_text(
+            target.read_text(encoding="utf-8").replace(literal, "Rewritten Upstream Copy", 1),
+            encoding="utf-8",
+        )
+        with self.assertRaises(OverlayError):
+            replace_brand_literals(target, entries, "Eddy")

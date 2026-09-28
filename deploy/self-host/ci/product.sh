@@ -12,23 +12,38 @@ args=(--output "$REPORT/server" --brand-id core-server-fixture --port "${SELF_HO
 if [ -n "${SELF_HOST_CI_RUNTIME_IMAGE:-}" ]; then
   args+=(--runtime-image "$SELF_HOST_CI_RUNTIME_IMAGE")
 fi
-args+=(--embedding-store "${SELF_HOST_CI_EMBEDDING_STORE:?prepare the BGE-M3 model store first}")
+# A hosted operator AI (openrouter / siliconflow / cloudflare-gateway) owns
+# embeddings over the wire, so the local BGE-M3 store is not provisioned.
+# MiMo keeps the local embedding service. Embedding stores are unused for
+# the hosted shape, mandatory for MiMo; the Python product.py enforces the
+# pairing once the secret+provider pair is known.
+case "${SELF_HOST_CI_OPERATOR_PROVIDER:-}" in
+  openrouter|siliconflow|cloudflare-gateway) hosted=1 ;;
+  *) hosted=0 ;;
+esac
 if [ -n "${SELF_HOST_CI_MIMO_SECRET_FILE:-}" ]; then
   if [ -n "${SELF_HOST_CI_LLM_STORE:-}${SELF_HOST_CI_SPEECH_STORE:-}" ]; then
     echo 'MiMo requires only the embedding store; do not select native LLM/speech stores' >&2
     exit 2
   fi
-  args+=(--mimo-secret-file "$SELF_HOST_CI_MIMO_SECRET_FILE")
+  args+=(--embedding-store "${SELF_HOST_CI_EMBEDDING_STORE:?MiMo requires the BGE-M3 model store}"
+    --mimo-secret-file "$SELF_HOST_CI_MIMO_SECRET_FILE")
 elif [ -n "${SELF_HOST_CI_OPERATOR_SECRET_FILE:-}" ]; then
-  # A hosted operator AI (openrouter / siliconflow / cloudflare-gateway / mimo-cn)
-  # replaces the native LLM and speech stores. The brand manifest declares which
-  # provider the stage selects; the secret file carries that provider's bearer.
+  # A hosted operator AI replaces the native LLM, speech and embedding
+  # stores. The brand manifest declares which provider the stage selects;
+  # the secret file carries that provider's bearer.
   if [ -n "${SELF_HOST_CI_LLM_STORE:-}${SELF_HOST_CI_SPEECH_STORE:-}" ]; then
     echo 'Operator AI requires only the embedding store; do not select native LLM/speech stores' >&2
     exit 2
   fi
   if [ -z "${SELF_HOST_CI_OPERATOR_PROVIDER:-}" ]; then
     echo 'SELF_HOST_CI_OPERATOR_PROVIDER is required alongside SELF_HOST_CI_OPERATOR_SECRET_FILE' >&2
+    exit 2
+  fi
+  if [ "$hosted" -eq 0 ]; then
+    args+=(--embedding-store "${SELF_HOST_CI_EMBEDDING_STORE:?MiMo requires the BGE-M3 model store}")
+  elif [ -n "${SELF_HOST_CI_EMBEDDING_STORE:-}" ]; then
+    echo 'A hosted operator AI owns embeddings; do not provision SELF_HOST_CI_EMBEDDING_STORE' >&2
     exit 2
   fi
   args+=(--operator-secret-file "$SELF_HOST_CI_OPERATOR_SECRET_FILE"

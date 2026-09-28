@@ -49,8 +49,10 @@ DECLARED_SEAMS = frozenset({
 BRAND_GLOBS: tuple[str, ...] = (
     "brand/",
     "scripts/brand/",
+    "scripts/brand/generators/",
     "scripts/profiles/",
     "deploy/profiles/",
+    "deploy/web/",
     "backend/fork/firmware.py",
     "backend/fork/firmware_brand.generated.json",
     "backend/fork/brand_transport.py",
@@ -61,7 +63,9 @@ BRAND_GLOBS: tuple[str, ...] = (
     "app/fork/tests/",
     "app/lib/flavors.brand.dart",
     "app/lib/flavors.dart",
+    "desktop/macos/fork/",
     "desktop/windows/fork/",
+    "web/app/fork/",
     "omi/firmware/fork/",
 )
 
@@ -83,7 +87,8 @@ ENDORSED_PATHS: frozenset[str] = frozenset({
 # is allowed.
 META_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^brand/_schema/"),
-    re.compile(r"^brand/omi-upstream/manifest\.yaml$"),
+    re.compile(r"^brand/(?:omi-upstream|eddy)/manifest\.yaml$"),
+    re.compile(r"^brand/(?:omi-upstream|eddy)/assets/"),
     re.compile(r"^brand/_allow\.yaml$"),
     re.compile(r"^scripts/brand/test_[^/]+\.py$"),
     re.compile(r"^scripts/brand/schema_validate\.py$"),
@@ -91,6 +96,7 @@ META_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^scripts/brand/yaml_lite\.py$"),
     re.compile(r"^scripts/brand/check\.py$"),
     re.compile(r"^scripts/brand/apply\.py$"),
+    re.compile(r"^scripts/brand/generators/"),
     re.compile(r"^scripts/brand/lexicon\.yaml$"),
     re.compile(r"^scripts/profiles/check_tables\.py$"),
     re.compile(r"^scripts/profiles/test_profiles\.py$"),
@@ -118,6 +124,14 @@ META_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^desktop/windows/fork/assets-stage\.mjs$"),
     re.compile(r"^desktop/windows/fork/source-stage\.mjs$"),
     re.compile(r"^desktop/windows/fork/source-owners\.json$"),
+    # Pattern A: desktop/macos prepare + shim scripts (declarative config generators).
+    re.compile(r"^desktop/macos/fork/"),
+    # Pattern D: web/app prepare + shim scripts (vite resolve.alias surface).
+    re.compile(r"^web/app/fork/"),
+    # Pattern D adjunct: deploy/web is the Cloudflare renderer's fork-owned
+    # overlay root; changes here alter what gets rendered into the deploy
+    # directory and never edit upstream Cloudflare config files.
+    re.compile(r"^deploy/web/"),
     re.compile(r"^backend/fork/bootstrap\.py$"),
     re.compile(r"^backend/fork/registry\.py$"),
     re.compile(r"^backend/fork/main\.py$"),

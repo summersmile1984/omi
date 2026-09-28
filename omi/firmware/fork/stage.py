@@ -20,6 +20,11 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+GENERATORS_DIR = ROOT / "scripts/brand/generators"
+if str(GENERATORS_DIR) not in sys.path:
+    sys.path.insert(0, str(GENERATORS_DIR))
+import firmware_validate as _validate  # noqa: E402
+
 DEFAULT_CONFIG = ROOT / "backend/fork/firmware_brand.generated.json"
 SOURCE = ROOT / "omi/firmware/omi"
 NFC_PATH = Path("src/lib/core/nfc.c")
@@ -43,48 +48,21 @@ def load_config(path: Path) -> dict:
         config = json.loads(raw)
     except (OSError, ValueError) as error:
         raise StageError(f"cannot load generated firmware config {path}: {error}") from error
-    _exact_keys(config, {"schema_version", "brand_id", "build", "release"}, "firmware config")
-    if config["schema_version"] != 1 or not isinstance(config["brand_id"], str):
-        raise StageError("unsupported firmware config identity")
-    build = _exact_keys(
-        config["build"],
-        {
-            "ble_name",
-            "ble_name_devkit",
-            "dis_manufacturer",
-            "dis_model_cv1",
-            "nfc_pair_url",
-            "service_uuid_base",
-            "mcuboot_signing_key",
-        },
-        "firmware build identity",
-    )
-    release = _exact_keys(
-        config["release"],
-        {
-            "schema_version",
-            "brand_id",
-            "device_model",
-            "device_model_aliases",
-            "release_tag_prefix",
-            "release_asset_prefix",
-            "github_releases_url",
-        },
-        "firmware release policy",
-    )
-    if release["schema_version"] != 1 or release["brand_id"] != config["brand_id"]:
-        raise StageError("firmware release policy belongs to another brand")
-    if build["dis_model_cv1"] != release["device_model"]:
-        raise StageError("firmware build model and release model differ")
-    if not isinstance(build["nfc_pair_url"], str) or build["nfc_pair_url"].count("%s") != 1:
-        raise StageError("firmware NFC pairing URL needs exactly one device-id placeholder")
-    if len(build["nfc_pair_url"].replace("%s", "ABC123")) >= 64:
-        raise StageError("firmware NFC pairing URL exceeds the CV1 URI buffer")
-    for name in ("ble_name", "dis_manufacturer", "dis_model_cv1"):
-        value = build[name]
-        if not isinstance(value, str) or not value or any(ord(char) < 32 or char in '\\\"' for char in value):
-            raise StageError(f"firmware build identity {name} is unsafe")
-    return config
+    # Shared validator enforces the same field-by-field constraints as the
+    # producer (``scripts/brand/generators/firmware.py``); ``strict=False`` keeps
+    # the historical stage-side check on kconfig strings (control chars +
+    # backslash + quote) so the looser producer rule cannot silently tighten.
+    try:
+        return _validate.validate_generated_config(config, strict=False)
+    except _validate.FirmwareValidationError as error:
+        # Translate the shared error message to the stage-side vocabulary so
+        # existing log consumers keep seeing the messages they parse.
+        message = str(error)
+        if "nfc_pair_url" in message and "placeholder" in message:
+            raise StageError("firmware NFC pairing URL needs exactly one device-id placeholder") from error
+        if "nfc_pair_url" in message and "URI buffer" in message:
+            raise StageError("firmware NFC pairing URL exceeds the CV1 URI buffer") from error
+        raise StageError(message) from error
 
 
 def _replace_kconfig(text: str, name: str, value: str) -> str:

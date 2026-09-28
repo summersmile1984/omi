@@ -3,7 +3,10 @@
   "compilerOptions": {
     "incremental": false,
     "types": ["bun"],
-    "typeRoots": ["../../web/app/node_modules/@types"]
+    "typeRoots": ["../../web/app/node_modules/@types"],
+    "paths": {
+      "typescript": ["../../web/app/node_modules/typescript"]
+    }
   },
   "include": ["*.ts"],
   "exclude": []

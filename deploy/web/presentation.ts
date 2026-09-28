@@ -26,6 +26,7 @@ export const presentationFiles = [
   "src/components/marketplace/AppList.tsx",
   "src/components/marketplace/DeveloperBanner.tsx",
   "src/components/settings/SettingsPage.tsx",
+  "src/components/settings/McpSection.tsx",
   "src/components/settings/PlansSheet.tsx",
   "src/components/ui/BetaWelcomeModal.tsx",
   "src/components/ui/BetaRibbon.tsx",

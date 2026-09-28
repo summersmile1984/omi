@@ -13,7 +13,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'backend'))
 sys.path.insert(0, str(ROOT / 'scripts/profiles'))
-from fork.model_contract import validate, validate_digest, validate_llm
+from fork.model_contract import validate, validate_digest
 from fork.model_store import check
 from render import resolve
 
@@ -76,11 +76,11 @@ def provision(output, contract):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--kind', choices=('embedding', 'llm'), required=True)
+    parser.add_argument('--kind', choices=('embedding',), required=True)
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     row = resolve('self_hosted', stage='local')['profiles']['self_hosted.local']
-    contract = (validate if args.kind == 'embedding' else validate_llm)(row.get(args.kind))
+    contract = validate(row.get(args.kind))
     if contract is None:
         parser.error('the selected model capability is disabled')
     print(json.dumps(provision(args.output.resolve(), contract)))
