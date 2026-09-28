@@ -14,6 +14,22 @@ from prepare_release import ROOT, build_plan, prepare, sha256
 
 
 class SelectionTests(unittest.TestCase):
+    def selector_env(self, **overrides):
+        """The complete-lane probes own both FORK_* switches.
+
+        The CI workflow exports FORK_SKIP_CHECKS inside the manifest step when it
+        substitutes fake inference; a child that inherits it while asking for
+        FORK_FULL_CHECKS trips the conflict guard. The sibling fan-out tests
+        already strip both keys the same way.
+        """
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in ('FORK_FULL_CHECKS', 'FORK_SKIP_CHECKS')
+        }
+        environment.update(overrides)
+        return environment
+
     def test_release_selects_product_contracts_even_without_a_diff(self):
         for full in ('true', 'false'):
             with self.subTest(full=full):
@@ -30,7 +46,7 @@ class SelectionTests(unittest.TestCase):
                         '--output',
                         'json',
                     ],
-                    env={**os.environ, 'FORK_FULL_CHECKS': full},
+                    env=self.selector_env(FORK_FULL_CHECKS=full),
                     capture_output=True,
                     text=True,
                     check=False,
@@ -67,7 +83,7 @@ class SelectionTests(unittest.TestCase):
                 '--output',
                 'json',
             ],
-            env={**os.environ, 'FORK_FULL_CHECKS': 'true'},
+            env=self.selector_env(FORK_FULL_CHECKS='true'),
             capture_output=True,
             text=True,
             check=False,
@@ -99,14 +115,13 @@ class SelectionTests(unittest.TestCase):
                     '--output',
                     'json',
                 ],
-                env={
-                    **os.environ,
-                    'FORK_FULL_CHECKS': 'true',
-                    'FORK_CI_ATTESTATION': str(attestation),
-                    'GITHUB_RUN_ID': '4242',
-                    'GITHUB_RUN_ATTEMPT': '3',
-                    'GITHUB_SHA': 'a' * 40,
-                },
+                env=self.selector_env(
+                    FORK_FULL_CHECKS='true',
+                    FORK_CI_ATTESTATION=str(attestation),
+                    GITHUB_RUN_ID='4242',
+                    GITHUB_RUN_ATTEMPT='3',
+                    GITHUB_SHA='a' * 40,
+                ),
                 capture_output=True,
                 text=True,
                 check=False,
